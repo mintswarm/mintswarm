@@ -35,20 +35,19 @@ Checks:
   operator, digit words before a redirection, assignments before a command and through
   env, every class of builtin outside the allow-list (export, declare,
   typeset, local, readonly, read, unset, mapfile, let, `[[`, compgen,
-  complete, bind, eval, trap, builtin, cd, coproc), printf -v, set -x,
-  unknown options of env, exec, time and command, command with -v after
-  its command word, wrappers, find -exec, versioned and unmodelled
-  interpreters, brace expansion, preload and unknown interpreter options,
-  task runners, untracked scripts and a script that is a tracked symbolic
-  link; when the wrapper or interpreter is not installed, gate-tools is
+  complete, bind, eval, trap, builtin, cd, coproc, set, printf), the
+  prefixes env, exec, time and command, command words holding `=` (also
+  `NAME+=`) or starting with `+`, an interpreter given an option of any
+  kind (`-` or `+`) or no script, wrappers, find -exec, versioned and
+  unmodelled interpreters, brace expansion, task runners, untracked
+  scripts and a script that is a tracked symbolic link; when the wrapper or interpreter is not installed, gate-tools is
   expected to fail too): exit 1
   with exactly the expected set of failing signals, each named on its line
   with its feature and the expected reason text; variants that must stay
-  ready (docs/CODEOWNERS, a symlinked CLAUDE.md, a gate with assignments,
-  exec, redirections and interpreter options, a ref without
-  render-agents.py, whose agents-drift passes as not applicable, time -p,
-  command -v, env -i, `[`, set -euo pipefail and printf, the repository's
-  own two gate commands, and a ref
+  ready (docs/CODEOWNERS, a symlinked CLAUDE.md, a gate with redirections
+  and arguments after the script, a ref without render-agents.py, whose
+  agents-drift passes as not applicable, the allowed builtins and source,
+  the repository's own two gate commands, and a ref
   whose renderer differs from the checker's, which is noted) exit 0;
 - no config: exit 1, every config signal fails naming its absence and the
   others pass;
@@ -554,7 +553,7 @@ def m_rename_docs(config, files):
     config["components"]["documentation"] = config["components"].pop("docs")
 
 
-PASS_GATE = "exec python3 -W ignore ./tests/test_ok.py >/dev/null 2>&1 || bash -e tests/test_ok.py"
+PASS_GATE = "python3 ./tests/test_ok.py --flag >/dev/null 2>&1 || bash tests/test_ok.py -x"
 
 GAP_CASES = [
     # (name, mutation, failing signals, {signal: reason fragment})
@@ -679,14 +678,20 @@ GAP_CASES = [
     (
         "bash -c",
         m_gate("bash -c true; python3 tests/test_ok.py"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate unit: bash -c runs code given inline, from stdin or before its script"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate unit: bash is given -c before its script, an option the check does not read",
+            "gate-tools": "gate unit: bash is given -c before its script, an option the check does not read, so its tools are unknown",
+        },
     ),
     (
         "python3 -m",
         m_gate("python3 -m unittest tests/test_ok.py"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate unit: python3 -m runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate unit: python3 is given -m before its script, an option the check does not read",
+            "gate-tools": "gate unit: python3 is given -m before its script, an option the check does not read, so its tools are unknown",
+        },
     ),
     (
         "an untracked script path",
@@ -769,8 +774,11 @@ GAP_CASES = [
     (
         "env -u NAME",
         m_gate("env -u X bash -c evil", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs env, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs env, a prefix the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
@@ -778,37 +786,49 @@ GAP_CASES = [
         m_gate("env -S bash", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: env -S is an option the check does not read",
-            "gate-tools": "gate shell: env -S is an option the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it runs env, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs env, a prefix the check does not read, so its tools are unknown",
         },
         (),
     ),
     (
         "exec -a NAME",
         m_gate("exec -a name bash -c evil", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs exec, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs exec, a prefix the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
         "time -p",
         m_gate("time -p bash -c evil", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs time, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs time, a prefix the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
         "time with an unknown option",
         m_gate("time -x true", name="shell"),
-        {"gate-tools", "gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: time -x is an option the check does not read"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs time, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs time, a prefix the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
         "command",
         m_gate("command bash -c evil", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs command, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs command, a prefix the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
@@ -920,36 +940,51 @@ GAP_CASES = [
     (
         "node -r",
         m_gate("node -r ./evil.js tests/test_ok.py", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: node -r runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: node is given -r before its script, an option the check does not read",
+            "gate-tools": "gate shell: node is given -r before its script, an option the check does not read, so its tools are unknown",
+        },
         ("node",),
     ),
     (
         "ruby -r",
         m_gate("ruby -rmodule tests/test_ok.py", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: ruby -rmodule runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: ruby is given -rmodule before its script, an option the check does not read",
+            "gate-tools": "gate shell: ruby is given -rmodule before its script, an option the check does not read, so its tools are unknown",
+        },
         ("ruby",),
     ),
     (
         "perl -M",
         m_gate("perl -MEvil tests/test_ok.py", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: perl -MEvil runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: perl is given -MEvil before its script, an option the check does not read",
+            "gate-tools": "gate shell: perl is given -MEvil before its script, an option the check does not read, so its tools are unknown",
+        },
         ("perl",),
     ),
     (
         "node --require",
         m_gate("node --require=./evil.js tests/test_ok.py", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: node --require=./evil.js loads code before the script"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: node is given --require=./evil.js before its script, an option the check does not read",
+            "gate-tools": "gate shell: node is given --require=./evil.js before its script, an option the check does not read, so its tools are unknown",
+        },
         ("node",),
     ),
     (
         "an option the reader does not know",
         m_gate("python3 -j tests/test_ok.py", name="shell"),
-        {"gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: python3 -j is an option the check does not read"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: python3 is given -j before its script, an option the check does not read",
+            "gate-tools": "gate shell: python3 is given -j before its script, an option the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
@@ -957,8 +992,8 @@ GAP_CASES = [
         m_gate("BASH_ENV=evil.sh bash tests/test_ok.py", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it assigns BASH_ENV, which the check does not read",
-            "gate-tools": "gate shell: it assigns BASH_ENV, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: its command word BASH_ENV=evil.sh holds =, which the check does not read",
+            "gate-tools": "gate shell: its command word BASH_ENV=evil.sh holds =, which the check does not read, so its tools are unknown",
         },
         (),
     ),
@@ -967,8 +1002,8 @@ GAP_CASES = [
         m_gate("PATH=. python3 tests/test_ok.py", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it assigns PATH, which the check does not read",
-            "gate-tools": "gate shell: it assigns PATH, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: its command word PATH=. holds =, which the check does not read",
+            "gate-tools": "gate shell: its command word PATH=. holds =, which the check does not read, so its tools are unknown",
         },
         (),
     ),
@@ -982,8 +1017,11 @@ GAP_CASES = [
     (
         "command with -v after its command word",
         m_gate("command bash -c x -v", name="shell"),
-        ["gate-scripts-named"],
-        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs command, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs command, a prefix the check does not read, so its tools are unknown",
+        },
     ),
     (
         "the builtin export",
@@ -1107,8 +1145,8 @@ GAP_CASES = [
         m_gate("printf -v BASH_ENV %s ./untracked.sh", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: printf -v assigns a variable, which the check does not read",
-            "gate-tools": "gate shell: printf -v assigns a variable, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it runs printf, a builtin the check does not read",
+            "gate-tools": "gate shell: it runs printf, a builtin the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1116,8 +1154,8 @@ GAP_CASES = [
         m_gate("set -x; true", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: set -x is an option the check does not read",
-            "gate-tools": "gate shell: set -x is an option the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it runs set, a builtin the check does not read",
+            "gate-tools": "gate shell: it runs set, a builtin the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1143,8 +1181,8 @@ GAP_CASES = [
         m_gate("env A=1 python3 tests/test_ok.py", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it assigns A, which the check does not read",
-            "gate-tools": "gate shell: it assigns A, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it runs env, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs env, a prefix the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1152,8 +1190,8 @@ GAP_CASES = [
         m_gate("A=1 true", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it assigns A, which the check does not read",
-            "gate-tools": "gate shell: it assigns A, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: its command word A=1 holds =, which the check does not read",
+            "gate-tools": "gate shell: its command word A=1 holds =, which the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1270,6 +1308,87 @@ GAP_CASES = [
         },
     ),
     (
+        "NAME+= before a command",
+        m_gate("BASH_ENV+=tests/p bash tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: its command word BASH_ENV+=tests/p holds =, which the check does not read",
+            "gate-tools": "gate shell: its command word BASH_ENV+=tests/p holds =, which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "env with any word holding =",
+        m_gate("env 9=x/ok bash pwn", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs env, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs env, a prefix the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "python3 -i",
+        m_gate("echo x | python3 -i tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: python3 is given -i before its script, an option the check does not read",
+            "gate-tools": "gate shell: python3 is given -i before its script, an option the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "zsh -O",
+        m_gate("zsh -O x tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: zsh is given -O before its script, an option the check does not read",
+            "gate-tools": "gate shell: zsh is given -O before its script, an option the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "bash +x",
+        m_gate("bash +x x", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: bash is given +x before its script, an option the check does not read",
+            "gate-tools": "gate shell: bash is given +x before its script, an option the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "source with an option",
+        m_gate("source -x tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: source is given -x before its script, an option the check does not read",
+            "gate-tools": "gate shell: source is given -x before its script, an option the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "time -p --",
+        m_gate("time -p -- bash x", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it runs time, a prefix the check does not read",
+            "gate-tools": "gate shell: it runs time, a prefix the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "a command word starting with +",
+        m_gate("+x tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: its command word +x starts with +, which the check does not read",
+            "gate-tools": "gate shell: its command word +x starts with +, which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "an interpreter given no script",
+        m_gate("echo x | python3", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: python3 is given no script, which the check does not read",
+            "gate-tools": "gate shell: python3 is given no script, which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
         "a missing tool",
         m_gate("msw-no-such-tool --flag", name="shell"),
         {"gate-tools"},
@@ -1340,14 +1459,10 @@ READY_CASES = [
     # (name, mutation, {signal: reason fragment of a pass})
     ("CODEOWNERS under docs/", m_move_codeowners, {}),
     ("CLAUDE.md as a symlink to AGENTS.md", m_file("CLAUDE.md", (SYMLINK, b"AGENTS.md")), {}),
-    ("a gate with exec, redirections and options", m_gate(PASS_GATE), {}),
+    ("a gate with redirections and arguments after the script", m_gate(PASS_GATE), {}),
     (
-        "time -p, command -v, env -i, test, set -euo pipefail and printf",
-        m_gate(
-            "time -p true; command -v bash; command -pv bash; env -i python3 tests/test_ok.py; test -d src;"
-            " set -euo pipefail; printf %s ok",
-            "shell",
-        ),
+        "the allowed builtins and source",
+        m_gate("true; : x; echo -n ok; test -d src; pwd; wait; if false; then exit 1; fi; . tests/test_ok.py", "shell"),
         {},
     ),
     (

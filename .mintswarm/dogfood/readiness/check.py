@@ -157,23 +157,25 @@ grammar:
   piece holding `>` or `&` is unreadable. Every other piece is a word as
   written, digits included.
 - A simple command is any of the reserved words `if then else elif fi
-  while until do done`, then any of the prefixes `time -p`, `env` with
-  `-i`, `-`, `--ignore-environment`, `-u NAME` or `--unset=NAME`, `exec`
-  with `-c`, `-l` or `-a NAME`, and `command` with `-p`, `-v` or `-V`
-  (clustered or not) given before its command word, then the command word
-  and its arguments. After `command -v` or `-V` nothing runs. Any other
-  option of a prefix is unreadable.
-- The command word is not an assignment (`NAME=...`), so there are no
-  assignments at all, before a command or through env.
+  while until do done`, then the command word and its arguments.
+- The reader models no options of any program: it never skips an option or
+  an option's argument to find a command word or a script. So the prefixes
+  env, exec, time and command, which take options and then run another
+  word, are unreadable, and so is a command word that holds `=` (an
+  assignment, `NAME+=` and env's rule alike) or starts with `+`.
 - A command word that is a bash builtin or keyword must be one of `:`,
-  `true`, `false`, `echo`, `test`, `pwd`, `exit`, `shift`, `wait`, `printf`
-  not given `-v`, and `set` given only `-e`, `-u`, `+e`, `+u` (clustered)
-  and `-o` or `+o` with errexit, nounset or pipefail; `source` and `.` are
-  read as interpreters, below. `[` is outside the characters, so a test is
-  written with `test`. Every other builtin or keyword (export, declare,
-  typeset, local, readonly, read, unset, let, eval, trap, builtin, cd,
-  compgen, complete, bind, for, case, function, coproc and the rest) is
+  `true`, `false`, `echo`, `test`, `pwd`, `exit`, `shift` and `wait`, which
+  evaluate nothing whatever their arguments; `source` and `.` are read as
+  interpreters, below. `[` is outside the characters, so a test is written
+  with `test`. Every other builtin or keyword (set, printf, export,
+  declare, typeset, local, readonly, read, unset, let, eval, trap, builtin,
+  cd, compgen, complete, bind, for, case, function, coproc and the rest) is
   unreadable.
+- An interpreter the reader knows (bash, sh, zsh, dash, python, python3,
+  node, perl, ruby, source, `.`) is readable only as `INTERPRETER SCRIPT
+  [ARGUMENTS...]`: the word right after it is its script. An interpreter
+  given no word, or a word starting with `-` or `+` (an option of any
+  kind, `-` itself included), is unreadable.
 
 A readable simple command fails gate-scripts-named when:
 
@@ -188,17 +190,8 @@ A readable simple command fails gate-scripts-named when:
   as python3.12, or awk, gawk, mawk, nawk, ksh, mksh, ash, fish, csh, tcsh,
   busybox, pypy, pypy3, python2, nodejs, deno, bun, php, lua, luajit,
   tclsh, wish, Rscript, osascript, expect, pwsh, ts-node or tsx;
-- it runs a modelled interpreter (bash, sh, zsh, dash, python, python3,
-  node, perl, ruby, source, `.`) that is not given a tracked regular file
-  as its first argument after its options. Each interpreter's known options
-  are modelled (single-letter clusters, options that take an argument, and
-  a few long options such as --norc); an option that runs code given on the
-  command line or from stdin (-c, -i, -s for the shells, -c and -m for
-  Python, -e, -p, -i for node, -e, -E for perl, -e for ruby), one that
-  loads code before the script (-r and --require for node and ruby,
-  --import and --loader for node, -M and -m for perl, -l and --login,
-  --rcfile and --init-file for the shells), `-`, any other option and no
-  script at all fail;
+- it runs an interpreter the reader knows whose script is not a tracked
+  regular file;
 - its command word holds `/` and is not a tracked regular file.
 
 A tracked symbolic link is never a tracked regular file, since it can point
@@ -305,35 +298,8 @@ ARGS = ("--ref", "--json", "--run-gates")
 VALUED = ("--ref", "--json")
 USAGE = "usage: check.py --ref REF [--json PATH] [--run-gates]"
 
-# Interpreters: (option letters that run code inline, from stdin or before the script; letters that take an
-# argument; other known letters; known long options). Any other option fails.
-SHELL = ("cisl", "oO", "abefhkmnptuvxBCEHPT", ("--norc", "--noprofile", "--posix", "--restricted", "--noediting"))
-PYTHON = ("cm", "WX", "bBdEhiIOPqRsSuvVx", ())
-INTERPRETERS = {
-    "bash": SHELL,
-    "sh": SHELL,
-    "zsh": SHELL,
-    "dash": SHELL,
-    "python": PYTHON,
-    "python3": PYTHON,
-    "node": ("epir", "", "c", ("--no-warnings", "--enable-source-maps", "--trace-warnings")),
-    "perl": ("eEMm", "I", "wWXTtcsnlap", ()),
-    "ruby": ("erCx", "IE", "wWvdcsl", ()),
-    "source": ("", "", "", ()),
-    ".": ("", "", "", ()),
-}
-CODE_OPTIONS = {
-    "--eval": "runs code given on the command line",
-    "--print": "runs code given on the command line",
-    "--command": "runs code given on the command line",
-    "--require": "loads code before the script",
-    "--import": "loads code before the script",
-    "--loader": "loads code before the script",
-    "--experimental-loader": "loads code before the script",
-    "--rcfile": "loads code before the script",
-    "--init-file": "loads code before the script",
-    "--login": "loads code before the script",
-}
+INTERPRETERS = frozenset("bash sh zsh dash python python3 node perl ruby source .".split())
+PREFIXES = frozenset("env exec time command".split())
 UNMODELLED = frozenset(
     """
     awk gawk mawk nawk ksh mksh ash fish csh tcsh busybox pypy pypy3 python2 nodejs deno bun php lua luajit tclsh
@@ -359,20 +325,11 @@ SUBCOMMAND_RUNNERS = {
     "pipenv": ("run",),
     "bundle": ("exec",),
 }
-# Options of the prefixes: {option: takes an argument}.
-PREFIX_OPTIONS = {
-    "env": {"-i": False, "-": False, "--ignore-environment": False, "-u": True, "--unset": True},
-    "exec": {"-c": False, "-l": False, "-a": True},
-    "time": {"-p": False},
-}
 WORD = re.compile(r"[A-Za-z0-9._/:=+,@%-]+")
 COMMAND_CHARACTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/:=+,@%- \n;|&>")
 OPERATORS = re.compile(r"(&&|\|\||;|\|)")
 REDIRECTIONS = (">/dev/null", "2>/dev/null", "2>&1", ">&2")
-ALLOWED_BUILTINS = frozenset(": true false echo test pwd exit shift wait printf set".split())
-SET_LETTERS = "eu"
-SET_NAMES = ("errexit", "nounset", "pipefail")
-ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+ALLOWED_BUILTINS = frozenset(": true false echo test pwd exit shift wait".split())
 RESERVED = frozenset("if then else elif fi do done while until".split())
 # Every bash builtin and keyword; outside ALLOWED_BUILTINS, and apart from the prefixes, source and `.`, unreadable.
 BUILTINS = frozenset(
@@ -773,90 +730,27 @@ def simple_commands(command: str) -> list:
     return commands
 
 
-def skip_options(words: list, i: int, name: str) -> int:
-    """The index after the options of env, exec or time; raises CommandError on one not modelled."""
-    options = PREFIX_OPTIONS[name]
-    while i < len(words) and words[i].startswith("-"):
-        word = words[i]
-        if word == "--":
-            return i + 1
-        if word in options:
-            i += 2 if options[word] else 1
-            continue
-        long_name, equals, _ = word.partition("=")
-        if equals and options.get(long_name):
-            i += 1
-            continue
-        if not word.startswith("--") and options.get(word[:2]):
-            i += 1  # -uNAME
-            continue
-        raise CommandError(f"{name} {word} is an option the check does not read")
-    return i
-
-
-def command_options(words: list, i: int) -> tuple:
-    """(the index of command's command word, whether it runs one) from command's options; raises CommandError."""
-    runs = True
-    while i < len(words) and words[i].startswith("-"):
-        word = words[i]
-        i += 1
-        if word == "--":
-            break
-        if word == "-" or any(c not in "pvV" for c in word[1:]):
-            raise CommandError(f"command {word} is an option the check does not read")
-        if "v" in word or "V" in word:
-            runs = False
-    return i, runs
-
-
-def check_builtin(words: list) -> None:
-    """Raise CommandError unless an allowed builtin is given only what evaluates nothing."""
-    first, args = words[0], words[1:]
-    if first == "printf" and args and args[0].startswith("-v"):
-        raise CommandError("printf -v assigns a variable, which the check does not read")
-    if first != "set":
-        return
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        i += 1
-        if arg[:1] not in ("-", "+") or len(arg) < 2:
-            raise CommandError(f"set {arg} is an argument the check does not read")
-        letters = arg[1:]
-        if letters.endswith("o"):
-            letters = letters[:-1]
-            if i >= len(args) or args[i] not in SET_NAMES:
-                raise CommandError(f"set {arg} {' '.join(args[i : i + 1])} is an option the check does not read")
-            i += 1
-        if any(c not in SET_LETTERS for c in letters):
-            raise CommandError(f"set {arg} is an option the check does not read")
-
-
 def command_word(words: list) -> list:
-    """The words from the command word on, empty when nothing runs; raises CommandError outside the grammar."""
+    """The words from the command word on, empty when there is none; raises CommandError outside the grammar."""
     i = 0
     while i < len(words) and words[i] in RESERVED:
         i += 1
-    while i < len(words):
-        word = words[i]
-        if word in PREFIX_OPTIONS:
-            i = skip_options(words, i + 1, word)
-        elif word == "command":
-            i, runs = command_options(words, i + 1)
-            if not runs:
-                return []
-        else:
-            break
     rest = words[i:]
     if not rest:
         return []
     first = rest[0]
-    assignment = ASSIGNMENT.match(first)
-    if assignment:
-        raise CommandError(f"it assigns {assignment.group(1)}, which the check does not read")
-    if first in ALLOWED_BUILTINS:
-        check_builtin(rest)
-    elif first in BUILTINS and first not in INTERPRETERS:
+    if "=" in first:
+        raise CommandError(f"its command word {first} holds =, which the check does not read")
+    if first.startswith("+"):
+        raise CommandError(f"its command word {first} starts with +, which the check does not read")
+    if first in PREFIXES:
+        raise CommandError(f"it runs {first}, a prefix the check does not read")
+    if first in INTERPRETERS:
+        if len(rest) < 2:
+            raise CommandError(f"{first} is given no script, which the check does not read")
+        if rest[1].startswith(("-", "+")):
+            raise CommandError(f"{first} is given {rest[1]} before its script, an option the check does not read")
+    elif first in BUILTINS and first not in ALLOWED_BUILTINS:
         raise CommandError(f"it runs {first}, a builtin the check does not read")
     return rest
 
@@ -871,49 +765,14 @@ def tracked_problem(word: str, regular: set, blobs: set) -> str:
     return f"{word}, which is not a tracked file"
 
 
-def interpreter_problem(words: list, regular: set, blobs: set) -> str:
-    first = words[0]
-    code, takes, known, long_options = INTERPRETERS[first]
-    i = 1
-    while i < len(words):
-        word = words[i]
-        if word == "-":
-            return f"{first} reads its script from stdin"
-        if word == "--":
-            i += 1
-            break
-        if not word.startswith("-"):
-            break
-        i += 1
-        if word.startswith("--"):
-            option = word.partition("=")[0]
-            if option in CODE_OPTIONS:
-                return f"{first} {word} {CODE_OPTIONS[option]}"
-            if word not in long_options:
-                return f"{first} {word} is an option the check does not read"
-            continue
-        for position, letter in enumerate(word[1:], start=1):
-            if letter in code:
-                return f"{first} {word} runs code given inline, from stdin or before its script"
-            if letter in takes:
-                if position == len(word) - 1:
-                    i += 1  # the option's argument is the next word
-                break
-            if letter not in known:
-                return f"{first} {word} is an option the check does not read"
-    if i >= len(words):
-        return f"{first} is given no script"
-    problem = tracked_problem(words[i], regular, blobs)
-    return f"{first} runs {problem}" if problem else ""
-
-
 def script_problem(words: list, regular: set, blobs: set) -> str:
     """Why a readable simple command runs code that no tracked regular file it names holds, or empty."""
     if not words:
         return ""
     first = words[0]
     if first in INTERPRETERS:
-        return interpreter_problem(words, regular, blobs)
+        problem = tracked_problem(words[1], regular, blobs)
+        return f"{first} runs {problem}" if problem else ""
     if first in ALLOWED_BUILTINS:
         return ""
     if first in WRAPPERS or (first == "find" and any(w in FIND_EXEC for w in words[1:])):
