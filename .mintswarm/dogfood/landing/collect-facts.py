@@ -643,7 +643,7 @@ def check_rounds_location(value: str) -> Path:
             proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
         except OSError as exc:
             raise InputError(f"cannot run git: {exc}") from exc
-        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        out = os.fsdecode(proc.stdout).strip()  # a path, kept exactly: no replacement characters
         if proc.returncode != 0 or not out:
             raise InputError(f"git rev-parse {args[-1]} failed: the working directory is not a git checkout")
         places.append((name, Path(out).parent if name == "the main checkout" else Path(out)))

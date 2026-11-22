@@ -43,10 +43,17 @@ Checks:
   through .git/info/attributes or core.attributesFile, which keep-round.py
   must not run; core.autocrlf with CRLF line endings; core.fileMode false
   with an executable bit; a tracked symbolic link retargeted or replaced by
-  a file holding its target; with all undone the round is kept. The
-  sandbox's HEAD holds a tracked symbolic link, so every kept gates round
-  also checks one that is unchanged; a gates keep at a HEAD holding a
-  gitlink exits 2;
+  a file holding its target; a tracked file renamed in case only, whatever
+  core.ignoreCase says; with all undone the round is kept. The sandbox's
+  HEAD holds a tracked symbolic link, so every kept gates round also
+  checks one that is unchanged; a gates keep at a HEAD holding a gitlink
+  exits 2; tracked names `"x"/y` and `x` followed by a CR are kept when
+  unchanged, and each changed while HEAD holds a twin `x` with the same
+  blob (which `git hash-object --stdin-paths` is shown to hash instead) is
+  refused; in a partial clone whose promisor remote runs a marker command
+  (shown to run under a plain `git ls-tree`), a gates and a review keep,
+  and a keep with only remote.<name>.promisor set, exit 2 and the command
+  does not run;
 - commit binding: rounds kept at the base (gates with the base checked
   out, review as an ancestor) and at the head give `commit` and `current`,
   false for the base's rounds, with their raw verdicts;
@@ -725,8 +732,77 @@ def head_tests(sb: Sandbox) -> None:
             keep(sb, "gates", "1", cwd=submodule, head=sb.git("rev-parse", "HEAD", cwd=submodule),
                  rounds=gitlink_rounds), "submodules (gitlinks), whose content is not checked: sub",
             [gitlink_rounds / "gates-1"])
+    readme.rename(sb.repo / "readme.md")  # a case-only rename: the same file on a case-insensitive file system
+    refused("keep: a gates keep with a tracked file renamed in case only exits 2, whatever core.ignoreCase says",
+            keep(sb, "gates", "9", rounds=rounds), "readme.md", [rounds / "gates-9"])
+    (sb.repo / "readme.md").rename(readme)
     proc = keep(sb, "gates", "9", rounds=rounds)
     T.check("keep: with every change undone the same gates round is kept", proc.returncode == 0, detail(proc))
+    twin_tests(sb)
+    promisor_tests(sb)
+
+
+def twin_tests(sb: Sandbox) -> None:
+    """Tracked names that git hash-object --stdin-paths would read as another file, their twin."""
+    job = sb.tmp / "twins"
+    sb.job(job)
+    names = ['"x"/y', "x\r", "x"]
+    for name in names:
+        write(job / name, "x = 1\n")
+    sb.git("add", "--", *names, cwd=job)
+    sb.git("commit", "-q", "-m", "twins", cwd=job)
+    head = sb.git("rev-parse", "HEAD", cwd=job)
+    rounds = sb.runner_state / "jobs" / "twins" / "rounds"
+    ready_gates(job, T0 + 6000)
+    proc = keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds)
+    T.check("keep: tracked names holding quotes and a CR are checked and kept when unchanged",
+            proc.returncode == 0, detail(proc))
+    for number, (name, label) in enumerate(((names[0], 'a changed "x"/y with a twin x'),
+                                            (names[1], "a changed x followed by a CR, with a twin x")), 2):
+        write(job / name, "import os; os.system('echo pwned')\n")
+        piped = subprocess.run(["git", "hash-object", "--no-filters", "--stdin-paths"], cwd=job, env=sb.env,
+                               input=name.encode("utf-8") + b"\n", capture_output=True).stdout.decode().strip()
+        T.check(f"keep: for {label}, git hash-object --stdin-paths hashes the twin",
+                piped == sb.git("rev-parse", "HEAD:x", cwd=job), piped)
+        refused(f"keep: a gates keep with {label} exits 2", keep(sb, "gates", str(number), cwd=job, head=head,
+                                                                 rounds=rounds),
+                "changed or untracked paths", [rounds / f"gates-{number}"])
+        write(job / name, "x = 1\n")
+    proc = keep(sb, "gates", "2", cwd=job, head=head, rounds=rounds)
+    T.check("keep: with the twins restored the next round is kept", proc.returncode == 0, detail(proc))
+
+
+def promisor_tests(sb: Sandbox) -> None:
+    """A partial clone whose promisor remote would run a command when an object is missing."""
+    job = sb.tmp / "promisor"
+    sb.job(job)
+    write(job / "d" / "f", "content\n")
+    sb.git("add", "d/f", cwd=job)
+    sb.git("commit", "-q", "-m", "a tree", cwd=job)
+    head = sb.git("rev-parse", "HEAD", cwd=job)
+    tree = sb.git("rev-parse", "HEAD:d", cwd=job)
+    (job / ".git" / "objects" / tree[:2] / tree[2:]).unlink()
+    marker = sb.tmp / "promisor-ran"
+    for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "evil"),
+                       ("remote.evil.promisor", "true"), ("remote.evil.url", str(sb.tmp / "nowhere")),
+                       ("remote.evil.uploadpack", f"sh -c 'touch {shlex.quote(str(marker))}; exit 1'")):
+        sb.git("config", key, value, cwd=job)
+    subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
+    T.check("keep: in the partial clone, a plain git ls-tree runs the promisor's command", marker.exists())
+    marker.unlink(missing_ok=True)
+    ready_gates(job, T0 + 7000)
+    rounds = sb.runner_state / "jobs" / "promisor" / "rounds"
+    for name, args in (("extensions.partialClone", ["gates", "1"]),
+                       ("extensions.partialClone, for a review round", ["review", "1", "--no-address"])):
+        refused(f"keep: a keep in a partial clone ({name}) exits 2", keep(sb, *args, cwd=job, head=head,
+                                                                         rounds=rounds),
+                "the repository is a partial clone", [rounds / f"{args[0]}-1"])
+        T.check(f"keep: a keep in a partial clone ({name}) runs no command", not marker.exists())
+    sb.git("config", "--unset", "extensions.partialClone", cwd=job)
+    refused("keep: a keep with only remote.evil.promisor true exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.promisor true",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with only remote.evil.promisor true runs no command", not marker.exists())
 
 
 def stale_tests(sb: Sandbox) -> Path:

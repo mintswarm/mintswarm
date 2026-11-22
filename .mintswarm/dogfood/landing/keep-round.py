@@ -47,13 +47,15 @@ it unchanged. For a gates round it must be HEAD, and the worktree must hold
 HEAD's content outside .mintswarm/job/, so that the recorded commit is what
 the gates ran on:
 
-- every entry of `git ls-tree -r -z --full-tree HEAD` is in the worktree
-  with the same mode, taken from os.lstat (a symbolic link, or a regular
-  file that is executable when its owner may execute it), and the same
-  blob id: `git hash-object --no-filters --stdin-paths` for files, and
-  `git hash-object --no-filters --stdin` of the link target for symbolic
-  links. No attribute, filter, end-of-line or file-mode setting is
-  consulted, the stat cache is not used and no configured filter runs;
+- every entry of `git ls-tree -r -z --full-tree HEAD`, split as bytes, is
+  in the worktree with the same mode, taken from os.lstat (a symbolic link,
+  or a regular file that is executable when its owner may execute it), and
+  the same blob id, computed here (`blob <length>\\0` and the content,
+  hashed with the algorithm `git rev-parse --show-object-format` names)
+  from the file's bytes or the link's target. Paths stay bytes from git's
+  output to the file system, so git parses no path; no attribute, filter,
+  end-of-line or file-mode setting is consulted, the stat cache is not
+  used and no configured filter runs;
 - HEAD holds no submodule (gitlink, mode 160000): a submodule's content,
   index and excludes are its own, so none is checked, and a round is not
   kept at a HEAD that has one;
@@ -70,10 +72,21 @@ the gates ran on:
   untracked .gitignore cannot hide itself and the paths it names.
 
 Every git command runs with the neutral environment floor.py uses (no
-system, global or environment config, no replace objects or grafts) and
-with core.fsmonitor and core.untrackedCache off and core.excludesFile the
-null device, overriding the repository's config. Not covered: files that a
-.gitignore held by HEAD ignores, such as build output, can still differ.
+system, global or environment config, no replace objects or grafts),
+GIT_NO_LAZY_FETCH=1 (git 2.45 and later), and core.fsmonitor and
+core.untrackedCache off, core.excludesFile the null device and
+core.ignoreCase false, overriding the repository's config. Before any git
+command reads an object, a repository whose own config sets
+extensions.partialClone or any remote.<name>.promisor to true is refused:
+reading it could fetch a missing object and run the command that config
+names. Not covered: files that a .gitignore held by HEAD ignores, such as
+build output, can still differ.
+
+What this check is. It runs git over a repository and an object store
+that the stages can write: the config, the index, the excludes and the
+objects. So it closes the bypasses named above and nothing more; it is
+not a proof that the worktree is HEAD. A store the stages cannot write is
+#87's subject.
 
 For a review round, `git merge-base --is-ancestor SHA HEAD` must succeed:
 the round judged the head of the diff.patch it was given, and address
@@ -163,7 +176,9 @@ JOB_PREFIX = ".mintswarm/job/"
 # settings in the repository's config that could make git list fewer untracked files, or run a command
 GIT_OVERRIDES = (
     "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", f"core.excludesFile={os.devnull}",
+    "-c", "core.ignoreCase=false",
 )
+FALSE_WORDS = ("false", "no", "off", "0")
 GITLINK = "160000"
 SYMLINK = "120000"
 DROPPED_ENV = (
@@ -211,18 +226,44 @@ def neutral_git_config() -> None:
         if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
             del os.environ[name]
     os.environ.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
-                       "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull})
+                       "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
+                       "GIT_NO_LAZY_FETCH": "1"})  # git 2.45 and later; older git ignores it
+
+
+def check_no_promisor() -> None:
+    """Refuse a partial clone before any git command reads objects: a missing object would be fetched lazily
+    from a promisor remote, running whatever command its config names."""
+    code, out = git("config", "-z", "--list")
+    if code != 0:
+        raise InputError("git config --list failed")
+    found = []
+    for entry in out.split("\0"):
+        key, newline, value = entry.partition("\n")
+        if key == "extensions.partialclone":
+            found.append(f"extensions.partialClone {value}")
+        elif key.startswith("remote.") and key.endswith(".promisor") \
+                and (not newline or value.lower() not in FALSE_WORDS):
+            found.append(f"{key} {value or 'true'}")
+    if found:
+        raise InputError(f"the repository is a partial clone ({', '.join(found)}): reading its objects could fetch "
+                         "them and run a configured command, so no round is kept here")
 
 
 def git(*args: str, data: bytes = b"", index: str = None) -> tuple:
     """Run git in the working directory with GIT_OVERRIDES, `data` on stdin and, when given, GIT_INDEX_FILE
     `index`: (exit code, stdout as text)."""
+    code, out = git_bytes(*args, data=data, index=index)
+    return code, out.decode("utf-8", errors="surrogateescape")  # paths round-trip exactly through os.fsencode
+
+
+def git_bytes(*args: str, data: bytes = b"", index: str = None) -> tuple:
+    """As git(), with stdout as bytes."""
     env = dict(os.environ, GIT_INDEX_FILE=index) if index else None
     try:
         proc = subprocess.run(["git", *GIT_OVERRIDES, *args], input=data, capture_output=True, env=env)
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
-    return proc.returncode, proc.stdout.decode("utf-8", errors="replace")
+    return proc.returncode, proc.stdout
 
 
 def check_rounds_location(value: str) -> Path:
@@ -245,7 +286,7 @@ def check_rounds_location(value: str) -> Path:
             proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
         except OSError as exc:
             raise InputError(f"cannot run git: {exc}") from exc
-        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        out = os.fsdecode(proc.stdout).strip()  # a path, kept exactly: no replacement characters
         if proc.returncode != 0 or not out:
             raise InputError(f"git rev-parse {args[-1]} failed: the working directory is not a git checkout")
         places.append((name, Path(out).parent if name == "the main checkout" else Path(out)))
@@ -308,7 +349,7 @@ def check_worktree() -> None:
                          "gates ran on: " + "; ".join(problems))
 
 
-def worktree_mode(path: str):
+def worktree_mode(path: bytes):
     """The mode git would record for the worktree's `path`, from os.lstat; None when it holds no file."""
     try:
         info = os.lstat(path)
@@ -321,47 +362,56 @@ def worktree_mode(path: str):
     return None
 
 
-def head_differences() -> tuple:
-    """([paths whose worktree content or mode is not HEAD's], [gitlinks in HEAD]), with no conversion.
+def blob_id(algorithm: str, content: bytes) -> str:
+    """The id git gives a blob holding `content`."""
+    digest = hashlib.new(algorithm)
+    digest.update(b"blob %d\0" % len(content))
+    digest.update(content)
+    return digest.hexdigest()
 
-    HEAD's blobs come from `git ls-tree`, the worktree's from `git hash-object --no-filters`, so no
-    attribute, filter, end-of-line or file-mode setting is consulted and no configured filter runs.
+
+def worktree_content(path: bytes, mode: str):
+    """The bytes git would store for the worktree's `path`: a symbolic link's target or a file's content."""
+    try:
+        if mode == SYMLINK:
+            return os.readlink(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def head_differences() -> tuple:
+    """([paths whose worktree content or mode is not HEAD's], [gitlinks in HEAD]), as text, with no conversion.
+
+    HEAD's entries come from `git ls-tree`, split as bytes, and the worktree's blob ids are computed here from
+    the bytes on disk, so git parses no path, and no attribute, filter, end-of-line or file-mode setting is
+    consulted.
     """
-    changed, gitlinks, files, links = [], [], [], []
-    for record in git_records("ls-tree", "-r", "-z", "--full-tree", "HEAD"):
-        header, tab, path = record.partition("\t")
-        parts = header.split(" ")
+    code, out = git("rev-parse", "--show-object-format")
+    algorithm = out.strip()
+    if code != 0 or algorithm not in ("sha1", "sha256"):
+        raise InputError(f"git rev-parse --show-object-format failed or named {algorithm!r}")
+    code, out = git_bytes("ls-tree", "-r", "-z", "--full-tree", "HEAD")
+    if code != 0:
+        raise InputError("git ls-tree -r HEAD failed")
+    changed, gitlinks = [], []
+    for record in out.split(b"\0")[:-1] if out else []:
+        header, tab, path = record.partition(b"\t")
+        parts = header.decode("ascii", errors="replace").split(" ")
         if not tab or len(parts) != 3 or not path:
             raise InputError(f"git ls-tree: unexpected record {record!r}")
         mode, oid = parts[0], parts[2]
+        name = path.decode("utf-8", errors="surrogateescape")
         if mode == GITLINK:
-            gitlinks.append(path)
+            gitlinks.append(name)
         elif worktree_mode(path) != mode:
-            changed.append(path)
-        elif mode == SYMLINK:
-            links.append((path, oid))
-        elif "\n" in path:  # hash-object --stdin-paths reads one path per line
-            changed.append(path)
+            changed.append(name)
         else:
-            files.append((path, oid))
-    if files:
-        code, out = git("hash-object", "--no-filters", "--stdin-paths",
-                        data=b"".join(path.encode("utf-8") + b"\n" for path, _ in files))
-        oids = out.split()
-        if code != 0 or len(oids) != len(files):
-            raise InputError("git hash-object --no-filters --stdin-paths failed")
-        changed += [path for (path, oid), found in zip(files, oids) if found != oid]
-    for path, oid in links:
-        try:
-            target = os.fsencode(os.readlink(path))
-        except OSError:
-            changed.append(path)
-            continue
-        code, out = git("hash-object", "--no-filters", "--stdin", data=target)
-        if code != 0:
-            raise InputError("git hash-object --no-filters --stdin failed")
-        if out.strip() != oid:
-            changed.append(path)
+            content = worktree_content(path, mode)
+            if content is None or blob_id(algorithm, content) != oid:
+                changed.append(name)
     return changed, gitlinks
 
 
@@ -386,7 +436,7 @@ def worktree_problems(index: str) -> list:
     if hiding:  # an untracked .gitignore that is itself ignored: only a tracked one may hide it
         tracked = set(git_records("ls-files", "-z", index=index))
         code, out = git("check-ignore", "-v", "-z", "--no-index", "--stdin",
-                        data=b"".join(path.encode("utf-8") + b"\0" for path in hiding))
+                        data=b"".join(os.fsencode(path) + b"\0" for path in hiding))
         fields = out.split("\0")[:-1] if out else []
         if code not in (0, 1) or len(fields) % 4:
             raise InputError("git check-ignore failed")
@@ -515,6 +565,7 @@ def keep(rounds: Path, kind: str, number: int, head: str, files: list) -> Path:
 def keep_round(argv: list) -> int:
     kind, number, head, value, no_address = parse_args(argv)
     neutral_git_config()
+    check_no_promisor()
     rounds = check_rounds_location(value)
     check_head(kind, head)
     final = rounds / f"{kind}-{number}"
