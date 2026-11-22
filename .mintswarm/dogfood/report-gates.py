@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write a job's gate results in the report formats the repository asks for.
 
-    report-gates.py [--check] [--config PATH]
+    report-gates.py [--check | --clean] [--config PATH]
 
 Dogfooding stand-in for the runner's report step. run-gates.py writes the
 canonical result, .mintswarm/job/outputs/gates.ctrf.json; every other format
@@ -37,6 +37,9 @@ Converter contract:
   example gates.junit.xml. It is deleted before the converter runs, and the
   temporary file is renamed onto it only on success: exit 0 within the
   timeout, with OUT_PATH a non-empty regular file.
+- The converter runs in its own session; on timeout its whole process group
+  is killed, so no descendant left in it can write the temporary file after
+  it is deleted.
 - On any other outcome (non-zero exit, timeout, missing or empty output, a
   command that cannot start) the temporary file is deleted,
   `warning: report <format>: <reason>` is printed to stderr and the next
@@ -47,17 +50,24 @@ Converter contract:
   converter. A config error or a converter failure never changes the gate
   verdict, which is taken from the CTRF report before any converter runs.
 
-Runner sequence (the dogfooding session follows it):
+--clean deletes the gate reports of an earlier round: gates.ctrf.json and
+every gates.<format>.<extension> file (and its .tmp) under the outputs
+directory, whatever the config says. It reads no config.
+
+Runner sequence, in every gates round (the dogfooding session follows it):
 
 1. report-gates.py --check; stop the job on exit 2.
-2. Write inputs/gates.json from gates.run.
-3. Dispatch the gates stage and save gates.md.
-4. run-gates.py --verdict for the verdict.
-5. report-gates.py, noting any warnings.
+2. report-gates.py --clean, so that no report from an earlier round is left.
+3. Write inputs/gates.json from gates.run.
+4. Dispatch the gates stage and save gates.md.
+5. run-gates.py --verdict for the verdict. It fails when the report is
+   missing or older than inputs/gates.json.
+6. report-gates.py, noting any warnings.
 
-Exits 0 when every requested format was written or none was requested, 1 when
-any converter failed, 2 on a config error, a missing yq or CTRF report, or bad
-arguments. Standard library only, apart from calling yq.
+Exits 0 when every requested format was written or none was requested (with
+--clean, when the old reports are gone), 1 when any converter failed or a
+file could not be deleted, 2 on a config error, a missing yq or CTRF report,
+or bad arguments. Standard library only, apart from calling yq.
 """
 
 import argparse
@@ -65,6 +75,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -77,6 +88,7 @@ DEFAULT_CONFIG = ROOT / ".mintswarm" / "config.yaml"
 OUTPUTS = Path(".mintswarm/job/outputs")
 REPORT = OUTPUTS / "gates.ctrf.json"
 FORMAT_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+REPORT_FILE = re.compile(r"gates\.[a-z0-9][a-z0-9-]*\.[a-z0-9]+(?:\.tmp)?")
 EXTENSION = re.compile(r"[a-z0-9]+")
 CONVERTER_KEYS = {"command", "extension", "timeout"}
 REPORT_KEYS = {"formats", "converters"}
@@ -180,35 +192,71 @@ def remove(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def clean() -> int:
+    status = 0
+    if not OUTPUTS.is_dir():
+        return 0
+    for path in sorted(OUTPUTS.iterdir()):
+        if not REPORT_FILE.fullmatch(path.name):
+            continue
+        try:
+            remove(path)
+        except OSError as exc:
+            print(f"report-gates: cannot delete {path}: {exc}", file=sys.stderr)
+            status = 1
+            continue
+        print(f"deleted {path}")
+    return status
+
+
+def run_converter(argv: list, timeout: int) -> str:
+    """Run a converter in a new session; return the failure reason, or None."""
+    sys.stderr.flush()
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return f"could not start {argv[0]}: {exc.strerror or exc}"
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_group(proc)
+        proc.wait()
+        return f"timed out after {timeout} s"
+    except BaseException:
+        kill_group(proc)
+        proc.wait()
+        raise
+    if proc.returncode < 0:
+        return f"killed by signal {-proc.returncode}"
+    if proc.returncode != 0:
+        return f"exit code {proc.returncode}"
+    return None
+
+
+def kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def convert(name: str, spec: dict) -> bool:
     final = OUTPUTS / f"gates.{name}.{spec['extension']}"
     temporary = final.with_name(final.name + ".tmp")
     remove(final)
     remove(temporary)
-    reason = None
     with tempfile.TemporaryDirectory(prefix="report-gates-") as scratch:
         ctrf_in = Path(scratch) / "gates.ctrf.json"
         shutil.copyfile(REPORT, ctrf_in)
         os.chmod(ctrf_in, 0o444)
         argv = spec["command"] + [str(ctrf_in), str(temporary.resolve())]
-        sys.stderr.flush()
-        try:
-            proc = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=sys.stderr.fileno(),
-                stderr=sys.stderr.fileno(),
-                timeout=spec["timeout"],
-            )
-        except subprocess.TimeoutExpired:
-            reason = f"timed out after {spec['timeout']} s"
-        except OSError as exc:
-            reason = f"could not start {spec['command'][0]}: {exc.strerror or exc}"
-        else:
-            if proc.returncode < 0:
-                reason = f"killed by signal {-proc.returncode}"
-            elif proc.returncode != 0:
-                reason = f"exit code {proc.returncode}"
+        reason = run_converter(argv, spec["timeout"])
     if reason is None:
         try:
             info = os.lstat(temporary)
@@ -234,9 +282,13 @@ def convert(name: str, spec: dict) -> bool:
 
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(prog="report-gates.py", description="Write gate results in extra report formats.")
-    parser.add_argument("--check", action="store_true", help="validate the report settings and run nothing")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true", help="validate the report settings and run nothing")
+    modes.add_argument("--clean", action="store_true", help="delete the gate reports of an earlier round")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="repository config (default: %(default)s)")
     args = parser.parse_args(argv)
+    if args.clean:
+        return clean()
     try:
         formats = resolve(load_config(args.config))
     except ConfigError as exc:

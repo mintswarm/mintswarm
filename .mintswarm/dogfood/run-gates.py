@@ -17,20 +17,25 @@ runner prepared in .mintswarm/job/inputs/gates.json:
 Running the gates first deletes any stale report, then writes
 .mintswarm/job/outputs/gates.ctrf.json, a CTRF 0.3.0 report
 (https://ctrf.io): `results.tool.name` is `mintswarm-gates` and each gate is
-one test, `passed` or `failed`. A failed gate carries `message` (`exit code N`
-or `timed out after N s`) and `trace` (the last 200 lines of its combined
-stdout and stderr, left out when empty); a timeout also has `rawStatus`
-`timeout`. Every test has the command, exit code (null on timeout), timeout
-flag and timeout in `extra["mintswarm.gate"]`. One line per gate is printed.
-Exits 0 when every gate passed, 1 when any failed or timed out, 2 when the
-input is unusable.
+one test, `passed` or `failed`. Every test has `stdout`, the last 200 lines
+of the gate's combined stdout and stderr (left out when empty), and the
+command, exit code (null on timeout), timeout flag and timeout in
+`extra["mintswarm.gate"]`. A failed gate also carries `message` (`exit code N`
+or `timed out after N s`) and `trace` (the same tail as one string); a
+timeout also has `rawStatus` `timeout`. Each gate runs in its own session,
+and on timeout its whole process group is killed. One line per gate is
+printed. Exits 0 when every gate passed, 1 when any failed or timed out, 2
+when the input is unusable.
 
 --verdict exits 0 only when the report exists and parses, is CTRF, has no
-`results.errors`, counts as many tests as the input has gates (at least one)
-and as `results.tests` holds, and every test passed with none failed or other.
-Otherwise it prints the first unmet condition and exits 1. It exits 2 when the
-report exists but the input is unusable. The verdict is this, never a summary
-written by an agent.
+`results.errors`, is no older than inputs/gates.json, counts as many tests as
+the input has gates (at least one) and as `results.tests` holds, names the
+input's gates in order, and every test passed with none failed or other, in
+the summary and in each test. Otherwise it prints the first unmet condition
+and exits 1. It exits 2 when the report exists but the input is unusable.
+The verdict is this, never a summary written by an agent. The runner deletes
+the report before each gates stage (see report-gates.py --clean), so a stage
+that never ran the gates leaves no report and fails.
 
 --failures prints, for each failed gate, `== <name>: <message>` and then its
 trace verbatim, or `no failed gates`. Exits 0 when printed, 2 when the report
@@ -41,6 +46,8 @@ afterwards; see report-gates.py. Standard library only.
 """
 
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -66,9 +73,8 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def tail(text: str) -> str:
-    lines = text.splitlines()
-    return "\n".join(lines[-TAIL_LINES:])
+def tail(text: str) -> list:
+    return text.splitlines()[-TAIL_LINES:]
 
 
 def seconds(value) -> str:
@@ -89,21 +95,45 @@ def load_gates() -> list:
     return gates
 
 
+def kill_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def run_in_session(argv: list, timeout, **kwargs) -> tuple:
+    """Run argv in a new session; return (returncode, stdout, timed_out).
+
+    On timeout the whole process group is killed, not only the direct child.
+    """
+    proc = subprocess.Popen(argv, start_new_session=True, **kwargs)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out, False
+    except subprocess.TimeoutExpired:
+        kill_group(proc)
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            out = exc.stdout
+            proc.kill()
+            proc.wait()
+        return None, out, True
+    except BaseException:
+        kill_group(proc)
+        proc.wait()
+        raise
+
+
 def run_gate(gate: dict) -> dict:
     name, command = gate["name"], gate["command"]
     timeout = gate.get("timeout", DEFAULT_TIMEOUT_S)
     start = now_ms()
     started = time.monotonic()
-    try:
-        proc = subprocess.run(
-            ["bash", "-c", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-        exit_code, raw, timed_out = proc.returncode, proc.stdout, False
-    except subprocess.TimeoutExpired as exc:
-        exit_code, raw, timed_out = None, exc.stdout, True
+    exit_code, raw, timed_out = run_in_session(
+        ["bash", "-c", command], timeout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
     duration = int((time.monotonic() - started) * 1000)
     stop = now_ms()
     output = (raw or b"").decode("utf-8", errors="replace")
@@ -115,11 +145,13 @@ def run_gate(gate: dict) -> dict:
         "start": start,
         "stop": stop,
     }
+    lines = tail(output)
+    if lines:
+        test["stdout"] = lines
     if test["status"] == "failed":
         test["message"] = f"timed out after {seconds(timeout)} s" if timed_out else f"exit code {exit_code}"
-        trace = tail(output)
-        if trace:
-            test["trace"] = trace
+        if lines:
+            test["trace"] = "\n".join(lines)
         if timed_out:
             test["rawStatus"] = "timeout"
     test["extra"] = {
@@ -224,14 +256,27 @@ def unmet_condition():
             return f"summary.{key} is not an integer"
         counts[key] = value
     gates = load_gates()
+    try:
+        stale = REPORT.stat().st_mtime_ns < INPUT.stat().st_mtime_ns
+    except OSError as exc:
+        raise InputError(f"cannot stat {INPUT}: {exc}") from exc
+    if stale:
+        return f"stale report: {REPORT} is older than {INPUT}"
     if counts["tests"] != len(gates) or counts["tests"] <= 0:
         return f"summary.tests is {counts['tests']}, the input has {len(gates)} gates"
     if counts["tests"] != len(tests):
         return f"summary.tests is {counts['tests']}, results.tests holds {len(tests)}"
+    names = [t.get("name") if isinstance(t, dict) else None for t in tests]
+    expected = [g["name"] for g in gates]
+    if names != expected:
+        return f"results.tests names {names}, the input has {expected}"
     if counts["passed"] != counts["tests"]:
         return f"summary.passed is {counts['passed']} of {counts['tests']}"
     if counts["failed"] != 0 or counts["other"] != 0:
         return f"summary.failed is {counts['failed']}, summary.other is {counts['other']}"
+    for test in tests:
+        if test.get("status") != "passed":
+            return f"test {test['name']} has status {test.get('status')!r}"
     return None
 
 
