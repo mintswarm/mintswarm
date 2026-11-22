@@ -34,7 +34,7 @@ Your final reply carries your output document in one fenced block:
 3. N is greater than the longest run of backticks that starts any line of the document, ignoring leading spaces. That is 4 for most documents, and 5 when the document contains a four-backtick block (the decompose and review templates, or a document quoting them).
 4. The runner saves the lines strictly between the opening and closing lines, unchanged, with a final newline. The first of them is the document's `# ` title.
 5. The reply contains exactly one such block. Lines inside it are part of the document, never the start of another block.
-6. After the closing line comes exactly one result block (below), and nothing after it. A few lines of text may come before the document block.
+6. After the closing line come only blank lines, then exactly one result block (below), then only blank lines. A few lines of text may come before the document block.
 
 - Never write the document with a file tool or the shell. The only file a stage writes under `.mintswarm/job/outputs/` is `gates.json`, and the gate script writes it.
 - The runner saves the block's content unchanged at the path in `outputs`. While mintswarm is dogfooded, the dispatching session saves it with `.mintswarm/dogfood/save-output.py`, which applies exactly these rules.

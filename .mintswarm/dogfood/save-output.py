@@ -23,9 +23,9 @@ The reply must follow "Returning the output" in .mintswarm/stages.md:
    document's `# ` title.
 5. The reply contains exactly one such block. Lines inside it are part of
    the document, never the start of another block.
-6. After the closing line comes exactly one result block, a ```yaml fence
-   whose first line is `msw-result:`, and nothing after it. A few lines of
-   text may come before the document block.
+6. After the closing line come only blank lines, then exactly one result
+   block (a ```yaml fence whose first line is `msw-result:`), then only
+   blank lines. A few lines of text may come before the document block.
 
 Closing on exactly N backticks is stricter than CommonMark's "at least N";
 a reply that follows rule 3 renders the same in CommonMark.
@@ -126,28 +126,22 @@ def check_document(lines: list, first: int, last: int, fence: str) -> None:
 
 
 def find_result(lines: list, after: int) -> str:
-    results = []
     i = after
-    end = after
-    while i < len(lines):
-        if RESULT_OPENER.fullmatch(lines[i]) and i + 1 < len(lines) and lines[i + 1].startswith("msw-result:"):
-            for j in range(i + 2, len(lines)):
-                if RESULT_CLOSER.fullmatch(lines[j]):
-                    break
-            else:
-                raise ReplyError(f"line {i + 1}: result block is never closed")
-            results.append("\n".join(lines[i + 1:j]))
-            end = j + 1
-            i = j + 1
-            continue
+    while i < len(lines) and not lines[i].strip():
         i += 1
-    if not results:
+    if i == len(lines):
         raise ReplyError("no msw-result block after the document block")
-    if len(results) > 1:
-        raise ReplyError(f"{len(results)} msw-result blocks after the document block; expected exactly one")
-    if any(line.strip() for line in lines[end:]):
-        raise ReplyError(f"line {end + 1}: text after the msw-result block")
-    return results[0]
+    if not (RESULT_OPENER.fullmatch(lines[i]) and i + 1 < len(lines) and lines[i + 1].startswith("msw-result:")):
+        raise ReplyError(f"line {i + 1}: only blank lines may come between the document block and the msw-result block")
+    for j in range(i + 2, len(lines)):
+        if RESULT_CLOSER.fullmatch(lines[j]):
+            break
+    else:
+        raise ReplyError(f"line {i + 1}: result block is never closed")
+    for k in range(j + 1, len(lines)):
+        if lines[k].strip():
+            raise ReplyError(f"line {k + 1}: text after the msw-result block")
+    return "\n".join(lines[i + 1:j])
 
 
 def extract(text: str) -> tuple:
