@@ -104,6 +104,10 @@ gates:
       command: "git diff --check origin/master...HEAD"
     - name: agents-drift
       command: "python3 .mintswarm/dogfood/render-agents.py --check"
+    - name: packs-check
+      command: "python3 .mintswarm/dogfood/packs/pack.py check --base origin/master"
+    - name: packs-selftest
+      command: "python3 .mintswarm/dogfood/packs/selftest.py"
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
