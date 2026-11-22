@@ -74,10 +74,10 @@ agents:
     gates: { model: sonnet, effort: low }
 
 pipeline:
-  # Read from the base ref, never the worktree, by the session and plan-approval/floor.py.
+  # Read from the base ref, never the worktree, by the session, plan-approval/floor.py and plan-approval/decision.py.
   plan_approval:
-    mode: always                     # always | shadow | judged | never; every plan goes to the maintainer while the flow proves itself
-                                     # shadow: floor and assess run and are recorded, but every plan still goes to a human
+    mode: shadow                     # always | shadow | judged | never
+                                     # shadow: floor, assess and the decision run and are recorded on every plan, while a human decides
     require_human:                   # any declared match sends the plan to a human
       components: [agents, tooling]
       paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md"]
