@@ -15,8 +15,12 @@
 #   A  selftest.sh as the non-root user msw: GNU userland, bash 5, Debian's tools.
 #   B  secret-service as msw, against gnome-keyring in dbus-run-session: backend
 #      selection, a byte-exact round trip, rotate and mint-token.sh jwt; with no
-#      bus, get fails; with the collection locked, get fails within 20 seconds
-#      and says to unlock it; nothing falls back to the file backend.
+#      bus, get fails. Then the daemon is restarted without --unlock, so the login
+#      collection loads locked (confirmed over D-Bus; a bounded secret-tool lock
+#      is the fallback): get of the stored key fails within 20 seconds, whatever
+#      the prompt does, and nothing falls back to the file backend; restarted
+#      unlocked, get returns the key again. skip, with the reason, only when no
+#      locked collection can be reached.
 #   C  pass as msw, with a throwaway gpg key: round trip, rotate and jwt.
 #   D  the file backend as msw: modes 600 and 700, the warning, refusing a
 #      symlink, a wide mode and (after root chowns it) a foreign owner; rotate and jwt.
@@ -145,20 +149,55 @@ kill_strays() {  # kill msw's processes outside this script's ancestry (the keyr
   done
 }
 
-locked_get() {  # with the collection locked: get fails within 20 seconds and says to unlock it
+running_named() {  # running_named COMM: one of this user's processes has that command name
+  local q
+  for q in /proc/[0-9]*; do
+    if [ -O "$q" ] && [ "$(cat "$q/comm" 2>/dev/null || true)" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+stop_keyring() {  # stop gnome-keyring-daemon (and any prompter) and wait until it is gone
+  local i
+  kill_strays
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    running_named gnome-keyring-d || return 0
+    sleep 0.5
+  done
+  echo "gnome-keyring-daemon is still running after 5 seconds ($i checks)"
+  return 1
+}
+KEYRING_PASSWORD='msw-check-keyring'
+start_keyring_unlocked() { printf '%s' "$KEYRING_PASSWORD" | timeout 20 gnome-keyring-daemon --unlock --components=secrets; }
+start_keyring_locked() { timeout 20 gnome-keyring-daemon --start --components=secrets </dev/null; }
+LOGIN=/org/freedesktop/secrets/collection/login
+login_locked() {  # the login collection reports Locked = true over D-Bus; the reply is in $HOME/locked.out
+  local out
+  out="$(timeout 10 dbus-send --session --print-reply --dest=org.freedesktop.secrets "$LOGIN" \
+    org.freedesktop.DBus.Properties.Get string:org.freedesktop.Secret.Collection string:Locked 2>&1)" || true
+  printf '%s\n' "$out" > "$HOME/locked.out"
+  case "$out" in *"boolean true"*) return 0 ;; esac
+  return 1
+}
+locked_get() {  # with the collection locked: get of the stored key fails within 20 seconds
   local start end
   start="$(date +%s)"
-  fails_saying "the keyring is probably locked; unlock it first" timeout 60 "$K" get "$SERVICE" "$CLIENT_ID" || return 1
+  if timeout 60 "$K" get "$SERVICE" "$CLIENT_ID" > /dev/null 2> "$HOME/locked-get.err"; then
+    echo "get succeeded on a locked collection"; return 1
+  fi
   end="$(date +%s)"
+  cat "$HOME/locked-get.err"
   [ $((end - start)) -lt 20 ] || { echo "took $((end - start)) seconds"; return 1; }
+}
+unlocked_get() { "$K" get "$SERVICE" "$CLIENT_ID" | cmp "$W/key1.pem" -; }
+one_line() {  # one_line FILE: FILE on one line, or (none)
+  if [ -s "$1" ]; then tr '\n' ' ' < "$1" | sed 's/  */ /g; s/ $//'; else printf '(none)'; fi
 }
 
 user_b() {
   # Nothing this phase starts may outlive it: strace -f waits for every process it traces.
   trap kill_strays EXIT
   unset MSW_KEY_STORE
-  check "B: gnome-keyring starts and unlocks a throwaway login keyring" \
-    sh -c 'printf "%s" msw-check-keyring | gnome-keyring-daemon --unlock --components=secrets'
+  check "B: gnome-keyring starts and unlocks a throwaway login keyring" start_keyring_unlocked
   check "B: backend selects secret-service" eq "$("$K" backend 2>&1)" secret-service
   export MSW_KEY_STORE=secret-service
   check "B: byte-exact round trip, delete, get after delete fails" roundtrip ss
@@ -167,15 +206,34 @@ user_b() {
     fails_saying "MSW_KEY_STORE=secret-service is not available" \
     env -u DBUS_SESSION_BUS_ADDRESS "$K" get "$SERVICE" "$CLIENT_ID"
   check "B: and nothing fell back to the file backend" no_key_dir
-  local rc=0
-  timeout 20 secret-tool lock --collection=/org/freedesktop/secrets/collection/login >/dev/null 2>&1 || rc=$?
-  case "$rc" in
-    0)
-      check "B: with the collection locked, get fails within 20 seconds and says to unlock it" locked_get
-      check "B: and nothing fell back to the file backend" no_key_dir ;;
-    124) not_ok "B: secret-tool lock did not finish within 20 seconds" ;;
-    *) skip "B: secret-tool lock is not available here (status $rc); the locked-collection check did not run" ;;
-  esac
+
+  # The locked case. The key that rotate stored is still in the login collection.
+  local how="" rc=0 tried=""
+  rm -f "$HOME/restart.out" "$HOME/locked.out" "$HOME/locked-get.err"
+  if stop_keyring > "$HOME/restart.out" 2>&1 && start_keyring_locked >> "$HOME/restart.out" 2>&1 && login_locked; then
+    how="the daemon restarted without --unlock"
+  else
+    tried="restarting without --unlock: $(one_line "$HOME/restart.out") / D-Bus: $(one_line "$HOME/locked.out")"
+    timeout 20 secret-tool lock --collection="$LOGIN" >/dev/null 2>&1 || rc=$?
+    if login_locked; then
+      how="secret-tool lock, status $rc"
+    else
+      tried="$tried; secret-tool lock: status $rc / D-Bus: $(one_line "$HOME/locked.out")"
+    fi
+  fi
+  if [ -n "$how" ]; then
+    ok "B: the login collection reports Locked over D-Bus ($how)"
+    check "B: with the collection locked, get of the stored key fails within 20 seconds" locked_get
+    printf 'note  B: get on the locked collection said: %s\n' "$(one_line "$HOME/locked-get.err")"
+    check "B: and nothing fell back to the file backend" no_key_dir
+    if stop_keyring > "$HOME/restart.out" 2>&1 && start_keyring_unlocked >> "$HOME/restart.out" 2>&1; then
+      check "B: restarted unlocked, get returns the key again (the failure was the lock)" unlocked_get
+    else
+      not_ok "B: restarting the keyring unlocked failed: $(one_line "$HOME/restart.out")"
+    fi
+  else
+    skip "B: no locked collection could be reached ($tried); the locked-collection check did not run"
+  fi
   phase_done B
 }
 
