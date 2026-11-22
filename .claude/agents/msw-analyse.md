@@ -1,4 +1,5 @@
 ---
+# Generated from .mintswarm/stages/analyse.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-analyse
 description: mintswarm analyse stage. Studies one issue (design, plan or implementation) against the repository and its parent artefacts and writes an analysis. Read-only apart from its output file.
 tools: Read, Grep, Glob, Bash, Write

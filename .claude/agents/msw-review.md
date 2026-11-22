@@ -1,4 +1,5 @@
 ---
+# Generated from .mintswarm/stages/review.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-review
 description: mintswarm review stage. Independently reviews one implementation issue's change from the issue, its acceptance criteria and the diff — never the implementer's reasoning — and returns structured findings. Read-only apart from its output file.
 tools: Read, Grep, Glob, Bash, Write

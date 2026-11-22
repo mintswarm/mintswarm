@@ -1,4 +1,5 @@
 ---
+# Generated from .mintswarm/stages/implement.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-implement
 description: mintswarm implement stage. Carries out the approved plan of one implementation issue in its worktree and commits; also answers review findings in address rounds. Never pushes.
 tools: Read, Grep, Glob, Bash, Edit, Write

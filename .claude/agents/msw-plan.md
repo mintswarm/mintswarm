@@ -1,4 +1,5 @@
 ---
+# Generated from .mintswarm/stages/plan.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-plan
 description: mintswarm plan stage. Turns one implementation issue into ordered steps, files to touch and tests derived from its acceptance criteria. Read-only apart from its output file.
 tools: Read, Grep, Glob, Bash, Write

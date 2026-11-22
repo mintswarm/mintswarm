@@ -1,4 +1,5 @@
 ---
+# Generated from .mintswarm/stages/gates.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-gates
 description: mintswarm gates stage. Runs the project's gates in a job's worktree with the gate runner script and summarises failures for the implementer. Never edits or fixes anything.
 tools: Read, Bash, Write
