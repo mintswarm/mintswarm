@@ -89,6 +89,16 @@ A maintainer decision taken while a job is in flight, for example one that chang
 3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue before the next stage runs.
 4. If the plan was already through the floor, rerun the floor (step 2) and the decision (step 6) on the refreshed `issue.md`: both bind the documents they read, so a verdict from before the refresh no longer counts. A `floor.json` of version 1, from before the floor read the issue document and the analysis, also counts as `human` until the floor reruns.
 
+## The review job's mechanical check
+
+When the approved plan has a `## Mechanical check` section (rule 10 of `.mintswarm/stages/plan.md`), the session writes `.mintswarm/job/inputs/mechanical-check.md` in every review round's job:
+
+- The first line is `Base: <commit>`, the commit the review job's `diff.patch` is made against (the merge base of the head with `origin/master` when the session writes the review inputs), followed by a blank line. This can differ from the job's plan-approval base, for example after a rebase before the first push; the check must compare against the same commit as `diff.patch`.
+- Then comes the plan's section, from its `## Mechanical check` line up to, not including, the next `## ` heading outside a fenced block, copied unchanged.
+- The section is taken from the plan the maintainer approved, or that was approved without a human, never from a later revision.
+
+Nothing else from the plan goes into the review job. Without the section, the file is absent.
+
 ## PR approval
 
 PR approval stays with a human in every mode, including `never`. Plan approval only decides whether implement may start without the maintainer.

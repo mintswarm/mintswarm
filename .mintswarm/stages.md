@@ -16,7 +16,7 @@ Rules every mintswarm stage agent follows, whatever its harness. Each stage's ow
 ## Boundaries
 
 - Never touch GitHub or any other remote: no `gh`, no `git push`, no `git fetch`, no network calls. The runner publishes and pushes.
-- Read-only stages (analyse, decompose, plan, assess, gates, review, landing) change nothing in the repository. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`) and, for gates, running the gate script.
+- Read-only stages (analyse, decompose, plan, assess, gates, review, landing) change nothing in the repository. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`), for gates running the gate script, and for review running the check in `mechanical-check.md` under the conditions in `review.md`.
 - Only the implement stage edits files and commits. It never changes `.mintswarm/config.yaml` or the `agents` component's paths (`.claude/agents/`, `.mintswarm/stages.md`, `.mintswarm/stages/`, `.mintswarm/dogfood/`, `defaults/prompts/`, `defaults/packs/`, `.claude/skills/`) unless its issue's component is `agents`.
 - Do not declare success you cannot show. Gates are run by the runner; a stage passes only when the runner accepts your result.
 
