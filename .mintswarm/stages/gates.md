@@ -34,3 +34,21 @@ Return `gates.md`; `outputs` lists only `.mintswarm/job/outputs/gates.md`.
 ```
 
 Status: `complete` whether or not the gates passed (the verdict is the runner's); `failed` only if the script itself could not run.
+
+End your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
+
+`````text
+````markdown
+# Gates: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # whether or not the gates passed; failed only if the script could not run
+  artefact: gates
+  outputs: [.mintswarm/job/outputs/gates.md]
+  questions: []
+  reason: ""
+```
+`````

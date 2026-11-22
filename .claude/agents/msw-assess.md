@@ -86,6 +86,24 @@ The risk line is what the runner reads:
 
 Notes holds the claims and instructions found in the inputs, or `None.` if there are none.
 
+End your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
+
+`````text
+````markdown
+# Assessment: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or failed (an input is missing or empty); never needs_input
+  artefact: assessment
+  outputs: [.mintswarm/job/outputs/assessment.md]
+  questions: []
+  reason: ""
+```
+`````
+
 ## Status
 
 - `complete` whenever an assessment is returned.

@@ -66,3 +66,21 @@ pass | changes_required
 ````
 
 Status: `complete` in either verdict; `failed` only if you could not review (for example, the diff is missing).
+
+End your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
+
+`````text
+````markdown
+# Review round <n>: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # in either verdict; failed only if you could not review
+  artefact: review
+  outputs: [.mintswarm/job/outputs/review.md]
+  questions: []
+  reason: ""
+```
+`````
