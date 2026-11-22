@@ -44,18 +44,21 @@ Checks:
   floor layer's rules equal to the verdict's, the risk and reason equal to
   the assessment's, harness and model equal to the arguments,
   `as_configured` against the config, `judged_decision` and `decision`
-  recomputed from the layers and the mode, the exit code, and stdout:
-  empty for `human`, the comment for `auto`;
+  recomputed from the layers, `as_configured` and the mode, the exit code,
+  and stdout: the auto-approval comment for `auto`, the shadow-record
+  comment in `shadow` mode, empty otherwise;
 - decision under `judged`: clean and `low` is `auto`; a floor hit, `medium`,
   `high`, a missing or unparsable verdict, a verdict edited to break each
-  binding, and a missing, non-UTF-8 or malformed assessment are `human`,
-  with the failing layer unusable; a trailing space and CRLF still give
-  `auto`; a harness or model other than the config's sets `as_configured`
-  false and leaves the decision alone;
+  binding, a forged verdict that is consistent in itself but differs from
+  what floor.py gives for the plan, and a missing, non-UTF-8 or malformed
+  assessment are `human`, with the failing layer unusable; a trailing space
+  and CRLF still give `auto`; a harness or model other than the config's
+  sets `as_configured` false and gives `human`;
 - decision under `always`, `shadow` and `never`: `human`, `human` with
   `judged_decision` recorded, and `auto` whatever the layers say;
-- the comment: the heading, the floor line, the risk and reason, the veto
-  paragraph, and model and session text only inside code spans of at most
+- the comments: the auto-approval comment's heading, floor line, risk and
+  reason and veto paragraph; the shadow-record comment's heading and rows;
+  and in both, model and session text only inside code spans of at most
   200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a
   missing `yq` and a record path that is a directory exit 2, print nothing
@@ -785,7 +788,7 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
 
     clean = fl["status"] == "usable" and fl["verdict"] == "clean"
     low = jd["status"] == "usable" and jd["risk"] == "low"
-    judged = "auto" if clean and low else "human"
+    judged = "auto" if clean and low and as_configured else "human"
     decision = {"always": "human", "shadow": "human", "never": "auto", "judged": judged}.get(mode)
     if record["judged_decision"] != judged:
         problems.append(f"judged_decision {record['judged_decision']!r}, expected {judged!r}")
@@ -797,7 +800,10 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
     if (not isinstance(reasons, list) or not all(isinstance(x, str) for x in reasons)
             or not reasons or not reasons[0].startswith(f"mode {mode}:")):
         problems.append(f"reasons {reasons!r}")
-    if record["decision"] == "human" and proc.stdout != "":
+    if record["decision"] == "human" and mode == "shadow":
+        if not proc.stdout.startswith("### Shadow record: plan approval\n"):
+            problems.append("no shadow-record comment in shadow mode")
+    elif record["decision"] == "human" and proc.stdout != "":
         problems.append("stdout not empty for human")
     if record["decision"] == "auto" and "approved without a human" not in proc.stdout:
         problems.append("no comment for auto")
@@ -834,6 +840,19 @@ def check_comment(name: str, proc, floor_line: str, risk_line: str) -> None:
                   and "rejection at PR approval" in line for line in lines)
           and "PR approval stays with a human in every mode." in lines)
     T.check(f"{name}: comment has the heading, floor, risk and veto", ok, repr(out))
+
+
+def check_shadow_comment(name: str, proc, floor_start: str, risk_line: str, judged: str) -> None:
+    lines = proc.stdout.splitlines()
+    floor = next((line for line in lines if line.startswith("- **Floor:** ")), "")
+    ok = (bool(lines) and lines[0] == "### Shadow record: plan approval"
+          and any(line.startswith("- **Plan:** ") and "footprint: " in line for line in lines)
+          and any(line.startswith("- **Assess:** stage `assess`, `claude` with `sonnet`, as configured") for line in lines)
+          and f"- **Risk:** {risk_line}" in lines
+          and floor_start in floor and "clean: `" in floor
+          and f"- **Would-be decision:** `{judged}` (`judged_decision`)" in lines
+          and "- **Decision:** `human`" in lines and "- **Maintainer decision:** pending" in lines)
+    T.check(f"{name}: shadow-record comment has the heading and rows", ok, repr(proc.stdout))
 
 
 def check_decision_judged(d: Decider) -> None:
@@ -902,6 +921,7 @@ def check_decision_judged(d: Decider) -> None:
         ("Risk:low", assessment_text(risk_line="Risk:low")),
         ("summary level differs", assessment_text(summary=f"medium risk: {REASON}")),
         ("summary without reason", assessment_text(summary="low risk: ")),
+        ("summary reason of format characters", assessment_text(summary="low risk: \u200b\u2060")),
         ("no summary line", assessment_text(summary="A plan.")),
         ("no title", assessment_text(title="Assessment: selftest case")),
     ]
@@ -918,17 +938,43 @@ def check_decision_judged(d: Decider) -> None:
 
     for label, harness, model in (("other model", "claude", "opus"), ("other harness", "codex", "sonnet")):
         proc, record = d.run(f"judged {label}", harness=harness, model=model)
-        expect_decision(f"judged {label}", (proc, record), "auto", "auto")
-        T.check(f"judged {label}: as_configured false", isinstance(record, dict)
-                and record["layers"]["judgement"]["as_configured"] is False)
+        expect_decision(f"judged {label}", (proc, record), "human", "human", "usable", "usable")
+        T.check(f"judged {label}: as_configured false, with a reason", isinstance(record, dict)
+                and record["layers"]["judgement"]["as_configured"] is False
+                and "judgement: harness or model not as configured" in record["reasons"])
+
+    clean_verdict = json.loads(d.prepare("judged", "clean")["verdict"])
+    hit_verdict = json.loads(d.prepare("judged", "hit")["verdict"])
+    forged = dict(clean_verdict, plan=hit_verdict["plan"])
+    proc, record = d.run("judged forged clean verdict", plan="hit",
+                         verdict=(json.dumps(forged, indent=2) + "\n").encode("utf-8"))
+    expect_decision("judged forged clean verdict", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged forged clean verdict: the recomputed rules differ", isinstance(record, dict)
+            and record["layers"]["floor"]["problems"]
+            == ["the floor verdict's rules differ from what floor.py gives for this plan and base"],
+            str(record and record.get("layers", {}).get("floor", {}).get("problems")))
+
+    def other_reason(document):
+        for rule in document["rules"]:
+            if rule["result"] == "hit":
+                rule["reasons"] = ["an edited reason"]
+
+    expect_decision("judged verdict reason edited", d.run("judged verdict reason edited", plan="hit",
+                                                          verdict=other_reason), "human", "human", "unusable")
 
 
 def check_decision_modes(d: Decider) -> None:
     expect_decision("always clean low", d.run("always clean low", config="always"), "human", "auto")
     expect_decision("always hit high", d.run("always hit high", config="always", plan="hit", assessment="high"),
                     "human", "human")
-    expect_decision("shadow clean low", d.run("shadow clean low", config="real"), "human", "auto")
-    expect_decision("shadow hit low", d.run("shadow hit low", config="real", plan="hit"), "human", "human")
+    proc, record = d.run("shadow clean low", config="real")
+    expect_decision("shadow clean low", (proc, record), "human", "auto")
+    check_shadow_comment("shadow clean low", proc, f"clean, {len(RULES)} of {len(RULES)} rules (`floor.py` exit 0)",
+                         f"`low`, `{REASON}`", "auto")
+    proc, record = d.run("shadow hit low", config="real", plan="hit")
+    expect_decision("shadow hit low", (proc, record), "human", "human")
+    check_shadow_comment("shadow hit low", proc, "hit on `require-human-paths` (`floor.py` exit 1)",
+                         f"`low`, `{REASON}`", "human")
     expect_decision("shadow no layers", d.run("shadow no layers", config="real", verdict=None, assessment=None),
                     "human", "human", "unusable", "unusable")
 
@@ -947,8 +993,9 @@ def check_decision_comment(d: Decider) -> None:
                "\r<b>bold</b> " + "x" * 300)
     content = assessment_text(reason=hostile)
     artifact = "issues/34/artifacts/7\n@someone `code`"
-    proc, record = d.run("hostile comment", assessment=content, artifact=artifact, model="sonnet\n# heading")
-    expect_decision("hostile comment", (proc, record), "auto", "auto")
+    proc, record = d.run("hostile comment", config="never", assessment=content, artifact=artifact,
+                         model="sonnet\n# heading")
+    expect_decision("hostile comment", (proc, record), "auto", "human")
     out = proc.stdout
     outside = outside_spans(out)
     T.check("hostile comment: no @, link, CR or line separator outside code spans",
@@ -965,6 +1012,22 @@ def check_decision_comment(d: Decider) -> None:
     T.check("hostile comment: the artifact and model stay on one line",
             any(line.startswith("- **Assessment:** `issues/34/artifacts/7 @someone 'code'`") for line in lines)
             and not any(line.startswith("# ") for line in lines), repr(lines))
+
+    proc, record = d.run("hostile shadow comment", config="real", assessment=content, artifact=artifact,
+                         model="sonnet\n# heading")
+    expect_decision("hostile shadow comment", (proc, record), "human", "human")
+    out = proc.stdout
+    outside = outside_spans(out)
+    T.check("hostile shadow comment: no @, link, CR or line separator outside code spans",
+            out.startswith("### Shadow record") and "@" not in outside and "http" not in outside
+            and "\r" not in out and "\u2028" not in out and "# heading" not in outside, repr(outside))
+    spans = [s for s in code_spans(out) if "@someone" in s or "http" in s or "heading" in s]
+    T.check("hostile shadow comment: model and session text in code spans of at most 200 characters",
+            len(spans) == 3 and all(len(s) <= SPAN_LIMIT for s in spans), repr(spans))
+    lines = out.splitlines()
+    T.check("hostile shadow comment: no line starts a heading or list item from model text",
+            not any(line.startswith("# ") for line in lines)
+            and all(line.startswith(("### ", "Mode ", "- **")) or not line for line in lines), repr(lines))
 
 
 def check_decision_unusable(sb: Sandbox, d: Decider) -> None:

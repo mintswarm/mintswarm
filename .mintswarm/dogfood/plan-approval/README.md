@@ -6,7 +6,7 @@ The mode is `pipeline.plan_approval.mode` in `.mintswarm/config.yaml` at the job
 
 - `always`: every plan goes to a human.
 - `shadow`: floor, assess and the decision run and are recorded, and every plan still goes to a human. The maintainer's own decisions become the comparison for the threshold review.
-- `judged`: a plan is approved without a human only when the floor is clean and the risk is `low`.
+- `judged`: a plan is approved without a human only when the floor is clean, the risk is `low` and assess ran on the configured harness and model.
 - `never`: every plan is approved without a human.
 
 Both layers run in every mode, so a disagreement between them, or with the maintainer, is always visible.
@@ -26,7 +26,7 @@ After the plan stage returns a plan, in this order:
    It writes `.mintswarm/job/outputs/floor.json`.
 3. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md` and `plan.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
 4. **Save the assessment** from the subagent's reply with `.mintswarm/dogfood/save-output.py` to `.mintswarm/job/outputs/assessment.md`.
-5. **Publish the assessment as an issue artifact** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`).
+5. **Publish the assessment as an issue artifact named exactly `Plan assessment`** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`). This is done on every plan, whatever `pipeline.plan_approval.mode` is, for traceability.
 6. **Run the decision** with the same plan file, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
 
    ```
@@ -35,23 +35,23 @@ After the plan stage returns a plan, in this order:
      --assessment-artifact <artifact URL> --base <base commit> --harness <harness> --model <model>
    ```
 
-   It writes `.mintswarm/job/outputs/decision.json`, exits 0 for `auto` and 1 for `human`, and for `auto` prints the issue comment to stdout. Keep stdout in a file for the comment.
-7. **Publish `decision.json` as an issue artifact** on the same issue.
+   It writes `.mintswarm/job/outputs/decision.json` and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Keep stdout in a file for the comment.
+7. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
 8. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the risk and its reason, and links to the assessment and decision artifacts.
 
 ## Outcomes
 
 - **Exit 2 or no record** counts as `human`. Exit 0 counts as `auto` only together with a `decision.json` whose `decision` is `auto`.
-- **`shadow`:** post a shadow-record comment on the issue, through `bot-gh.sh`. From the record, it carries what shadow records 1 to 3 carried by hand:
-  - the plan: its artifact and the footprint in brief;
-  - assess: the stage, the harness and model, the risk, the decisive reason and the artifact;
-  - the floor: the script, the commit it ran at, `--base`, the verdict, the exit code, and the hit and clean rules;
-  - the would-be decision, `judged_decision`;
-  - the decision artifact.
+- **`shadow`:** post the shadow-record comment that `decision.py` printed on the issue, through `bot-gh.sh` (`-F body=@<file>`), unchanged except for one line the session appends with the URLs GitHub returned for the plan, `Plan assessment` and decision artifacts. Never write the body by hand: the script sets model and session text (the risk's reason, the harness, model, artifact, paths and ref) on one line, without backticks, at most 200 characters, in code spans, so mentions, links and Markdown in it do nothing. The body carries what shadow records 1 to 3 carried by hand:
+  - the plan: its path, sha256 and the footprint in brief;
+  - assess: the stage, the harness and model, whether they are as configured, the risk, the decisive reason and the artifact;
+  - the floor: the base commit, `--base`, the result, the exit code, and the hit and clean rules;
+  - the would-be decision, `judged_decision`, and the decision;
+  - the maintainer decision, pending.
 
   The plan then goes to the maintainer as before, with the approval package below. When the maintainer decides, record that decision beside the judgement, in the shadow-record comment and in the plan artifact: approved or rejected, whether it agrees with `judged_decision`, and any observation for the threshold review, such as a rule that should have hit or a path that should require a human.
 - **`auto`:** post the printed comment on the issue through `.mintswarm/dogfood/github/bot-gh.sh` (`-F body=@<file>`), unchanged. Implement then starts without the maintainer. The PR description of an auto-approved item says that the plan was auto-approved and why: the mode, the floor clean on all 13 rules, the risk and its reason, and links to the assessment and decision artifacts.
-- **`human`** (under `always`, `shadow`, or `judged` with a hit, a risk above `low` or an unusable layer): the plan goes to the maintainer with the approval package.
+- **`human`** (under `always`, `shadow`, or `judged` with a hit, a risk above `low`, an unusable layer, or assess run on a harness or model other than the configured one): the plan goes to the maintainer with the approval package.
 
 ## The approval package
 
@@ -59,7 +59,7 @@ For a `human` decision, the maintainer gets, in one message:
 
 - the plan artifact, with its approach and footprint in brief;
 - the floor verdict: hit rules with their reasons, or clean;
-- the risk with its reason, and the assessment artifact;
+- the risk with its reason, and the `Plan assessment` artifact;
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
 
@@ -77,10 +77,18 @@ The session checks for one before implement starts, before it records implement 
 - **Until implement finishes**, a veto cancels the job and returns the item to awaiting plan approval: the plan goes to the maintainer with the approval package, as for `human`.
 - **After implement finishes**, a veto is a rejection at PR approval: the PR is not approved, and the item follows what the maintainer says there.
 
+## Decisions while a job is in flight
+
+A maintainer decision taken while a job is in flight, for example one that changes what a criterion asks, is not left only in a comment, because later stages read the job's inputs, not the comments:
+
+1. Apply it to the issue itself: amend the acceptance criteria or the body, with a note that points to the decision.
+2. The decision comment carries the line `<!-- mintswarm: steer -->`.
+3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue before the next stage runs.
+
 ## PR approval
 
 PR approval stays with a human in every mode, including `never`. Plan approval only decides whether implement may start without the maintainer.
 
 ## Records
 
-Shadow records and decision records live in issue comments and issue artifacts, never in the repository. `.mintswarm/job/` is not committed.
+Shadow records, `Plan assessment` artifacts and decision records live in issue comments and issue artifacts, never in the repository. `.mintswarm/job/` is not committed.

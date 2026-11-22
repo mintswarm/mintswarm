@@ -27,7 +27,7 @@ Inputs:
   given to --assessment-artifact, where it was published.
 - --harness and --model, what the session actually ran assess on. They are
   compared with `agents.stages.assess` over `agents.default` in the base
-  config; a mismatch is recorded and never changes the decision.
+  config; a mismatch is recorded, and under `judged` it gives `human`.
 
 The floor layer is usable only if the verdict is strict JSON (no duplicate
 keys, NaN or Infinity) and all of these hold: its keys are floor.py's, in
@@ -37,21 +37,26 @@ is the sha256 of the plan's bytes; `base.commit` is the resolved base;
 {`rule`, `result`, `reasons`} with `result` `hit` or `clean` and string
 reasons exactly when it is a hit; the identifiers across `rules` and
 `not_evaluated` are floor.py's 13, in order; rules are skipped only after a
-`footprint` hit; and `verdict` agrees with the rules. A usable verdict is
-therefore clean only when all 13 rules ran and are clean.
+`footprint` hit; `verdict` agrees with the rules; and `rules` and
+`not_evaluated` equal what floor.py's own parse_footprint and evaluate give
+for the plan and the validated base config, recomputed here, so an edited
+verdict that is consistent in itself still does not count. A usable verdict
+is therefore clean only when all 13 rules ran and are clean.
 
 The judgement layer is usable only if the assessment is UTF-8 and, with
 lines split at LF only and trailing CR, space and tab removed from each:
 exactly one line starts with `Risk:` at column 0 and it is exactly
 `Risk: low`, `Risk: medium` or `Risk: high`; and the first non-blank line is
 a `# ` title, and the next non-blank line is `<level> risk: <reason>` with
-the same level and a reason that is not empty. That reason is the layer's
-only entry in `reasons`.
+the same level and a reason that is not empty once whitespace, control and
+format characters are removed. That reason is the layer's only entry in
+`reasons`.
 
 Problems in either layer are fixed strings that never quote the files.
 
-`judged_decision` is `auto` only when the floor layer is usable and clean
-and the judgement layer is usable with risk `low`; otherwise `human`.
+`judged_decision` is `auto` only when the floor layer is usable and clean,
+the judgement layer is usable with risk `low`, and the judge's harness and
+model are the configured ones (`as_configured`); otherwise `human`.
 `decision` follows the mode: `always` and `shadow` give `human`, `never`
 gives `auto`, and `judged` gives `judged_decision`. Both layers are always
 read and recorded, whatever the mode.
@@ -70,22 +75,32 @@ unchanged) and `not_evaluated`. `layers.judgement` holds `status`,
 `reasons`. A field that cannot be filled, including the content of an
 unusable layer, is null, or [] for a list.
 
-One status line goes to stderr. For `auto` only, after the record is
-written, the issue comment the session posts goes to stdout: it says the
-plan was approved without a human, the mode and base commit, the floor
-result, the risk with its reason, the assessment artifact and who judged,
-and how to veto. Model and session text in it is flattened to one line,
-stripped of control characters, its backticks replaced, cut to 200
-characters and set in a code span. Nothing else is ever printed to stdout.
+One status line goes to stderr. After the record is written, the issue
+comment the session posts goes to stdout, in two cases only:
+
+- for `auto`, the auto-approval comment: it says the plan was approved
+  without a human, the mode and base commit, the floor result, the risk
+  with its reason, the assessment artifact and who judged, and how to veto;
+- in `shadow` mode, the shadow-record comment: the plan's path, sha256 and
+  footprint in brief, the assess harness, model and artifact and whether
+  they are as configured, the risk with its reason, the floor's base, result,
+  exit code and hit and clean rules, `judged_decision` and `decision`, and a
+  pending maintainer decision.
+
+Model and session text in either is flattened to one line, stripped of
+control and format characters, its backticks replaced, cut to 200
+characters and set in a code span; layer problems are this script's fixed
+strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
-record: bad arguments, an unresolvable base ref, no config at it, an invalid
+record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, no config at it, an invalid
 config, an unknown component, an unreadable plan, git or yq missing or
 failing, a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it
 gives a record with that layer unusable. The interpreter itself exits 1 when
 it crashes outside main(), so exit 0 counts only together with a record
-whose `decision` is `auto`; exit 2 or no record counts as `human`. Standard
+whose `decision` is `auto`; exit 2 never comes with a valid record, and exit
+2 or no record counts as `human`. Standard
 library only, apart from running git and yq through floor.py.
 """
 
@@ -98,6 +113,7 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
+from types import ModuleType
 
 RECORD = Path(".mintswarm/job/outputs/decision.json")
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
@@ -128,16 +144,18 @@ MODE_REASONS = {
 }
 SUMMARY = re.compile(r"(low|medium|high) risk: (.*)", re.DOTALL)
 
-floor = None  # floor.py, loaded by main()
+floor: ModuleType  # floor.py, set by main() before anything uses it
 
 
 class InputError(Exception):
     """Unusable input: exit 2, no record."""
 
 
-def load_floor():
+def load_floor() -> ModuleType:
     sys.dont_write_bytecode = True  # leave no __pycache__ next to floor.py
     spec = importlib.util.spec_from_file_location("msw_plan_floor", FLOOR)
+    if spec is None or spec.loader is None:
+        raise InputError(f"cannot load {FLOOR}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -251,7 +269,21 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     return problems
 
 
-def floor_layer(plan_sha: str, commit: str, component: str, mode: str) -> dict:
+def floor_rules(plan: bytes, component: str, cfg: dict) -> tuple:
+    """What floor.py concludes for this plan and base: (rules, not_evaluated, footprint or None)."""
+    try:
+        footprint = floor.parse_footprint(plan.decode("utf-8"))
+    except floor.FootprintError as exc:
+        footprint = None
+        rules = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
+    else:
+        rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
+        rules += floor.evaluate(footprint, component, cfg)
+    evaluated = [r["rule"] for r in rules]
+    return rules, [name for name in floor.RULES if name not in evaluated], footprint
+
+
+def floor_layer(plan_sha: str, commit: str, component: str, mode: str, expected: tuple) -> dict:
     layer = {
         "status": "unusable",
         "problems": [],
@@ -276,6 +308,8 @@ def floor_layer(plan_sha: str, commit: str, component: str, mode: str) -> dict:
         layer["problems"] = ["the floor verdict is not strict JSON"]
         return layer
     problems = verdict_problems(verdict, plan_sha, commit, component, mode)
+    if not problems and (verdict["rules"], verdict["not_evaluated"]) != expected:
+        problems = ["the floor verdict's rules differ from what floor.py gives for this plan and base"]
     if problems:
         layer["problems"] = problems
         return layer
@@ -307,7 +341,7 @@ def assessment_problems(text: str) -> tuple:
     if summary.group(1) != risk:
         return ["the assessment's summary level differs from its Risk: line"], None, None
     reason = summary.group(2).strip()
-    if not reason:
+    if not inert(reason):
         return ["the assessment's summary gives no reason"], None, None
     return [], risk, reason
 
@@ -364,7 +398,7 @@ def hit_rules(layer: dict) -> list:
 def decide(mode: str, floor_: dict, judgement: dict) -> tuple:
     clean = floor_result(floor_) == "clean"
     low = judgement["status"] == "usable" and judgement["risk"] == "low"
-    judged = "auto" if clean and low else "human"
+    judged = "auto" if clean and low and judgement["as_configured"] else "human"
     decision = {"always": "human", "shadow": "human", "never": "auto", "judged": judged}[mode]
     reasons = [MODE_REASONS[mode]]
     result = floor_result(floor_)
@@ -378,43 +412,53 @@ def decide(mode: str, floor_: dict, judgement: dict) -> tuple:
         reasons.append(f"judgement: risk {judgement['risk']}")
     else:
         reasons.append("judgement: unusable")
+    if not judgement["as_configured"]:
+        reasons.append("judgement: harness or model not as configured")
     reasons.append(f"judged_decision: {judged}")
     return judged, decision, reasons
 
 
 # --- comment -------------------------------------------------------------
 
-def span(text) -> str:
-    """Model or session text as one bounded, inert Markdown code span."""
+def inert(text) -> str:
+    """Text on one line, without control or format characters or backticks."""
     flat = " ".join(str(text).split())
     flat = "".join(c for c in flat if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))
-    flat = flat.replace("`", "'")[:SPAN_LIMIT].strip()
+    return " ".join(flat.replace("`", "'").split())
+
+
+def span(text) -> str:
+    """Model or session text as one bounded, inert Markdown code span."""
+    flat = inert(text)[:SPAN_LIMIT].strip()
     return f"`{flat}`" if flat else "`(empty)`"
 
 
-def comment(record: dict) -> str:
-    layers = record["layers"]
-    floor_ = layers["floor"]
-    judgement = layers["judgement"]
-    result = floor_result(floor_)
+def floor_line(layer: dict) -> str:
+    result = floor_result(layer)
     if result == "clean":
-        floor_line = f"clean, {len(floor_['rules'])} of {len(floor.RULES)} rules"
-    elif result == "hit":
-        floor_line = "hit on " + ", ".join(f"`{rule}`" for rule in hit_rules(floor_))
-    else:
-        floor_line = "unusable"
-    if judgement["status"] == "usable":
-        risk_line = f"`{judgement['risk']}`, {span(judgement['reasons'][0])}"
-    else:
-        risk_line = "unusable"
+        return f"clean, {len(layer['rules'])} of {len(floor.RULES)} rules"
+    if result == "hit":
+        return "hit on " + ", ".join(f"`{rule}`" for rule in hit_rules(layer))
+    return "unusable"
+
+
+def risk_line(layer: dict) -> str:
+    if layer["status"] == "usable":
+        return f"`{layer['risk']}`, {span(layer['reasons'][0])}"
+    return "unusable"
+
+
+def comment(record: dict) -> str:
+    floor_ = record["layers"]["floor"]
+    judgement = record["layers"]["judgement"]
     lines = [
         "### Plan approved without a human",
         "",
         "mintswarm's plan-approval decision approved the plan for this issue without a human.",
         "",
         f"- **Mode:** `{record['mode']}`, base commit `{record['subject']['base']['commit']}`",
-        f"- **Floor:** {floor_line}",
-        f"- **Risk:** {risk_line}",
+        f"- **Floor:** {floor_line(floor_)}",
+        f"- **Risk:** {risk_line(judgement)}",
         f"- **Assessment:** {span(judgement['artifact'])}, judged by "
         f"{span(judgement['harness'])} with {span(judgement['model'])}",
         "",
@@ -423,6 +467,57 @@ def comment(record: dict) -> str:
         "after that, it is a rejection at PR approval.",
         "",
         "PR approval stays with a human in every mode.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def footprint_brief(footprint) -> str:
+    if footprint is None:
+        return "not readable (a `footprint` hit)"
+    return (f"{len(footprint['files'])} files ({len(footprint['new_files'])} new), "
+            f"about {footprint['estimated_lines']} lines, "
+            f"{len(footprint['new_dependencies'])} new dependencies")
+
+
+def problems_line(layer: dict) -> str:
+    return "; ".join(layer["problems"])  # fixed strings from this script
+
+
+def shadow_comment(record: dict, footprint) -> str:
+    floor_ = record["layers"]["floor"]
+    judgement = record["layers"]["judgement"]
+    subject = record["subject"]
+    configured = "as configured" if judgement["as_configured"] else (
+        f"not as configured: expected {span(judgement['expected']['harness'])} "
+        f"with {span(judgement['expected']['model'])}")
+    assess = (f"{span(judgement['harness'])} with {span(judgement['model'])}, {configured}; "
+              f"artifact {span(judgement['artifact'])}")
+    if floor_["status"] == "usable":
+        clean = [r["rule"] for r in floor_["rules"] if r["result"] == "clean"]
+        floor_detail = (f"{floor_line(floor_)} (`floor.py` exit {0 if floor_['verdict'] == 'clean' else 1}); "
+                        f"clean: {', '.join(f'`{rule}`' for rule in clean) or 'none'}")
+        if floor_["not_evaluated"]:
+            floor_detail += f"; not evaluated: {', '.join(f'`{rule}`' for rule in floor_['not_evaluated'])}"
+    else:
+        floor_detail = f"unusable: {problems_line(floor_)}"
+    risk = risk_line(judgement)
+    if judgement["status"] != "usable":
+        risk += f": {problems_line(judgement)}"
+    lines = [
+        "### Shadow record: plan approval",
+        "",
+        "Mode `shadow`: this plan goes to the maintainer. Below is what plan approval judged, for comparison "
+        "with the maintainer's decision.",
+        "",
+        f"- **Plan:** {span(subject['plan']['path'])}, sha256 `{subject['plan']['sha256']}`; "
+        f"footprint: {footprint_brief(footprint)}",
+        f"- **Assess:** stage `assess`, {assess}",
+        f"- **Risk:** {risk}",
+        f"- **Floor:** at base commit `{subject['base']['commit']}` (`--base` {span(subject['base']['ref'])}): "
+        f"{floor_detail}",
+        f"- **Would-be decision:** `{record['judged_decision']}` (`judged_decision`)",
+        f"- **Decision:** `{record['decision']}`",
+        "- **Maintainer decision:** pending",
     ]
     return "\n".join(lines) + "\n"
 
@@ -466,13 +561,15 @@ def run(argv: list) -> int:
     try:
         commit = floor.resolve_base(args["base"])
         config = floor.load_config(commit)
-        mode = floor.validate_config(config, args["component"])["mode"]
+        cfg = floor.validate_config(config, args["component"])
         plan = floor.read_plan(args["plan"])
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
+    mode = cfg["mode"]
     plan_sha = sha256(plan)
+    rules, skipped, footprint = floor_rules(plan, args["component"], cfg)
 
-    floor_ = floor_layer(plan_sha, commit, args["component"], mode)
+    floor_ = floor_layer(plan_sha, commit, args["component"], mode, (rules, skipped))
     judgement = judgement_layer(args, expected_judge(config))
     judged, decision, reasons = decide(mode, floor_, judgement)
     record = {
@@ -491,7 +588,12 @@ def run(argv: list) -> int:
         "decision": decision,
         "reasons": reasons,
     }
-    text = comment(record) if decision == "auto" else None
+    if decision == "auto":
+        text = comment(record)
+    elif mode == "shadow":
+        text = shadow_comment(record, footprint)
+    else:
+        text = None
     write_record(record)
     print(f"decision: {decision} (mode {mode}, floor {floor_result(floor_)}, "
           f"judgement {judgement['risk'] or 'unusable'}, judged {judged})", file=sys.stderr)
