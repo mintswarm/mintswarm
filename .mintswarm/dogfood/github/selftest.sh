@@ -1554,6 +1554,12 @@ git commit -q -m "add a workflow"
 check "push.sh pushes a branch that adds a workflow" env MSW_PUSH_URL="$url" "$P" mintswarm/6-workflow
 check "push.sh asks for workflows:write when the branch touches .github/workflows/" \
   eq "$(push_perms)" '{"contents":"write","workflows":"write"}'
+git checkout -q --no-track -b mintswarm/9-rebase refs/remotes/origin/master
+printf 'c\n' > c.txt
+git add c.txt
+git commit -q -m "no workflow"
+check "push.sh pushes mintswarm/9-rebase" env MSW_PUSH_URL="$url" "$P" mintswarm/9-rebase
+rebase_old="$(git rev-parse mintswarm/9-rebase)"
 git checkout -q --detach refs/remotes/origin/master
 mkdir -p .github/workflows
 printf 'name: other\n' > .github/workflows/other.yml
@@ -1562,9 +1568,23 @@ git commit -q -m "maintainer adds a workflow on master"
 git update-ref refs/remotes/origin/master HEAD
 check "push.sh pushes mintswarm/2-y with a workflow commit on origin/master only" \
   env MSW_PUSH_URL="$url" "$P" mintswarm/2-y
+check "workflow commits on origin/master alone do not widen the token" eq "$(push_perms)" '{"contents":"write"}'
+git checkout -q mintswarm/9-rebase
+git rebase -q refs/remotes/origin/master
+check "push.sh refuses a lease commit that is not here" \
+  fails_saying "fetch the branch's old tip first" \
+  push_as_bot mintswarm/9-rebase --force-with-lease=0123456789abcdef0123456789abcdef01234567
+check "push.sh pushes a branch rebased onto a workflow change, with the old tip as lease" \
+  env MSW_PUSH_URL="$url" "$P" mintswarm/9-rebase "--force-with-lease=$rebase_old"
+check "a rebase onto a workflow change on origin/master asks for workflows:write" \
+  eq "$(push_perms)" '{"contents":"write","workflows":"write"}'
+git checkout -q --no-track -b mintswarm/10-delete refs/remotes/origin/master
+git rm -q .github/workflows/other.yml
+git commit -q -m "delete a workflow"
+check "push.sh pushes a branch that deletes a workflow" env MSW_PUSH_URL="$url" "$P" mintswarm/10-delete
+check "deleting a workflow asks for workflows:write" eq "$(push_perms)" '{"contents":"write","workflows":"write"}'
 git update-ref refs/remotes/origin/master "$origin_master"
 git checkout -q mintswarm/1-x
-check "workflow commits on origin/master alone do not widen the token" eq "$(push_perms)" '{"contents":"write"}'
 
 git config url.git@github.com:.insteadOf https://github.com/
 refuses "push.sh refuses a url.*.insteadOf in the repository config" push_as_bot mintswarm/2-y
