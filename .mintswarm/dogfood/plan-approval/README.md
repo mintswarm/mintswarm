@@ -93,7 +93,7 @@ A maintainer decision taken while a job is in flight, for example one that chang
 
 When the approved plan has a `## Mechanical check` section (rule 10 of `.mintswarm/stages/plan.md`), the session writes `.mintswarm/job/inputs/mechanical-check.md` in every review round's job:
 
-- The first line is `Base: <base commit>`, the job's base commit (the one plan approval reads the config at), followed by a blank line.
+- The first line is `Base: <commit>`, the commit the review job's `diff.patch` is made against (the merge base of the head with `origin/master` when the session writes the review inputs), followed by a blank line. This can differ from the job's plan-approval base, for example after a rebase before the first push; the check must compare against the same commit as `diff.patch`.
 - Then comes the plan's section, from its `## Mechanical check` line up to, not including, the next `## ` heading outside a fenced block, copied unchanged.
 - The section is taken from the plan the maintainer approved, or that was approved without a human, never from a later revision.
 
