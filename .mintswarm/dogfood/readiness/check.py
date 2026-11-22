@@ -137,32 +137,43 @@ the tracked paths that are .mintswarm/stages.md or under .claude/agents/ or
 instructions; landing's fixed `protected` rule already covers the config and
 the gate words, so require-human-landing checks the agent instructions only.
 
-Gate commands are read by a deliberately small approximation of bash, and
-the gate signals fail closed: a form the reader does not model fails, it is
-never passed. A command that holds `#` anywhere, `$(` or a backtick cannot
-be read. Otherwise it is split by shlex in POSIX mode, comments off, with
-the punctuation characters `();<>|&` and newline, whitespace space, tab and
-CR, into simple commands at every operator other than a redirection (`;`,
-`|`, `&`, `(`, `)`, newline and their doubled forms). Redirection targets
-are dropped, and so is a word of digits just before a redirection; a
-here-document, a process substitution or any other operator cannot be
-read. Quotes are not seen after splitting, so an operator character quoted
-on its own reads as an operator; that only splits a command further.
+Gate commands are read by a small allow-list grammar, not by modelling
+bash. A command outside the grammar is unreadable, and an unreadable command
+fails both gate-scripts-named and gate-tools. The grammar:
 
-The command word is found by skipping leading assignments, the reserved
-words `! { } if then else elif fi do done while until`, `time` with `-p`,
-`env` with `-i`, `-`, `-u NAME` and `--unset`, `exec` with `-c`, `-l` and
-`-a NAME`, `command` with `-p` (with `-v` or `-V` nothing runs), and
-`builtin` before a builtin. Any other option of these cannot be read. A
-simple command fails gate-scripts-named when:
+- The raw text holds no `$`, backtick or `#`, so nothing in it is expanded,
+  substituted or commented out, however it is quoted.
+- shlex in POSIX mode, comments off, with the punctuation characters
+  `();<>|&` and newline and the whitespace space, tab and CR, splits it into
+  words and operators. A punctuation token, with any newlines after it, is
+  one operator: `;`, `&`, `|`, `&&`, `||`, `|&`, `(`, `)` or newline, which
+  end a simple command, or a redirection (`>`, `>>`, `<`, `<<<`, `>&`, `<&`,
+  `&>`, `&>>`, `>|`, `<>`), whose target word is dropped, together with a
+  word of digits just before it. Any other operator (`((`, `))`, `;;`,
+  `()`, `<<`, `<(`, `>(`, `);` and so on) is unreadable. Quotes are not
+  seen after splitting, so an operator character quoted on its own reads as
+  an operator; that only splits a command further.
+- A simple command is any of the reserved words `! { } if then else elif fi
+  while until do done`, then any of the prefixes `time -p`, `env` with
+  `-i`, `-`, `--ignore-environment`, `-u NAME` or `--unset=NAME`, `exec`
+  with `-c`, `-l` or `-a NAME`, and `command` with `-p`, `-v` or `-V`
+  (clustered or not) given before its command word, then the command word
+  and its arguments. After `command -v` or `-V` nothing runs. Any other
+  option of a prefix is unreadable.
+- The command word is not an assignment (`NAME=...`, so there are no
+  assignments at all, before a command or through env), and it holds none
+  of `*?[]{}~`, unless it is the builtin `[`.
+- A command word that is a bash builtin or keyword must be one of `:`,
+  `true`, `false`, `echo`, `test`, `[`, `pwd`, `exit`, `shift`, `wait`,
+  `printf` not given `-v`, and `set` given only `-e`, `-u`, `+e`, `+u`
+  (clustered) and `-o` or `+o` with errexit, nounset or pipefail; `source`
+  and `.` are read as interpreters, below. Every other builtin or keyword
+  (export, declare, typeset, local, readonly, read, unset, let, `[[`,
+  eval, trap, builtin, cd, compgen, complete, bind, for, case, function,
+  coproc and the rest) is unreadable.
 
-- an assignment before it sets BASH_ENV, ENV, PATH, NODE_OPTIONS, PERL5OPT,
-  PERL5LIB, RUBYOPT, RUBYLIB, PYTHONPATH, PYTHONSTARTUP, PYTHONHOME,
-  LD_PRELOAD, LD_LIBRARY_PATH or DYLD_INSERT_LIBRARIES;
-- its command word holds `$`, `{`, `}`, `*`, `?`, `[` or `~` (it is expanded
-  when it runs), unless it is the builtin `[`;
-- it runs eval, alias, enable, fc, hash, mapfile, readarray, cd, pushd,
-  popd, function or coproc, or trap with an action;
+A readable simple command fails gate-scripts-named when:
+
 - it runs a wrapper that runs another command (timeout, nice, nohup,
   stdbuf, xargs, sudo, doas, su, setsid, flock, watch, parallel, chroot,
   ionice, taskset, caffeinate, unbuffer, script, nsenter, unshare, npx,
@@ -175,22 +186,23 @@ simple command fails gate-scripts-named when:
   busybox, pypy, pypy3, python2, nodejs, deno, bun, php, lua, luajit,
   tclsh, wish, Rscript, osascript, expect, pwsh, ts-node or tsx;
 - it runs a modelled interpreter (bash, sh, zsh, dash, python, python3,
-  node, perl, ruby, source, `.`) that is not given a tracked file as its
-  first argument after its options. Each interpreter's known options are
-  modelled (single-letter clusters, options that take an argument, and a
-  few long options such as --norc); an option that runs code given on the
+  node, perl, ruby, source, `.`) that is not given a tracked regular file
+  as its first argument after its options. Each interpreter's known options
+  are modelled (single-letter clusters, options that take an argument, and
+  a few long options such as --norc); an option that runs code given on the
   command line or from stdin (-c, -i, -s for the shells, -c and -m for
   Python, -e, -p, -i for node, -e, -E for perl, -e for ruby), one that
   loads code before the script (-r and --require for node and ruby,
   --import and --loader for node, -M and -m for perl, -l and --login,
   --rcfile and --init-file for the shells), `-`, any other option and no
   script at all fail;
-- its command word holds `/` and is not a tracked file.
+- its command word holds `/` and is not a tracked regular file.
 
-Any other command word is taken as a tool that runs its own code, so a tool
-that itself runs an inline program (sed's `e` command, a git alias, a
-compiler plugin) is not followed. The tests-gated signal reads gate words as
-the plan floor does, with shlex.split.
+A tracked symbolic link is never a tracked regular file, since it can point
+outside the repository. Any other command word is taken as a tool that runs
+its own code, so a tool that itself runs an inline program (sed's `e`
+command, a git alias, a compiler plugin) is not followed. The tests-gated
+signal reads gate words as the plan floor does, with shlex.split.
 
 With --run-gates, after the static signals, each gate of gates.run that
 gates-run accepts (the first of each name), in order, runs as
@@ -344,31 +356,30 @@ SUBCOMMAND_RUNNERS = {
     "pipenv": ("run",),
     "bundle": ("exec",),
 }
-RISKY_BUILTINS = frozenset("eval alias enable fc hash mapfile readarray cd pushd popd function coproc".split())
-INJECTING = frozenset(
-    """
-    BASH_ENV ENV PATH NODE_OPTIONS PERL5OPT PERL5LIB RUBYOPT RUBYLIB PYTHONPATH PYTHONSTARTUP PYTHONHOME LD_PRELOAD
-    LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES
-    """.split()
-)
-EXPANDED = "${}*?[~"
-# Options of the command-running builtins and env: {option: takes an argument}.
+# Options of the prefixes: {option: takes an argument}.
 PREFIX_OPTIONS = {
     "env": {"-i": False, "-": False, "--ignore-environment": False, "-u": True, "--unset": True},
     "exec": {"-c": False, "-l": False, "-a": True},
-    "command": {"-p": False},
     "time": {"-p": False},
 }
+UNREADABLE_CHARACTERS = ("$", "`", "#")
+EXPANDED = "*?[]{}~"
+SEPARATORS = (";", "&", "|", "&&", "||", "|&", "(", ")", "\n")
+ALLOWED_BUILTINS = frozenset(": true false echo test [ pwd exit shift wait printf set".split())
+SET_LETTERS = "eu"
+SET_NAMES = ("errexit", "nounset", "pipefail")
 PUNCTUATION = "();<>|&\n"
 REDIRECTIONS = (">", ">>", "<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")
 ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 RESERVED = frozenset("! { } if then else elif fi do done while until".split())
+# Every bash builtin and keyword; outside ALLOWED_BUILTINS, and apart from the prefixes, source and `.`, unreadable.
 BUILTINS = frozenset(
     """
-    : . [ [[ ]] alias bg bind break builtin caller case cd command compgen complete compopt continue coproc declare
-    dirs disown echo enable esac eval exec exit export false fc fg for function getopts hash help history in jobs
-    kill let local logout mapfile popd printf pushd pwd read readarray readonly return select set shift shopt source
-    suspend test time times trap true type typeset ulimit umask unalias unset wait
+    : . [ [[ ]] (( )) alias bg bind break builtin caller case cd command compgen complete compopt continue coproc
+    declare dirs disown do done echo elif else enable esac eval exec exit export false fc fg fi for function getopts
+    hash help history if in jobs kill let local logout mapfile popd printf pushd pwd read readarray readonly return
+    select set shift shopt source suspend test then time times trap true type typeset ulimit umask unalias unset
+    until wait while { } !
     """.split()
 )
 # git's repository-local variables (git rev-parse --local-env-vars, and GIT_NAMESPACE), kept from the gates.
@@ -578,6 +589,7 @@ class Ref:
         self.by_path = {path: (mode, kind, oid) for path, mode, kind, oid in entries}
         self.paths = [path for path, _, _, _ in entries]
         self.blobs = {path for path, _, kind, _ in entries if kind == "blob"}
+        self.regular_files = {path for path, mode, kind, _ in entries if kind == "blob" and mode in REGULAR}
         self.config = config
         self.tests = [path for path in self.paths if path in self.blobs and is_test(path)]
         self._cache = {}
@@ -728,12 +740,21 @@ def require_human(config: dict, section: str, globs: dict) -> tuple:
 # --- gate commands ---------------------------------------------------------
 
 
+def operator(token: str) -> str:
+    """The operator a punctuation token stands for, newlines after it dropped; raises CommandError."""
+    core = token.rstrip("\n") or "\n"
+    if core in SEPARATORS:
+        return core
+    if core in REDIRECTIONS and core == token:
+        return core
+    raise CommandError(f"it uses {token!r}, an operator the check does not read")
+
+
 def simple_commands(command: str) -> list:
     """The simple commands of a gate command, each a list of words; raises CommandError."""
-    if "#" in command:
-        raise CommandError("it holds #, which the check does not read")
-    if "$(" in command or "`" in command:
-        raise CommandError("it runs a command substitution")
+    for character in UNREADABLE_CHARACTERS:
+        if character in command:
+            raise CommandError(f"it holds {character}, which the check does not read")
     lexer = shlex.shlex(command, posix=True, punctuation_chars=PUNCTUATION)
     lexer.commenters = ""
     lexer.whitespace = " \t\r"
@@ -745,11 +766,10 @@ def simple_commands(command: str) -> list:
     commands, current, target = [], [], False
     for token in tokens:
         if token and all(c in PUNCTUATION for c in token):
+            op = operator(token)
             if target:
                 raise CommandError(f"a redirection without a target before {token!r}")
-            if "<" in token or ">" in token:
-                if token not in REDIRECTIONS:
-                    raise CommandError(f"it uses {token!r}, a here-document, process substitution or other operator")
+            if op in REDIRECTIONS:
                 if current and current[-1].isdigit():
                     current.pop()  # the file descriptor of 2>file
                 target = True
@@ -768,7 +788,7 @@ def simple_commands(command: str) -> list:
 
 
 def skip_options(words: list, i: int, name: str) -> int:
-    """The index after the options of env, exec, command or time; raises CommandError on one not modelled."""
+    """The index after the options of env, exec or time; raises CommandError on one not modelled."""
     options = PREFIX_OPTIONS[name]
     while i < len(words) and words[i].startswith("-"):
         word = words[i]
@@ -788,36 +808,86 @@ def skip_options(words: list, i: int, name: str) -> int:
     return i
 
 
-def command_word(words: list) -> tuple:
-    """(the words from the command word on, the names assigned before it); raises CommandError.
+def command_options(words: list, i: int) -> tuple:
+    """(the index of command's command word, whether it runs one) from command's options; raises CommandError."""
+    runs = True
+    while i < len(words) and words[i].startswith("-"):
+        word = words[i]
+        i += 1
+        if word == "--":
+            break
+        if word == "-" or any(c not in "pvV" for c in word[1:]):
+            raise CommandError(f"command {word} is an option the check does not read")
+        if "v" in word or "V" in word:
+            runs = False
+    return i, runs
 
-    The words are empty when nothing runs, as after `command -v`."""
-    assigned = []
+
+def check_builtin(words: list) -> None:
+    """Raise CommandError unless an allowed builtin is given only what evaluates nothing."""
+    first, args = words[0], words[1:]
+    if first == "printf" and args and args[0].startswith("-v"):
+        raise CommandError("printf -v assigns a variable, which the check does not read")
+    if first != "set":
+        return
     i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg[:1] not in ("-", "+") or len(arg) < 2:
+            raise CommandError(f"set {arg} is an argument the check does not read")
+        letters = arg[1:]
+        if letters.endswith("o"):
+            letters = letters[:-1]
+            if i >= len(args) or args[i] not in SET_NAMES:
+                raise CommandError(f"set {arg} {' '.join(args[i : i + 1])} is an option the check does not read")
+            i += 1
+        if any(c not in SET_LETTERS for c in letters):
+            raise CommandError(f"set {arg} is an option the check does not read")
+
+
+def command_word(words: list) -> list:
+    """The words from the command word on, empty when nothing runs; raises CommandError outside the grammar."""
+    i = 0
+    while i < len(words) and words[i] in RESERVED:
+        i += 1
     while i < len(words):
         word = words[i]
-        assignment = ASSIGNMENT.match(word)
-        if assignment:
-            assigned.append(assignment.group(1))
-            i += 1
-        elif word in RESERVED:
-            i += 1
-        elif word in ("env", "exec", "time"):
+        if word in PREFIX_OPTIONS:
             i = skip_options(words, i + 1, word)
         elif word == "command":
-            if any(w in ("-v", "-V") for w in words[i + 1 :]):
-                return [], assigned
-            i = skip_options(words, i + 1, word)
-        elif word == "builtin":
-            if i + 1 < len(words) and words[i + 1] not in BUILTINS:
-                raise CommandError(f"builtin {words[i + 1]}: not a builtin")
-            i += 1
+            i, runs = command_options(words, i + 1)
+            if not runs:
+                return []
         else:
             break
-    return words[i:], assigned
+    rest = words[i:]
+    if not rest:
+        return []
+    first = rest[0]
+    assignment = ASSIGNMENT.match(first)
+    if assignment:
+        raise CommandError(f"it assigns {assignment.group(1)}, which the check does not read")
+    if first in ALLOWED_BUILTINS:
+        check_builtin(rest)
+    elif first in BUILTINS and first not in INTERPRETERS:
+        raise CommandError(f"it runs {first}, a builtin the check does not read")
+    elif any(c in first for c in EXPANDED):
+        raise CommandError(f"its command word {first} would be expanded, which the check does not read")
+    return rest
 
 
-def interpreter_problem(words: list, tracked: set) -> str:
+def tracked_problem(word: str, regular: set, blobs: set) -> str:
+    """Why word is not a tracked regular file, or empty."""
+    path = strip_dot(word)
+    if path in regular:
+        return ""
+    if path in blobs:
+        return f"{word}, which is a tracked symbolic link, not a regular file"
+    return f"{word}, which is not a tracked file"
+
+
+def interpreter_problem(words: list, regular: set, blobs: set) -> str:
     first = words[0]
     code, takes, known, long_options = INTERPRETERS[first]
     i = 1
@@ -849,47 +919,28 @@ def interpreter_problem(words: list, tracked: set) -> str:
                 return f"{first} {word} is an option the check does not read"
     if i >= len(words):
         return f"{first} is given no script"
-    if strip_dot(words[i]) not in tracked:
-        return f"{first} runs {words[i]}, which is not a tracked file"
-    return ""
+    problem = tracked_problem(words[i], regular, blobs)
+    return f"{first} runs {problem}" if problem else ""
 
 
-def trap_action(words: list) -> bool:
-    """True when trap is given an action to run."""
-    args = words[1:]
-    if args and args[0] in ("-p", "-l"):
-        return False
-    if args and args[0] == "--":
-        args = args[1:]
-    return len(args) >= 2 and args[0] not in ("-", "")
-
-
-def script_problem(words: list, assigned: list, tracked: set) -> str:
-    """Why a simple command does not run only code a tracked file it names holds, or empty."""
-    injected = [name for name in assigned if name in INJECTING]
-    if injected:
-        return f"it sets {injected[0]}, which makes a program run code no gate names"
+def script_problem(words: list, regular: set, blobs: set) -> str:
+    """Why a readable simple command runs code that no tracked regular file it names holds, or empty."""
     if not words:
         return ""
     first = words[0]
-    if first in RISKY_BUILTINS:
-        return f"it runs {first}, which runs or maps code the check does not follow"
-    if first == "trap":
-        return "it runs trap with an action, which runs code as eval does" if trap_action(words) else ""
     if first in INTERPRETERS:
-        return interpreter_problem(words, tracked)
-    if first in BUILTINS:
+        return interpreter_problem(words, regular, blobs)
+    if first in ALLOWED_BUILTINS:
         return ""
-    if any(c in first for c in EXPANDED):
-        return f"its command word {first} is expanded when it runs"
     if first in WRAPPERS or (first == "find" and any(w in FIND_EXEC for w in words[1:])):
         return f"it runs {first}, which runs another command the check does not follow"
     if first in TASK_RUNNERS or (len(words) > 1 and words[1] in SUBCOMMAND_RUNNERS.get(first, ())):
         return f"it runs {first}, which runs what an untracked recipe says"
     if first in UNMODELLED or VERSIONED.fullmatch(first):
         return f"it runs {first}, an interpreter the check does not read"
-    if "/" in first and strip_dot(first) not in tracked:
-        return f"it runs {first}, which is not a tracked file"
+    if "/" in first:
+        problem = tracked_problem(first, regular, blobs)
+        return f"it runs {problem}" if problem else ""
     return ""
 
 
@@ -1183,8 +1234,8 @@ def gate_scripts_named(ref: Ref) -> tuple:
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so the floors cannot see what it runs")
             continue
-        for words, assigned in simple:
-            problem = script_problem(words, assigned, ref.blobs)
+        for words in simple:
+            problem = script_problem(words, ref.regular_files, ref.blobs)
             if problem:
                 reasons.append(f"gate {label}: {problem}, so the floors cannot protect what it runs")
     return outcome(reasons)
@@ -1197,7 +1248,7 @@ def gate_tools(ref: Ref) -> tuple:
     reasons, tools = [], ["bash"]
     for label, command in commands:
         try:
-            simple = [command_word(words)[0] for words in simple_commands(command)]
+            simple = [command_word(words) for words in simple_commands(command)]
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so its tools are unknown")
             continue
@@ -1205,7 +1256,7 @@ def gate_tools(ref: Ref) -> tuple:
             if not words:
                 continue
             first = words[0]
-            if "/" in first or any(c in first for c in EXPANDED) or first in BUILTINS or first in tools:
+            if "/" in first or first in ALLOWED_BUILTINS or first in ("source", ".") or first in tools:
                 continue
             tools.append(first)
     for tool in tools:
