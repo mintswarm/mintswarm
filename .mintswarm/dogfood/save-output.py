@@ -21,11 +21,13 @@ The reply must follow "Returning the output" in .mintswarm/stages.md:
 4. The runner saves the lines strictly between the opening and closing
    lines, unchanged, with a final newline. The first of them is the
    document's `# ` title.
-5. The reply contains exactly one such block. Lines inside it are part of
-   the document, never the start of another block.
+5. The reply contains exactly one such block before the result block.
+   Lines inside it are part of the document, never the start of another
+   block.
 6. After the closing line come only blank lines, then exactly one result
-   block (a ```yaml fence whose first line is `msw-result:`), then only
-   blank lines. A few lines of text may come before the document block.
+   block (a ```yaml fence whose first line is `msw-result:`). Text after
+   the result block is ignored. A few lines of text may come before the
+   document block.
 
 Closing on exactly N backticks is stricter than CommonMark's "at least N";
 a reply that follows rule 3 renders the same in CommonMark.
@@ -87,8 +89,20 @@ def leading_backticks(line: str) -> int:
     return len(stripped) - len(stripped.lstrip("`"))
 
 
+def result_follows(lines: list, after: int) -> bool:
+    """Whether lines[after:] hold only blank lines, then a result block opener."""
+    i = after
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    return i + 1 < len(lines) and bool(RESULT_OPENER.fullmatch(lines[i])) and lines[i + 1].startswith("msw-result:")
+
+
 def find_document(lines: list) -> tuple:
-    """Return (first, last, fence): the document is lines[first:last]."""
+    """Return (first, last, fence): the document is lines[first:last].
+
+    Scanning stops at the first closed document block that the result block
+    follows, so text after the result block is never read.
+    """
     blocks = []
     i = 0
     while i < len(lines):
@@ -104,6 +118,8 @@ def find_document(lines: list) -> tuple:
         else:
             raise ReplyError(f"line {i + 1}: document block opened with {len(fence)} backticks is never closed")
         blocks.append((i + 1, j, fence))
+        if result_follows(lines, j + 1):
+            break
         i = j + 1
     if not blocks:
         raise ReplyError("no document block (a line of 4 or more backticks followed by 'markdown')")
@@ -138,9 +154,6 @@ def find_result(lines: list, after: int) -> str:
             break
     else:
         raise ReplyError(f"line {i + 1}: result block is never closed")
-    for k in range(j + 1, len(lines)):
-        if lines[k].strip():
-            raise ReplyError(f"line {k + 1}: text after the msw-result block")
     return "\n".join(lines[i + 1:j])
 
 
