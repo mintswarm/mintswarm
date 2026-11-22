@@ -49,29 +49,34 @@ fix(core): renew leases on heartbeat, not on claim
 docs(docs): describe the repository layout
 ```
 
-Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`; a change that is not part of any component (CI, repository tooling) uses `ci`, `build` or `docs` as its scope. A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
+Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, `docs/` and the top-level documents use `docs`. A change that also touches the `shared` paths listed in that file takes the scope of the component it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
 
 Inside a work branch commits can be as small as you like; the PR title is what lands on `master`.
 
 ## Pull requests
 
 - Every change reaches `master` through a PR; no direct pushes, including from maintainers.
-- **Squash merge only.** The PR title becomes the commit subject, so it must be a valid Conventional Commit; CI checks it. The changelog is generated from these subjects.
+- **Squash merge only.** The PR title becomes the commit subject, so it must be a valid Conventional Commit; the `pr-title` check will verify it once CI is added. The changelog is generated from these subjects.
 - One logical change per PR. A refactor that a feature needs goes in its own PR first.
 - Link the issue (`Closes #12`). Describe what changed, why, and how it was verified.
-- Required before merge: all checks green, one approving review, conversations resolved, branch up to date with `master`.
+- Required before merge: one approving review from a Code Owner (`.github/CODEOWNERS`), and all conversations resolved. Once CI is added, all checks green and the branch up to date with `master` as well.
 - A change to a contract (anything under `api/`, `crates/core/migrations/`, or the job MCP tool list) states its compatibility impact in the description.
 - The repository describes the current state. A change that alters how the system works updates `docs/architecture/` in the same PR; the reasoning goes in the PR description or the issue, never in a file of its own.
 
 ## `master` protection
 
-Configured as a GitHub ruleset on `master`:
+The `master` ruleset requires:
 
-- require a pull request, one approval, dismiss stale approvals on push
-- required status checks: `fmt`, `clippy`, `test`, `deny`, `proto` (buf lint + breaking), `generated` (OpenAPI and JSON Schema drift), `web` (UI lint, typecheck, test), `pr-title`; branch must be up to date
-- linear history; squash merge as the only allowed method
-- block force-push and deletion
-- auto-delete head branches after merge
+- a pull request with one approving review, including review from Code Owners (`.github/CODEOWNERS`); stale approvals are dismissed on push
+- all review conversations resolved
+- squash merge as the only allowed method, and linear history
+- no force-push and no deletion
+
+The repository Admin role may bypass the ruleset for pull requests only; nothing else bypasses it, and no one pushes to `master` directly. The maintainer's own PRs, whose only code owner is their author, merge through this bypass without an approving review, and GitHub logs each use of it.
+
+The repository settings, outside the ruleset, allow squash merge only and delete head branches after merge.
+
+Waiting for CI, not required yet: the status checks `fmt`, `clippy`, `test`, `deny`, `proto` (buf lint + breaking), `generated` (OpenAPI and JSON Schema drift), `web` (UI lint, typecheck, test) and `pr-title`, and the branch being up to date with `master`.
 
 ## Releases
 
