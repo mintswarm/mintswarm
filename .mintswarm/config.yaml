@@ -1,0 +1,81 @@
+# mintswarm repository config for this repository.
+# A first cut used while dogfooding: the shape follows the decisions on #3,
+# the final schema comes with the contracts work.
+
+tracker:
+  kind: github
+  kinds:
+    source: issue_types              # issue_types | labels
+    design:         { issue_type: Design }
+    plan:           { issue_type: Plan }
+    implementation: { issue_type: Task }
+  components:
+    source: labels                   # labels (per repository) | field (account-wide select or free text)
+    label: "component:{name}"        # implementation issues carry exactly one; design and plan issues may carry several
+  ingest:
+    trusted:
+      labels: [mintswarm]            # maintainer-only; never applied by an issue template
+      authors: [zmij]
+    match: any                       # any | all
+
+design:
+  store: issue_artifacts             # where design documents live
+
+components:
+  api:
+    description: "contracts: proto definitions, generated OpenAPI and JSON Schemas, generated Rust code"
+    paths: ["api/**", "crates/proto/**"]
+  domain:
+    description: "shared model and configuration types used by control plane and runner"
+    paths: ["crates/domain/**", "crates/config/**"]
+  core:
+    description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
+    paths: ["crates/core/**", "crates/server/**"]
+  runner:
+    description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
+    paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
+  console-mcp:
+    description: "console MCP server used from people's own agent sessions"
+    paths: ["crates/console-mcp/**"]
+  cli:
+    description: "the mintswarm command-line client"
+    paths: ["crates/cli/**"]
+  web:
+    description: "web UI and its generated API client"
+    paths: ["web/**"]
+  agents:
+    description: "stage agent definitions, stage conventions, prompt templates and the dogfooding glue"
+    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/dogfood/**", "defaults/prompts/**"]
+  distribution:
+    description: "container image, compose files, service units and installers"
+    paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
+  tooling:
+    description: "repository tasks, CI workflows and end-to-end tests"
+    paths: ["xtask/**", ".github/**", "tests/**"]
+  docs:
+    description: "architecture documents, guides and the repository's top-level documents"
+    paths: ["docs/**", "README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]
+
+shared:                              # any component may touch these
+  - Cargo.toml
+  - Cargo.lock
+  - rust-toolchain.toml
+  - deny.toml
+  - .gitignore
+  - .mintswarm/config.yaml
+
+agents:
+  default: { harness: claude, model: opus, effort: high }
+  stages:
+    gates: { model: sonnet, effort: low }
+
+pipeline:
+  approve_plan: true                 # plan approval for every implementation issue while the flow proves itself
+  review:
+    max_rounds: 3
+
+gates:
+  tests: none                        # no code yet; forces plan approval
+  run:
+    - name: whitespace
+      command: "git diff --check origin/master...HEAD"
