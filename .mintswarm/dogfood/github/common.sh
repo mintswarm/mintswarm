@@ -9,14 +9,21 @@
 #     otherwise a fresh one from mint-token.sh. It fails unless the token starts
 #     with ghs_. Capture it with tok="$(msw_token)" || exit; never print it.
 #   - msw_git_env ARGS... runs git with only the repository's own config: no
-#     system or global config, no config from the environment, no askpass, no
+#     system or global config, no config from the environment (including the
+#     legacy GIT_CONFIG, which changes what "git config" reads but not what
+#     "git push" reads), no TLS overrides from the environment
+#     (GIT_SSL_NO_VERIFY, GIT_SSL_CAINFO, GIT_SSL_CAPATH), no askpass, no
 #     prompts and no tracing.
 #   - msw_git_net ARGS... is msw_git_env plus a credential helper list reset to
 #     a single inline helper that answers with $MSW_TOKEN from the environment,
-#     no hooks, and transports limited to https (and file, only when the caller
-#     sets MSW_GIT_ALLOW_FILE=1 itself; the environment cannot), so no redirect
-#     can reach ssh and the maintainer's key.
+#     and only for a request with protocol=https and host=github.com; no hooks;
+#     and transports limited to https (and file, only when the caller sets
+#     MSW_GIT_ALLOW_FILE=1 itself; the environment cannot), so no redirect can
+#     reach ssh and the maintainer's key.
 #     The token is never in a URL, a file, a credential store or any argv.
+#   - msw_recorded_key_store prints the key store recorded as key_store in
+#     $MSW_APP_CONFIG; a file without it means keychain on macOS and is an
+#     error elsewhere. mint-token.sh reads the key only from that store.
 #
 # bash 3.2 compatible.
 
@@ -34,6 +41,9 @@ MSW_BRANCH_PREFIX=mintswarm/
 MSW_KEYCHAIN_SERVICE=mintswarm-dev-private-key
 MSW_CONFIG_DIR="$HOME/.config/mintswarm"
 MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/dev-app.json}"
+MSW_KEY_FILE_DIR="$MSW_CONFIG_DIR/keys"
+MSW_CREDSTORE_DIR="$MSW_CONFIG_DIR/credstore"
+MSW_KEY_STORES="keychain, secret-service, pass, systemd-creds, file"
 
 # Set by the sourcing script, never taken from the environment: only push.sh sets
 # it, and only for a file:// MSW_PUSH_URL (selftest.sh).
@@ -63,10 +73,22 @@ msw_token() {
   printf '%s' "$tok"
 }
 
+msw_recorded_key_store() {
+  local store
+  store="$(jq -r '.key_store // empty' "$MSW_APP_CONFIG")" || msw_die "cannot read $MSW_APP_CONFIG"
+  if [ -z "$store" ]; then
+    [ "$(uname -s)" = Darwin ] \
+      || msw_die "key_store missing from $MSW_APP_CONFIG: store the key here with MSW_KEY_STORE=<one of: $MSW_KEY_STORES> store-credentials.sh rotate PEM_PATH (see README.md, Key store)"
+    store=keychain
+  fi
+  printf '%s\n' "$store"
+}
+
 msw_git_env() {
   env -u GIT_ASKPASS -u SSH_ASKPASS \
       -u GIT_TRACE -u GIT_TRACE_CURL -u GIT_TRACE_PACKET -u GIT_CURL_VERBOSE -u GIT_TRACE_REDACT \
-      -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+      -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_CONFIG \
+      -u GIT_SSL_NO_VERIFY -u GIT_SSL_CAINFO -u GIT_SSL_CAPATH \
       GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
       git "$@"
 }
@@ -79,7 +101,9 @@ msw_git_net() {
   fi
   # GIT_ALLOW_PROTOCOL overrides any protocol.* config; the -c keys say the same.
   # The helper is single-quoted on purpose: git's shell expands $MSW_TOKEN from
-  # the environment, so the token never appears in this argv.
+  # the environment, so the token never appears in this argv. It reads the
+  # request up to the blank line and answers only for https://github.com, so a
+  # planted redirect to another https host never receives the token.
   # shellcheck disable=SC2016
   GIT_ALLOW_PROTOCOL="$protocols" msw_git_env \
     -c protocol.allow=never \
@@ -87,7 +111,7 @@ msw_git_net() {
     -c "protocol.file.allow=$file" \
     -c core.hooksPath=/dev/null \
     -c credential.helper= \
-    -c 'credential.helper=!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$MSW_TOKEN"; }; f' \
+    -c 'credential.helper=!f() { test "$1" = get || exit 0; p=; h=; while IFS= read -r l; do case "$l" in "") break;; protocol=https) p=1;; host=github.com) h=1;; esac; done; test "$p$h" = 11 && printf "username=x-access-token\npassword=%s\n" "$MSW_TOKEN"; }; f' \
     -c core.askPass= \
     "$@"
 }

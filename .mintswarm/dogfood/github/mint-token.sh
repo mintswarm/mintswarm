@@ -5,10 +5,12 @@
 #   mint-token.sh token [PERMS_JSON]   print an installation token for mintswarm/mintswarm (1 hour)
 #
 # Identifiers come from $MSW_APP_CONFIG (default ~/.config/mintswarm/dev-app.json),
-# the private key from the login Keychain. PERMS_JSON narrows the token, for
-# example '{"contents":"read"}'.
+# the private key from the key store recorded there as key_store (keychain when
+# the field is missing on macOS; see key-store.sh). $MSW_KEY_STORE is ignored
+# here, so the key is never read from a different store than it was written to.
+# PERMS_JSON narrows the token, for example '{"contents":"read"}'.
 #
-# The key reaches openssl only through a pipe. The JWT reaches curl on stdin
+# The key reaches openssl only through a pipe from key-store.sh. The JWT reaches curl on stdin
 # (-H @-), never in argv. The only temporary file holds the non-secret JWT
 # signing input (header and payload) and is removed on exit. curl runs with -q
 # first, so ~/.curlrc cannot add tracing or verbose output.
@@ -31,6 +33,8 @@ client_id="$(jq -r '.client_id // empty' "$MSW_APP_CONFIG")" || msw_die "cannot 
 service="$(jq -r '.keychain_service // empty' "$MSW_APP_CONFIG")" || msw_die "cannot read $MSW_APP_CONFIG"
 [ -n "$client_id" ] || msw_die "client_id missing from $MSW_APP_CONFIG"
 [ -n "$service" ] || msw_die "keychain_service missing from $MSW_APP_CONFIG"
+store=""
+store="$(msw_recorded_key_store)" || exit 1
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
@@ -45,13 +49,12 @@ jwt() {
   sign_input="$(mktemp)"
   trap cleanup EXIT
   printf '%s.%s' "$header" "$payload" > "$sign_input"
-  signature="$(security find-generic-password -s "$service" -a "$client_id" -w \
-    | openssl base64 -d -A \
+  signature="$(MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" get "$service" "$client_id" \
     | openssl dgst -sha256 -binary -sign /dev/stdin "$sign_input" \
-    | b64url)"
+    | b64url)" || signature=""
   cleanup
   sign_input=""
-  [ -n "$signature" ] || msw_die "signing the JWT failed (is the key in the Keychain?)"
+  [ -n "$signature" ] || msw_die "signing the JWT failed (is the key in the $store key store?)"
   printf '%s.%s.%s' "$header" "$payload" "$signature"
 }
 

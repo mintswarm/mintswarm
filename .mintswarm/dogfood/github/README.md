@@ -1,33 +1,73 @@
 # GitHub identity for the dogfooding session
 
-While mintswarm is dogfooded, the session acting as the runner pushes, opens PRs and writes issues and artifacts as the `mintswarm-dev` GitHub App (id 5874301), whose bot user is `mintswarm-dev[bot]` (user id 359856778). These scripts are how it does that without using the maintainer's SSH key or `gh` login, and without writing the App's key or a token to disk.
+While mintswarm is dogfooded, the session acting as the runner pushes, opens PRs and writes issues and artifacts as the `mintswarm-dev` GitHub App (id 5874301), whose bot user is `mintswarm-dev[bot]` (user id 359856778). These scripts are how it does that without using the maintainer's SSH key or `gh` login, without ever writing a token to disk, and without writing the App's key to disk unencrypted unless the file key store is chosen explicitly.
 
-The App's private key lives in the maintainer's login Keychain, in a generic password with service `mintswarm-dev-private-key` and the App's client id as account. The public identifiers live in `~/.config/mintswarm/dev-app.json`. Installation tokens (`ghs_…`, one hour) are minted on demand and only ever held in shell variables and the environment of the process that needs them.
+The App's private key lives in a key store: the macOS login Keychain, Secret Service, `pass`, `systemd-creds` or a plain file (see [Key store](#key-store)). Every store keeps it under the service `mintswarm-dev-private-key` with the App's client id as account. The public identifiers and the name of the key store in use (`key_store`) live in `~/.config/mintswarm/dev-app.json`. Installation tokens (`ghs_…`, one hour) are minted on demand and only ever held in shell variables and the environment of the process that needs them.
 
 ## Scripts
 
 | Script | What it does | Secrets it touches |
 | --- | --- | --- |
-| `common.sh` | Sourced by the others. Holds the repository, bot identity and config paths; `msw_token`, and `msw_git_net`, which runs git with only the repository's config and an inline credential helper fed from `$MSW_TOKEN`. | the token, from the environment |
-| `mint-token.sh` | `jwt` prints an App JWT; `token [PERMS_JSON]` prints an installation token for `mintswarm/mintswarm`, optionally with narrower permissions. Used by the other scripts; do not run `token` bare in the session. | the key (Keychain to `openssl` on a pipe), the JWT (to `curl` on stdin), the token (stdout) |
+| `common.sh` | Sourced by the others. Holds the repository, bot identity and config paths; `msw_token`; `msw_recorded_key_store`; and `msw_git_net`, which runs git with only the repository's config and an inline credential helper fed from `$MSW_TOKEN` that answers only for `https://github.com`. | the token, from the environment |
+| `key-store.sh backend\|put\|get\|delete` | Keeps a value in a key store, with the value on stdin and stdout only (see [Key store](#key-store)). `backend` prints the store `put` would use. | the key, on stdin or stdout, to and from the store |
+| `mint-token.sh` | `jwt` prints an App JWT; `token [PERMS_JSON]` prints an installation token for `mintswarm/mintswarm`, optionally with narrower permissions. Reads the key only from the key store recorded in `dev-app.json`. Used by the other scripts; do not run `token` bare in the session. | the key (key store to `openssl` on a pipe), the JWT (to `curl` on stdin), the token (stdout) |
 | `push.sh BRANCH [--force-with-lease=SHA]` | Pushes a `mintswarm/*` branch to `https://github.com/mintswarm/mintswarm.git` as the bot, after checking every commit in `origin/master..BRANCH` is the bot's. | the token, minted with `contents: write` unless `MSW_TOKEN` is set |
 | `bot-gh.sh ARGS…` | Runs `gh` with a fresh installation token as `GH_TOKEN`, `GH_REPO=mintswarm/mintswarm` and the maintainer's tokens removed from the environment; does not run `gh` at all if minting fails. | the token, as `GH_TOKEN` |
 | `request-review.py PR --branch B` | Resolves reviewers for the PR's changed paths from `.mintswarm/config.yaml` and requests them through `bot-gh.sh`. `--dry-run` only prints them. | none directly |
 | `bot-identity.sh install\|status\|uninstall` | Makes every commit on a `mintswarm/*` branch authored and committed by `mintswarm-dev[bot]`, through a conditional include in the repository's shared git config. | none |
-| `store-credentials.sh prepare\|convert\|rotate` | Creates the App from `create-app.html` and stores its key, or imports a new key when rotating. | the key, from GitHub or the downloaded PEM to the Keychain on the stdin of `security -i` |
+| `store-credentials.sh prepare\|convert\|rotate` | Creates the App from `create-app.html` and stores its key, or stores a new key when rotating; records the key store in `dev-app.json`. | the key, from GitHub or the downloaded PEM to `key-store.sh` on stdin |
 | `create-app.html` | The App's manifest: `contents`, `pull_requests` and `issues` write; `checks`, `statuses` and `metadata` read; no events. `prepare` fills in its `state`. | none |
-| `selftest.sh` | Offline test of all of the above against stubs of `security`, `curl` and `gh` in a temporary sandbox. Reaches neither the Keychain nor GitHub. | throwaway keys and dummy tokens only |
+| `selftest.sh` | Offline test of all of the above against stubs of `security`, `secret-tool`, `pass`, `systemd-creds`, `uname`, `curl` and `gh` in a temporary sandbox; the file backend is tested for real inside the sandbox. Reaches no real key store and not GitHub. | throwaway keys and dummy tokens only |
+| `linux-check.sh` | Runs `selftest.sh` and the real Linux backends in a throwaway Debian container (see [Linux check](#linux-check)). `linux/` holds its image and in-container script. | throwaway keys generated in the container only |
 
-The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `python3` and `yq`. `selftest.sh` also needs `shellcheck`.
+The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `python3` and `yq`. `selftest.sh` also needs `shellcheck`. Each key store needs its own tool:
+
+| Key store | Needs |
+| --- | --- |
+| `keychain` | macOS `security` |
+| `secret-service` | `secret-tool` (Debian and Ubuntu: `libsecret-tools`), a D-Bus session bus and a Secret Service provider such as GNOME Keyring or KeePassXC |
+| `pass` | `pass` and `gnupg`, with an initialised store |
+| `systemd-creds` | `systemd-creds`; systemd 256 or later for a non-root user |
+| `file` | nothing beyond coreutils and `find` |
+
+`linux-check.sh` needs Docker.
+
+## Key store
+
+`key-store.sh` keeps the key in one of five backends. Each takes the value on stdin and gives it back on stdout, so the key is never in argv or a temporary file.
+
+| `MSW_KEY_STORE` | Where the key is kept | Chosen |
+| --- | --- | --- |
+| `keychain` | the login Keychain: a generic password with service `mintswarm-dev-private-key`, the client id as account and the label `mintswarm-dev GitHub App private key`, base64-encoded | automatically on macOS |
+| `secret-service` | the default Secret Service collection: an item with attributes `service` and `account` | automatically when `secret-tool` is on `PATH` and there is a session bus (`DBUS_SESSION_BUS_ADDRESS`, or a socket at `$XDG_RUNTIME_DIR/bus`) |
+| `pass` | the entry `mintswarm/mintswarm-dev-private-key/<client id>` in the password store | automatically when `pass` is on `PATH` and `${PASSWORD_STORE_DIR:-~/.password-store}/.gpg-id` exists |
+| `systemd-creds` | `~/.config/mintswarm/credstore/mintswarm-dev-private-key@<client id>.cred`, encrypted with the host key (and the TPM2 when there is one; `--user` for a non-root user); read from `$CREDENTIALS_DIRECTORY/mintswarm-dev-private-key@<client id>` first | only when set explicitly, or when `$CREDENTIALS_DIRECTORY` already holds the credential |
+| `file` | `~/.config/mintswarm/keys/mintswarm-dev-private-key@<client id>`, **unencrypted**, mode 0600 in a 0700 directory | only when set explicitly |
+
+**Which store is used.** `convert` and `rotate` choose the store and record it as `key_store` in `dev-app.json`; after that, `mint-token.sh` reads the key only from the recorded store and ignores `MSW_KEY_STORE`, so it never reads from a different store than the one written to. The choice is `MSW_KEY_STORE` when set, and fails if that store is not available here. Otherwise it is the first available in the order of the table above, without `systemd-creds` unless `$CREDENTIALS_DIRECTORY` holds the credential, and never `file`. When nothing is available the command fails and lists the values of `MSW_KEY_STORE`; it never falls back to the file. A `dev-app.json` without `key_store`, as written before key stores existed, means `keychain` on macOS and is an error elsewhere.
+
+- `key-store.sh backend` prints the store that would be chosen here; `jq -r .key_store ~/.config/mintswarm/dev-app.json` shows the one in use.
+- To choose one: `MSW_KEY_STORE=<name> store-credentials.sh rotate PEM_PATH` (or `convert`).
+- **Moving to another store:** run `rotate` with the new `MSW_KEY_STORE`; once a token mints with the new key, delete the old item, as `rotate` prints: `MSW_KEY_STORE=<old> key-store.sh delete mintswarm-dev-private-key <client id>`. `rotate` leaves the old item where it is.
+- **A systemd user service** can take the key without decrypting it itself: `LoadCredentialEncrypted=mintswarm-dev-private-key@<client id>:%h/.config/mintswarm/credstore/mintswarm-dev-private-key@<client id>.cred` in the unit puts it in `$CREDENTIALS_DIRECTORY`, which `key-store.sh` reads first.
+- **The file store is the weakest:** the key is plain text on disk, protected only by its mode. It is never picked automatically, every use prints a warning, and it refuses the file or directory when it is a symlink, is not yours, or has any group or other permission. `~/.config` is often in a dotfiles repository or synced; keep `~/.config/mintswarm/keys` out of both.
+- **`pass` commits** each change when the password store is a git repository; the entry is encrypted, but the commit is pushed wherever that store is pushed.
+- **Unlock first.** A locked keyring makes `secret-tool` prompt on the desktop or fail without one, and `pass` may start `pinentry`. In an agent session with no display either can fail or block, so unlock the keyring or the gpg key before the session starts. Choosing a store never runs the store's tool, so `key-store.sh backend` never prompts.
+
+**What has been verified where.** The Keychain backend on macOS (#14, with `security -i`). Every backend against stubs in `selftest.sh`. The Linux backends against the real tools in the [Linux check](#linux-check), whose runs are recorded on #21: GNOME Keyring in a D-Bus session, `pass` with a throwaway gpg key, `systemd-creds` as root with the host key, and the file backend with GNU coreutils. Not verified yet, on a real Linux host:
+
+- Secret Service: GNOME Keyring unlocked at login through PAM; KeePassXC's Secret Service integration (access prompts, a locked database); the desktop prompt on a locked collection; an SSH session without the desktop's bus (expected: a clear error, no fallback).
+- `pass`: a real `gpg-agent` and `pinentry`, hardware keys, and the commit to a git-backed store.
+- `systemd-creds`: `--user` as a non-root user on systemd 256 or later; a real user service reading `$CREDENTIALS_DIRECTORY` through `LoadCredentialEncrypted=`; TPM2 binding on a machine with a TPM, including PCR changes after firmware updates.
 
 ## Setup
 
-The App already exists and is installed on `mintswarm/mintswarm`. On another machine, give it its own key (Rotation, steps 1 and 2, with `dev-app.json` copied over first) and then follow steps 3 to 5.
+The App already exists and is installed on `mintswarm/mintswarm`. On another machine, copy `dev-app.json` over, give the machine its own key (Rotation, steps 1 and 2) and then follow steps 3 to 5. On Linux the copied file names no key store, so choose one in step 2, for example `MSW_KEY_STORE=secret-service store-credentials.sh rotate ~/Downloads/mintswarm-dev.<date>.private-key.pem`.
 
 1. **Re-creating the App**, only if it is gone:
    1. `store-credentials.sh prepare` writes `~/.config/mintswarm/create-app.html` with a random `state` and prints its path.
    2. Open that file in a browser signed in as an owner of the `mintswarm` organisation and confirm. GitHub redirects to `http://localhost:8765/?code=CODE&state=STATE`; nothing needs to listen there, copy both values from the address bar.
-   3. Within an hour, `store-credentials.sh convert CODE STATE`. It checks `STATE`, imports the key into the Keychain, writes `dev-app.json` and prints the key's fingerprint; compare it with the App's settings page. The client secret and webhook secret are discarded.
+   3. Within an hour, `store-credentials.sh convert CODE STATE` (with `MSW_KEY_STORE` set to choose a key store). It checks `STATE` and that a key store is available, stores the key, writes `dev-app.json` with the key store's name and prints the key's fingerprint; compare it with the App's settings page. The client secret and webhook secret are discarded.
 2. **Install the App** on `mintswarm/mintswarm` only (organisation settings, GitHub Apps, `mintswarm-dev`, Configure).
 3. **Bot commit identity:** from any worktree of the repository, `bot-identity.sh install`. Check with `bot-identity.sh status` on a `mintswarm/*` branch.
 4. **Check the token works:** `bot-gh.sh api repos/{owner}/{repo} --jq .full_name` prints `mintswarm/mintswarm`.
@@ -44,16 +84,17 @@ git -c user.name='mintswarm-dev[bot]' -c user.email='359856778+mintswarm-dev[bot
 ## Rotation
 
 1. In the App's settings on GitHub, generate a new private key. The browser downloads `mintswarm-dev.<date>.private-key.pem`.
-2. `store-credentials.sh rotate ~/Downloads/mintswarm-dev.<date>.private-key.pem`. It imports the key into the same Keychain item, reads it back to compare fingerprints, updates `key_fingerprint` in `dev-app.json`, deletes the downloaded file (`--keep` keeps it) and prints the fingerprint.
+2. `store-credentials.sh rotate ~/Downloads/mintswarm-dev.<date>.private-key.pem`. It stores the key under the same service and account in the recorded key store (or in `MSW_KEY_STORE` when set), reads it back to compare fingerprints, updates `key_fingerprint` and `key_store` in `dev-app.json`, deletes the downloaded file (`--keep` keeps it) and prints the fingerprint.
 3. Mint a token with the new key: `bot-gh.sh api repos/{owner}/{repo} --jq .full_name`.
 4. Only then delete the old key in the App's settings, matching it by fingerprint.
 
-Before the first `convert` or `rotate` on a machine, check once that `security -i` accepts commands on stdin, with a dummy item:
+Before the first `convert` or `rotate` on a machine, check once that the key store works, with a dummy item (add `MSW_KEY_STORE=<name>` to each line to check a store other than the one chosen automatically):
 
 ```
-printf 'add-generic-password -s msw-selftest -a t -w abc\n' | security -i
-security find-generic-password -s msw-selftest -w     # prints abc
-security delete-generic-password -s msw-selftest
+key-store.sh backend                                   # the store that will be used
+printf 'abc\n' | key-store.sh put msw-selftest t
+key-store.sh get msw-selftest t                        # prints abc
+key-store.sh delete msw-selftest t
 ```
 
 ## Session procedure
@@ -82,8 +123,8 @@ Each Bash call in the session is a fresh shell, so the scripts mint a token per 
 - **Never run `gh` without `GH_TOKEN`**, that is, never plain `gh`: it falls back to the maintainer's stored login. Use `bot-gh.sh`.
 - **Never let `gh pr create` push the branch:** it may push through `origin`. Push with `push.sh`, open the PR with `bot-gh.sh api …/pulls`.
 - **Never print a token or the key:** no bare `mint-token.sh token`, no `set -x`, no `curl -v`, no `GIT_TRACE_REDACT=0`, no `GIT_CURL_VERBOSE`. The session transcript is kept on disk.
-- **Never store a token** in a git or `gh` credential store; `push.sh` uses an inline helper and `GIT_CONFIG_GLOBAL=/dev/null`, so `osxkeychain` and `store` never see it. To check after a push: `security find-internet-password -s github.com -a x-access-token` finds nothing, and `~/.git-credentials` has no `x-access-token` line.
-- **Do not set `url.*`, `credential.*`, `http.*` or `remote.<URL>.*` in the repository's git config;** `push.sh` refuses to push while they are set. A remote section named after a URL, such as `remote.https://github.com/mintswarm/mintswarm.git.pushurl`, applies to a push to that URL and would redirect it. Independently, `push.sh` lets git use only the https transport, so no redirect can reach ssh and the maintainer's key, and it runs no hooks, so none sees the token.
+- **Never store a token** in a git or `gh` credential store; `push.sh` uses an inline helper, which answers only for `https://github.com`, and `GIT_CONFIG_GLOBAL=/dev/null`, so `osxkeychain`, `libsecret` and `store` never see it. To check after a push: on macOS `security find-internet-password -s github.com -a x-access-token` finds nothing; on Linux with `git-credential-libsecret`, `secret-tool search protocol https server github.com user x-access-token` finds nothing; and `~/.git-credentials` has no `x-access-token` line.
+- **Do not set `url.*`, `credential.*`, `http.*` or `remote.<URL>.*` in the repository's git config;** `push.sh` refuses to push while they are set. A remote section named after a URL, such as `remote.https://github.com/mintswarm/mintswarm.git.pushurl`, applies to a push to that URL and would redirect it. Independently, `push.sh` lets git use only the https transport, so no redirect can reach ssh and the maintainer's key, its credential helper gives the token only to `github.com`, and it runs no hooks, so none sees the token. `GIT_CONFIG`, `GIT_SSL_NO_VERIFY`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH` are removed from git's environment.
 - **Do not count on `~/.curlrc`:** `mint-token.sh` and `store-credentials.sh` run `curl -q`, so a curlrc with `--trace` or `-v` cannot record the JWT, the token or the private key. `GIT_AUTHOR_*` or `GIT_COMMITTER_*` in the environment override the bot identity; `push.sh` refuses the resulting commits.
 - **Do not rely on the token's length;** it varies (390 characters has been seen). Only the `ghs_` prefix is checked.
 - **`@me` and `gh pr status` do not work** with an installation token (`GET /user` is 403). Name logins explicitly.
@@ -93,7 +134,24 @@ Each Bash call in the session is a fresh shell, so the scripts mint a token per 
 - GitHub's secondary rate limits for content-creating requests: 80 per minute and 500 per hour.
 - An installation token lasts one hour and reaches only `mintswarm/mintswarm`.
 
+## Linux check
+
+```
+.mintswarm/dogfood/github/linux-check.sh
+```
+
+Builds a Debian image from `linux/Dockerfile` (`debian:trixie-slim` unless `MSW_LINUX_BASE` is set; the build needs the network) and prints the base image's digest, the commit and, from inside the container, the package versions. It then streams the tracked files under `.mintswarm/` into a container and runs `linux/check.sh` as root:
+
+- **A:** the whole `selftest.sh` as a non-root user.
+- **B:** `secret-service` against GNOME Keyring in a D-Bus session: selection, a byte-exact round trip, `rotate` then `mint-token.sh jwt`; without the bus and with the collection locked, `get` fails and nothing falls back to the file.
+- **C:** `pass` with a throwaway gpg key: round trip, `rotate` then `jwt`.
+- **D:** the file store: modes, the warning, refusing a symlink, a wide mode and a file owned by another user; `rotate` then `jwt`.
+- **E:** `systemd-creds` as root with the host key, which is then moved aside to show that `get` fails, so the null key was not used.
+- **F:** no key line in any `execve` argv traced with `strace` during B to E, every `TMPDIR` empty, and no key line in any file under `/home`, `/root`, `/tmp`, `/run`, `/dev/shm` or `/var` except the file store's own.
+
+It prints one `ok`, `FAIL` or `skip` line per check and the totals, and exits with the container's status. The container runs with `--network none` and gets no volume, no variable, no socket and no SSH agent from the host, so the Keychain, `~/.config/mintswarm`, `~/.gnupg` and `~/.password-store` never reach it; every key it uses is generated inside it. `yq` in the image is a stand-in (`linux/yq`, on PyYAML) that accepts only `yq -o=json . FILE`, the form `request-review.py` uses. It is a recorded manual check, not a gate: run it after changing `key-store.sh` and post its output on the issue or PR. The items listed under "What has been verified where" still need a real Linux host.
+
 ## Not covered
 
 - Verified (signed) commits: bot commits are unsigned; squash merges are signed by GitHub.
-- The `master` ruleset, which is the maintainer's to configure.
+- The `master` and `mintswarm/*` rulesets: both exist on GitHub (#18) and are not managed by these scripts.
