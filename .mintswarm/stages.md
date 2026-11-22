@@ -4,7 +4,7 @@ Rules every mintswarm stage agent follows, whatever its harness. Each stage's ow
 
 ## The job
 
-- You work in one job: one stage of one issue, in a git worktree prepared for it. Your working directory is the worktree root; stay inside it.
+- You work in one job: one stage of one issue, in a git worktree prepared for it. Your working directory is the worktree root; stay inside it, except that a fetch allowed under Boundaries may write its caches outside it (`~/.cargo`, `~/.rustup`, the pnpm store).
 - Inputs are files under `.mintswarm/job/inputs/`. You write no output files: you return your output document in your final reply, and the runner saves it under `.mintswarm/job/outputs/` and publishes it. Both directories are outside version control.
 - `issue.md` holds the issue as the tracker has it: title, kind (design, plan or implementation), component, body. Other inputs are listed in your stage definition.
 
@@ -16,7 +16,8 @@ Rules every mintswarm stage agent follows, whatever its harness. Each stage's ow
 ## Boundaries
 
 - Never touch GitHub or any other remote: no `gh`, no `git push`, no `git fetch`, no network calls. The runner publishes and pushes.
-- Read-only stages (analyse, decompose, plan, assess, gates, review, landing) change nothing in the repository. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`), for gates running the gate script, and for review running the check in `mechanical-check.md` under the conditions in `review.md`.
+- One exception, for fetching dependencies and toolchains only (for example `cargo build`, `cargo fetch`, `rustup toolchain install`, `pnpm install`): the implement and gates stages may reach exactly `crates.io`, `index.crates.io`, `static.crates.io`, `registry.npmjs.org` and `static.rust-lang.org`. Gates reaches them only through the gate script's commands, never through commands of its own. Every other host stays forbidden, and GitHub stays the runner's alone. No stage passes credentials to these hosts or publishes anything: no `cargo publish`, `npm publish`, `pnpm publish`, `cargo login`, `npm login`. The read-only stages analyse, decompose, plan, assess, review and landing stay offline.
+- Read-only stages (analyse, decompose, plan, assess, gates, review, landing) change nothing in the repository; a fetch made by a gate command is not a change. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`), for gates running the gate script, and for review running the check in `mechanical-check.md` under the conditions in `review.md`.
 - Only the implement stage edits files and commits. It never changes `.mintswarm/config.yaml` or the `agents` component's paths (`.claude/agents/`, `.mintswarm/stages.md`, `.mintswarm/stages/`, `.mintswarm/dogfood/`, `defaults/prompts/`, `defaults/packs/`, `.claude/skills/`) unless its issue's component is `agents`.
 - Do not declare success you cannot show. Gates are run by the runner; a stage passes only when the runner accepts your result.
 
