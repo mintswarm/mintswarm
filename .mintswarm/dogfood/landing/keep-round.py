@@ -45,17 +45,24 @@ The head. SHA is the full hash of the commit the round judged, and
 `git rev-parse --verify --quiet --end-of-options SHA^{commit}` must return
 it unchanged. For a gates round it must be HEAD, and the worktree must hold
 HEAD's content outside .mintswarm/job/, so that the recorded commit is what
-the gates ran on. The worktree is compared with a temporary index read from
-HEAD (`git read-tree HEAD` into a file outside the repository, as
-GIT_INDEX_FILE), whose entries carry no stat data and no flags, so git
-compares the content of every file HEAD holds, whatever the stat cache
-says, and a file staged but not committed counts as untracked:
+the gates ran on:
 
-- `git status --porcelain=v1 -z --untracked-files=no
-  --ignore-submodules=none` lists no changed path;
-- `git ls-files --others -z --exclude-per-directory=.gitignore` lists no
-  untracked path outside .mintswarm/job/: only .gitignore files hide
-  paths, never .git/info/exclude or core.excludesFile;
+- every entry of `git ls-tree -r -z --full-tree HEAD` is in the worktree
+  with the same mode, taken from os.lstat (a symbolic link, or a regular
+  file that is executable when its owner may execute it), and the same
+  blob id: `git hash-object --no-filters --stdin-paths` for files, and
+  `git hash-object --no-filters --stdin` of the link target for symbolic
+  links. No attribute, filter, end-of-line or file-mode setting is
+  consulted, the stat cache is not used and no configured filter runs;
+- HEAD holds no submodule (gitlink, mode 160000): a submodule's content,
+  index and excludes are its own, so none is checked, and a round is not
+  kept at a HEAD that has one;
+- `git ls-files --others -z --exclude-per-directory=.gitignore`, run
+  against a temporary index read from HEAD (`git read-tree HEAD` into a
+  file outside the repository, as GIT_INDEX_FILE), lists no untracked path
+  outside .mintswarm/job/: only .gitignore files hide paths, never
+  .git/info/exclude or core.excludesFile, and a file staged but not
+  committed counts as untracked;
 - in the repository's own index, `git ls-files -v -z` shows no entry marked
   assume-unchanged (a lower-case tag) or skip-worktree (`S`);
 - no untracked .gitignore outside .mintswarm/job/ is itself ignored unless
@@ -64,9 +71,8 @@ says, and a file staged but not committed counts as untracked:
 
 Every git command runs with the neutral environment floor.py uses (no
 system, global or environment config, no replace objects or grafts) and
-with core.fsmonitor and core.untrackedCache off, core.checkStat default,
-core.trustctime on, core.ignoreStat off and core.excludesFile the null
-device, overriding the repository's config. Not covered: files that a
+with core.fsmonitor and core.untrackedCache off and core.excludesFile the
+null device, overriding the repository's config. Not covered: files that a
 .gitignore held by HEAD ignores, such as build output, can still differ.
 
 For a review round, `git merge-base --is-ancestor SHA HEAD` must succeed:
@@ -133,6 +139,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -153,11 +160,12 @@ FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 USAGE = ("usage: keep-round.py gates N --head SHA --rounds DIR | "
          "keep-round.py review N --head SHA --rounds DIR [--no-address]")
 JOB_PREFIX = ".mintswarm/job/"
-# settings in the repository's config that could make git report a changed worktree as clean
+# settings in the repository's config that could make git list fewer untracked files, or run a command
 GIT_OVERRIDES = (
-    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.checkStat=default",
-    "-c", "core.trustctime=true", "-c", "core.ignoreStat=false", "-c", f"core.excludesFile={os.devnull}",
+    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", f"core.excludesFile={os.devnull}",
 )
+GITLINK = "160000"
+SYMLINK = "120000"
 DROPPED_ENV = (
     "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE",
 )
@@ -300,17 +308,70 @@ def check_worktree() -> None:
                          "gates ran on: " + "; ".join(problems))
 
 
+def worktree_mode(path: str):
+    """The mode git would record for the worktree's `path`, from os.lstat; None when it holds no file."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        return SYMLINK
+    if stat.S_ISREG(info.st_mode):
+        return "100755" if info.st_mode & stat.S_IXUSR else "100644"
+    return None
+
+
+def head_differences() -> tuple:
+    """([paths whose worktree content or mode is not HEAD's], [gitlinks in HEAD]), with no conversion.
+
+    HEAD's blobs come from `git ls-tree`, the worktree's from `git hash-object --no-filters`, so no
+    attribute, filter, end-of-line or file-mode setting is consulted and no configured filter runs.
+    """
+    changed, gitlinks, files, links = [], [], [], []
+    for record in git_records("ls-tree", "-r", "-z", "--full-tree", "HEAD"):
+        header, tab, path = record.partition("\t")
+        parts = header.split(" ")
+        if not tab or len(parts) != 3 or not path:
+            raise InputError(f"git ls-tree: unexpected record {record!r}")
+        mode, oid = parts[0], parts[2]
+        if mode == GITLINK:
+            gitlinks.append(path)
+        elif worktree_mode(path) != mode:
+            changed.append(path)
+        elif mode == SYMLINK:
+            links.append((path, oid))
+        elif "\n" in path:  # hash-object --stdin-paths reads one path per line
+            changed.append(path)
+        else:
+            files.append((path, oid))
+    if files:
+        code, out = git("hash-object", "--no-filters", "--stdin-paths",
+                        data=b"".join(path.encode("utf-8") + b"\n" for path, _ in files))
+        oids = out.split()
+        if code != 0 or len(oids) != len(files):
+            raise InputError("git hash-object --no-filters --stdin-paths failed")
+        changed += [path for (path, oid), found in zip(files, oids) if found != oid]
+    for path, oid in links:
+        try:
+            target = os.fsencode(os.readlink(path))
+        except OSError:
+            changed.append(path)
+            continue
+        code, out = git("hash-object", "--no-filters", "--stdin", data=target)
+        if code != 0:
+            raise InputError("git hash-object --no-filters --stdin failed")
+        if out.strip() != oid:
+            changed.append(path)
+    return changed, gitlinks
+
+
 def worktree_problems(index: str) -> list:
     """What makes the worktree differ from HEAD; `index` is a fresh index read from HEAD."""
     problems = []
-    records, changed, i = git_records("status", "--porcelain=v1", "-z", "--untracked-files=no",
-                                      "--ignore-submodules=none", index=index), [], 0
-    while i < len(records):
-        record, i = records[i], i + 1
-        changed.append(record[3:])
-        if "R" in record[:2] or "C" in record[:2]:  # a rename or copy is followed by its source path
-            changed.append(records[i] if i < len(records) else "")
-            i += 1
+    changed, gitlinks = head_differences()
+    if gitlinks:
+        problems.append(f"HEAD holds submodules (gitlinks), whose content is not checked: "
+                        f"{', '.join(sorted(gitlinks)[:10])}")
     untracked = git_records("ls-files", "--others", "-z", "--exclude-per-directory=.gitignore", index=index)
     changed += [path for path in untracked if not path.startswith(JOB_PREFIX)]
     if changed:

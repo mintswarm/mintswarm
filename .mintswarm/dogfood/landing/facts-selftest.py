@@ -36,9 +36,17 @@ Checks:
   keep with a change a plain git status hides (each shown hidden first): a
   skip-worktree or assume-unchanged entry, an untracked file listed in
   .git/info/exclude or core.excludesFile, an untracked .gitignore that
-  ignores itself, a file staged but not committed, and a same-size change with its mtime restored under
-  core.checkStat minimal and core.trustctime off; with all undone the
-  round is kept;
+  ignores itself, a file staged but not committed, and a same-size change
+  with its mtime restored under core.checkStat minimal and core.trustctime
+  off; and so does a change git status on a fresh index from HEAD hides
+  (shown hidden first): a clean filter that returns HEAD's blob, set
+  through .git/info/attributes or core.attributesFile, which keep-round.py
+  must not run; core.autocrlf with CRLF line endings; core.fileMode false
+  with an executable bit; a tracked symbolic link retargeted or replaced by
+  a file holding its target; with all undone the round is kept. The
+  sandbox's HEAD holds a tracked symbolic link, so every kept gates round
+  also checks one that is unchanged; a gates keep at a HEAD holding a
+  gitlink exits 2;
 - commit binding: rounds kept at the base (gates with the base checked
   out, review as an ancestor) and at the head give `commit` and `current`,
   false for the base's rounds, with their raw verdicts;
@@ -94,6 +102,7 @@ import ast
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -175,7 +184,8 @@ class Sandbox:
         self.env = env
         self.git("init", "-q", "-b", "master")
         write(self.repo / "README.md", "a tracked file\n")
-        self.git("add", "README.md")
+        os.symlink("README.md", self.repo / "link")
+        self.git("add", "README.md", "link")
         self.git("commit", "-q", "-m", "base")
         self.base = self.git("rev-parse", "HEAD")
         self.git("commit", "-q", "--allow-empty", "-m", "head")
@@ -513,6 +523,18 @@ def plain_status(sb: Sandbox, *args: str) -> str:
     return "\n".join(line for line in lines if not line[3:].startswith(".mintswarm/"))
 
 
+def fresh_status(sb: Sandbox) -> str:
+    """What `git status --porcelain` reports outside .mintswarm/job/ against a fresh index read from HEAD."""
+    index = sb.tmp / "fresh-index"
+    env = dict(sb.env, GIT_INDEX_FILE=str(index))
+    lines = []
+    for args in (["read-tree", "HEAD"], ["status", "--porcelain"]):
+        proc = subprocess.run(["git", *args], cwd=sb.repo, env=env, capture_output=True, text=True)
+        lines = proc.stdout.splitlines()
+    index.unlink(missing_ok=True)
+    return "\n".join(line for line in lines if not line[3:].startswith(".mintswarm/"))
+
+
 def refused(name: str, proc, fragment: str, absent: list) -> None:
     gone = [str(path) for path in absent if os.path.lexists(path)]
     T.check(name, proc.returncode == 2 and fragment in proc.stderr and not gone,
@@ -643,6 +665,66 @@ def head_tests(sb: Sandbox) -> None:
     sb.git("config", "--unset", "core.checkStat")
     sb.git("config", "--unset", "core.trustctime")
     sb.git("update-index", "--really-refresh")
+
+    # conversions that make changed content compare equal to HEAD's
+    marker = sb.tmp / "filter-ran"
+    attributes = sb.repo / ".git" / "info" / "attributes"
+    attributes_file = sb.tmp / "attributes"
+    sources = [
+        (".git/info/attributes", lambda: write(attributes, "README.md filter=h\n"), attributes.unlink),
+        ("core.attributesFile", lambda: (write(attributes_file, "README.md filter=h\n"),
+                                         sb.git("config", "core.attributesFile", str(attributes_file))),
+         lambda: sb.git("config", "--unset", "core.attributesFile")),
+    ]
+    for source, add, remove in sources:
+        sb.git("config", "filter.h.clean", f"touch {shlex.quote(str(marker))}; git cat-file blob HEAD:%f")
+        add()
+        write(readme, "a longer change that the clean filter turns back into HEAD's blob\n")
+        hidden = fresh_status(sb)
+        T.check(f"keep: a clean filter set through {source} hides a change from git status on a fresh index",
+                hidden == "" and marker.exists(), hidden)
+        marker.unlink(missing_ok=True)
+        refused(f"keep: a gates keep with a change a clean filter set through {source} hides exits 2",
+                keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+        T.check(f"keep: keep-round.py does not run the clean filter set through {source}", not marker.exists())
+        remove()
+        sb.git("config", "--remove-section", "filter.h")
+        write(readme, original)
+    conversions = [
+        ("core.autocrlf true and CRLF line endings", ("core.autocrlf", "true"),
+         lambda: write(readme, original.replace(b"\n", b"\r\n")), lambda: write(readme, original)),
+        ("core.fileMode false and an executable bit", ("core.fileMode", "false"),
+         lambda: readme.chmod(0o755), lambda: readme.chmod(0o644)),
+    ]
+    for name, (key, value), change, undo in conversions:
+        sb.git("config", key, value)
+        change()
+        hidden = fresh_status(sb)
+        T.check(f"keep: {name} hide a change from git status on a fresh index", hidden == "", hidden)
+        refused(f"keep: a gates keep with {name} exits 2", keep(sb, "gates", "9", rounds=rounds), "README.md",
+                [rounds / "gates-9"])
+        undo()
+        sb.git("config", "--unset", key)
+    link = sb.repo / "link"
+    for name, change in (("retargeted", lambda: os.symlink("elsewhere", link)),
+                         ("replaced by a file holding its target", lambda: write(link, "README.md"))):
+        link.unlink()
+        change()
+        refused(f"keep: a gates keep with the tracked symbolic link {name} exits 2",
+                keep(sb, "gates", "9", rounds=rounds), "link", [rounds / "gates-9"])
+        link.unlink()
+        os.symlink("README.md", link)
+
+    submodule = sb.tmp / "with-gitlink"
+    sb.job(submodule)
+    sb.git("update-index", "--add", "--cacheinfo", f"160000,{sb.head},sub", cwd=submodule)
+    sb.git("commit", "-q", "-m", "a gitlink", cwd=submodule)
+    ready_gates(submodule, T0 + 4500)
+    gitlink_rounds = sb.runner_state / "jobs" / "with-gitlink" / "rounds"
+    refused("keep: a gates keep at a HEAD holding a gitlink exits 2",
+            keep(sb, "gates", "1", cwd=submodule, head=sb.git("rev-parse", "HEAD", cwd=submodule),
+                 rounds=gitlink_rounds), "submodules (gitlinks), whose content is not checked: sub",
+            [gitlink_rounds / "gates-1"])
     proc = keep(sb, "gates", "9", rounds=rounds)
     T.check("keep: with every change undone the same gates round is kept", proc.returncode == 0, detail(proc))
 
