@@ -3,23 +3,30 @@
 #
 #   selftest.sh
 #
-# Runs in a fresh mktemp -d sandbox with HOME, TMPDIR and MSW_APP_CONFIG inside it,
-# and PATH starting with stubs for security, curl and gh that record their argv and
-# stdin. It aborts before any check unless those three commands resolve to the
-# stubs, so the real Keychain and GitHub are never reached. git runs without the
-# system config, against repositories and a bare "remote" inside the sandbox.
+# Runs in a fresh mktemp -d sandbox with HOME, TMPDIR, XDG_RUNTIME_DIR and
+# MSW_APP_CONFIG inside it, and PATH starting with stubs for security, secret-tool,
+# pass, systemd-creds, uname, curl and gh that record their argv and stdin. It
+# aborts before any check unless those commands resolve to the stubs, so no real
+# key store and not GitHub are ever reached. The key store settings
+# (MSW_KEY_STORE, DBUS_SESSION_BUS_ADDRESS, PASSWORD_STORE_DIR, GNUPGHOME,
+# CREDENTIALS_DIRECTORY) are unset. uname -s answers $MSW_STUB_UNAME, Darwin by
+# default. git runs without the system config, against repositories and a bare
+# "remote" inside the sandbox.
 #
 # Checks: shellcheck and py_compile; manifest prepare and convert; the JWT and the
-# installation token; key rotation; the bot identity include; push.sh pushes and
-# refusals; the inline credential helper; bot-gh.sh; reviewer resolution. Secrets
-# must appear in no recorded argv, nothing may be left in TMPDIR, HOME gains only
-# dev-app.json, and .git/config stays byte-identical across pushes.
+# installation token; key rotation; every key store backend (selection, round
+# trips, the file backend's modes and refusals, rotate and jwt through each); the
+# bot identity include; push.sh pushes and refusals; the inline credential
+# helper; bot-gh.sh; reviewer resolution. Secrets must appear in no recorded
+# argv, nothing may be left in TMPDIR, HOME gains only dev-app.json, and
+# .git/config stays byte-identical across pushes.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
 #
-# shellcheck disable=SC2016,SC2329,SC2030,SC2031
+# shellcheck disable=SC2016,SC2329,SC2030,SC2031,SC2012
 # SC2016: sh -c '...' scripts take their values as positional parameters.
+# SC2012: ls -ld and ls -A list sandbox paths the test created, for their modes and names.
 # SC2329: check functions are invoked through check and refuses.
 # SC2030, SC2031: subshells that source common.sh change variables on purpose.
 set -euo pipefail
@@ -34,16 +41,19 @@ unset MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_EN
       GH_REPO GH_HOST GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR \
       GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL \
       GIT_COMMITTER_DATE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG \
-      GIT_ASKPASS SSH_ASKPASS
+      GIT_ASKPASS SSH_ASKPASS GIT_SSL_NO_VERIFY GIT_SSL_CAINFO GIT_SSL_CAPATH \
+      MSW_KEY_STORE DBUS_SESSION_BUS_ADDRESS PASSWORD_STORE_DIR GNUPGHOME CREDENTIALS_DIRECTORY \
+      MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION MSW_STUB_SECRET_TOOL_HANG MSW_KEY_STORE_TIMEOUT
 export HOME="$sandbox/home"
 export TMPDIR="$sandbox/tmp"
+export XDG_RUNTIME_DIR="$sandbox/run"
 export MSW_APP_CONFIG="$HOME/.config/mintswarm/dev-app.json"
 export MSW_STUB_STATE="$sandbox/stub-state"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_TERMINAL_PROMPT=0
 stubs="$sandbox/stubs"
 keys="$sandbox/keys"
-mkdir -p "$HOME" "$TMPDIR" "$MSW_STUB_STATE" "$stubs" "$keys"
+mkdir -p "$HOME" "$TMPDIR" "$XDG_RUNTIME_DIR" "$MSW_STUB_STATE" "$stubs" "$keys"
 
 DUMMY=ghs_SelfTestDummyToken0123456789abcdefABCDEF
 MINTED=ghs_SelfTestMintedToken9876543210fedcbaFEDCBA
@@ -107,15 +117,170 @@ if argv == ["-i"]:
     json.dump(kc, open(path, "w"))
     sys.exit(0)
 
-if argv and argv[0] == "find-generic-password":
+if argv and argv[0] in ("find-generic-password", "delete-generic-password"):
     key = (opt(argv, "-s") or "") + "/" + (opt(argv, "-a") or "")
     if key not in kc:
         print("security: The specified item could not be found in the keychain.", file=sys.stderr)
         sys.exit(44)
+    if argv[0] == "delete-generic-password":
+        del kc[key]
+        json.dump(kc, open(path, "w"))
+        sys.exit(0)
     print(kc[key] if "-w" in argv else 'keychain: "stub"')
     sys.exit(0)
 
 sys.exit(1)
+EOF
+
+cat > "$stubs/secret-tool" <<'EOF'
+#!/usr/bin/env python3
+# Stub of secret-tool (libsecret): store, lookup and clear, kept in a JSON file.
+import json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stublib import STATE, record, record_stdin
+
+argv = sys.argv[1:]
+record("secret-tool", argv)
+if os.environ.get("MSW_STUB_SECRET_TOOL_HANG"):
+    # A locked collection: secret-tool waits for an unlock prompt nobody answers.
+    import time
+    with open(os.path.join(STATE, "secret-tool.pid"), "w") as f:
+        f.write("%d\n" % os.getpid())
+    time.sleep(60)
+    sys.exit(0)
+if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+    print("secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY", file=sys.stderr)
+    sys.exit(1)
+path = os.path.join(STATE, "secret-service.json")
+db = json.load(open(path)) if os.path.exists(path) else {}
+cmd, rest = (argv[0], argv[1:]) if argv else ("", [])
+labels = [a for a in rest if a.startswith("--label=")]
+attrs = [a for a in rest if not a.startswith("--")]
+if len(attrs) % 2 or not attrs:
+    sys.exit(2)
+key = "/".join(attrs)
+if cmd == "store" and labels:
+    data = sys.stdin.read()
+    record_stdin("secret-tool", data)
+    db[key] = data
+    json.dump(db, open(path, "w"))
+elif cmd == "lookup":
+    if key not in db:
+        sys.exit(1)
+    sys.stdout.write(db[key])
+elif cmd == "clear":
+    db.pop(key, None)
+    json.dump(db, open(path, "w"))
+else:
+    sys.exit(2)
+EOF
+
+cat > "$stubs/pass" <<'EOF'
+#!/usr/bin/env python3
+# Stub of pass: insert -m -f, show and rm -f, kept in a JSON file.
+import json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stublib import STATE, record, record_stdin
+
+argv = sys.argv[1:]
+record("pass", argv)
+store = os.environ.get("PASSWORD_STORE_DIR") or os.path.join(os.environ["HOME"], ".password-store")
+if not os.path.exists(os.path.join(store, ".gpg-id")):
+    print("Error: You must run: pass init your-gpg-id", file=sys.stderr)
+    sys.exit(1)
+path = os.path.join(STATE, "pass.json")
+db = json.load(open(path)) if os.path.exists(path) else {}
+if argv[:3] == ["insert", "-m", "-f"] and len(argv) == 4:
+    print("Enter contents of %s and press Ctrl+D when finished:" % argv[3])
+    data = sys.stdin.read()
+    record_stdin("pass", data)
+    db[argv[3]] = data
+elif argv[:1] == ["show"] and len(argv) == 2:
+    if argv[1] not in db:
+        print("Error: %s is not in the password store." % argv[1], file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.write(db[argv[1]])
+elif argv[:2] == ["rm", "-f"] and len(argv) == 3:
+    if argv[2] not in db:
+        print("Error: %s is not in the password store." % argv[2], file=sys.stderr)
+        sys.exit(1)
+    del db[argv[2]]
+else:
+    sys.exit(1)
+json.dump(db, open(path, "w"))
+EOF
+
+cat > "$stubs/systemd-creds" <<'EOF'
+#!/usr/bin/env python3
+# Stub of systemd-creds: --version, and encrypt and decrypt with --name and
+# stdin or stdout. The "encrypted" file is a marker line and the reversed value
+# in base64, so it holds no plaintext line.
+import base64, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stublib import STATE, record, record_stdin
+
+argv = sys.argv[1:]
+record("systemd-creds", argv)
+if argv == ["--version"]:
+    print("systemd %s (stub)" % os.environ.get("MSW_STUB_SYSTEMD_VERSION", "257"))
+    sys.exit(0)
+args = [a for a in argv if a != "--user"]
+names = [a[len("--name="):] for a in args if a.startswith("--name=")]
+args = [a for a in args if not a.startswith("--name=")]
+if len(names) != 1 or len(args) != 3:
+    sys.exit(2)
+marker = "SYSTEMD-CREDS-STUB name=%s user=%s" % (names[0], "--user" in argv)
+if args[0] == "encrypt" and args[1] == "-":
+    data = sys.stdin.read()
+    record_stdin("systemd-creds", data)
+    with open(args[2], "w") as f:
+        f.write(marker + "\n" + base64.b64encode(data[::-1].encode()).decode() + "\n")
+elif args[0] == "decrypt" and args[2] == "-":
+    with open(args[1]) as f:
+        head, body = f.read().split("\n", 1)
+    if head != marker:
+        print("systemd-creds: Embedded credential name or scope does not match", file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.write(base64.b64decode(body.strip()).decode()[::-1])
+else:
+    sys.exit(2)
+EOF
+
+cat > "$stubs/uname" <<'EOF'
+#!/usr/bin/env python3
+# Stub of uname: -s answers $MSW_STUB_UNAME (Darwin by default); anything else fails.
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stublib import record
+
+record("uname", sys.argv[1:])
+if sys.argv[1:] != ["-s"]:
+    sys.exit(1)
+print(os.environ.get("MSW_STUB_UNAME", "Darwin"))
+EOF
+
+cat > "$sandbox/on-tty.py" <<'EOF'
+# on-tty.py COMMAND...: run COMMAND with stdout on a pseudo-terminal; print what
+# reached the terminal on stdout and exit with COMMAND's status.
+import os, subprocess, sys
+
+m, s = os.openpty()
+p = subprocess.Popen(sys.argv[1:], stdout=s, stderr=subprocess.PIPE)
+os.close(s)
+out = b""
+while True:
+    try:
+        chunk = os.read(m, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+err = p.stderr.read()
+rc = p.wait()
+sys.stdout.write(out.decode(errors="replace"))
+sys.stderr.write(err.decode(errors="replace"))
+sys.exit(rc)
 EOF
 
 cat > "$stubs/curl" <<'EOF'
@@ -173,10 +338,11 @@ if argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv)
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
 EOF
-chmod 755 "$stubs/security" "$stubs/curl" "$stubs/gh"
+chmod 755 "$stubs/security" "$stubs/secret-tool" "$stubs/pass" "$stubs/systemd-creds" "$stubs/uname" \
+          "$stubs/curl" "$stubs/gh"
 
 export PATH="$stubs:$PATH"
-for c in security curl gh; do
+for c in security secret-tool pass systemd-creds uname curl gh; do
   if [ "$(command -v "$c")" != "$stubs/$c" ]; then
     printf 'selftest: %s does not resolve to the stub; aborting before anything runs\n' "$c" >&2
     exit 1
@@ -237,13 +403,18 @@ R="$here/request-review.py"
 
 # --- static checks -----------------------------------------------------------
 
-check "shellcheck on every script" sh -c 'cd "$1" && shellcheck -x ./*.sh' sh "$here"
+# At severity warning: info and style notes differ between shellcheck versions
+# (0.10 on Debian, 0.11 on Homebrew), so they do not fail the check.
+check "shellcheck on every script" sh -c 'cd "$1" && shellcheck -S warning -x ./*.sh linux/*.sh' sh "$here"
 check "request-review.py compiles" \
   python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
   "$R" "$sandbox/request-review.pyc"
+check "linux/yq compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$here/linux/yq" "$sandbox/yq.pyc"
 no_secret_redirections() {
   local f
-  for f in "$here"/*.sh; do
+  for f in "$here"/*.sh "$here"/linux/*.sh; do
     [ "$f" = "$here/selftest.sh" ] && continue
     if grep -nE '<<|set -x|curl -v' "$f"; then return 1; fi
   done
@@ -277,8 +448,9 @@ check "HOME gains only dev-app.json" \
   eq "$(LC_ALL=C comm -13 "$sandbox/home-before" "$sandbox/home-after")" "./.config/mintswarm/dev-app.json"
 check "convert removes the manifest state" \
   eq "$(LC_ALL=C comm -23 "$sandbox/home-before" "$sandbox/home-after")" "./.config/mintswarm/manifest-state"
-check "dev-app.json holds the five identifiers" \
-  eq "$(jq -c 'keys' "$MSW_APP_CONFIG")" '["app_id","client_id","key_fingerprint","keychain_service","slug"]'
+check "dev-app.json holds the five identifiers and the key store" \
+  eq "$(jq -c 'keys' "$MSW_APP_CONFIG")" '["app_id","client_id","key_fingerprint","key_store","keychain_service","slug"]'
+check "dev-app.json records the keychain key store" eq "$(jq -r .key_store "$MSW_APP_CONFIG")" keychain
 check "dev-app.json records the key's fingerprint" \
   eq "$(jq -r .key_fingerprint "$MSW_APP_CONFIG")" "SHA256:$(fingerprint_of "$keys/key1.pem")"
 check "dev-app.json holds no secret" absent selftest-client-secret-value "$MSW_APP_CONFIG"
@@ -349,6 +521,276 @@ check "the rotated key signs the JWT" verify_jwt "$keys/pub2.pem"
 check "rotated key base64 in no argv" absent "$key2_b64" "$argv_log"
 check "rotated key PEM in no argv" absent "$key2_line" "$argv_log"
 check "TMPDIR is empty after rotate" tmp_empty
+
+# --- key store ---------------------------------------------------------------
+
+K="$here/key-store.sh"
+ks_root="$sandbox/ks"   # HOME and stores for these checks, outside the main HOME
+mkdir -p "$ks_root/sel" "$ks_root/home" "$ks_root/pass" "$ks_root/xdg" "$ks_root/creds"
+printf 'selftest-gpg-id\n' > "$ks_root/pass/.gpg-id"
+
+exits_2() {  # exits_2 COMMAND...: COMMAND fails as bad usage
+  local rc=0
+  "$@" </dev/null >/dev/null 2>&1 || rc=$?
+  eq "$rc" 2
+}
+fails_saying() {  # fails_saying TEXT COMMAND...: COMMAND fails and its output contains TEXT
+  local text="$1"; shift
+  if "$@" >"$sandbox/fails.out" 2>&1; then echo "succeeded"; cat "$sandbox/fails.out"; return 1; fi
+  cat "$sandbox/fails.out"
+  grep -qF -- "$text" "$sandbox/fails.out"
+}
+with_value() { printf 'abc\n' | "$@"; }   # with_value COMMAND...: COMMAND with a dummy value on stdin
+linux_sel() { env HOME="$ks_root/sel" MSW_STUB_UNAME=Linux "$@"; }
+no_key_dir() { test ! -e "$ks_root/sel/.config/mintswarm/keys"; }
+
+for n in '' .. .x -x a/b 'a b' 'a$b'; do
+  check "key-store.sh refuses the service name '$n' as bad usage" exits_2 env MSW_KEY_STORE=keychain "$K" get "$n" acct
+  check "key-store.sh refuses the account name '$n' as bad usage" exits_2 env MSW_KEY_STORE=keychain "$K" get svc "$n"
+done
+check "key-store.sh refuses a label with a quote" exits_2 env MSW_KEY_STORE=keychain "$K" put svc acct 'a"b'
+check "key-store.sh without arguments is bad usage" exits_2 "$K"
+check "key-store.sh refuses an extra argument" exits_2 "$K" get svc acct extra
+check "refused names reached no key store" eq "$(jq -r 'select(.cmd == "security") | .argv[0]' "$argv_log" | grep -c -e delete -e svc)" 0
+
+check "Darwin selects keychain" eq "$(env HOME="$ks_root/sel" "$K" backend 2>&1)" keychain
+check "Linux with a session bus address selects secret-service" \
+  eq "$(linux_sel DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent "$K" backend 2>&1)" secret-service
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$ks_root/xdg/bus"
+check "Linux with a socket at XDG_RUNTIME_DIR/bus selects secret-service" \
+  eq "$(linux_sel XDG_RUNTIME_DIR="$ks_root/xdg" "$K" backend 2>&1)" secret-service
+check "secret-service comes before pass" \
+  eq "$(linux_sel DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent PASSWORD_STORE_DIR="$ks_root/pass" "$K" backend 2>&1)" secret-service
+check "Linux with an initialised pass store selects pass" \
+  eq "$(linux_sel PASSWORD_STORE_DIR="$ks_root/pass" "$K" backend 2>&1)" pass
+printf 'x\n' > "$ks_root/creds/msw-selftest@sel"
+chmod 400 "$ks_root/creds/msw-selftest@sel"
+check "Linux with the credential in CREDENTIALS_DIRECTORY selects systemd-creds" \
+  eq "$(linux_sel CREDENTIALS_DIRECTORY="$ks_root/creds" "$K" backend msw-selftest sel 2>&1)" systemd-creds
+refuses "CREDENTIALS_DIRECTORY selects systemd-creds only for the credential it holds" \
+  linux_sel CREDENTIALS_DIRECTORY="$ks_root/creds" "$K" backend msw-selftest other
+check "Linux with no key store fails and names every MSW_KEY_STORE value" \
+  fails_saying "set MSW_KEY_STORE to one of keychain, secret-service, pass, systemd-creds, file" linux_sel "$K" backend
+check "put with no key store fails" fails_saying "MSW_KEY_STORE" with_value linux_sel "$K" put msw-selftest sel
+check "an unknown MSW_KEY_STORE fails" fails_saying "unknown MSW_KEY_STORE 'vault'" linux_sel MSW_KEY_STORE=vault "$K" backend
+check "an explicit secret-service without a bus fails" \
+  fails_saying "MSW_KEY_STORE=secret-service is not available" with_value linux_sel MSW_KEY_STORE=secret-service "$K" put msw-selftest sel
+check "an explicit keychain fails on Linux" fails_saying "MSW_KEY_STORE=keychain is not available" linux_sel MSW_KEY_STORE=keychain "$K" backend
+check "an explicit pass without an initialised store fails" \
+  fails_saying "MSW_KEY_STORE=pass is not available" linux_sel MSW_KEY_STORE=pass "$K" backend
+env HOME="$ks_root/sel" "$S" prepare > /dev/null
+conv_state="$(cat "$ks_root/sel/.config/mintswarm/manifest-state")"
+calls="$(curl_calls)"
+check "convert with no key store fails before using the code" \
+  fails_saying "set MSW_KEY_STORE to one of" linux_sel "$S" convert "$CODE" "$conv_state"
+check "and calls no GitHub endpoint" eq "$(curl_calls)" "$calls"
+check "the file backend was never used without MSW_KEY_STORE=file" no_key_dir
+check "the failed selections ran no secret-tool or pass" \
+  eq "$(jq -r 'select(.cmd == "secret-tool" or .cmd == "pass") | .cmd' "$argv_log" | wc -l | tr -d ' ')" 0
+
+ks_vars() {  # ks_vars BACKEND: export the environment that makes BACKEND available
+  export MSW_KEY_STORE="$1" HOME="$ks_root/home"
+  if [ "$1" != keychain ]; then export MSW_STUB_UNAME=Linux; fi
+  case "$1" in
+    secret-service) export DBUS_SESSION_BUS_ADDRESS="unix:path=$sandbox/no-such-bus" ;;
+    pass) export PASSWORD_STORE_DIR="$ks_root/pass" ;;
+  esac
+}
+ks() {  # ks BACKEND COMMAND...: COMMAND in BACKEND's environment
+  local b="$1"; shift
+  ( ks_vars "$b"; "$@" )
+}
+ks_roundtrip() {  # ks_roundtrip BACKEND ACCOUNT: put, get byte for byte, delete, get fails
+  ks "$1" "$K" put msw-selftest "$2" < "$keys/key1.pem" || return 1
+  ks "$1" "$K" get msw-selftest "$2" > "$ks_root/get.out" || return 1
+  cmp "$keys/key1.pem" "$ks_root/get.out" || return 1
+  ks "$1" "$K" delete msw-selftest "$2" || return 1
+  if ks "$1" "$K" get msw-selftest "$2" > /dev/null; then echo "get after delete succeeded"; return 1; fi
+}
+ks_e2e() {  # ks_e2e BACKEND: rotate into a copy of dev-app.json through BACKEND, then sign a JWT
+  local cfg="$ks_root/dev-app.$1.json"
+  cp "$MSW_APP_CONFIG" "$cfg"
+  cp "$keys/key1.pem" "$ks_root/rotate.pem"
+  ks "$1" env MSW_APP_CONFIG="$cfg" "$S" rotate "$ks_root/rotate.pem" > "$ks_root/rotate.$1.out" || return 1
+  cat "$ks_root/rotate.$1.out"
+  eq "$(jq -r .key_store "$cfg")" "$1" || return 1
+  eq "$(jq -r .key_fingerprint "$cfg")" "SHA256:$(fingerprint_of "$keys/key1.pem")" || return 1
+  grep -qF "MSW_KEY_STORE=keychain $K delete mintswarm-dev-private-key $CLIENT_ID" "$ks_root/rotate.$1.out" || return 1
+  ( ks_vars "$1"; unset MSW_KEY_STORE; export MSW_APP_CONFIG="$cfg"; verify_jwt "$keys/pub1.pem" )
+}
+argv_has() { jq -c 'select(.cmd == "'"$1"'") | .argv' "$argv_log" | grep -qF -- "$2"; }   # argv_has CMD TEXT
+
+# keychain
+check "keychain: round trip, delete, get after delete fails" ks_roundtrip keychain kc
+check "keychain: the default label is used" present '-l "mintswarm msw-selftest kc"' "$MSW_STUB_STATE/stdin-security.log"
+check "keychain: delete goes through delete-generic-password" argv_has security '["delete-generic-password","-s","msw-selftest","-a","kc"]'
+jq 'del(.key_store)' "$MSW_APP_CONFIG" > "$ks_root/legacy.json"
+legacy_jwt() { ( export MSW_APP_CONFIG="$ks_root/legacy.json"; verify_jwt "$keys/pub2.pem" ); }
+check "a dev-app.json without key_store signs with the Keychain on macOS" legacy_jwt
+check "a dev-app.json without key_store fails on Linux and says how to choose" \
+  fails_saying "key_store missing from $ks_root/legacy.json: store the key here with MSW_KEY_STORE=" \
+  env MSW_STUB_UNAME=Linux MSW_APP_CONFIG="$ks_root/legacy.json" "$M" jwt
+cp "$keys/key1.pem" "$ks_root/legacy.pem"
+check "rotate with such a file fails on Linux without MSW_KEY_STORE" \
+  fails_saying "key_store missing" env MSW_STUB_UNAME=Linux MSW_APP_CONFIG="$ks_root/legacy.json" "$S" rotate "$ks_root/legacy.pem"
+check "the refused rotate kept the file and left dev-app.json alone" \
+  sh -c 'test -f "$1" && ! jq -e .key_store "$2" >/dev/null' sh "$ks_root/legacy.pem" "$ks_root/legacy.json"
+mint_ignores_env() {
+  ( export MSW_KEY_STORE=file; verify_jwt "$keys/pub2.pem" ) 2> "$ks_root/mint.err" || return 1
+  if grep -q unencrypted "$ks_root/mint.err"; then cat "$ks_root/mint.err"; return 1; fi
+}
+check "mint-token.sh ignores MSW_KEY_STORE and reads the recorded key store" mint_ignores_env
+
+# secret-service
+check "secret-service: round trip, delete, get after delete fails" ks_roundtrip secret-service ss
+check "secret-service: the key reaches secret-tool store on stdin" present "$key1_line" "$MSW_STUB_STATE/stdin-secret-tool.log"
+check "secret-service: the default label is used" argv_has secret-tool '"--label=mintswarm msw-selftest ss"'
+check "secret-service: rotate, then mint-token.sh jwt" ks_e2e secret-service
+check "secret-service: rotate passes the key label" argv_has secret-tool '"--label=mintswarm-dev GitHub App private key"'
+hangs_briefly() {  # hangs_briefly OP: with secret-tool hanging, OP fails within 5 seconds and the stub is gone
+  local start end pid
+  rm -f "$MSW_STUB_STATE/secret-tool.pid"
+  start="$(date +%s)"
+  if ks secret-service env MSW_STUB_SECRET_TOOL_HANG=1 MSW_KEY_STORE_TIMEOUT=1 \
+       sh -c 'printf "abc\n" | "$@"' sh "$K" "$1" msw-selftest hang > "$ks_root/hang.out" 2>&1; then
+    echo "$1 succeeded"; return 1
+  fi
+  end="$(date +%s)"
+  cat "$ks_root/hang.out"
+  [ $((end - start)) -lt 5 ] || { echo "took $((end - start)) seconds"; return 1; }
+  grep -qF "secret-tool did not answer within 1 seconds: the keyring is probably locked; unlock it first" "$ks_root/hang.out" \
+    || return 1
+  pid="$(cat "$MSW_STUB_STATE/secret-tool.pid")" || return 1
+  if kill -0 "$pid" 2>/dev/null; then echo "secret-tool ($pid) is still running"; return 1; fi
+}
+check "secret-service: with the keyring locked, get fails promptly and says to unlock it" hangs_briefly get
+check "secret-service: with the keyring locked, put fails promptly and says to unlock it" hangs_briefly put
+check "secret-service: a locked keyring falls back to nothing" test ! -e "$ks_root/home/.config/mintswarm/keys"
+check "an invalid MSW_KEY_STORE_TIMEOUT is bad usage" exits_2 ks secret-service env MSW_KEY_STORE_TIMEOUT=soon "$K" backend
+ks secret-service "$K" put msw-selftest tty < "$keys/key1.pem"
+tty_refused() {
+  if ks secret-service python3 "$sandbox/on-tty.py" "$K" get msw-selftest tty > "$ks_root/tty.out" 2> "$ks_root/tty.err"; then
+    echo "get to a terminal succeeded"; return 1
+  fi
+  cat "$ks_root/tty.err"
+  grep -qF "refusing to print msw-selftest/tty to a terminal" "$ks_root/tty.err" || return 1
+  if grep -qF -e "$key1_line" -e "PRIVATE KEY" "$ks_root/tty.out"; then echo "the key reached the terminal"; return 1; fi
+}
+check "get refuses to print the value to a terminal" tty_refused
+tty_on_pipe() { ks secret-service python3 "$sandbox/on-tty.py" sh -c '"$1" get msw-selftest tty | wc -c' sh "$K"; }
+check "get to a pipe works when the caller's stdout is a terminal (the test is not vacuous)" tty_on_pipe
+ks secret-service "$K" delete msw-selftest tty
+check "TMPDIR is empty after the secret-service checks" tmp_empty
+
+# pass
+check "pass: round trip, delete, get after delete fails" ks_roundtrip pass pa
+check "pass: the key reaches pass insert on stdin" present "$key1_line" "$MSW_STUB_STATE/stdin-pass.log"
+check "pass: the entry is mintswarm/SERVICE/ACCOUNT" argv_has pass '["insert","-m","-f","mintswarm/msw-selftest/pa"]'
+check "pass: rotate, then mint-token.sh jwt" ks_e2e pass
+check "TMPDIR is empty after the pass checks" tmp_empty
+
+# systemd-creds
+cred="$ks_root/home/.config/mintswarm/credstore/msw-selftest@sd.cred"
+check "systemd-creds: put" ks systemd-creds "$K" put msw-selftest sd < "$keys/key1.pem"
+check "systemd-creds: the key reaches encrypt on stdin" present "$key1_line" "$MSW_STUB_STATE/stdin-systemd-creds.log"
+check "systemd-creds: the .cred file exists" test -f "$cred"
+check "systemd-creds: the .cred file holds no key line" absent "$key1_line" "$cred"
+check "systemd-creds: the .cred file holds no PRIVATE KEY" absent "PRIVATE KEY" "$cred"
+if [ "$(id -u)" != 0 ]; then
+  check "systemd-creds: --user is passed when not root" argv_has systemd-creds '["--user","encrypt","--name=msw-selftest@sd","-",'
+  refuses "systemd-creds: unavailable for a non-root user below systemd 256" \
+    ks systemd-creds env MSW_STUB_SYSTEMD_VERSION=255 "$K" backend
+else
+  check "systemd-creds: --user is not passed as root" argv_has systemd-creds '["encrypt","--name=msw-selftest@sd","-",'
+fi
+sd_get() { ks systemd-creds "$K" get msw-selftest sd > "$ks_root/get.out" && cmp "$keys/key1.pem" "$ks_root/get.out"; }
+check "systemd-creds: get decrypts it byte for byte" sd_get
+check "systemd-creds: delete removes the .cred file" sh -c '"$@" && test ! -e "$0"' "$cred" \
+  env HOME="$ks_root/home" MSW_STUB_UNAME=Linux MSW_KEY_STORE=systemd-creds "$K" delete msw-selftest sd
+refuses "systemd-creds: get after delete fails" ks systemd-creds "$K" get msw-selftest sd
+cp "$keys/key1.pem" "$ks_root/creds/msw-selftest@cd"
+chmod 400 "$ks_root/creds/msw-selftest@cd"
+decrypts() { jq -r 'select(.cmd == "systemd-creds") | .argv | map(select(. == "decrypt")) | .[]' "$argv_log" | wc -l | tr -d ' '; }
+calls="$(decrypts)"
+sd_passed() {
+  ks systemd-creds env CREDENTIALS_DIRECTORY="$ks_root/creds" MSW_STUB_SYSTEMD_VERSION=255 \
+    "$K" get msw-selftest cd > "$ks_root/get.out" && cmp "$keys/key1.pem" "$ks_root/get.out"
+}
+check "systemd-creds: get reads \$CREDENTIALS_DIRECTORY first" sd_passed
+check "systemd-creds: and does not call decrypt for it" eq "$(decrypts)" "$calls"
+check "systemd-creds: rotate, then mint-token.sh jwt" ks_e2e systemd-creds
+check "TMPDIR is empty after the systemd-creds checks" tmp_empty
+
+# file
+fdir="$ks_root/home/.config/mintswarm/keys"
+file_put_warns() {
+  ks file "$K" put msw-selftest fl < "$keys/key1.pem" 2> "$ks_root/file.err" || { cat "$ks_root/file.err"; return 1; }
+  grep -qF "warning: the file key store keeps the key unencrypted in $fdir/msw-selftest@fl" "$ks_root/file.err"
+}
+file_get_warns() {
+  ks file "$K" get msw-selftest fl > "$ks_root/get.out" 2> "$ks_root/file.err" || { cat "$ks_root/file.err"; return 1; }
+  cmp "$keys/key1.pem" "$ks_root/get.out" || return 1
+  grep -qF "warning: the file key store keeps the key unencrypted" "$ks_root/file.err"
+}
+check "file: put stores the key and warns that it is unencrypted" file_put_warns
+check "file: the key file is 0600" eq "$(ls -ld "$fdir/msw-selftest@fl" | cut -c1-10)" "-rw-------"
+check "file: its directory is 0700" eq "$(ls -ld "$fdir" | cut -c1-10)" "drwx------"
+check "file: get returns it byte for byte and warns" file_get_warns
+chmod 640 "$fdir/msw-selftest@fl"
+check "file: get refuses a key file at 0640" fails_saying "group or other permissions" ks file "$K" get msw-selftest fl
+refuses "file: put refuses a key file at 0640" ks file "$K" put msw-selftest fl < "$keys/key2.pem"
+check "file: the refused put left the file alone" cmp "$keys/key1.pem" "$fdir/msw-selftest@fl"
+chmod 600 "$fdir/msw-selftest@fl"
+chmod 750 "$fdir"
+check "file: get refuses a key directory at 0750" fails_saying "group or other permissions" ks file "$K" get msw-selftest fl
+chmod 700 "$fdir"
+cp "$keys/key2.pem" "$ks_root/elsewhere.pem"
+chmod 600 "$ks_root/elsewhere.pem"
+ln -s "$ks_root/elsewhere.pem" "$fdir/msw-selftest@ln"
+check "file: get refuses a symlinked key file" fails_saying "symlink" ks file "$K" get msw-selftest ln
+refuses "file: put refuses a symlinked key file" ks file "$K" put msw-selftest ln < "$keys/key1.pem"
+check "file: nothing was written through the symlink" cmp "$keys/key2.pem" "$ks_root/elsewhere.pem"
+mkdir -p "$ks_root/home-ln/.config/mintswarm" "$ks_root/real-keys"
+chmod 700 "$ks_root/real-keys"
+ln -s "$ks_root/real-keys" "$ks_root/home-ln/.config/mintswarm/keys"
+check "file: put refuses a symlinked key directory" \
+  fails_saying "symlink" ks file env HOME="$ks_root/home-ln" "$K" put msw-selftest fl < "$keys/key1.pem"
+check "file: nothing was written into the symlinked directory" eq "$(ls -A "$ks_root/real-keys")" ""
+check "file: delete removes the key file" \
+  sh -c '"$@" 2>/dev/null && test ! -e "$0"' "$fdir/msw-selftest@fl" \
+  env HOME="$ks_root/home" MSW_STUB_UNAME=Linux MSW_KEY_STORE=file "$K" delete msw-selftest fl
+refuses "file: get after delete fails" ks file "$K" get msw-selftest fl
+mkdir -p "$ks_root/home-cfg/.config" "$ks_root/dotfiles/mintswarm"
+ln -s "$ks_root/dotfiles/mintswarm" "$ks_root/home-cfg/.config/mintswarm"
+check "file: put refuses a symlinked ~/.config/mintswarm" \
+  fails_saying "mintswarm: it is a symlink (a dotfiles link?)" \
+  ks file env HOME="$ks_root/home-cfg" "$K" put msw-selftest fl < "$keys/key1.pem"
+mkdir -p "$ks_root/home-cfg2" "$ks_root/dotfiles/config"
+ln -s "$ks_root/dotfiles/config" "$ks_root/home-cfg2/.config"
+check "file: put refuses a symlinked ~/.config" \
+  fails_saying ".config: it is a symlink (a dotfiles link?)" \
+  ks file env HOME="$ks_root/home-cfg2" "$K" put msw-selftest fl < "$keys/key1.pem"
+check "file: nothing was written into the dotfiles" eq "$(find "$ks_root/dotfiles" -type f | wc -l | tr -d ' ')" 0
+mkdir -p "$ks_root/home-git"
+git init -q "$ks_root/home-git"
+check "file: put refuses a key directory inside a git work tree" \
+  fails_saying "is inside a git work tree" \
+  ks file env HOME="$ks_root/home-git" "$K" put msw-selftest fl < "$keys/key1.pem"
+check "file: nothing was written into the work tree" test ! -e "$ks_root/home-git/.config/mintswarm/keys"
+mkdir -p "$ks_root/home-git/.config/mintswarm/keys"
+chmod 700 "$ks_root/home-git/.config/mintswarm/keys"
+cp "$keys/key1.pem" "$ks_root/home-git/.config/mintswarm/keys/msw-selftest@fl"
+chmod 600 "$ks_root/home-git/.config/mintswarm/keys/msw-selftest@fl"
+check "file: get refuses a key file inside a git work tree" \
+  fails_saying "is inside a git work tree" ks file env HOME="$ks_root/home-git" "$K" get msw-selftest fl
+check "file: rotate, then mint-token.sh jwt" ks_e2e file
+check "file: rotate left only the key file in the key directory" \
+  eq "$(ls -A "$fdir" | LC_ALL=C sort | tr '\n' ' ')" "mintswarm-dev-private-key@$CLIENT_ID msw-selftest@ln "
+
+check "key lines in no argv after the key store checks" absent "$key1_line" "$argv_log"
+check "key base64 in no argv after the key store checks" absent "$key1_b64" "$argv_log"
+check "no PRIVATE KEY in any argv after the key store checks" absent "PRIVATE KEY" "$argv_log"
+check "TMPDIR is empty after the key store checks" tmp_empty
 
 # --- bot identity ------------------------------------------------------------
 
@@ -486,7 +928,29 @@ git config --unset "remote.$url.url"
 git config remote.https://github.com/mintswarm/mintswarm.git.pushurl git@github.com:mintswarm/mintswarm.git
 refuses "push.sh refuses an ssh pushurl for the GitHub URL" push_as_bot mintswarm/2-y
 git config --unset remote.https://github.com/mintswarm/mintswarm.git.pushurl
+# The legacy GIT_CONFIG changes what git config reads, not what git push reads.
+git config "remote.$url.pushurl" "file://$other"
+: > "$sandbox/empty.gitconfig"
+check "GIT_CONFIG hides a planted pushurl from a plain git config (the test is not vacuous)" \
+  sh -c '! GIT_CONFIG="$1" git config --get-regexp "^remote\\." >/dev/null' sh "$sandbox/empty.gitconfig"
+refuses "push.sh refuses remote.<push URL>.pushurl with GIT_CONFIG set" \
+  env GIT_CONFIG="$sandbox/empty.gitconfig" MSW_TOKEN="$DUMMY" MSW_PUSH_URL="$url" "$P" mintswarm/2-y
+git config --unset "remote.$url.pushurl"
 check "nothing reached the redirect target" eq "$(git --git-dir="$other" for-each-ref | wc -l | tr -d ' ')" "0"
+git_env_sees() {  # git_env_sees: the environment msw_git_env gives a git alias
+  (
+    # shellcheck source=common.sh
+    . "$here/common.sh"
+    GIT_CONFIG="$sandbox/empty.gitconfig" GIT_SSL_NO_VERIFY=1 GIT_SSL_CAINFO=/tmp/ca.pem GIT_SSL_CAPATH=/tmp \
+      msw_git_env -c 'alias.e=!env' e
+  )
+}
+git_env_clean() {
+  git_env_sees > "$sandbox/git-env.out" || return 1
+  grep -q '^GIT_CONFIG_NOSYSTEM=1$' "$sandbox/git-env.out" || { echo "the alias did not run"; return 1; }
+  ! grep -E '^(GIT_CONFIG|GIT_SSL_NO_VERIFY|GIT_SSL_CAINFO|GIT_SSL_CAPATH)=' "$sandbox/git-env.out"
+}
+check "msw_git_env unsets GIT_CONFIG and GIT_SSL_*" git_env_clean
 
 # Behind the refusal, msw_git_net allows only https (and file when the script says so).
 printf '#!/bin/sh\necho "ssh $*" >> "$MSW_STUB_STATE/ssh.log"\nexit 1\n' > "$stubs/ssh"
@@ -567,6 +1031,18 @@ filled="$(printf 'protocol=https\nhost=github.com\n\n' | (
 check "credential fill gives x-access-token" eq "$(printf '%s\n' "$filled" | grep '^username=')" "username=x-access-token"
 check "credential fill gives the token" eq "$(printf '%s\n' "$filled" | grep '^password=')" "password=$DUMMY"
 check "no planted helper answered" absent evil <(printf '%s\n' "$filled")
+net_fill() {  # net_fill PROTOCOL HOST: what msw_git_net's helper answers
+  printf 'protocol=%s\nhost=%s\n\n' "$1" "$2" | (
+    # shellcheck source=common.sh
+    . "$here/common.sh"
+    MSW_TOKEN="$DUMMY"; export MSW_TOKEN
+    msw_git_net credential fill 2>/dev/null
+  ) || true
+}
+check "credential fill gives no token for another https host" absent "$DUMMY" <(net_fill https example.com)
+check "credential fill gives no token for http://github.com" absent "$DUMMY" <(net_fill http github.com)
+check "credential fill gives no token for a host that only starts with github.com" \
+  absent "$DUMMY" <(net_fill https github.com.example.com)
 rm -f "$HOME/.gitconfig"
 cd "$repo"
 
