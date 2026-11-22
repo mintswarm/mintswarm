@@ -19,16 +19,45 @@ You plan one implementation issue so that the implement stage can carry it out w
 ## Rules
 
 1. Choose one approach and say why in two or three sentences; mention the rejected ones in one line each.
-2. Steps are ordered, each small enough to verify on its own, each naming the files it touches.
+2. Steps are ordered, each small enough to verify on its own, each naming the files it touches. Together they name exactly the paths in the footprint's `files`.
 3. Every acceptance criterion maps to a test or, where no test is possible, to a stated manual check. If the project has no tests (`gates.tests: none`), say how each criterion will be verified instead.
-4. Stay inside the issue's component. If the work cannot be done without touching another component (apart from the config's `shared` paths), stop with `needs_input` and recommend a split.
+4. Stay inside the issue's component. If the work cannot be done without touching another component (apart from the config's `shared` paths), stop with `needs_input` and recommend a split as a `- **Blocking:**` question.
 5. Name the gates from the config that the change must pass.
+6. The Verification table has one row per acceptance criterion of the issue, in the issue's order, and no other rows. Its first cell is the criterion verbatim: without its list number, with no added emphasis, quotes or rewording. Write a `|` in the criterion as `\|`, and join a criterion that spans several lines with single spaces.
+7. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`, the markers of `.mintswarm/stages/analyse.md`. A non-blocking question ends with `→` and the assumption the plan works on.
+8. Where the plan departs from a `Non-blocking (assumed)` assumption of the analysis, it declares this in the footprint's `overridden_assumptions`; the analysis's other assumptions stand.
+
+## Footprint
+
+The footprint declares what the change will touch, for the plan-approval floor and the conformance check, which read it without a model.
+
+- **Location:**
+  - The plan has exactly one `## Footprint` section, right after `## Steps`.
+  - The section holds only a fenced block. Its opening line is exactly ` ```json ` and its closing line exactly ` ``` `.
+  - No other line of the plan opens a `json` fence. Do not quote the footprint, or this template's example of it, anywhere else in the plan; describe it in prose instead.
+  - A reader finds the single line equal to ` ```json `; the previous non-blank line must be `## Footprint`.
+- **Syntax:** strict JSON as `json.loads` reads it, with no comments and no trailing commas. One object with the single key `"footprint"`, whose value has exactly the seven keys below, in this order, and no others.
+- **Empty values:** a field with nothing to declare is written `[]`, or `0` for `estimated_lines`. It is never omitted and never `null`.
+- **Paths:**
+  - Literal and relative to the repository root, with `/` separators.
+  - No leading `./`, no globs, no directories.
+  - Generated files count. Nothing under `.mintswarm/job/` is ever listed.
+
+| Key | Type | Holds |
+| --- | --- | --- |
+| `files` | list of paths | every path the change creates, modifies or deletes; a renamed file as both its old and its new path |
+| `new_files` | list of paths | the paths in `files` that do not exist at the base commit |
+| `estimated_lines` | integer, 0 or more | added plus deleted lines over all of `files`, as `git diff --numstat --no-renames` against the base would count them |
+| `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml` |
+| `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates) |
+| `gate_changes` | list of strings | each gate the change adds, removes or alters, either through its entry under `gates` in `.mintswarm/config.yaml` or through the script its command runs; one line each saying what changes |
+| `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Non-blocking (assumed)` assumption of the analysis the plan departs from: `assumption` quotes the text after `→` verbatim, `reason` says what the plan does instead and why |
 
 ## Output
 
 Return `plan.md` as `.mintswarm/stages.md` describes:
 
-```markdown
+````markdown
 # Plan: <issue title>
 
 <one line: the approach and its size>
@@ -36,12 +65,31 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 ## Approach
 ## Steps
 1. **<goal>** — files: `…`; done when: …
+## Footprint
+
+```json
+{
+  "footprint": {
+    "files": [],
+    "new_files": [],
+    "estimated_lines": 0,
+    "new_dependencies": [],
+    "external_steps": [],
+    "gate_changes": [],
+    "overridden_assumptions": []
+  }
+}
+```
+
 ## Verification
 | Acceptance criterion | Test or check |
 | --- | --- |
+| <criterion, verbatim> | <test or check> |
 ## Gates
 ## Risks
 ## Questions
-```
+- **Blocking:** …
+- **Non-blocking (assumed):** … → assumption
+````
 
-Status: `needs_input` if the issue needs splitting or a blocking question remains, otherwise `complete`.
+Status: `needs_input` if the Questions hold any `- **Blocking:**` entry, including a recommended split, otherwise `complete`.
