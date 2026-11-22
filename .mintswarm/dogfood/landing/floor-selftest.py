@@ -32,6 +32,13 @@ Checks:
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
   evaluates the other three;
+- submodules: a gitlink hidden by a worktree `.gitmodules` `ignore = all` is
+  still a changed and added path, and every gitlink is unmeasurable for
+  `size`; with hostile system, global, environment and repository config,
+  the verdict does not change;
+- protected single entries: a symlink or gitlink at .github/workflows or at
+  a directory above a protected path is a `protected` hit without
+  require_human;
 - base ref: with a head commit and a worktree config that raise
   lines_factor, the base's limit still gives the `size` hit;
 - unusable input: bad arguments, refs, history, configs and plans, a
@@ -74,6 +81,10 @@ CONFIG_PATH = ".mintswarm/config.yaml"
 VERDICT = Path(".mintswarm/job/outputs/landing-floor.json")
 PLAN_VERDICT = Path(".mintswarm/job/outputs/floor.json")
 HASH = re.compile(r"[0-9a-f]{40}")
+GITLINK = "160000"
+SYMLINK = "120000"
+SUBMODULE = (GITLINK, "1234567890abcdef1234567890abcdef12345678")
+GITMODULES_HIDDEN = b'[submodule "x"]\n\tpath = docs/sub\n\turl = ./nowhere\n\tignore = all\n'
 
 RULES = [
     "footprint",
@@ -179,12 +190,15 @@ class Sandbox:
         return self.raw(*args, data=data).decode("utf-8").strip()
 
     def commit(self, files: dict, parents: tuple = (), message: str = "case") -> str:
-        """Commit `files` ({path: bytes or (mode, bytes)}) as the whole tree."""
+        """Commit `files` ({path: bytes or (mode, bytes)}) as the whole tree.
+
+        A gitlink is (GITLINK, "<commit hash>"); git does not need that commit.
+        """
         self.counter += 1
         records = b""
         for path, content in files.items():
             mode, data = content if isinstance(content, tuple) else ("100644", content)
-            sha = self.git("hash-object", "-w", "--stdin", data=data)
+            sha = data if mode == GITLINK else self.git("hash-object", "-w", "--stdin", data=data)
             records += f"{mode} {sha}\t".encode("utf-8") + path.encode("utf-8") + b"\0"
         env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{self.counter}"))
         self.raw("update-index", "-z", "--index-info", data=records, env=env)
@@ -373,12 +387,13 @@ class Runner:
         self.modes = modes
 
     def run(self, name: str, content, changes: dict = None, component: str = "docs", config: str = "real",
-            base: str = None, head: str = None, mode: str = None):
+            base: str = None, head: str = None, mode: str = None, env: dict = None):
         plan = self.sb.write_plan(name, content)
         base = base or self.commits[config]
         head = head or self.sb.child(self.sb.git("rev-parse", f"{base}^{{commit}}"), changes or {})
         args = {"plan": plan, "component": component, "base": base, "head": head}
-        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", base, "--head", head])
+        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", base, "--head", head],
+                                      env=env)
         check_shape(name, proc, verdict, self.sb, args, mode or self.modes[config])
         return proc, verdict
 
@@ -546,6 +561,82 @@ def check_base_ref(r: Runner, sb: Sandbox, configs: dict) -> None:
              base="landing-base", head=second, config="factor-1")
     r.expect("base ref: --base at the raised commit", footprint(["docs/guide.md"], estimated_lines=10), None, {},
              base=first, head=second, config="factor-1")
+
+
+def check_submodules(r: Runner, sb: Sandbox) -> None:
+    base = r.commits["real"]
+    gitmodules = sb.repo / ".gitmodules"
+    gitmodules.write_bytes(GITMODULES_HIDDEN)  # git reads it from the worktree, which the branch controls
+    hidden = sb.child(base, {".gitmodules": GITMODULES_HIDDEN, "docs/sub": SUBMODULE,
+                             **appended("docs/guide.md", 1)}, "hidden submodule")
+    plain = sb.git("diff", "--numstat", "--no-renames", f"{base}...{hidden}")
+    T.check("submodule: a plain git diff hides the gitlink under ignore = all", "docs/sub" not in plain, plain)
+    gitlink_reason = "docs/sub is a submodule (gitlink), whose change is not measured in lines"
+    r.expect("undeclared submodule hidden by .gitmodules",
+             footprint(["docs/guide.md", ".gitmodules"], [".gitmodules"], estimated_lines=10), None,
+             {"undeclared-files": "docs/sub is changed but is neither in files nor a new dependency's manifest",
+              "undeclared-new-files": "docs/sub is added but is not in new_files",
+              "size": gitlink_reason},
+             head=hidden)
+    declared = footprint(["docs/guide.md", ".gitmodules", "docs/sub"], [".gitmodules", "docs/sub"], estimated_lines=10)
+    r.expect("declared submodule: unmeasurable", declared, None, {"size": gitlink_reason}, head=hidden)
+    r.expect("file replaced by a submodule", footprint(["docs/guide.md"], estimated_lines=10),
+             {"docs/guide.md": SUBMODULE},
+             {"size": "docs/guide.md is a submodule (gitlink), whose change is not measured in lines"})
+
+    attributes = sb.tmp / "hostile-attributes"
+    attributes.write_text("*.md binary\n", encoding="utf-8")
+    hostile = sb.tmp / "hostile-gitconfig"
+    hostile.write_text(
+        "[diff]\n\tignoreSubmodules = all\n\talgorithm = patience\n\texternal = false\n"
+        f"[core]\n\tattributesFile = {attributes}\n", encoding="utf-8")
+    env = {k: v for k, v in sb.env.items() if k != "GIT_CONFIG_NOSYSTEM"}
+    env.update({
+        "GIT_CONFIG_GLOBAL": str(hostile),
+        "GIT_CONFIG_PARAMETERS": "'diff.ignoreSubmodules'='all'",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.attributesFile",
+        "GIT_CONFIG_VALUE_0": str(attributes),
+        "GIT_EXTERNAL_DIFF": "false",
+    })
+    sb.git("config", "diff.ignoreSubmodules", "all")
+    sb.git("config", "submodule.x.ignore", "all")
+    try:
+        _, verdict = r.expect("hostile config: system, global and environment config ignored", declared, None,
+                              {"size": gitlink_reason}, head=hidden, env=env)
+        T.check("hostile config: only the gitlink is unmeasurable, no *.md is binary",
+                reasons_of(verdict, "size") == [gitlink_reason], str(reasons_of(verdict, "size")))
+    finally:
+        sb.git("config", "--unset", "diff.ignoreSubmodules")
+        sb.git("config", "--unset", "submodule.x.ignore")
+        gitmodules.unlink()
+
+
+def check_protected_entries(r: Runner) -> None:
+    """A single entry (symlink or gitlink) standing in for a protected directory, under no require_human."""
+    base = r.commits["no-rh"]
+    docs = [p for p in r.sb.trees[base] if p.startswith("docs/")]
+    cases = [
+        (".github/workflows", (SYMLINK, b"../elsewhere"), {},
+         ".github/workflows is the protected directory itself, changed as a single entry"),
+        (".GitHub/Workflows", (SYMLINK, b"../elsewhere"), {},
+         ".GitHub/Workflows is the protected directory itself, changed as a single entry"),
+        (".github", SUBMODULE, {"size": ".github is a submodule (gitlink), whose change is not measured in lines"},
+         ".github is a single entry standing in for a directory above the protected .github/codeowners"),
+        (".mintswarm/dogfood", (SYMLINK, b"../elsewhere"), {},
+         ".mintswarm/dogfood is a single entry standing in for a directory above the protected "
+         ".mintswarm/dogfood/render-agents.py"),
+        ("docs", (SYMLINK, b"elsewhere"), {},
+         "docs is a single entry standing in for a directory above the protected docs/codeowners"),
+    ]
+    for path, content, extra, reason in cases:
+        changes = {path: content}
+        files = [path]
+        if path == "docs":
+            changes.update({p: None for p in docs})
+            files += docs
+        r.expect(f"protected single entry {path} under no-rh", footprint(files, [path], estimated_lines=50),
+                 changes, {"protected": reason, **extra}, config="no-rh")
 
 
 def check_unusable(sb: Sandbox, commits: dict) -> None:
@@ -791,6 +882,8 @@ def main() -> int:
         check_single_rules(runner)
         check_protected(runner, commits)
         check_footprint_hit(runner)
+        check_submodules(runner, sb)
+        check_protected_entries(runner)
         check_base_ref(runner, sb, configs)
         check_unusable(sb, commits)
         check_isolation(runner, sb)

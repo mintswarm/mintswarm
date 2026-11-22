@@ -36,7 +36,21 @@ Inputs:
 - REF after --head, the head of the change. The diff is
   `git diff --numstat --no-renames -z <base>...<head>`, which runs from the
   merge base of the two; added paths come from the same range with
-  `--diff-filter=A`. A rename counts as its old and its new path.
+  `--diff-filter=A`, and file modes from `--raw`. A rename counts as its old
+  and its new path. Every diff also passes `--ignore-submodules=none`, so
+  neither a `.gitmodules` `ignore` setting (read from the worktree, which
+  the branch controls) nor any config can hide a gitlink, and
+  `--diff-algorithm=myers`, `--no-ext-diff`, `--no-textconv`,
+  `--no-relative` and `--no-color`, which override any `diff.*` config.
+
+Every git command runs with a neutral configuration: the system and global
+config files are not read (GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL set to
+the null device, GIT_ATTR_NOSYSTEM=1), and config, external-diff and
+diff-option settings passed through the environment (GIT_CONFIG_PARAMETERS,
+GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n,
+GIT_EXTERNAL_DIFF, GIT_DIFF_OPTS) are dropped. The repository's own config
+is still read, as git needs it; the options above override the settings in
+it that could hide or reshape entries.
 
 The configuration must pass the plan floor's checks (components, shared,
 pipeline.plan_approval and gates) and NAME must be a defined component.
@@ -65,7 +79,8 @@ footprint's `files` plus each new dependency's `manifest`.
                              exactly
   size                       the added plus deleted lines of the diff are
                              over floor(estimated_lines × lines_factor),
-                             computed exactly, or an entry is binary or
+                             computed exactly, or an entry is binary,
+                             a submodule (gitlink) on either side, or
                              otherwise unmeasurable
   require-human-paths        a changed path matches require_human.paths,
                              compared case-insensitively
@@ -75,10 +90,13 @@ footprint's `files` plus each new dependency's `manifest`.
   protected                  a changed path is .mintswarm/config.yaml, a
                              word of a gates.run command at the base
                              (without a leading `./`), CODEOWNERS,
-                             .github/CODEOWNERS or docs/CODEOWNERS, or is
-                             under .github/workflows/, compared
-                             case-insensitively; fixed here, whatever the
-                             config says
+                             .github/CODEOWNERS or docs/CODEOWNERS, is
+                             .github/workflows or under it, or is a
+                             directory above any of these (every changed
+                             path is a single entry, so such a path is a
+                             file, symlink or gitlink standing in for that
+                             directory), compared case-insensitively; fixed
+                             here, whatever the config says
 
 When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff and are.
@@ -135,11 +153,19 @@ RULES = (
 )
 DIFF_RULES = ("undeclared-files", "undeclared-new-files", "size")
 CODEOWNERS = ("codeowners", ".github/codeowners", "docs/codeowners")
+PROTECTED_DIRS = (".github/workflows",)
 PROTECTED_GLOBS = (".github/workflows/**",)
 ARGS = ("--plan", "--component", "--base", "--head")
 USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF"
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-DIFF_OPTIONS = ("--no-renames", "-z", "--no-ext-diff", "--no-textconv", "--no-relative", "--no-color")
+DIFF_OPTIONS = (
+    "--no-renames", "-z", "--ignore-submodules=none", "--diff-algorithm=myers",
+    "--no-ext-diff", "--no-textconv", "--no-relative", "--no-color",
+)
+GITLINK = "160000"
+RAW_HEADER = re.compile(r":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) ([A-Z])")
+DROPPED_ENV = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS")
+DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 P = None  # the plan floor's module, once loaded
 
@@ -161,6 +187,16 @@ def remove_stale_verdict() -> None:
         remove(VERDICT)
     except OSError as exc:
         raise InputError(f"cannot delete the stale verdict {VERDICT}: {exc}") from exc
+
+
+def neutral_git_config() -> None:
+    """Keep system, global and environment config away from every git command run here."""
+    for name in list(os.environ):
+        if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
+            del os.environ[name]
+    os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_ATTR_NOSYSTEM"] = "1"
 
 
 def load_plan_floor():
@@ -292,8 +328,27 @@ def split_z(data: bytes, what: str) -> list:
     return records
 
 
+def read_modes(span: str) -> tuple:
+    """Return ({path: (old mode, new mode)}, [added path]) from `git diff --raw`."""
+    records = split_z(P.run(["git", "diff", "--raw", "--no-abbrev", *DIFF_OPTIONS, span]), "git diff --raw")
+    if len(records) % 2:
+        raise InputError("git diff --raw: a header without a path")
+    modes, added = {}, []
+    for header, path in zip(records[0::2], records[1::2]):
+        match = RAW_HEADER.fullmatch(header)
+        if not match or path == "" or path in modes:
+            raise InputError(f"git diff --raw: unexpected record {header!r} {path!r}")
+        modes[path] = (match.group(1), match.group(2))
+        if match.group(5) == "A":
+            added.append(path)
+    return modes, added
+
+
 def read_diff(base: str, head: str) -> tuple:
-    """Return ([(path, added, deleted)], [added path]); counts are None when unmeasurable."""
+    """Return ([(path, added, deleted)], [added path], {gitlink path}).
+
+    Counts are None when unmeasurable: binary, or a gitlink on either side.
+    """
     span = f"{base}...{head}"
     entries = []
     for record in split_z(P.run(["git", "diff", "--numstat", *DIFF_OPTIONS, span]), "git diff --numstat"):
@@ -315,12 +370,17 @@ def read_diff(base: str, head: str) -> tuple:
     stray = [path for path in new if path not in changed]
     if stray or any(path == "" for path in new):
         raise InputError(f"git diff --diff-filter=A: paths missing from --numstat: {stray}")
-    return entries, new
+    modes, raw_added = read_modes(span)
+    if sorted(modes) != sorted(changed) or sorted(raw_added) != sorted(new):
+        raise InputError("git diff --raw and --numstat disagree on the changed or added paths")
+    gitlinks = {path for path, pair in modes.items() if GITLINK in pair}
+    entries = [(path, None, None) if path in gitlinks else (path, a, d) for path, a, d in entries]
+    return entries, new, gitlinks
 
 
 # --- rules ---------------------------------------------------------------
 
-def footprint_rules(footprint: dict, entries: list, new: list, landing: dict) -> list:
+def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
         if dep["manifest"] not in declared:
@@ -347,7 +407,9 @@ def footprint_rules(footprint: dict, entries: list, new: list, landing: dict) ->
             f"the diff counts {total} lines, over the limit of {limit} "
             f"(estimated_lines {footprint['estimated_lines']} × lines_factor {landing['lines_factor']!r})")
     for path, added, _ in entries:
-        if added is None:
+        if path in gitlinks:
+            reasons.append(f"{path} is a submodule (gitlink), whose change is not measured in lines")
+        elif added is None:
             reasons.append(f"{path} is binary or otherwise unmeasurable")
     rule("size", reasons)
     return results
@@ -376,6 +438,14 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
                 reasons.append(f"{path} is in component {name} ({glob}), which requires a human")
     rule("require-human-components", reasons)
 
+    targets = [CONFIG, *CODEOWNERS, *PROTECTED_DIRS, *(word for _, word in cfg["gate_words"])]
+    above = {}
+    for target in targets:
+        segments = target.lower().split("/")
+        for i in range(1, len(segments)):
+            directory = "/".join(segments[:i])
+            if directory and all(segments[:i]):
+                above.setdefault(directory, target)
     reasons = []
     for path in changed:
         lower = path.lower()
@@ -388,6 +458,10 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
                 reasons.append(f"{path} is named by gate {name}")
         for glob in P.matching(list(PROTECTED_GLOBS), path, ci=True):
             reasons.append(f"{path} is under .github/workflows/ ({glob})")
+        if lower in PROTECTED_DIRS:
+            reasons.append(f"{path} is the protected directory itself, changed as a single entry")
+        if lower in above:
+            reasons.append(f"{path} is a single entry standing in for a directory above the protected {above[lower]}")
     rule("protected", reasons)
     return results
 
@@ -413,6 +487,7 @@ def landing_floor(argv: list) -> int:
     global P
     remove_stale_verdict()
     args = parse_args(argv)
+    neutral_git_config()
     P = load_plan_floor()
 
     base = P.resolve_base(args["base"])
@@ -422,7 +497,7 @@ def landing_floor(argv: list) -> int:
     head = resolve_head(args["head"])
     merge = merge_base(base, head)
     data = P.read_plan(args["plan"])
-    entries, new = read_diff(base, head)
+    entries, new, gitlinks = read_diff(base, head)
 
     try:
         footprint = P.parse_footprint(data.decode("utf-8"))
@@ -430,7 +505,7 @@ def landing_floor(argv: list) -> int:
         results = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
     else:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        results += footprint_rules(footprint, entries, new, landing)
+        results += footprint_rules(footprint, entries, new, gitlinks, landing)
     results += policy_rules(entries, args["component"], cfg, landing)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
