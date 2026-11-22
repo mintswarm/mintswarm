@@ -10,7 +10,8 @@
     "issues": "write",
     "checks": "read",
     "statuses": "read",
-    "metadata": "read"
+    "metadata": "read",
+    "workflows": "write"
   },
   "default_events": []
 }
