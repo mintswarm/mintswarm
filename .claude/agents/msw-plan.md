@@ -27,6 +27,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 6. The Verification table has one row per acceptance criterion of the issue, in the issue's order, and no other rows. Its first cell is the criterion verbatim: without its list marker (a number, `-` or `- [ ]`), with no added emphasis, quotes or rewording. Write any `|` in either cell as `\|`, and join a criterion that spans several lines with single spaces.
 7. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`, the markers of `.mintswarm/stages/analyse.md`. A non-blocking question ends with `→` and the assumption the plan works on. The section holds only such bullets, with no prose; with no questions it is left empty, without a placeholder such as `None`.
 8. Where the plan departs from a `Non-blocking (assumed)` assumption of the analysis, it declares this in the footprint's `overridden_assumptions`; the analysis's other assumptions stand.
+9. Before returning, check the footprint: if `files` contains `.mintswarm/config.yaml` or a file a `gates.run` command names, `gate_changes` is not empty and has an entry for each such file.
 
 ## Footprint
 
@@ -52,7 +53,7 @@ The footprint declares what the change will touch, for the plan-approval floor a
 | `estimated_lines` | integer, 0 or more | added plus deleted lines over all of `files`, as `git diff --numstat --no-renames` against the base would count them |
 | `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml` |
 | `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates) |
-| `gate_changes` | list of strings | each gate the change adds, removes or alters, either through its entry under `gates` in `.mintswarm/config.yaml` or through the script its command runs; one line each saying what changes |
+| `gate_changes` | list of strings | every change to `.mintswarm/config.yaml` and to any file a `gates.run` command names, including edits outside the `gates` block, for example in `pipeline`; one line per such file, naming the file and what changes in it, and saying so when no gate is added, removed or altered, for example `.mintswarm/config.yaml: pipeline.plan_approval.mode changes; no gate is added, removed or altered`; `[]` means the change touches no such file |
 | `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Non-blocking (assumed)` assumption of the analysis the plan departs from: `assumption` is the text after the first `→` of that analysis bullet, verbatim with leading and trailing whitespace removed; `reason` says what the plan does instead and why |
 
 ## Output
