@@ -21,7 +21,7 @@
 # backend (selection, round trips, put --confirm, the file backend's modes and
 # refusals, rotate and jwt through each); the bot identity include; push.sh
 # pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
-# resolution. Secrets and the manifest code must appear in no recorded argv,
+# resolution; assignment and release of approvers. Secrets and the manifest code must appear in no recorded argv,
 # nothing may be left in TMPDIR, each create adds only its own App's config to
 # HOME, and .git/config stays byte-identical across pushes. Every background
 # process runs in its own process group, every wait is bounded, and any group
@@ -359,9 +359,11 @@ EOF
 cat > "$stubs/gh" <<'EOF'
 #!/usr/bin/env python3
 # Stub of gh: records argv, the environment it was given and stdin for --input -.
-import json, os, sys
+# Issues, their assignees and events are kept in issues.json in the stub state:
+# {"<n>": {"assignees": [...], "events": [...], "unassignable": [...]}}.
+import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from stublib import STATE, record, record_stdin
+from stublib import STATE, record, record_stdin, opt
 
 argv = sys.argv[1:]
 record("gh", argv)
@@ -376,6 +378,33 @@ if any(argv[i] == "--input" and argv[i + 1] == "-" for i in range(len(argv) - 1)
 if argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
     print(json.dumps({"number": 7, "requested_reviewers": [{"login": r} for r in reviewers]}))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events)?", a) for a in argv):
+    path = next(a for a in argv if a.startswith("repos/"))
+    n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
+    method = opt(argv, "--method") or "GET"
+    store = os.path.join(STATE, "issues.json")
+    issues = json.load(open(store)) if os.path.exists(store) else {}
+    item = issues.setdefault(n, {})
+    for k in ("assignees", "events", "unassignable"):
+        item.setdefault(k, [])
+    bot = {"login": "mintswarm-dev[bot]"}
+    app = {"slug": "mintswarm-dev"}
+    if tail == "/assignees" and method in ("POST", "DELETE"):
+        for login in json.loads(data)["assignees"]:
+            if method == "POST" and login not in item["assignees"] and login not in item["unassignable"]:
+                item["assignees"].append(login)
+                item["events"].append({"event": "assigned", "actor": bot, "assignee": {"login": login},
+                                       "assigner": bot, "performed_via_github_app": app})
+            elif method == "DELETE" and login in item["assignees"]:
+                item["assignees"].remove(login)
+                item["events"].append({"event": "unassigned", "actor": bot, "assignee": {"login": login},
+                                       "assigner": bot, "performed_via_github_app": app})
+        json.dump(issues, open(store, "w"))
+    if tail == "/events":
+        out = [item["events"]] if "--slurp" in argv else item["events"]
+    else:
+        out = {"number": int(n), "assignees": [{"login": a} for a in item["assignees"]]}
+    print(json.dumps(out))
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
 EOF
@@ -1755,6 +1784,91 @@ last_gh_argv() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | tail -n 1; }
 check "request-review.py posts to requested_reviewers through bot-gh.sh" \
   eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/pulls/7/requested_reviewers","--input","-"]'
 check "request-review.py sends the reviewers on stdin" present '{"reviewers": ["zmij"]}' "$MSW_STUB_STATE/stdin-gh.log"
+
+# --- assign-approvers.py -----------------------------------------------------
+
+A="$here/assign-approvers.py"
+check "assign-approvers.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$A" "$sandbox/assign-approvers.pyc"
+check "assign-approvers.py names no approver" absent zmij "$A"
+aa() { python3 -I "$A" "$@"; }
+assignees() { jq -r --arg n "$1" '.[$n].assignees | join(" ")' "$MSW_STUB_STATE/issues.json"; }
+seed() {  # seed N JSON: issue N's state in the gh stub
+  local f="$MSW_STUB_STATE/issues.json"
+  [ -f "$f" ] || printf '{}\n' > "$f"
+  jq --arg n "$1" --argjson v "$2" '.[$n] = $v' "$f" > "$f.new" && mv "$f.new" "$f"
+}
+gh_argv_seen() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | grep -qxF -- "$1"; }
+deletes() { jq -c 'select(.cmd == "gh") | .argv | select(index("DELETE"))' "$argv_log" | wc -l | tr -d ' '; }
+assign_drops() {  # assign on issue 13, where bob cannot be assigned: exit 1, naming bob
+  local rc=0
+  aa assign 13 plan --base HEAD >"$sandbox/aa.out" 2>&1 || rc=$?
+  cat "$sandbox/aa.out"
+  eq "$rc" 1 && grep -qF "did not assign bob" "$sandbox/aa.out"
+}
+
+git checkout -q --no-track -b mintswarm/7-assign refs/remotes/origin/master
+mkdir -p .mintswarm
+cp "$here/../../config.yaml" .mintswarm/config.yaml
+git add .mintswarm/config.yaml
+git commit -q -m "the real config"
+real_base="$(git rev-parse HEAD)"
+cat > .mintswarm/config.yaml <<'EOF'
+pipeline:
+  review: {reviewers: [alice, "@bob", "mintswarm-dev[bot]", "other[bot]", alice]}
+EOF
+git add .mintswarm/config.yaml
+git commit -q -m "approvers config"
+check "approvers from the real config" eq "$(aa assign 1 plan --dry-run --base "$real_base")" "zmij"
+check "approvers from the base config: @ stripped, bots skipped, deduplicated" \
+  eq "$(aa assign 1 plan --dry-run --base HEAD 2>/dev/null | tr '\n' ' ')" "alice bob "
+check "a skipped bot is noted" present "skipping other[bot]" <(aa assign 1 plan --dry-run --base HEAD 2>&1)
+printf 'pipeline:\n  review: {reviewers: [mallory]}\n' > .mintswarm/config.yaml
+check "an uncommitted edit of the config changes nothing" \
+  eq "$(aa assign 1 plan --dry-run --base HEAD 2>/dev/null | tr '\n' ' ')" "alice bob "
+git checkout -q -- .mintswarm/config.yaml
+check "an unknown reason exits 2" exits_2 aa assign 1 later --base HEAD
+check "number 0 exits 2" exits_2 aa assign 0 plan --base HEAD
+check "a missing action exits 2" exits_2 aa 1 plan
+
+out="$(aa assign 11 plan --base HEAD 2>/dev/null)" || out="(failed)"
+check "assign prints the assigned logins and the reason" eq "$out" "assigned alice bob to #11 (plan)"
+check "assign posts to the issue's assignees through bot-gh.sh" \
+  eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/issues/11/assignees","--input","-"]'
+check "gh sees the minted token" eq "$(gh_env GH_TOKEN)" "$MINTED"
+check "assign sends the approvers on stdin" present '{"assignees": ["alice", "bob"]}' "$MSW_STUB_STATE/stdin-gh.log"
+check "no bot login is in any request body" absent "[bot]" "$MSW_STUB_STATE/stdin-gh.log"
+check "issue 11 is assigned to alice and bob" eq "$(assignees 11)" "alice bob"
+seed 13 '{"assignees": [], "events": [], "unassignable": ["bob"]}'
+check "a login GitHub drops fails assign with 1 and is named" assign_drops
+
+out="$(aa release 11 pr 2>/dev/null)" || out="(failed)"
+check "release prints the released logins and the reason" eq "$out" "released alice bob from #11 (pr)"
+check "release reads every page of the events" \
+  gh_argv_seen '["api","--paginate","--slurp","repos/{owner}/{repo}/issues/11/events"]'
+check "release sends DELETE to the issue's assignees" \
+  eq "$(last_gh_argv)" '["api","--method","DELETE","repos/{owner}/{repo}/issues/11/assignees","--input","-"]'
+check "release sends the bot's assignees on stdin" \
+  eq "$(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1)" '{"assignees": ["alice", "bob"]}'
+check "issue 11 has no assignees left" eq "$(assignees 11)" ""
+
+seed 12 '{"assignees": ["carol"], "events": [{"event": "assigned", "actor": {"login": "carol"}, "assignee": {"login": "carol"}}]}'
+aa assign 12 plan --base HEAD >/dev/null 2>&1 || true
+check "issue 12 is assigned to carol, alice and bob" eq "$(assignees 12)" "carol alice bob"
+check "release --dry-run prints what it would remove" eq "$(aa release 12 plan --dry-run 2>/dev/null | tr '\n' ' ')" "alice bob "
+out="$(aa release 12 plan 2>/dev/null)" || out="(failed)"
+check "release removes only the bot's assignments" eq "$out" "released alice bob from #12 (plan)"
+check "carol, assigned by a person, stays" eq "$(assignees 12)" "carol"
+seed 14 '{"assignees": ["alice"], "events": [{"event": "assigned", "actor": {"login": "dave"}, "assigner": {"login": "dave"}, "assignee": {"login": "alice"}}]}'
+aa assign 14 needs_input --base HEAD >/dev/null 2>&1 || true
+out="$(aa release 14 needs_input 2>/dev/null)" || out="(failed)"
+check "an approver a person assigned before the bot is not released" eq "$out" "released bob from #14 (needs_input)"
+check "alice stays on issue 14" eq "$(assignees 14)" "alice"
+before="$(deletes)"
+out="$(aa release 12 plan 2>/dev/null)" || out="(failed)"
+check "release with nothing of the bot's is a no-op" eq "$out" "nothing to release"
+check "and sends no DELETE" eq "$(deletes)" "$before"
 
 # --- summary -----------------------------------------------------------------
 
