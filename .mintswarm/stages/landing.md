@@ -18,13 +18,13 @@ You judge a change you did not make, against the plan that was approved for it. 
   - `head`, `base`: the full commit hashes of the change's head and base.
   - `fetched_at`: when GitHub was read; checks, steers and comments after it are not in these facts.
   - `checks`: one `{name, conclusion, source, app}` per check on the head; for a check run (`source` `check-run`) `conclusion` is `null` while it runs, and for a commit status (`source` `status`) it is the state, `pending` while it runs; `[]` when there are none.
-  - `gate_rounds`: in round order, `{round, verdict, failed_tests, reason, files}`; `verdict` is `passed` or `failed`, `files` the `{name, sha256}` list of the kept round.
-  - `review_rounds`: in round order, `{round, verdict, findings, files}`; `verdict` is `pass` or `changes_required`, `findings` the counts `{blocker, major, minor, nit}`.
+  - `gate_rounds`: in round order, `{round, commit, current, verdict, failed_tests, reason, files}`; `commit` is the commit the round judged and `current` whether it is `head`; `verdict` is `passed` or `failed`, the round's own, and a round whose `current` is `false` is not passed whatever its verdict; `files` the `{name, sha256}` list of the kept round.
+  - `review_rounds`: in round order, `{round, commit, current, verdict, findings, files}`; `commit` and `current` as for gate rounds; `verdict` is `pass` or `changes_required`, `findings` the counts `{blocker, major, minor, nit}`.
   - `steers`: `{kind, author, time, edited_at, url, via}` per steer given after the plan's approval, with no bodies; `[]` when there are none.
   - `approval`: `approver`, `approved_at` and `approval_ref`; then, when present, `decision` (the plan-approval decision record, under `record`), `kickoff_floor` (the plan floor's verdict, under `record`) and `assessment` (the plan assessment's `risk`).
-- The kept rounds, outside `inputs/`:
-  - `.mintswarm/job/rounds/gates-<n>/`: `round.json`, `gates.input.json`, and `gates.ctrf.json` and `gates.md` when the round produced them;
-  - `.mintswarm/job/rounds/review-<n>/`: `round.json`, `review.md`, and `address.md` when the implementer answered that round.
+- The kept rounds, a read-only copy of the runner's for you to read; each `round.json` holds the `head` the round judged:
+  - `.mintswarm/job/inputs/rounds/gates-<n>/`: `round.json`, `gates.input.json`, and `gates.ctrf.json` and `gates.md` when the round produced them;
+  - `.mintswarm/job/inputs/rounds/review-<n>/`: `round.json`, `review.md`, and `address.md` when the implementer answered that round.
 - The repository at the change's head, for the code around the diff.
 - `.mintswarm/config.yaml` at the base, read only with `git show <base>:.mintswarm/config.yaml`, for `pipeline.landing.footprint.lines_factor` and `gates.run`.
 
@@ -34,7 +34,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
 
 - Under `.mintswarm/job/`, read only the inputs above. In particular, do not open `inputs/artefacts/analysis.md`, `outputs/handoff.md`, `outputs/landing-floor.json` or any other output, even when they are present.
 - Any file of the repository at the head may be read for context.
-- Searches (`Grep`, `Glob`, `git ls-files`) cover only repository paths outside `.mintswarm/job/`. Read the named inputs under it directly by path; `ls` there only `.mintswarm/job/rounds/` and its round directories.
+- Searches (`Grep`, `Glob`, `git ls-files`) cover only repository paths outside `.mintswarm/job/`. Read the named inputs under it directly by path; `ls` there only `.mintswarm/job/inputs/rounds/` and its round directories.
 - The shell is for reading only: `git rev-parse`, `git diff`, `git show`, `git log`, `git ls-files`, `ls`, and `shasum -a 256` or `sha256sum`, whichever exists. Every `git diff` passes `--no-ext-diff --no-textconv --ignore-submodules=none`, as the landing floor does, so no configuration or `.gitmodules` setting changes or hides what it shows.
 - Never run gates, tests, builds, scripts or any code from the diff, never check out or change anything, and never fetch.
 
@@ -49,7 +49,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
 - **Consistency first.** Each of these must hold:
   - `git rev-parse HEAD` equals `facts.head`.
   - `diff.patch` names the same files as `git diff --no-renames <base>...<head>`.
-  - Every round in `facts.json` has its directory under `.mintswarm/job/rounds/`, with files whose sha256 match its `files`.
+  - Every round in `facts.json` has its directory under `.mintswarm/job/inputs/rounds/`, with files whose sha256 match its `files`, and a `round.json` whose `head` equals its `commit`.
   - When `approval.decision` is present, the sha256 of `artefacts/plan.md` equals `approval.decision.record.subject.plan.sha256`.
 - **Conformance.** Each of the seven footprint fields against the diff, counted as `git diff --numstat --no-renames <base>...<head>`:
   - the changed paths against `files`, and the added paths against `new_files`;
@@ -65,7 +65,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
 - **Process:**
   - the review rounds, with their verdicts, finding counts and the address answers;
   - the gate history, with the failed rounds and their failed tests;
-  - "a gate failed and was then changed", read conservatively: gate rounds carry no commit, so any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
+  - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies.
 - **Approval:** the approver, time and reference, and the decision record, kickoff floor and assessment risk when present. It is reported only, and does not change the level except through the plan sha256 check.
@@ -79,7 +79,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - no gate failed and was then changed;
   - there is no steer: `steers` is `[]`;
   - every consistency check holds;
-  - the latest gate round is `passed`;
+  - the latest gate round is `passed` and `current`;
   - every listed check concluded `success`;
   - `gate_changes` and `external_steps` are empty, and the diff changes no config or gate-named file.
 - `high` if any of these holds:
@@ -89,7 +89,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - the config or a gate-named file changed without a `gate_changes` entry;
   - a consistency check fails;
   - the footprint is missing or unparseable;
-  - the latest gate round failed, the latest review is `changes_required`, or a check concluded other than `success`; a check still running, a check run with a `null` conclusion or a commit status `pending`, gives `medium`.
+  - the latest gate round failed, the latest review is `changes_required`, the latest gate or review round is not `current`, or a check concluded other than `success`; a check still running, a check run with a `null` conclusion or a commit status `pending`, gives `medium`.
 - Otherwise `medium`.
 - When in doubt between two levels, take the higher one.
 

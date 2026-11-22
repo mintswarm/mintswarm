@@ -5,7 +5,7 @@
     collect-facts.py assemble --responses DIR --pr N --issue N --head REF --base REF
                               --approver LOGIN --approved-at TIME
                               [--approval-url URL] [--approval-id ID] [--decision PATH]
-                              [--kickoff-floor PATH] [--assessment PATH] [--rounds DIR]
+                              [--kickoff-floor PATH] [--assessment PATH] --rounds DIR
 
 Dogfooding stand-in for the control plane's landing facts, read by the
 landing floor and the landing judge. Judging the facts is theirs; this
@@ -46,11 +46,23 @@ assemble
 --------
 
 Builds .mintswarm/job/inputs/landing/facts.json from the saved responses in
-DIR, the kept rounds (--rounds, default .mintswarm/job/rounds, see
-keep-round.py) and the session's arguments. It reads no network. Its first
-action is to delete any stale facts file; the new one is written to a
-temporary file and renamed onto it. Exits 0 when written and 2 on any
-unusable input, leaving no facts file.
+DIR, the kept rounds (--rounds DIR, required, see keep-round.py) and the
+session's arguments. It reads no network. Its first action is to delete any
+stale facts file; the new one is written to a temporary file and renamed
+onto it. Exits 0 when written and 2 on any unusable input, leaving no facts
+file.
+
+The kept rounds are read from the job's runner state, never from the
+worktree: --rounds DIR must be an existing directory, absolute and not a
+symbolic link, and, resolved, neither the resolved working directory nor
+under it, nor the main checkout (the parent of `git rev-parse
+--path-format=absolute --git-common-dir`, resolved) nor under it, as
+keep-round.py requires. A copy of the rounds under .mintswarm/job/, such as
+the landing judge's inputs/rounds/, is refused. On one account this is a
+convention, not an OS barrier: any process of the account can write DIR.
+What a later edit of an old round cannot pass is the binding to a commit:
+each round records the head it judged, and a round whose `current` is
+false is not passed, whatever its verdict.
 
 Inputs are checked before anything is written:
 
@@ -69,16 +81,16 @@ Inputs are checked before anything is written:
   100 items and the last fewer, so a truncated fetch is refused.
 - Under --rounds, every entry not starting with `.` is a directory named
   gates-<n> or review-<n>; each kind is numbered 1 to k without gaps; each
-  round.json is keep-round.py's (tool, version, kind and round matching the
-  directory) and lists exactly the files present apart from itself, each
-  with a matching sha256; every gates round holds gates.input.json and every
-  review round review.md.
+  round.json is keep-round.py's version 2 (tool, version, kind and round
+  matching the directory, `head` a full commit hash) and lists exactly the
+  files present apart from itself, each with a matching sha256; every gates
+  round holds gates.input.json and every review round review.md.
 
 facts.json holds, with keys in this order (written with indent 2,
 ensure_ascii off):
 
   tool           "mintswarm-landing-facts"
-  version        1
+  version        2
   pr, issue      the numbers given
   head, base     full commit hashes
   fetched_at     when GitHub was read, from request.json: checks, steers
@@ -90,8 +102,12 @@ ensure_ascii off):
                  "status" for commit statuses (name is the context,
                  conclusion the state, app null); sorted by source, name
                  and app; [] when there are none
-  gate_rounds    in round order, {round, verdict, failed_tests, reason,
-                 files}: verdict "passed" only when the kept
+  gate_rounds    in round order, {round, commit, current, verdict,
+                 failed_tests, reason, files}: commit the round.json
+                 `head`, the commit the round judged, and current whether
+                 it is the facts' head; a round whose current is false is
+                 not passed, whatever its verdict. verdict is the round's
+                 own, unchanged by current: "passed" only when the kept
                  gates.ctrf.json meets every condition of
                  run-gates.py --verdict against the kept gates.input.json,
                  in run-gates.py's order and with its wording, otherwise
@@ -107,8 +123,10 @@ ensure_ascii off):
                  checked by keep-round.py when the round is kept.
                  failed_tests are the names of tests with status failed or
                  other; files the {name, sha256} list of round.json
-  review_rounds  in round order, {round, verdict, findings, files}:
-                 verdict the first non-blank line after the one `## Verdict`
+  review_rounds  in round order, {round, commit, current, verdict,
+                 findings, files}: commit and current as for gate rounds,
+                 so a review round whose current is false is not passed
+                 either; verdict the first non-blank line after the one `## Verdict`
                  line outside code fences, "pass" or "changes_required";
                  findings the counts {blocker, major, minor, nit}, always
                  all four, from the one fenced yaml block whose first line
@@ -173,10 +191,10 @@ HERE = Path(__file__).resolve().parent
 BOT_GH = HERE.parent / "github" / "bot-gh.sh"
 FACTS = Path(".mintswarm/job/inputs/landing/facts.json")
 RESPONSES = Path(".mintswarm/job/landing/responses")
-ROUNDS = Path(".mintswarm/job/rounds")
 TOOL = "mintswarm-landing-facts"
-VERSION = 1
+VERSION = 2
 KEEP_TOOL = "mintswarm-keep-round"
+KEEP_VERSION = 2
 FLOOR_TOOL = "mintswarm-plan-floor"
 DECISION_TOOL = "mintswarm-approval-decision"
 REPO = "repos/{owner}/{repo}"
@@ -196,7 +214,7 @@ ROUND_DIR = re.compile(r"(gates|review)-([1-9][0-9]*)")
 GATES_INPUT = "gates.input.json"
 ROUND_FILES = {"gates": ("gates.ctrf.json", GATES_INPUT, "gates.md"), "review": ("address.md", "review.md")}
 REQUIRED_FILES = {"gates": GATES_INPUT, "review": "review.md"}
-ROUND_KEYS = ["tool", "version", "kind", "round", "kept_at", "files"]
+ROUND_KEYS = ["tool", "version", "kind", "round", "head", "kept_at", "files"]
 FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*([^`\s]*)")
 
 # name, path after repos/{owner}/{repo}/ (without per_page and page), items key
@@ -220,13 +238,13 @@ FETCH_OPTIONS = {"--pr": True, "--issue": True, "--head": True, "--out": False}
 ASSEMBLE_OPTIONS = {
     "--responses": True, "--pr": True, "--issue": True, "--head": True, "--base": True,
     "--approver": True, "--approved-at": True, "--approval-url": False, "--approval-id": False,
-    "--decision": False, "--kickoff-floor": False, "--assessment": False, "--rounds": False,
+    "--decision": False, "--kickoff-floor": False, "--assessment": False, "--rounds": True,
 }
 USAGE = (
     "usage: collect-facts.py fetch --pr N --issue N --head SHA [--out DIR]\n"
     "       collect-facts.py assemble --responses DIR --pr N --issue N --head REF --base REF "
     "--approver LOGIN --approved-at TIME [--approval-url URL] [--approval-id ID] "
-    "[--decision PATH] [--kickoff-floor PATH] [--assessment PATH] [--rounds DIR]"
+    "[--decision PATH] [--kickoff-floor PATH] [--assessment PATH] --rounds DIR"
 )
 
 
@@ -568,8 +586,11 @@ def load_round(path: Path, kind: str, number: int) -> dict:
     record = strict_json(read_bytes(path / "round.json"), str(path / "round.json"))
     if not isinstance(record, dict) or list(record) != ROUND_KEYS:
         raise InputError(f"{path}/round.json does not have the keys {ROUND_KEYS}")
-    if (record["tool"], record["version"], record["kind"], record["round"]) != (KEEP_TOOL, 1, kind, number):
-        raise InputError(f"{path}/round.json is not keep-round.py's record of {kind} round {number}")
+    if (record["tool"], record["version"], record["kind"], record["round"]) != (KEEP_TOOL, KEEP_VERSION, kind, number):
+        raise InputError(f"{path}/round.json is not keep-round.py's version {KEEP_VERSION} record "
+                         f"of {kind} round {number}")
+    if not isinstance(record["head"], str) or not FULL_HASH.fullmatch(record["head"]):
+        raise InputError(f"{path}/round.json: head is not a full commit hash: {record['head']!r}")
     files = record["files"]
     if not isinstance(files, list):
         raise InputError(f"{path}/round.json: files is not a list")
@@ -595,7 +616,29 @@ def load_round(path: Path, kind: str, number: int) -> dict:
         if sha256(content) != entry["sha256"]:
             raise InputError(f"{path / entry['name']} does not match its sha256 in round.json")
         data[entry["name"]] = content
-    return {"files": [dict(entry) for entry in files], "data": data}
+    return {"head": record["head"], "files": [dict(entry) for entry in files], "data": data}
+
+
+def check_rounds_location(value: str) -> Path:
+    """--rounds: absolute, not a link, outside the worktree and the main checkout (as keep-round.py checks)."""
+    path = Path(value)
+    if not path.is_absolute():
+        raise InputError(f"--rounds must be an absolute path, got {value!r}")
+    if path.is_symlink():
+        raise InputError(f"--rounds {value} is a symbolic link")
+    resolved = path.resolve()
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                              stdin=subprocess.DEVNULL, capture_output=True)
+    except OSError as exc:
+        raise InputError(f"cannot run git: {exc}") from exc
+    common = proc.stdout.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0 or not common:
+        raise InputError("git rev-parse --git-common-dir failed: the working directory is not a git checkout")
+    for name, place in (("the worktree", Path.cwd().resolve()), ("the main checkout", Path(common).resolve().parent)):
+        if resolved == place or place in resolved.parents:
+            raise InputError(f"--rounds {value} is inside {name} {place}; kept rounds are read from runner state")
+    return path
 
 
 def load_rounds(rounds: Path) -> dict:
@@ -686,7 +729,7 @@ def ctrf_unmet(data, input_data: bytes):
     return report, None
 
 
-def gate_round(number: int, kept: dict) -> dict:
+def gate_round(number: int, kept: dict, head: str) -> dict:
     report, reason = ctrf_unmet(kept["data"].get("gates.ctrf.json"), kept["data"][GATES_INPUT])
     failed = []
     results = report.get("results") if isinstance(report, dict) else None
@@ -695,6 +738,8 @@ def gate_round(number: int, kept: dict) -> dict:
         failed = [t.get("name") for t in tests if isinstance(t, dict) and t.get("status") in ("failed", "other")]
     return {
         "round": number,
+        "commit": kept["head"],
+        "current": kept["head"] == head,
         "verdict": "passed" if reason is None else "failed",
         "failed_tests": failed,
         "reason": reason,
@@ -733,7 +778,7 @@ def yq_json(text: str, where: str):
     return strict_json(proc.stdout, f"{where}: yq's output")
 
 
-def review_round(number: int, kept: dict, where: str) -> dict:
+def review_round(number: int, kept: dict, where: str, head: str) -> dict:
     try:
         text = kept["data"]["review.md"].decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -764,7 +809,8 @@ def review_round(number: int, kept: dict, where: str) -> dict:
         if severity not in counts:
             raise InputError(f"{where}: a finding with severity {severity!r}")
         counts[severity] += 1
-    return {"round": number, "verdict": verdict, "findings": counts, "files": kept["files"]}
+    return {"round": number, "commit": kept["head"], "current": kept["head"] == head, "verdict": verdict,
+            "findings": counts, "files": kept["files"]}
 
 
 # --- assemble: approval ---------------------------------------------------
@@ -865,11 +911,11 @@ def assemble(argv: list) -> int:
     responses = Responses(Path(opts["--responses"]))
     fetched_at = check_request(responses, pr, issue, head)
     checks = collect_checks(responses)
-    rounds_dir = Path(opts.get("--rounds", str(ROUNDS)))
+    rounds_dir = check_rounds_location(opts["--rounds"])
     kept = load_rounds(rounds_dir)
-    gate_rounds = [gate_round(n, kept["gates"][n]) for n in sorted(kept["gates"])]
+    gate_rounds = [gate_round(n, kept["gates"][n], head) for n in sorted(kept["gates"])]
     review_rounds = [
-        review_round(n, kept["review"][n], str(rounds_dir / f"review-{n}" / "review.md"))
+        review_round(n, kept["review"][n], str(rounds_dir / f"review-{n}" / "review.md"), head)
         for n in sorted(kept["review"])
     ]
     steers = collect_steers(responses, approved_at, opts.get("--approval-url"), opts.get("--approval-id"))
