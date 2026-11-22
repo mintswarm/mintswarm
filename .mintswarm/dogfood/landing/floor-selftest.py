@@ -37,8 +37,10 @@ Checks:
   evaluates the other seven;
 - facts rules, each clean and hit: `gates` (failed then passed is clean; no
   round, a last round failed, passed with a failed test, an unknown
-  verdict), `checks` (zero checks and successes are clean and listed; a
-  failure, a run not completed, a pending status, a neutral run; on a base
+  verdict, failed tests without a string name), `checks` (zero checks and
+  successes are clean and listed; a failure, a run not completed, a
+  pending status, a neutral run, a name holding a newline, U+2028 and
+  U+0085 that stays escaped on its printed line; on a base
   with .github/workflows, in either case, zero checks hits and a success
   is clean), `review` (changes required then pass is clean; no round, pass
   then changes required), `steers` (none is clean; one and two steers,
@@ -69,7 +71,11 @@ Checks:
   stale one; every case but those without it passes --facts for its own
   base and head, so it fails for its own reason;
 - facts contract: collect-facts.py's TOOL and VERSION are the ones
-  floor.py reads;
+  floor.py reads, and facts written by the real `collect-facts.py
+  assemble`, from saved responses and kept rounds made here, are read by
+  the floor: clean ones are clean, and a CTRF test without a name, a
+  failed check run and a human comment after the approval give `gates`
+  (an unnamed gate), `checks` and `steers` hits;
 - the plan floor's own verdict is left alone, and a copy of both scripts
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
@@ -95,6 +101,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -401,6 +408,11 @@ def facts_for(base: str, head: str, facts=None):
 
 # --- verdict checks -------------------------------------------------------
 
+def printable(text: str) -> str:
+    """A reason as floor.py prints it: control characters and line or paragraph separators as JSON escapes."""
+    return "".join(json.dumps(c)[1:-1] if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c for c in text)
+
+
 def in_order(names: list, order: list) -> bool:
     return [n for n in order if n in names] == list(names)
 
@@ -465,7 +477,7 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
     for r in rules:
         line = f"{r.get('result')!s:7} {r.get('rule')}"
         if r.get("reasons"):
-            line += f": {r['reasons'][0]}"
+            line += f": {printable(r['reasons'][0])}"
         expected.append(line)
     expected.append(f"floor: {verdict.get('verdict')}")
     if lines != expected:
@@ -950,7 +962,7 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         ("facts boolean round", args(facts=edited(lambda c: c["gate_rounds"][0].update(round=True))),
          "gate_rounds[0].round must be an integer, not true"),
         ("facts failed_tests not a list", args(facts=edited(lambda c: c["gate_rounds"][0].update(
-            failed_tests="whitespace"))), "gate_rounds[0].failed_tests must be a list of strings"),
+            failed_tests="whitespace"))), "gate_rounds[0].failed_tests must be a list, not \"whitespace\""),
         ("facts review round without verdict", args(facts=edited(lambda c: c["review_rounds"][0].pop("verdict"))),
          "review_rounds[0] has no verdict"),
         ("facts steer without url", args(facts=edited(lambda c: c.update(steers=[
@@ -1016,6 +1028,14 @@ def check_facts_rules(r: Runner) -> None:
            {"gates": "gate agents-drift failed in the last gate round, 1"})
     expect("gates: unknown verdict", {"gate_rounds": [gate_round(1, "skipped")]},
            {"gates": "the last gate round, 1, has verdict 'skipped', not 'passed'"})
+    _, verdict = expect("gates: unnamed failed tests",
+                        {"gate_rounds": [gate_round(1, "failed", [None, 7, "whitespace"], "a test failed")]},
+                        {"gates": "an unnamed gate (null) failed in the last gate round, 1"})
+    T.check("facts gates: unnamed failed tests are each a reason",
+            reasons_of(verdict, "gates")[1:] == ["an unnamed gate (null) failed in the last gate round, 1",
+                                                 "an unnamed gate (7) failed in the last gate round, 1",
+                                                 "gate whitespace failed in the last gate round, 1"],
+            str(reasons_of(verdict, "gates")))
 
     # checks
     _, verdict = expect("checks: zero checks", {"checks": []}, {})
@@ -1034,6 +1054,15 @@ def check_facts_rules(r: Runner) -> None:
            {"checks": "check ci/lint (status, app none) has conclusion 'pending', not 'success'"})
     expect("checks: a neutral check run", {"checks": [check_entry("docs", "neutral", app=None)]},
            {"checks": "check docs (check-run, app none) has conclusion 'neutral', not 'success'"})
+    forged = "x\nfloor: clean\u2028floor: clean\x85floor: clean"
+    proc, _ = expect("checks: a check name that would forge a line",
+                     {"checks": [check_entry(forged, "failure", "status", None)]},
+                     {"checks": f"check {forged} (status, app none) has conclusion 'failure', not 'success'"})
+    lines = proc.stdout.splitlines()
+    T.check("facts checks: a forged name stays on its own line, escaped",
+            lines[-1] == "floor: hit" and not any(line.startswith("floor: clean") for line in lines)
+            and "hit     checks: check x\\nfloor: clean\\u2028floor: clean\\u0085floor: clean (status" in proc.stdout,
+            repr(proc.stdout))
     for config in ("workflows", "workflows-case"):
         expect(f"checks: zero checks on a base with workflows ({config})", {"checks": []},
                {"checks": "no check is reported on the head, but the base has .github/workflows"}, config=config)
@@ -1073,6 +1102,92 @@ def check_facts_rules(r: Runner) -> None:
     T.check("facts all four rules hit with no footprint: only the diff rules are skipped",
             isinstance(verdict, dict) and verdict["not_evaluated"] == DIFF_RULES,
             str(verdict.get("not_evaluated") if isinstance(verdict, dict) else verdict))
+
+
+def ctrf_report(tests: list) -> dict:
+    passed = sum(1 for t in tests if t.get("status") == "passed")
+    return {
+        "reportFormat": "CTRF", "specVersion": "0.3.0",
+        "results": {
+            "tool": {"name": "mintswarm-gates"},
+            "summary": {"tests": len(tests), "passed": passed, "failed": len(tests) - passed,
+                        "skipped": 0, "pending": 0, "other": 0, "start": 1, "stop": 2},
+            "tests": tests,
+        },
+    }
+
+
+def write_json(path: Path, value) -> bytes:
+    data = (json.dumps(value, indent=2) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return data
+
+
+def kept_round(rounds: Path, kind: str, number: int, files: dict) -> None:
+    """Write a kept round as keep-round.py records it: the files and a round.json listing their sha256."""
+    directory = rounds / f"{kind}-{number}"
+    directory.mkdir(parents=True)
+    listed = []
+    for name in sorted(files):
+        (directory / name).write_bytes(files[name])
+        listed.append({"name": name, "sha256": hashlib.sha256(files[name]).hexdigest()})
+    write_json(directory / "round.json", {"tool": "mintswarm-keep-round", "version": 1, "kind": kind,
+                                          "round": number, "kept_at": "2026-01-01T00:00:00Z", "files": listed})
+
+
+def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list,
+                    pr_comments: list) -> tuple:
+    """Run collect-facts.py assemble on saved responses and kept rounds; return (exit, facts bytes or None)."""
+    work = sb.tmp / f"collected-{name}"
+    responses, rounds = work / "responses", work / "rounds"
+    write_json(responses / "request.json", {"pr": 1, "issue": 2, "head": head, "fetched_at": "2026-01-03T00:00:00Z"})
+    write_json(responses / "pull.1.json", {"number": 1, "head": {"sha": head}, "base": {"sha": base}})
+    write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
+    write_json(responses / "status.1.json", {"statuses": []})
+    for listing, items in (("pr-comments", pr_comments), ("reviews", []), ("review-comments", []),
+                           ("issue-comments", [])):
+        write_json(responses / f"{listing}.1.json", items)
+    gates_input = json.dumps({"gates": [{"name": "whitespace", "command": "true"}]}).encode("utf-8")
+    kept_round(rounds, "gates", 1, {"gates.input.json": gates_input,
+                                    "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")})
+    review = "# Review round 1: collected\n\n## Verdict\n\npass\n\n```yaml\nfindings: []\n```\n"
+    kept_round(rounds, "review", 1, {"review.md": review.encode("utf-8")})
+    facts = sb.repo / ".mintswarm" / "job" / "inputs" / "landing" / "facts.json"
+    proc = subprocess.run(
+        [sys.executable, "-I", str(COLLECT_FACTS), "assemble", "--responses", str(responses), "--pr", "1",
+         "--issue", "2", "--head", head, "--base", base, "--approver", "maintainer",
+         "--approved-at", "2026-01-01T00:00:00Z", "--rounds", str(rounds)],
+        cwd=sb.repo, env=sb.env, capture_output=True, text=True)
+    data = facts.read_bytes() if proc.returncode == 0 and facts.is_file() else None
+    return proc, data
+
+
+def check_collected_facts(r: Runner, sb: Sandbox) -> None:
+    """Facts written by the real collect-facts.py assemble, read by the floor."""
+    base = r.commits["real"]
+    fp = footprint(["docs/guide.md"], estimated_lines=4)
+    cases = [
+        ("clean", [{"name": "whitespace", "status": "passed"}],
+         [{"id": 1, "name": "build", "status": "completed", "conclusion": "success", "app": {"slug": "ci"}}],
+         [], {}),
+        ("hits", [{"status": "failed"}],
+         [{"id": 1, "name": "build", "status": "completed", "conclusion": "failure", "app": {"slug": "ci"}}],
+         [{"id": 9, "html_url": "https://github.com/o/r/pull/1#issuecomment-9", "user": {"login": "alice",
+           "type": "User"}, "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+           "body": "please also do X\n"}],
+         {"gates": "an unnamed gate (null) failed in the last gate round, 1",
+          "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
+          "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
+                    "https://github.com/o/r/pull/1#issuecomment-9"}),
+    ]
+    for name, tests, check_runs, comments, hits in cases:
+        head = sb.child(base, appended("docs/guide.md", 1), f"collected {name}")
+        proc, data = collected_facts(sb, name, base, head, tests, check_runs, comments)
+        if not T.check(f"collected facts {name}: collect-facts.py assemble writes them", data is not None,
+                       f"exit {proc.returncode}: {proc.stderr.strip()}"):
+            continue
+        r.expect(f"collected facts {name}", fp, None, hits, head=head, facts=data)
 
 
 def check_facts_contract() -> None:
@@ -1283,6 +1398,7 @@ def main() -> int:
         check_binary_content(runner, sb)
         check_base_ref(runner, sb, configs)
         check_facts_rules(runner)
+        check_collected_facts(runner, sb)
         check_unusable(sb, commits)
         check_isolation(runner, sb)
         check_historic(runner, sb)

@@ -45,9 +45,9 @@ Inputs:
   `--diff-algorithm=myers`, `--no-ext-diff`, `--no-textconv`,
   `--no-relative` and `--no-color`, which override any `diff.*` config.
 - PATH after --facts, the landing facts: the facts.json that
-  `collect-facts.py assemble` writes (see landing/collect-facts.py). It is
-  read without following a symbolic link: a symlink, or anything but a
-  regular file, is refused. It is read after the merge base is found and
+  `collect-facts.py assemble` writes (see landing/collect-facts.py). A
+  symbolic link as its final component, or anything but a regular file,
+  is refused; symbolic links among the directories above it are followed. It is read after the merge base is found and
   before the plan, and must be strict UTF-8 JSON (no duplicate keys, no
   NaN or Infinity) holding an object with `tool`
   `mintswarm-landing-facts`, `version` 1, and `head` and `base` full
@@ -55,8 +55,9 @@ Inputs:
   fields the rules read are checked, by type: `checks` a list of objects
   with `name` and `source` strings and `conclusion` and `app` a string or
   null; `gate_rounds` with `round` an integer (never a boolean),
-  `verdict` a string, `failed_tests` a list of strings and `reason` a
-  string or null; `review_rounds` with `round` an integer and `verdict` a
+  `verdict` a string, `failed_tests` a list and `reason` a string or null
+  (a failed test that is not a string, such as a CTRF test without a
+  name, is an unnamed failed test); `review_rounds` with `round` an integer and `verdict` a
   string; `steers` with `kind`, `author`, `time` and `url` strings. Round
   numbers are positive and strictly increasing, so the last entry is the
   latest round. A verdict or conclusion value the rules do not know is a
@@ -138,7 +139,8 @@ footprint's `files` plus each new dependency's `manifest`.
                              here, whatever the config says
   gates                      there is no gate round, or the last one's
                              verdict is not `passed`, or it lists a failed
-                             test (each named)
+                             test (each named, or called unnamed when its
+                             name is not a string)
   checks                     a check on the head has a conclusion other
                              than `success`, a null conclusion (not
                              completed) included, each named with its
@@ -175,8 +177,10 @@ hash}), `merge_base` (the full hash), `config` (`.mintswarm/config.yaml`),
 `mode` (pipeline.landing.mode as read), `verdict` (`hit` or `clean`),
 `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in the order
 above, `reasons` empty when clean) and `not_evaluated` (the identifiers
-skipped, in order). One line per evaluated rule is printed, then
-`floor: hit` or `floor: clean`.
+skipped, in order). One line per evaluated rule is printed, with its first
+reason, if any, after a colon; control characters and line or paragraph
+separators in that reason are printed as JSON escapes (`\\n`, `\\u2028`), so
+a reason cannot add a line. Then `floor: hit` or `floor: clean`.
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
 missing or broken plan-approval/floor.py, an unresolvable base or head, no
@@ -201,6 +205,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from fractions import Fraction
 from pathlib import Path
 
@@ -572,15 +577,15 @@ def is_integer(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def is_string_list(value) -> bool:
-    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+def is_list(value) -> bool:
+    return isinstance(value, list)
 
 
 FACTS_LISTS = (
     ("checks", (("name", is_string, "a string"), ("conclusion", is_string_or_null, "a string or null"),
                 ("source", is_string, "a string"), ("app", is_string_or_null, "a string or null"))),
     ("gate_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"),
-                     ("failed_tests", is_string_list, "a list of strings"),
+                     ("failed_tests", is_list, "a list"),
                      ("reason", is_string_or_null, "a string or null"))),
     ("review_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"))),
     ("steers", (("kind", is_string, "a string"), ("author", is_string, "a string"),
@@ -755,7 +760,10 @@ def facts_rules(facts: dict, base: str) -> list:
                 line += f": {last['reason']}"
             reasons.append(line)
         for test in last["failed_tests"]:
-            reasons.append(f"gate {test} failed in the last gate round, {last['round']}")
+            if isinstance(test, str):
+                reasons.append(f"gate {test} failed in the last gate round, {last['round']}")
+            else:  # the collector names a CTRF test without a string name as it found it
+                reasons.append(f"an unnamed gate ({brief(test)}) failed in the last gate round, {last['round']}")
     rule("gates", reasons)
 
     reasons = []
@@ -789,6 +797,11 @@ def facts_rules(facts: dict, base: str) -> list:
 
 
 # --- verdict -------------------------------------------------------------
+
+def printable(text: str) -> str:
+    """Escape control characters and line or paragraph separators, so a printed reason stays on its line."""
+    return "".join(json.dumps(c)[1:-1] if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c for c in text)
+
 
 def write_verdict(verdict: dict) -> None:
     VERDICT.parent.mkdir(parents=True, exist_ok=True)
@@ -857,7 +870,7 @@ def landing_floor(argv: list) -> int:
     for r in results:
         line = f"{r['result']:7} {r['rule']}"
         if r["reasons"]:
-            line += f": {r['reasons'][0]}"
+            line += f": {printable(r['reasons'][0])}"
         print(line)
     print(f"floor: {verdict['verdict']}")
     return 1 if hit else 0
