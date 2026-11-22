@@ -21,6 +21,8 @@ tracker:
 design:
   store: issue_artifacts             # where design documents live
 
+# A component may list reviewers: GitHub logins, bare (no "@"), requested on PRs that
+# change its paths, for example `reviewers: [alice]`. Without them, pipeline.review.reviewers.
 components:
   api:
     description: "contracts: proto definitions, generated OpenAPI and JSON Schemas, generated Rust code"
@@ -74,6 +76,7 @@ pipeline:
   approve_plan: true                 # plan approval for every implementation issue while the flow proves itself
   review:
     max_rounds: 3
+    reviewers: [zmij]                # default reviewers of a PR; see components above
 
 gates:
   tests: none                        # no code yet; forces plan approval
