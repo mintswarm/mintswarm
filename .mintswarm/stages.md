@@ -31,23 +31,23 @@ Your final reply carries your output document in one fenced block:
 
 1. The opening line is N backticks immediately followed by `markdown`, at the start of the line with no indentation; N is at least 4. Trailing whitespace is allowed, nothing else.
 2. The closing line is exactly N backticks at the start of the line, optionally followed by whitespace.
-3. N is greater than the longest run of backticks that starts any line of the document, ignoring leading spaces. That is 4 for most documents, and 5 when the document contains a four-backtick block (the decompose and review templates, or a document quoting them).
+3. N is greater than the longest run of backticks that starts any line of the document, ignoring leading spaces. That is 4 for most documents, and 5 when the document contains a four-backtick block, for example one quoting the decompose or review template.
 4. The runner saves the lines strictly between the opening and closing lines, unchanged, with a final newline. The first of them is the document's `# ` title.
-5. The reply contains exactly one such block. Lines inside it are part of the document, never the start of another block.
-6. After the closing line come only blank lines, then exactly one result block (below), then only blank lines. A few lines of text may come before the document block.
+5. The reply contains exactly one such block before the result block. Lines inside it are part of the document, never the start of another block.
+6. After the closing line come only blank lines, then exactly one result block (below). Text after the result block is ignored. A few lines of text may come before the document block.
 
-- Never write the document with a file tool or the shell. The only file a stage writes under `.mintswarm/job/outputs/` is `gates.json`, and the gate script writes it.
+- Never write the document with a file tool or the shell. Stages write no files under `.mintswarm/job/outputs/`; tools a stage runs, such as the gate script, may record their own results there.
 - The runner saves the block's content unchanged at the path in `outputs`. While mintswarm is dogfooded, the dispatching session saves it with `.mintswarm/dogfood/save-output.py`, which applies exactly these rules.
 
 ## Result block
 
-End your final reply with exactly one block of this form, and nothing after it:
+End your final reply with exactly one block of this form; anything after it is ignored:
 
 ```yaml
 msw-result:
   status: complete          # complete | needs_input | failed
   artefact: analysis        # the document you return: analysis | decomposition | plan | handoff | address | gates | review
-  outputs: [.mintswarm/job/outputs/analysis.md]   # where the runner saves it; gates also lists gates.json
+  outputs: [.mintswarm/job/outputs/analysis.md]   # where the runner saves it
   questions: []             # needs_input: the blocking questions, one string each
   reason: ""                # failed: why, in one sentence
 ```
