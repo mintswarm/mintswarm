@@ -17,8 +17,11 @@ Inputs:
 - pack.yaml is read with mikefarah yq: `yq -p=yaml -o=json .` for the values, loaded as JSON, and one
   query for each node's tag, style, kind, anchor, line, column and raw text, each value's path and
   each mapping's keys. A raw-text scan covers what yq hides: document markers, `<<` keys, quoted
-  strings that leave their line and double-quoted escapes. Before any pack is read, a probe runs yq on
-  a fixed text and checks that it answers each of these constructs as expected.
+  strings that leave their line and double-quoted escapes. yq numbers the first document's lines as if
+  its leading blank, comment, directive and marker lines were absent, so they are added back; a quoted
+  scalar whose line does not hold its quote at yq's column is a yaml-parse violation. Before any pack
+  is read, a probe runs yq on a fixed text and checks that it answers each of these constructs as
+  expected.
 - REF, given to check: the version rule compares each pack with `git merge-base REF HEAD`. A pack is
   changed when `git diff --name-only --no-renames` against that commit or `git ls-files --others
   --exclude-standard` lists anything in its directory. A changed pack whose pack.yaml exists at the
@@ -35,7 +38,8 @@ Rules, in README order:
   layout-unreferenced        a file under settings/ that no entry's template names
   encoding                   a file that is not UTF-8, starts with a BOM or holds a CR byte
   conventions-title          the first line of conventions.md does not start with `# `
-  yaml-parse                 yq cannot read pack.yaml, or its top level is not a mapping
+  yaml-parse                 yq cannot read pack.yaml, its top level is not a mapping, or yq places a
+                             quoted string where the text has no quote
   yaml-duplicate-key         a key repeated in one mapping
   yaml-marker                a `---` or `...` line, or more than one document
   yaml-anchor-alias          an anchor or an alias
@@ -101,7 +105,14 @@ Not checked (review rules): that a string value is placed only where every allow
 that a string parameter inside a quoted settings string has a `pattern` excluding the quote, `\\`, `$`
 and the backtick; that a derived pack does not repeat its base's conventions and is adopted with its
 base; that a base template takes in the derived file; that a fragment's target is a TOML,
-EditorConfig or INI-style file; that PyYAML loads the file the same way.
+EditorConfig or INI-style file; that PyYAML loads the file the same way, so a construct the two
+loaders read differently beyond those the yaml-* rules forbid passes.
+
+Limits: render checks the uniqueness of a derived pack's own settings only; the combined base and
+derived list with the values chosen at adoption is the setup session's to check. yq and git are found
+on PATH, and the probe catches only a yq that answers its fixed text wrongly, not one that lies about
+pack.yaml alone. A parameter `pattern` runs with no time bound, so a catastrophic pattern stalls check
+until the gate's timeout, which fails closed.
 
 Output: check prints one line per violation, `<pack id>: <rule>: <detail>`, the detail naming the
 file and, for pack.yaml, `line:column` where yq gives one; without --base it then prints `check:
@@ -139,6 +150,7 @@ PARAM_NAME = re.compile(r"[a-z][a-z0-9_]*")
 INTEGER = re.compile(r"0|-?[1-9][0-9]*")
 INT_LIMIT = 2147483647
 PATH_VALUE = re.compile(r"[A-Za-z0-9._/+-]+")
+LINE_BREAK = re.compile("\r\n|[\n\r\x85\u2028\u2029]")  # what yq counts as a line break
 MARKER = re.compile(r"(---|\.\.\.)([ \t].*)?")
 MERGE = re.compile(r"(?:^|[{,\[])\s*(?:-\s+)*<<\s*:")
 GLOB_CHARS = set("*?[]")
@@ -171,7 +183,7 @@ META_QUERY = (
     ' "paths": [.. | [path, line, column]],'
     ' "keys": [.. | select(kind == "map") | [keys | .[] | [line, column, tostring]]]}'
 )
-PROBE_META = 'a: 010\nb: True\nc: !!str "a"\nd: !!int 3\ne: &x "v"\nf: *x\ng: {<<: {z: 1}}\n'
+PROBE_META = '# probe\n\na: 010\nb: True\nc: !!str "a"\nd: !!int 3\ne: &x "v"\nf: *x\ng: {<<: {z: 1}}\n'
 PROBE_VALUES = "d: 1\nd: 2\n---\ne: 3\n"
 
 
@@ -240,6 +252,7 @@ def probe() -> None:
         nodes = {(n[4], n[5]): n for n in docs[0]["nodes"] if n[2] in ("scalar", "alias")}
         keys = docs[0]["keys"][0]
         expected = [
+            ("leading comment and blank lines are not counted", docs[0]["nodes"][0][4:6] == [1, 1]),
             ("010 is a plain !!int read as 010", nodes[(1, 4)][0:2] + nodes[(1, 4)][6:] == ["!!int", "", "010"]),
             ("True is a !!bool", nodes[(2, 4)][0] == "!!bool"),
             ('!!str "a" is not double-quoted', nodes[(3, 4)][0] == "!!str" and nodes[(3, 4)][1] != "double"),
@@ -293,16 +306,27 @@ def read_yaml(text: str, name: str = "pack.yaml") -> tuple:
             violations.append(("yaml-parse", f"{name}: {last_line(meta.stderr)}"))
         return value, violations, {}
     nodes, keys, where = [], [], {}
-    for doc in json_stream(meta.stdout.decode("utf-8"), dict):
-        nodes.extend(n for n in doc["nodes"] if n[4] > 0)  # an empty document is a null at 0:0
-        keys.extend([k for k in mapping if len(k) == 3] for mapping in doc["keys"])  # yq gives [] for {}
+    for number, doc in enumerate(json_stream(meta.stdout.decode("utf-8"), dict)):
+        shift = head_lines(text) if number == 0 else 0
+        nodes.extend(n[:4] + [n[4] + shift] + n[5:] for n in doc["nodes"] if n[4] > 0)  # an empty document: 0:0
+        keys.extend([[k[0] + shift] + k[1:] for k in mapping if len(k) == 3] for mapping in doc["keys"])  # {}: []
         for path, line, column in doc["paths"]:
-            where.setdefault(tuple(path), f"{line}:{column}")
+            where.setdefault(tuple(path), f"{line + shift}:{column}")
     violations.extend(check_keys(keys, name))
     key_at = {(k[0], k[1]) for mapping in keys for k in mapping}
     violations.extend(check_nodes(nodes, key_at, name))
     violations.extend(scan_raw(text, nodes, name))
     return value, violations, where
+
+
+def head_lines(text: str) -> int:
+    """The leading blank, comment, directive and marker lines, which yq leaves out of its line numbers."""
+    count = 0
+    for line in LINE_BREAK.split(text):
+        if line.strip() and not line.strip().startswith(("#", "%")) and not MARKER.fullmatch(line):
+            return count
+        count += 1
+    return count
 
 
 def _last_wins(pairs: list) -> dict:
@@ -379,18 +403,21 @@ def quoted_end(line: str, start: int, quote: str) -> tuple:
 
 def scan_raw(text: str, nodes: list, name: str) -> list:
     violations = []
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     spans = {}
     for node in nodes:
         style, kind, line, column = node[1], node[2], node[4], node[5]
         quote = {"double": '"', "single": "'"}.get(style)
-        if kind != "scalar" or quote is None or not 1 <= line <= len(lines):
+        if kind != "scalar" or quote is None:
             continue
-        source, start = lines[line - 1], column - 1
+        at = f"{name}:{line}:{column}"
+        source, start = lines[line - 1] if 1 <= line <= len(lines) else "", column - 1
+        anchor = re.match(r"&\S+[ \t]+", source[start:])
+        start += anchor.end() if anchor else 0
         if source[start : start + 1] != quote:
+            violations.append(("yaml-parse", f"{at}: yq places a quoted string where its text has no quote"))
             continue
         end, escapes = quoted_end(source, start, quote)
-        at = f"{name}:{line}:{column}"
         for escape in escapes:
             violations.append(("yaml-escape", f"{at}: the escape {escape!r}"))
         if end is None:
@@ -989,9 +1016,9 @@ def unique_problems(items: list) -> list:
     pairs, by_target = {}, {}
     for label, target, mode, section in items:
         key = (target, section)
-        if key in pairs:
-            problems.append(f"{label} repeats the target {target!r} and section {section!r} of {pairs[key]}")
-        pairs.setdefault(key, label)
+        if key in pairs and "file" not in (mode, pairs[key][1]):  # a file entry is reported below
+            problems.append(f"{label} repeats the target {target!r} and section {section!r} of {pairs[key][0]}")
+        pairs.setdefault(key, (label, mode))
         by_target.setdefault(target, []).append((label, mode))
     for target, users in by_target.items():
         files = [label for label, mode in users if mode == "file"]

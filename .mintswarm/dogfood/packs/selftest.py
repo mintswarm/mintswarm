@@ -20,10 +20,14 @@ Checks:
   violation: integer 0, a single-quoted pattern with `\\d`,
   `${{ secrets.TOKEN }}`, `{{- x }}` and `{{ Name }}` as literal text,
   `{{name}}` without spaces, a subdirectory under settings/, a derived pack
-  on a valid base and a `<section>.<rest>` fragment header;
+  on a valid base, a `<section>.<rest>` fragment header, and pack.yaml
+  starting with one or two comment lines;
 - failing rows: each exits 1 and prints exactly the expected pairs; every
   rule named in pack.py's docstring has at least one failing row
-  (version-bump in the git cases);
+  (version-bump in the git cases); among them an escape and a two-line
+  string after leading comment lines;
+- positions: line:column after leading comment lines, and one
+  settings-unique line for two file entries sharing a target;
 - the README: the `sample` pack of defaults/packs/README.md's Example
   section, read at test time, passes check, and render with defaults gives
   the targets, alternative, gates and conventions the README states, and
@@ -260,6 +264,12 @@ R, PY, DESC = "{{ package_root }}", "settings/pyproject.toml", '"A fixture base 
 RETRIES = {"name": "retries", "type": "integer", "default": 0, "description": "How many retries?"}
 SPARE = {"name": "spare", "type": "boolean", "default": False, "description": "Spare?"}
 NO_WORD = {"name": "alpha-x", "command": " ", "kind": "test"}
+HEAD1, HEAD2 = ("yaml", 'id: "alpha"', '# Alpha\nid: "alpha"'), (
+    "yaml",
+    'id: "alpha"',
+    '# Alpha\n# pack\n\nid: "alpha"',
+)
+ON_MARKER = '--- {id: "plain", version: 1, name: "Plain", detect: {shebangs: ["plain"]}}\n'
 TWO_DOCS = "\n".join(emit(PLAIN)) + '\n---\nid: "plain"\n'
 NOT_UTF8 = b'flavour = "\xff{{ flavour }}"\n'
 BETA_REPEATS = [("beta.setting", 0, "section", "tool.alpha"), ("beta.param", "beta_root", "default", ".")]
@@ -278,6 +288,8 @@ PASSING = [
     ),
     ("{{name}} without spaces", ("text", "conventions.md", "{{ greeting }}", "{{greeting}}")),
     ("an integer at the 32-bit limit", ("top", "version", 2147483647)),
+    ("one leading comment line", [HEAD1, ("yaml", DESC, '"A, <<: b"')]),
+    ("two leading comment lines and a blank", [HEAD2, ("yaml", DESC, '"A, \\"<<: b\\""')]),
 ]
 # Edge cases the valid fixtures hold: (name, pack, file, text).
 BAKED = [
@@ -316,6 +328,9 @@ FAILING = [
     ("a --- line", ("yaml", 'id: "alpha"', '---\nid: "alpha"'), "yaml-marker"),
     ("a ... line", ("yaml", "timeout: 600\n", "timeout: 600\n...\n"), "yaml-marker"),
     ("two documents", ("plain.file", "pack.yaml", TWO_DOCS), "plain:yaml-marker"),
+    ("content on a marker line", ("plain.file", "pack.yaml", ON_MARKER), "plain:yaml-marker plain:yaml-parse"),
+    ("an escape after a comment line", [HEAD1, ("yaml", DESC, '"A\\tb"')], "yaml-escape"),
+    ("a two-line string after two comment lines", [HEAD2, ("yaml", DESC, '"A\n  b"')], "yaml-multiline-string"),
     ("anchor, alias", [("yaml", 'name: "Alpha"', 'name: &n "Alpha"'), ("yaml", DESC, "*n")], "yaml-anchor-alias"),
     ("a merge key", ("yaml", "detect:\n", "detect:\n  <<: {}\n"), "yaml-merge-key"),
     (
@@ -383,7 +398,7 @@ FAILING = [
     ("a choice not matching the pattern", ("param", "flavour", "pattern", "[a-z]{4}"), "value-string"),
     ("a default not matching the pattern", ("param", "other", "default", "World"), "value-string"),
     ("a default with a Cf character", ("param", "greeting", "default", "hi\u200b"), "value-string"),
-    ("a default with U+2028", ("param", "greeting", "default", "hi\u2028there"), "value-string"),
+    ("a default with U+2028", ("param", "greeting", "default", "hi\u2028there"), "value-string yaml-multiline-string"),
     ("a path value with a space", ("param", "package_root", "default", "my dir"), "value-string"),
     ("a path value starting with -", ("param", "package_root", "default", "-x"), "value-string"),
     # settings
@@ -534,6 +549,19 @@ class Coverage(unittest.TestCase):
         hit = {word.split(":")[-1] for _, _, expected in FAILING for word in expected.split()} | {"version-bump"}
         self.assertEqual(sorted(set(rules) - hit), [])
         self.assertEqual(sorted(hit - set(rules)), [])
+
+    def test_positions(self):
+        """line:column after leading comments; one settings-unique line for two file entries"""
+        fixture = Fixture()
+        for op in (HEAD2, ("yaml", DESC, '"A\\tb"'), ("setting", 0, "mode", "file"), ("setting", 0, "section", DROP)):
+            apply(fixture, op)
+        apply(fixture, ("text", PY, "[tool.alpha.extra]", "[tool.alpha_extra]"))
+        apply(fixture, ("setting", 1, "target", R + "/pyproject.toml"))
+        proc = check_fixture(fixture, "positions")
+        text = next(Path(TMP).glob("positions-*/packs/alpha/pack.yaml")).read_text().split("\n")
+        line = next(n for n, t in enumerate(text, 1) if t.startswith("description:"))
+        self.assertIn(f"alpha: yaml-escape: pack.yaml:{line}:14: ", proc.stdout)
+        self.assertEqual(proc.stdout.count("alpha: settings-unique: "), 1, proc.stdout)
 
     def test_baked(self):
         """the valid fixtures hold the baked-in edge cases"""
