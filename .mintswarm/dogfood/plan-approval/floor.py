@@ -94,11 +94,13 @@ new dependency's `manifest`.
                              outside the `docs` component's paths
   overridden-assumptions     overridden_assumptions is not empty
   blocking-questions         the `## Questions` section of the analysis or
-                             of the plan has a line at column 0 starting
-                             with `- **Blocking:**` (the reason names the
-                             question), or any other line at column 0 that
+                             of the plan, which runs to the next `## `
+                             heading, has a line starting with
+                             `- **Blocking:**` after any spaces or tabs
+                             (the reason names the question), a `# `
+                             heading, or any other line at column 0 that
                              does not start with
-                             `- **Non-blocking (assumed):**`; blank and
+                             `- **Non-blocking (assumed):**`; other
                              indented lines are skipped; no --analysis
   acceptance-criteria        the criteria the first cells of the plan's
                              `## Verification` table quote are not the
@@ -120,7 +122,8 @@ new dependency's `manifest`.
 Issue criteria are the column-0 items of `## Acceptance criteria` marked
 `N.`, `N)`, `-`, `*` or `+`, with an optional `[ ]` or `[x]` after the
 marker; following non-blank lines that are not items belong to the item,
-and a blank line ends it. Table rows are split on `|` not preceded by `\\`,
+and so do indented lines after a blank line, its later paragraphs; a line
+at column 0 after a blank line that is not an item ends it. Table rows are split on `|` not preceded by `\\`,
 and `\\|` then reads as `|`. Question and criterion text in reasons is put on
 one line and cut to 200 characters.
 
@@ -192,7 +195,6 @@ RULES = (
     "first-of-kind",
 )
 FOOTPRINT_RULES = RULES[1:13]  # the rules that read the footprint, skipped after a `footprint` hit
-DOCUMENT_RULES = RULES[13:]
 REQUIRED = ("--plan", "--component", "--base")
 OPTIONAL = ("--issue-document", "--analysis")
 ARGS = REQUIRED + OPTIONAL
@@ -694,8 +696,10 @@ def headings(lines: list) -> list:
     return found
 
 
-def section(lines: list, title: str, what: str) -> tuple:
-    """(index of the first body line, body lines) of the one `## <title>` section; raises DocumentError."""
+def section(lines: list, title: str, what: str, ends: tuple = (1, 2)) -> tuple:
+    """(index of the first body line, body lines) of the one `## <title>` section; raises DocumentError.
+
+    The section runs to the next heading of a level in ends."""
     marks = headings(lines)
     starts = [i for i, level in marks if level == 2 and lines[i].rstrip() == f"## {title}"]
     if not starts:
@@ -703,7 +707,7 @@ def section(lines: list, title: str, what: str) -> tuple:
     if len(starts) > 1:
         raise DocumentError(f"{what}: {len(starts)} '## {title}' sections")
     start = starts[0]
-    end = next((i for i, _ in marks if i > start), len(lines))
+    end = next((i for i, level in marks if i > start and level in ends), len(lines))
     return start + 1, lines[start + 1:end]
 
 
@@ -722,17 +726,24 @@ def flat(text: str) -> str:
 def question_reasons(text: str, what: str) -> list:
     lines = document_lines(text)
     try:
-        start, body = section(lines, "Questions", what)
+        # Questions runs to the next `## ` heading, so a `# ` heading cannot end it early.
+        start, body = section(lines, "Questions", what, ends=(2,))
     except DocumentError as exc:
         return [str(exc)]
     reasons = []
     for offset, line in enumerate(body):
-        if not line.strip() or line[0] in " \t":
-            continue  # blank, a continuation or a sub-bullet
-        if line.startswith(BLOCKING):
-            reasons.append(f"{what}: blocking question: {flat(line[len(BLOCKING):])}")
+        number = start + offset + 1
+        entry = line.lstrip(" \t")
+        if not entry:
+            continue
+        if entry.startswith(BLOCKING):  # at column 0, indented, nested or after a tab
+            reasons.append(f"{what}: blocking question: {flat(entry[len(BLOCKING):])}")
+        elif line[0] in " \t":
+            continue  # a continuation or a sub-bullet
+        elif line.startswith("# "):
+            reasons.append(f"{what}: line {number} of '## Questions' is a '# ' heading inside the section")
         elif not line.startswith(NON_BLOCKING):
-            reasons.append(f"{what}: line {start + offset + 1} of '## Questions' is neither a "
+            reasons.append(f"{what}: line {number} of '## Questions' is neither a "
                            f"'{BLOCKING}' nor a '{NON_BLOCKING}' entry")
     return reasons
 
@@ -741,9 +752,10 @@ def issue_criteria(text: str) -> list:
     _, body = section(issue_body(text), "Acceptance criteria", "the issue document")
     criteria = []
     current = None
+    gap = False  # a blank line since the item's last line
     for line in body:
         if not line.strip():
-            current = None  # a blank line ends the item
+            gap = True
             continue
         item = ITEM.fullmatch(line)
         if item:
@@ -751,8 +763,11 @@ def issue_criteria(text: str) -> list:
             box = CHECKBOX.fullmatch(rest)
             current = [box.group(1) if box else rest]
             criteria.append(current)
-        elif current is not None:
-            current.append(line)
+        elif current is not None and (not gap or line[0] in " \t"):
+            current.append(line)  # a wrapped line, or an indented later paragraph of the item
+        else:
+            current = None  # prose at column 0 after a blank line ends the item
+        gap = False
     return [" ".join(" ".join(parts).split()) for parts in criteria]
 
 

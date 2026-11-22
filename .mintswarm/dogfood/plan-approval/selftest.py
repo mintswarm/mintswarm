@@ -45,16 +45,19 @@ Checks:
   the expected 16 results and reasons, plan-10.md a `require-human-paths`
   hit naming AGENTS.md; at `nodocs`, plan-20.md and plan-10.md are also
   `first-of-kind` hits;
-- blocking-questions: a blocking question in the analysis or the plan,
-  with continuation lines named once, a variant marker, prose, a missing or
-  repeated Questions section and no --analysis are hits; non-blocking
-  entries only, and a Questions heading inside a fence, are clean;
-- acceptance-criteria: a dropped, added, reworded or repeated criterion, no
-  criteria, no criteria section, two Verification sections, a table without
-  its `---` row and no --issue-document are hits naming the criterion or
-  the cause; whitespace differences, wrapped criteria, `\\|`, other list
-  markers and task boxes, reordered rows, the decoy in comments and CRLF
+- blocking-questions: a blocking question in the analysis or the plan, at
+  column 0, indented, tab-indented or nested, or after a `# ` heading
+  inside Questions, with continuation lines named once, a variant marker,
+  prose, a missing or repeated Questions section and no --analysis are
+  hits; non-blocking entries only, and a Questions heading inside a fence,
   are clean;
+- acceptance-criteria: a dropped, added, reworded or repeated criterion, a
+  criterion's indented later paragraph left out, no criteria, no criteria
+  section, two Verification sections, a table without its `---` row and no
+  --issue-document are hits naming the criterion or the cause; whitespace
+  differences, wrapped criteria, a later paragraph quoted, `\\|`, other
+  list markers and task boxes, reordered rows, the decoy in comments and
+  CRLF are clean;
 - first-of-kind: `cli` at `real`, `core` (multi-scope only), `runner`
   (revert only) and `domain` (other case only) are hits, and so are an
   issue kind other than implementation, another component, a repeated or
@@ -689,6 +692,16 @@ def check_blocking_questions(r: Runner) -> None:
                reasons=["analysis: blocking question: Which component owns it?"],
                analysis=analysis_document("- **Blocking:** Which component owns it?\n  It could be agents.\n"
                                           "  - or docs, as a sub-bullet\n\n" + assumed))
+    for label, entry in (("indented", " - **Blocking:** Which component owns it?\n"),
+                         ("tab-indented", "\t- **Blocking:** Which component owns it?\n"),
+                         ("nested", assumed + "  - **Blocking:** Which component owns it?\n")):
+        expect_hit(r, f"{label} blocking question", base(), rule, only=True,
+                   reasons=["analysis: blocking question: Which component owns it?"],
+                   analysis=analysis_document(entry))
+    expect_hit(r, "blocking question after a '# ' heading in Questions", base(), rule, only=True,
+               reasons=["analysis: line 13 of '## Questions' is a '# ' heading inside the section",
+                        "analysis: blocking question: Which component owns it?"],
+               analysis=analysis_document(assumed + "\n# Note\n\n- **Blocking:** Which component owns it?\n"))
     expect_hit(r, "variant Blocking marker", base(), rule, only=True, reason="analysis: line 11 of '## Questions'",
                analysis=analysis_document("- **Blocking**: Which component owns it?\n"))
     expect_hit(r, "prose in Questions", base(), rule, only=True, reason="is neither",
@@ -744,6 +757,14 @@ def check_acceptance_criteria(r: Runner) -> None:
     wrapped = (f"1. {CRITERIA[0][:20]}\n   {CRITERIA[0][20:]}\n2. {CRITERIA[1]}\n"
                f"3. {CRITERIA[2][:10]}\n{CRITERIA[2][10:]}\n\nProse after the list.\n")
     expect_clean(r, "wrapped issue criteria", base(), [rule], issue=issue_document(criteria=wrapped))
+    paragraphs = (f"1. {CRITERIA[0]}\n\n   It reads them as UTF-8.\n\n2. {CRITERIA[1]}\n"
+                  f"3. {CRITERIA[2]}\n\nProse after the list.\n")
+    expect_hit(r, "criterion's later paragraph left out", base(), rule, only=True,
+               reason=f"lacks the criterion: {CRITERIA[0]} It reads them as UTF-8.",
+               issue=issue_document(criteria=paragraphs))
+    expect_clean(r, "criterion's later paragraph quoted", base(), [rule],
+                 issue=issue_document(criteria=paragraphs),
+                 tail=plan_tail(rows=[f"{CRITERIA[0]} It reads them as UTF-8.", *escaped[1:]]))
     expect_clean(r, "escaped bar", base(), [rule], tail=plan_tail(rows=escaped))
     markers = (f"Done when:\n\n- [ ] {CRITERIA[0]}\n* [x] {CRITERIA[1]}\n"
                f"1) {CRITERIA[2]}\n")
