@@ -6,7 +6,7 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 
 - The toolchain is Rust `{{ rust_toolchain }}`, pinned in `rust-toolchain.toml` with the `rustfmt` and `clippy` components.
 - The edition is `{{ edition }}`. It is set once, in `[workspace.package]` of the root `Cargo.toml`, and every crate inherits it with `edition.workspace = true`.
-- Edition 2024 needs Rust 1.85 or later.
+- The toolchain is at least Rust 1.85, the first release with edition 2024 and rustfmt's `style_edition`.
 
 ## Formatting
 
@@ -23,7 +23,8 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 
 - Libraries return typed errors: an error enum per module or crate, implementing `std::error::Error`.
 - Binaries may use a catch-all error type at their top level.
-- `unwrap` is used only in tests. `expect` is used only with a message that states the invariant that makes it safe.
+- `unwrap` is used only in `#[test]` functions and `#[cfg(test)]` code. An integration-test crate in `tests/` starts with `#![cfg(test)]`, or its helpers use `expect` with a message.
+- Outside tests, `expect` is used only with a message that states the invariant that makes it safe.
 
 ## Unsafe code
 
@@ -44,7 +45,7 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 
 - Dependency versions are declared once, in `[workspace.dependencies]` of the root `Cargo.toml`, and crates take them with `workspace = true`.
 - Features are additive: enabling a feature never removes or changes behaviour.
-- `Cargo.lock` is committed for applications.
+- `Cargo.lock` at the workspace root is committed.
 
 ## Local checks
 
