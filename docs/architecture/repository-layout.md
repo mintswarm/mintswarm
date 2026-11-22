@@ -17,11 +17,12 @@ mintswarm/
 ├── LICENSE.md              # FSL-1.1-ALv2
 ├── README.md
 │
-├── .claude/agents/         # stage agent definitions; the prototype of mintswarm's default stage templates
+├── .claude/agents/         # stage agents for Claude Code, generated from `.mintswarm/stages/`; dogfooding only
 ├── .mintswarm/             # this repository's own mintswarm config
 │   ├── config.yaml         # tracker mapping, components, stage models, pipeline, gates
 │   ├── stages.md           # conventions every stage agent follows
-│   ├── dogfood/            # stand-ins for runner functions while the system does not run (gate runner)
+│   ├── stages/             # harness-neutral stage definitions: capabilities, model tier, instructions
+│   ├── dogfood/            # stand-ins for runner functions while the system does not run (gate runner, stage agent renderer)
 │   ├── job/                # per-job inputs and outputs inside a worktree, never committed
 │   └── worktrees/          # job worktrees created by the session acting as runner, never committed
 │

@@ -45,7 +45,7 @@ components:
     paths: ["web/**"]
   agents:
     description: "stage agent definitions, stage conventions, prompt templates and the dogfooding glue"
-    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/dogfood/**", "defaults/prompts/**"]
+    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/dogfood/**", "defaults/prompts/**"]
   distribution:
     description: "container image, compose files, service units and installers"
     paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
@@ -64,6 +64,7 @@ shared:                              # any component may touch these
   - .gitignore
   - .mintswarm/config.yaml
 
+# Chooses the model at run time; the tier in .mintswarm/stages/<stage>.md is the stage default that .claude/agents/ is rendered with.
 agents:
   default: { harness: claude, model: opus, effort: high }
   stages:
@@ -79,3 +80,5 @@ gates:
   run:
     - name: whitespace
       command: "git diff --check origin/master...HEAD"
+    - name: agents-drift
+      command: "python3 .mintswarm/dogfood/render-agents.py --check"
