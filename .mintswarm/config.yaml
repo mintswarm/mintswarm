@@ -70,6 +70,7 @@ shared:                              # any component may touch these
 agents:
   default: { harness: claude, model: opus, effort: high }
   stages:
+    assess: { model: sonnet }        # must differ from the plan stage's model (opus, through default)
     gates: { model: sonnet, effort: low }
 
 pipeline:
