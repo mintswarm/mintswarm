@@ -157,8 +157,11 @@ def assign(number: int, reason: str, base: str, dry_run: bool) -> int:
     issue = gh(["--method", "POST", f"repos/{{owner}}/{{repo}}/issues/{number}/assignees"], {"assignees": todo})
     missing = [login for login in todo if login.lower() not in lowered(assignee_logins(issue))]
     if missing:
-        print(f"assign-approvers.py: GitHub did not assign {' '.join(missing)} to #{number}"
-              " (not assignable, or over the 10-assignee cap)", file=sys.stderr)
+        print(
+            f"assign-approvers.py: GitHub did not assign {' '.join(missing)} to #{number}"
+            " (not assignable, or over the 10-assignee cap)",
+            file=sys.stderr,
+        )
         return 1
     print(f"assigned {' '.join(todo)} to #{number} ({reason})")
     return 0

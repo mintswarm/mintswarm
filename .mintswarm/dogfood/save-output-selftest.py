@@ -134,7 +134,11 @@ class SaveOutput(unittest.TestCase):
     def run_script(self, *args):
         return subprocess.run(
             [sys.executable, "-I", str(SCRIPT), *args],
-            cwd=self.dir, capture_output=True, text=True, encoding="utf-8", check=False,
+            cwd=self.dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
 
     def transcript(self, *records):
@@ -172,7 +176,7 @@ class SaveOutput(unittest.TestCase):
         if found is None:
             self.fail(f"no 'breaks <rule>' line in stderr: {proc.stderr}")
         self.assertEqual(found.group(1), rule, proc.stderr)
-        quoted = proc.stderr[found.end():].rstrip("\n")
+        quoted = proc.stderr[found.end() :].rstrip("\n")
         self.assertIn(quoted, self.stages_md, "the quoted rule is not verbatim in .mintswarm/stages.md")
         self.assertTrue(quoted.strip())
         for fragment in fragments:
@@ -256,7 +260,11 @@ class SaveOutput(unittest.TestCase):
         )
         proc = self.run_script(str(path), str(self.out))
         self.assert_rejected(
-            proc, "rule 1", "no document block", "'# ' title", "no earlier block is used",
+            proc,
+            "rule 1",
+            "no document block",
+            "'# ' title",
+            "no earlier block is used",
             message="assistant message 2 of 2 (msg_2)",
         )
 
@@ -282,7 +290,11 @@ class SaveOutput(unittest.TestCase):
             ("rule 4", broken(REPLY, "# Review round 1", "Review round 1"), "'# ' title"),
             ("rule 5", "````markdown\n" + DOCUMENT + "````\n\nAnd again:\n\n" + REPLY, "2 document blocks"),
             ("rule 6", REPLY.split("```yaml\nmsw")[0], "no msw-result block"),
-            ("rule 6", broken(REPLY, "````\n\n```yaml\nmsw", "````\n\nStatus below.\n\n```yaml\nmsw"), "'Status below.'"),
+            (
+                "rule 6",
+                broken(REPLY, "````\n\n```yaml\nmsw", "````\n\nStatus below.\n\n```yaml\nmsw"),
+                "'Status below.'",
+            ),
             ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```\nmsw-result:"), "untagged"),
             ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```msw-result"), "tagged 'msw-result'"),
             ("Result block", broken(REPLY, "msw-result:\n", "result:\n"), "'result:'"),
@@ -309,7 +321,7 @@ def fenced_blocks(lines):
                 break
         else:
             raise AssertionError(f"block opened with {fence}{tag} is never closed")
-        yield tag, len(fence), lines[i + 1:j]
+        yield tag, len(fence), lines[i + 1 : j]
         i = j + 1
 
 
@@ -345,7 +357,7 @@ class Skeletons(unittest.TestCase):
         blocks = list(fenced_blocks(output_section(source.split("\n"))))
         skeletons = [b for b in blocks if b[0] == "text"]
         self.assertEqual(len(skeletons), len(artefacts), f"{stage}: expected {len(artefacts)} skeletons")
-        self.assertEqual(blocks[-len(artefacts):], skeletons, f"{stage}: the skeletons must end the Output section")
+        self.assertEqual(blocks[-len(artefacts) :], skeletons, f"{stage}: the skeletons must end the Output section")
         titles = {body[0] for tag, _, body in blocks if tag == "markdown" and body}
         for (_, backticks, body), artefact in zip(skeletons, artefacts):
             self.assertEqual(backticks, 5, f"{stage}: the skeleton fence must have five backticks")
@@ -354,7 +366,11 @@ class Skeletons(unittest.TestCase):
             reply.write_text("\n".join(body) + "\n", encoding="utf-8")
             proc = subprocess.run(
                 [sys.executable, "-I", str(SCRIPT), "--text", str(reply), str(out)],
-                cwd=tmp, capture_output=True, text=True, encoding="utf-8", check=False,
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
             )
             self.assertEqual(proc.returncode, 0, f"{stage}: {proc.stderr}")
             title = out.read_text(encoding="utf-8").split("\n")[0]

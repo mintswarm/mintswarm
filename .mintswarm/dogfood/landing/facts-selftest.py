@@ -136,8 +136,20 @@ APPROVAL_ID = 9001
 APPROVAL_URL = f"https://github.com/mintswarm/mintswarm/pull/{PR}#issuecomment-{APPROVAL_ID}"
 MARKER = "<!-- mintswarm: steer -->"
 FORBIDDEN = {"-f", "-F", "--field", "--raw-field", "--input", "--paginate", "-X"}
-FACTS_KEYS = ["tool", "version", "pr", "issue", "head", "base", "fetched_at", "checks",
-              "gate_rounds", "review_rounds", "steers", "approval"]
+FACTS_KEYS = [
+    "tool",
+    "version",
+    "pr",
+    "issue",
+    "head",
+    "base",
+    "fetched_at",
+    "checks",
+    "gate_rounds",
+    "review_rounds",
+    "steers",
+    "approval",
+]
 ROUND_KEYS = ["tool", "version", "kind", "round", "head", "kept_at", "files"]
 GATE_KEYS = ["round", "commit", "current", "verdict", "failed_tests", "reason", "files"]
 REVIEW_KEYS = ["round", "commit", "current", "verdict", "findings", "files"]
@@ -165,6 +177,7 @@ T = SelfTest()
 
 # --- sandbox --------------------------------------------------------------
 
+
 class Sandbox:
     def __init__(self, tmp: Path):
         self.tmp = tmp
@@ -177,19 +190,21 @@ class Sandbox:
         drop = ("GIT_", "GH_", "GITHUB_", "MSW_")
         env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
         env.pop("GITHUB_TOKEN", None)
-        env.update({
-            "HOME": str(home),
-            "TMPDIR": str(tmp),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_AUTHOR_NAME": "facts selftest",
-            "GIT_AUTHOR_EMAIL": "selftest@example.invalid",
-            "GIT_COMMITTER_NAME": "facts selftest",
-            "GIT_COMMITTER_EMAIL": "selftest@example.invalid",
-            "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
-            "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
-        })
+        env.update(
+            {
+                "HOME": str(home),
+                "TMPDIR": str(tmp),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_AUTHOR_NAME": "facts selftest",
+                "GIT_AUTHOR_EMAIL": "selftest@example.invalid",
+                "GIT_COMMITTER_NAME": "facts selftest",
+                "GIT_COMMITTER_EMAIL": "selftest@example.invalid",
+                "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+                "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+            }
+        )
         self.env = env
         self.git("init", "-q", "-b", "master")
         write(self.repo / "README.md", "a tracked file\n")
@@ -224,7 +239,10 @@ class Sandbox:
     def run(self, script: Path, args: list, env: Optional[dict] = None, cwd: Optional[Path] = None):
         return subprocess.run(
             [sys.executable, str(script), *args],
-            cwd=cwd or self.repo, env=env or self.env, capture_output=True, text=True,
+            cwd=cwd or self.repo,
+            env=env or self.env,
+            capture_output=True,
+            text=True,
         )
 
 
@@ -259,6 +277,7 @@ def detail(proc) -> str:
 
 # --- rounds ---------------------------------------------------------------
 
+
 def ctrf(statuses: dict) -> str:
     tests = []
     for name, status in statuses.items():
@@ -269,12 +288,24 @@ def ctrf(statuses: dict) -> str:
         tests.append(test)
     passed = sum(1 for s in statuses.values() if s == "passed")
     report = {
-        "reportFormat": "CTRF", "specVersion": "0.3.0", "reportId": "00000000-0000-0000-0000-000000000000",
-        "timestamp": "2026-11-22T10:00:00+00:00", "generatedBy": "mintswarm run-gates.py",
+        "reportFormat": "CTRF",
+        "specVersion": "0.3.0",
+        "reportId": "00000000-0000-0000-0000-000000000000",
+        "timestamp": "2026-11-22T10:00:00+00:00",
+        "generatedBy": "mintswarm run-gates.py",
         "results": {
             "tool": {"name": "mintswarm-gates"},
-            "summary": {"tests": len(tests), "passed": passed, "failed": len(tests) - passed,
-                        "skipped": 0, "pending": 0, "other": 0, "start": 1, "stop": 6, "duration": 5},
+            "summary": {
+                "tests": len(tests),
+                "passed": passed,
+                "failed": len(tests) - passed,
+                "skipped": 0,
+                "pending": 0,
+                "other": 0,
+                "start": 1,
+                "stop": 6,
+                "duration": 5,
+            },
             "tests": tests,
         },
     }
@@ -377,8 +408,15 @@ def keep(sb: Sandbox, *args: str, cwd: Optional[Path] = None, head=DEFAULT, roun
     return sb.run(KEEP, argv, cwd=cwd)
 
 
-def check_round(name: str, sb: Sandbox, kind: str, number: int, expected: dict,
-                rounds: Optional[Path] = None, head: Optional[str] = None) -> None:
+def check_round(
+    name: str,
+    sb: Sandbox,
+    kind: str,
+    number: int,
+    expected: dict,
+    rounds: Optional[Path] = None,
+    head: Optional[str] = None,
+) -> None:
     path = (rounds or sb.rounds) / f"{kind}-{number}"
     problems = []
     if not path.is_dir():
@@ -397,8 +435,14 @@ def check_round(name: str, sb: Sandbox, kind: str, number: int, expected: dict,
         record = json.loads((path / "round.json").read_text(encoding="utf-8"))
         if list(record) != ROUND_KEYS:
             problems.append(f"round.json keys {list(record)}")
-        want = {"tool": "mintswarm-keep-round", "version": 2, "kind": kind, "round": number,
-                "head": head or sb.head, "files": [{"name": f, "sha256": sha(d)} for f, d in sorted(expected.items())]}
+        want = {
+            "tool": "mintswarm-keep-round",
+            "version": 2,
+            "kind": kind,
+            "round": number,
+            "head": head or sb.head,
+            "files": [{"name": f, "sha256": sha(d)} for f, d in sorted(expected.items())],
+        }
         for key, value in want.items():
             if record.get(key) != value:
                 problems.append(f"round.json {key} is {record.get(key)!r}")
@@ -435,17 +479,21 @@ def keep_tests(sb: Sandbox) -> None:
         T.check(f"keep: gates {number} is kept", proc.returncode == 0, detail(proc))
         kept[("gates", number)] = files
 
-    files = {"review.md": write(sb.outputs / "review.md", REVIEW_1),
-             "address.md": write(sb.outputs / "address.md", ADDRESS_1)}
+    files = {
+        "review.md": write(sb.outputs / "review.md", REVIEW_1),
+        "address.md": write(sb.outputs / "address.md", ADDRESS_1),
+    }
     proc = keep(sb, "review", "1")
     T.check("keep: review 1 is kept with its address", proc.returncode == 0, detail(proc))
     kept[("review", 1)] = files
 
     files = {"review.md": write(sb.outputs / "review.md", REVIEW_2)}
     proc = keep(sb, "review", "2")
-    T.check("keep: review 2 with the stale address 1 and no --no-address exits 2",
-            proc.returncode == 2 and not (sb.rounds / "review-2").exists() and not leftovers(sb.rounds),
-            detail(proc))
+    T.check(
+        "keep: review 2 with the stale address 1 and no --no-address exits 2",
+        proc.returncode == 2 and not (sb.rounds / "review-2").exists() and not leftovers(sb.rounds),
+        detail(proc),
+    )
     proc = keep(sb, "review", "2", "--no-address")
     T.check("keep: review 2 is kept with --no-address", proc.returncode == 0, detail(proc))
     kept[("review", 2)] = files
@@ -462,24 +510,40 @@ def keep_tests(sb: Sandbox) -> None:
 
     write(sb.outputs / "review.md", REVIEW_2)
     proc = keep(sb, "review", "3", "--no-address")
-    T.check("keep: a review.md titled round 2 kept as round 3 exits 2",
-            proc.returncode == 2 and not (sb.rounds / "review-3").exists(), detail(proc))
+    T.check(
+        "keep: a review.md titled round 2 kept as round 3 exits 2",
+        proc.returncode == 2 and not (sb.rounds / "review-3").exists(),
+        detail(proc),
+    )
     (sb.outputs / "review.md").unlink()
     proc = keep(sb, "review", "3", "--no-address")
-    T.check("keep: a missing review.md exits 2",
-            proc.returncode == 2 and not (sb.rounds / "review-3").exists(), detail(proc))
+    T.check(
+        "keep: a missing review.md exits 2",
+        proc.returncode == 2 and not (sb.rounds / "review-3").exists(),
+        detail(proc),
+    )
 
     write(gates_json, gates_input, T0 + 1000)
     write(sb.outputs / "gates.ctrf.json", ctrf(GATE_ROUNDS[2]), T0 + 1010)
     write(sb.outputs / "gates.md", "# Gates: Keep rounds\n\nOld.\n", T0 + 900)
     proc = keep(sb, "gates", "4")
-    T.check("keep: a gates.md older than inputs/gates.json exits 2",
-            proc.returncode == 2 and not (sb.rounds / "gates-4").exists(), detail(proc))
+    T.check(
+        "keep: a gates.md older than inputs/gates.json exits 2",
+        proc.returncode == 2 and not (sb.rounds / "gates-4").exists(),
+        detail(proc),
+    )
     T.check("keep: no temporary directory is left", not leftovers(sb.rounds), str(leftovers(sb.rounds)))
 
-    for args in (["gates", "0"], ["gates", "01"], ["gates"], ["review", "1", "--extra"],
-                 ["gates", "5", "--no-address"], ["other", "1"], ["gates", "5", "--head", sb.head],
-                 ["gates", "5", "--rounds"]):
+    for args in (
+        ["gates", "0"],
+        ["gates", "01"],
+        ["gates"],
+        ["review", "1", "--extra"],
+        ["gates", "5", "--no-address"],
+        ["other", "1"],
+        ["gates", "5", "--head", sb.head],
+        ["gates", "5", "--rounds"],
+    ):
         proc = keep(sb, *args)
         T.check(f"keep: bad arguments {args[:4]} exit 2", proc.returncode == 2, detail(proc))
 
@@ -487,16 +551,20 @@ def keep_tests(sb: Sandbox) -> None:
     other_head = sb.job(other)
     other_rounds = sb.runner_state / "jobs" / "other" / "rounds"
     proc = keep(sb, "gates", "1", cwd=other, head=other_head, rounds=other_rounds)
-    T.check("keep: a gates round without inputs/gates.json exits 2",
-            proc.returncode == 2 and not (other_rounds / "gates-1").exists(), detail(proc))
+    T.check(
+        "keep: a gates round without inputs/gates.json exits 2",
+        proc.returncode == 2 and not (other_rounds / "gates-1").exists(),
+        detail(proc),
+    )
     data = write(other / JOB / "inputs" / "gates.json", gates_input)
     proc = keep(sb, "gates", "1", cwd=other, head=other_head, rounds=other_rounds)
     empty = other_rounds / "gates-1"
     ok = proc.returncode == 0 and "warning" in proc.stderr and empty.is_dir()
     if ok:
         record = json.loads((empty / "round.json").read_text(encoding="utf-8"))
-        ok = record["files"] == [{"name": "gates.input.json", "sha256": sha(data)}] \
-            and sorted(p.name for p in empty.iterdir()) == ["gates.input.json", "round.json"]
+        ok = record["files"] == [{"name": "gates.input.json", "sha256": sha(data)}] and sorted(
+            p.name for p in empty.iterdir()
+        ) == ["gates.input.json", "round.json"]
     T.check("keep: a gates round with neither output keeps only its input, with a warning", ok, detail(proc))
 
 
@@ -546,8 +614,11 @@ def fresh_status(sb: Sandbox) -> str:
 
 def refused(name: str, proc, fragment: str, absent: list) -> None:
     gone = [str(path) for path in absent if os.path.lexists(path)]
-    T.check(name, proc.returncode == 2 and fragment in proc.stderr and not gone,
-            detail(proc) + (f"; left {gone}" if gone else ""))
+    T.check(
+        name,
+        proc.returncode == 2 and fragment in proc.stderr and not gone,
+        detail(proc) + (f"; left {gone}" if gone else ""),
+    )
 
 
 def location_tests(sb: Sandbox) -> None:
@@ -571,20 +642,34 @@ def location_tests(sb: Sandbox) -> None:
     if variant is None:
         skip(name, "the file system is case-sensitive")
     else:
-        refused(name, keep(sb, "gates", "9", rounds=variant / "state-case" / "rounds"), "inside the worktree",
-                [sb.repo / "state-case"])
+        refused(
+            name,
+            keep(sb, "gates", "9", rounds=variant / "state-case" / "rounds"),
+            "inside the worktree",
+            [sb.repo / "state-case"],
+        )
 
     nested = nested_worktree(sb)
     ready_gates(nested, T0 + 3000)
     in_main = sb.repo / "state" / "rounds"
-    refused("keep: from a nested worktree, --rounds inside the main checkout exits 2 and keeps nothing",
-            keep(sb, "gates", "1", cwd=nested, rounds=in_main), "inside the main checkout", [sb.repo / "state"])
+    refused(
+        "keep: from a nested worktree, --rounds inside the main checkout exits 2 and keeps nothing",
+        keep(sb, "gates", "1", cwd=nested, rounds=in_main),
+        "inside the main checkout",
+        [sb.repo / "state"],
+    )
     control = sb.runner_state / "jobs" / "nested" / "rounds"
     proc = keep(sb, "gates", "1", cwd=nested, rounds=control)
-    T.check("keep: from a nested worktree, the same round kept in runner state succeeds",
-            proc.returncode == 0 and (control / "gates-1" / "round.json").is_file(), detail(proc))
-    T.check("keep: the rounds directory is made mode 0700", stat.S_IMODE(control.stat().st_mode) == 0o700,
-            oct(stat.S_IMODE(control.stat().st_mode)))
+    T.check(
+        "keep: from a nested worktree, the same round kept in runner state succeeds",
+        proc.returncode == 0 and (control / "gates-1" / "round.json").is_file(),
+        detail(proc),
+    )
+    T.check(
+        "keep: the rounds directory is made mode 0700",
+        stat.S_IMODE(control.stat().st_mode) == 0o700,
+        oct(stat.S_IMODE(control.stat().st_mode)),
+    )
 
 
 def head_tests(sb: Sandbox) -> None:
@@ -594,23 +679,45 @@ def head_tests(sb: Sandbox) -> None:
     tree = sb.git("rev-parse", "HEAD^{tree}")
     unrelated = sb.git("commit-tree", tree, "-m", "unrelated")
     write(sb.outputs / "review.md", REVIEW_2.replace("round 2", "round 9"))
-    refused("keep: a gates --head that is not HEAD exits 2", keep(sb, "gates", "9", head=sb.base, rounds=rounds),
-            "is not HEAD", [rounds / "gates-9"])
-    refused("keep: a --head that is not a full hash exits 2",
-            keep(sb, "gates", "9", head=sb.head[:12], rounds=rounds), "must be a full commit hash",
-            [rounds / "gates-9"])
-    refused("keep: a --head HEAD exits 2", keep(sb, "gates", "9", head="HEAD", rounds=rounds),
-            "must be a full commit hash", [rounds / "gates-9"])
-    refused("keep: a review --head that is not an ancestor of HEAD exits 2",
-            keep(sb, "review", "9", "--no-address", head=unrelated, rounds=rounds), "not HEAD or an ancestor",
-            [rounds / "review-9"])
+    refused(
+        "keep: a gates --head that is not HEAD exits 2",
+        keep(sb, "gates", "9", head=sb.base, rounds=rounds),
+        "is not HEAD",
+        [rounds / "gates-9"],
+    )
+    refused(
+        "keep: a --head that is not a full hash exits 2",
+        keep(sb, "gates", "9", head=sb.head[:12], rounds=rounds),
+        "must be a full commit hash",
+        [rounds / "gates-9"],
+    )
+    refused(
+        "keep: a --head HEAD exits 2",
+        keep(sb, "gates", "9", head="HEAD", rounds=rounds),
+        "must be a full commit hash",
+        [rounds / "gates-9"],
+    )
+    refused(
+        "keep: a review --head that is not an ancestor of HEAD exits 2",
+        keep(sb, "review", "9", "--no-address", head=unrelated, rounds=rounds),
+        "not HEAD or an ancestor",
+        [rounds / "review-9"],
+    )
     write(sb.repo / "README.md", "changed after the gates ran\n")
-    refused("keep: a gates keep with a modified tracked file exits 2", keep(sb, "gates", "9", rounds=rounds),
-            "README.md", [rounds / "gates-9"])
+    refused(
+        "keep: a gates keep with a modified tracked file exits 2",
+        keep(sb, "gates", "9", rounds=rounds),
+        "README.md",
+        [rounds / "gates-9"],
+    )
     sb.git("checkout", "-q", "--", "README.md")
     write(sb.repo / "stray.txt", "untracked\n")
-    refused("keep: a gates keep with an untracked file outside .mintswarm/job/ exits 2",
-            keep(sb, "gates", "9", rounds=rounds), "stray.txt", [rounds / "gates-9"])
+    refused(
+        "keep: a gates keep with an untracked file outside .mintswarm/job/ exits 2",
+        keep(sb, "gates", "9", rounds=rounds),
+        "stray.txt",
+        [rounds / "gates-9"],
+    )
     (sb.repo / "stray.txt").unlink()
     (sb.outputs / "review.md").unlink()
 
@@ -620,8 +727,12 @@ def head_tests(sb: Sandbox) -> None:
         write(sb.repo / "README.md", "changed behind a flag\n")
         hidden = plain_status(sb)
         T.check(f"keep: with {flag}, a plain git status hides the change", hidden == "", hidden)
-        refused(f"keep: a gates keep with a {flag} entry exits 2", keep(sb, "gates", "9", rounds=rounds),
-                "assume-unchanged or skip-worktree: README.md", [rounds / "gates-9"])
+        refused(
+            f"keep: a gates keep with a {flag} entry exits 2",
+            keep(sb, "gates", "9", rounds=rounds),
+            "assume-unchanged or skip-worktree: README.md",
+            [rounds / "gates-9"],
+        )
         sb.git("update-index", f"--no-{flag}", "README.md")
         sb.git("checkout", "-q", "--", "README.md")
     exclude = sb.repo / ".git" / "info" / "exclude"
@@ -629,31 +740,48 @@ def head_tests(sb: Sandbox) -> None:
     excludes_file.write_text("evil.py\n", encoding="utf-8")
     hiders = [
         ("listed in .git/info/exclude", lambda: write(exclude, "evil.py\n"), lambda: write(exclude, "")),
-        ("listed in core.excludesFile", lambda: sb.git("config", "core.excludesFile", str(excludes_file)),
-         lambda: sb.git("config", "--unset", "core.excludesFile")),
+        (
+            "listed in core.excludesFile",
+            lambda: sb.git("config", "core.excludesFile", str(excludes_file)),
+            lambda: sb.git("config", "--unset", "core.excludesFile"),
+        ),
     ]
     for name, hide, unhide in hiders:
         hide()
         write(sb.repo / "evil.py", "print('not what HEAD holds')\n")
         hidden = plain_status(sb, "--untracked-files=all")
         T.check(f"keep: an untracked file {name} is hidden from a plain git status", hidden == "", hidden)
-        refused(f"keep: a gates keep with an untracked file {name} exits 2", keep(sb, "gates", "9", rounds=rounds),
-                "evil.py", [rounds / "gates-9"])
+        refused(
+            f"keep: a gates keep with an untracked file {name} exits 2",
+            keep(sb, "gates", "9", rounds=rounds),
+            "evil.py",
+            [rounds / "gates-9"],
+        )
         (sb.repo / "evil.py").unlink()
         unhide()
     write(sb.repo / "evil" / ".gitignore", "*\n")
     write(sb.repo / "evil" / "x.py", "print('hidden')\n")
     hidden = plain_status(sb, "--untracked-files=all")
-    T.check("keep: an untracked .gitignore that ignores itself hides its directory from a plain git status",
-            hidden == "", hidden)
-    refused("keep: a gates keep with an untracked .gitignore that ignores itself exits 2",
-            keep(sb, "gates", "9", rounds=rounds), "untracked .gitignore files that hide paths: evil/.gitignore",
-            [rounds / "gates-9"])
+    T.check(
+        "keep: an untracked .gitignore that ignores itself hides its directory from a plain git status",
+        hidden == "",
+        hidden,
+    )
+    refused(
+        "keep: a gates keep with an untracked .gitignore that ignores itself exits 2",
+        keep(sb, "gates", "9", rounds=rounds),
+        "untracked .gitignore files that hide paths: evil/.gitignore",
+        [rounds / "gates-9"],
+    )
     shutil.rmtree(sb.repo / "evil")
     write(sb.repo / "staged.py", "print('staged, never committed')\n")
     sb.git("add", "staged.py")
-    refused("keep: a gates keep with a file staged but not committed exits 2", keep(sb, "gates", "9", rounds=rounds),
-            "staged.py", [rounds / "gates-9"])
+    refused(
+        "keep: a gates keep with a file staged but not committed exits 2",
+        keep(sb, "gates", "9", rounds=rounds),
+        "staged.py",
+        [rounds / "gates-9"],
+    )
     sb.git("rm", "-q", "--cached", "staged.py")
     (sb.repo / "staged.py").unlink()
 
@@ -666,10 +794,17 @@ def head_tests(sb: Sandbox) -> None:
     sb.git("update-index", "--refresh")
     write(readme, original.replace(b"a tracked", b"a TRACKED"), old)
     hidden = plain_status(sb)
-    T.check("keep: a same-size change with its mtime restored is hidden from git status under core.checkStat "
-            "minimal", hidden == "", hidden)
-    refused("keep: a gates keep with a change hidden by the stat cache settings exits 2",
-            keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+    T.check(
+        "keep: a same-size change with its mtime restored is hidden from git status under core.checkStat " "minimal",
+        hidden == "",
+        hidden,
+    )
+    refused(
+        "keep: a gates keep with a change hidden by the stat cache settings exits 2",
+        keep(sb, "gates", "9", rounds=rounds),
+        "README.md",
+        [rounds / "gates-9"],
+    )
     write(readme, original)
     sb.git("config", "--unset", "core.checkStat")
     sb.git("config", "--unset", "core.trustctime")
@@ -681,46 +816,76 @@ def head_tests(sb: Sandbox) -> None:
     attributes_file = sb.tmp / "attributes"
     sources = [
         (".git/info/attributes", lambda: write(attributes, "README.md filter=h\n"), attributes.unlink),
-        ("core.attributesFile", lambda: (write(attributes_file, "README.md filter=h\n"),
-                                         sb.git("config", "core.attributesFile", str(attributes_file))),
-         lambda: sb.git("config", "--unset", "core.attributesFile")),
+        (
+            "core.attributesFile",
+            lambda: (
+                write(attributes_file, "README.md filter=h\n"),
+                sb.git("config", "core.attributesFile", str(attributes_file)),
+            ),
+            lambda: sb.git("config", "--unset", "core.attributesFile"),
+        ),
     ]
     for source, add, remove in sources:
         sb.git("config", "filter.h.clean", f"touch {shlex.quote(str(marker))}; git cat-file blob HEAD:%f")
         add()
         write(readme, "a longer change that the clean filter turns back into HEAD's blob\n")
         hidden = fresh_status(sb)
-        T.check(f"keep: a clean filter set through {source} hides a change from git status on a fresh index",
-                hidden == "" and marker.exists(), hidden)
+        T.check(
+            f"keep: a clean filter set through {source} hides a change from git status on a fresh index",
+            hidden == "" and marker.exists(),
+            hidden,
+        )
         marker.unlink(missing_ok=True)
-        refused(f"keep: a gates keep with a change a clean filter set through {source} hides exits 2",
-                keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+        refused(
+            f"keep: a gates keep with a change a clean filter set through {source} hides exits 2",
+            keep(sb, "gates", "9", rounds=rounds),
+            "README.md",
+            [rounds / "gates-9"],
+        )
         T.check(f"keep: keep-round.py does not run the clean filter set through {source}", not marker.exists())
         remove()
         sb.git("config", "--remove-section", "filter.h")
         write(readme, original)
     conversions = [
-        ("core.autocrlf true and CRLF line endings", ("core.autocrlf", "true"),
-         lambda: write(readme, original.replace(b"\n", b"\r\n")), lambda: write(readme, original)),
-        ("core.fileMode false and an executable bit", ("core.fileMode", "false"),
-         lambda: readme.chmod(0o755), lambda: readme.chmod(0o644)),
+        (
+            "core.autocrlf true and CRLF line endings",
+            ("core.autocrlf", "true"),
+            lambda: write(readme, original.replace(b"\n", b"\r\n")),
+            lambda: write(readme, original),
+        ),
+        (
+            "core.fileMode false and an executable bit",
+            ("core.fileMode", "false"),
+            lambda: readme.chmod(0o755),
+            lambda: readme.chmod(0o644),
+        ),
     ]
     for name, (key, value), change, undo in conversions:
         sb.git("config", key, value)
         change()
         hidden = fresh_status(sb)
         T.check(f"keep: {name} hide a change from git status on a fresh index", hidden == "", hidden)
-        refused(f"keep: a gates keep with {name} exits 2", keep(sb, "gates", "9", rounds=rounds), "README.md",
-                [rounds / "gates-9"])
+        refused(
+            f"keep: a gates keep with {name} exits 2",
+            keep(sb, "gates", "9", rounds=rounds),
+            "README.md",
+            [rounds / "gates-9"],
+        )
         undo()
         sb.git("config", "--unset", key)
     link = sb.repo / "link"
-    for name, change in (("retargeted", lambda: os.symlink("elsewhere", link)),
-                         ("replaced by a file holding its target", lambda: write(link, "README.md"))):
+    for name, change in (
+        ("retargeted", lambda: os.symlink("elsewhere", link)),
+        ("replaced by a file holding its target", lambda: write(link, "README.md")),
+    ):
         link.unlink()
         change()
-        refused(f"keep: a gates keep with the tracked symbolic link {name} exits 2",
-                keep(sb, "gates", "9", rounds=rounds), "link", [rounds / "gates-9"])
+        refused(
+            f"keep: a gates keep with the tracked symbolic link {name} exits 2",
+            keep(sb, "gates", "9", rounds=rounds),
+            "link",
+            [rounds / "gates-9"],
+        )
         link.unlink()
         os.symlink("README.md", link)
 
@@ -730,13 +895,19 @@ def head_tests(sb: Sandbox) -> None:
     sb.git("commit", "-q", "-m", "a gitlink", cwd=submodule)
     ready_gates(submodule, T0 + 4500)
     gitlink_rounds = sb.runner_state / "jobs" / "with-gitlink" / "rounds"
-    refused("keep: a gates keep at a HEAD holding a gitlink exits 2",
-            keep(sb, "gates", "1", cwd=submodule, head=sb.git("rev-parse", "HEAD", cwd=submodule),
-                 rounds=gitlink_rounds), "submodules (gitlinks), whose content is not checked: sub",
-            [gitlink_rounds / "gates-1"])
+    refused(
+        "keep: a gates keep at a HEAD holding a gitlink exits 2",
+        keep(sb, "gates", "1", cwd=submodule, head=sb.git("rev-parse", "HEAD", cwd=submodule), rounds=gitlink_rounds),
+        "submodules (gitlinks), whose content is not checked: sub",
+        [gitlink_rounds / "gates-1"],
+    )
     readme.rename(sb.repo / "readme.md")  # a case-only rename: the same file on a case-insensitive file system
-    refused("keep: a gates keep with a tracked file renamed in case only exits 2, whatever core.ignoreCase says",
-            keep(sb, "gates", "9", rounds=rounds), "readme.md", [rounds / "gates-9"])
+    refused(
+        "keep: a gates keep with a tracked file renamed in case only exits 2, whatever core.ignoreCase says",
+        keep(sb, "gates", "9", rounds=rounds),
+        "readme.md",
+        [rounds / "gates-9"],
+    )
     (sb.repo / "readme.md").rename(readme)
     proc = keep(sb, "gates", "9", rounds=rounds)
     T.check("keep: with every change undone the same gates round is kept", proc.returncode == 0, detail(proc))
@@ -757,18 +928,37 @@ def twin_tests(sb: Sandbox) -> None:
     rounds = sb.runner_state / "jobs" / "twins" / "rounds"
     ready_gates(job, T0 + 6000)
     proc = keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds)
-    T.check("keep: tracked names holding quotes and a CR are checked and kept when unchanged",
-            proc.returncode == 0, detail(proc))
-    for number, (name, label) in enumerate(((names[0], 'a changed "x"/y with a twin x'),
-                                            (names[1], "a changed x followed by a CR, with a twin x")), 2):
+    T.check(
+        "keep: tracked names holding quotes and a CR are checked and kept when unchanged",
+        proc.returncode == 0,
+        detail(proc),
+    )
+    for number, (name, label) in enumerate(
+        ((names[0], 'a changed "x"/y with a twin x'), (names[1], "a changed x followed by a CR, with a twin x")), 2
+    ):
         write(job / name, "import os; os.system('echo pwned')\n")
-        piped = subprocess.run(["git", "hash-object", "--no-filters", "--stdin-paths"], cwd=job, env=sb.env,
-                               input=name.encode("utf-8") + b"\n", capture_output=True).stdout.decode().strip()
-        T.check(f"keep: for {label}, git hash-object --stdin-paths hashes the twin",
-                piped == sb.git("rev-parse", "HEAD:x", cwd=job), piped)
-        refused(f"keep: a gates keep with {label} exits 2", keep(sb, "gates", str(number), cwd=job, head=head,
-                                                                 rounds=rounds),
-                "changed or untracked paths", [rounds / f"gates-{number}"])
+        piped = (
+            subprocess.run(
+                ["git", "hash-object", "--no-filters", "--stdin-paths"],
+                cwd=job,
+                env=sb.env,
+                input=name.encode("utf-8") + b"\n",
+                capture_output=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        T.check(
+            f"keep: for {label}, git hash-object --stdin-paths hashes the twin",
+            piped == sb.git("rev-parse", "HEAD:x", cwd=job),
+            piped,
+        )
+        refused(
+            f"keep: a gates keep with {label} exits 2",
+            keep(sb, "gates", str(number), cwd=job, head=head, rounds=rounds),
+            "changed or untracked paths",
+            [rounds / f"gates-{number}"],
+        )
         write(job / name, "x = 1\n")
     proc = keep(sb, "gates", "2", cwd=job, head=head, rounds=rounds)
     T.check("keep: with the twins restored the next round is kept", proc.returncode == 0, detail(proc))
@@ -785,42 +975,62 @@ def promisor_tests(sb: Sandbox) -> None:
     tree = sb.git("rev-parse", "HEAD:d", cwd=job)
     (job / ".git" / "objects" / tree[:2] / tree[2:]).unlink()
     marker = sb.tmp / "promisor-ran"
-    for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "evil"),
-                       ("remote.evil.promisor", "true"), ("remote.evil.url", str(sb.tmp / "nowhere")),
-                       ("remote.evil.uploadpack", f"sh -c 'touch {shlex.quote(str(marker))}; exit 1'")):
+    for key, value in (
+        ("core.repositoryformatversion", "1"),
+        ("extensions.partialClone", "evil"),
+        ("remote.evil.promisor", "true"),
+        ("remote.evil.url", str(sb.tmp / "nowhere")),
+        ("remote.evil.uploadpack", f"sh -c 'touch {shlex.quote(str(marker))}; exit 1'"),
+    ):
         sb.git("config", key, value, cwd=job)
     subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
     T.check("keep: in the partial clone, a plain git ls-tree runs the promisor's command", marker.exists())
     marker.unlink(missing_ok=True)
     ready_gates(job, T0 + 7000)
     rounds = sb.runner_state / "jobs" / "promisor" / "rounds"
-    for name, args in (("extensions.partialClone", ["gates", "1"]),
-                       ("extensions.partialClone, for a review round", ["review", "1", "--no-address"])):
-        refused(f"keep: a keep in a partial clone ({name}) exits 2", keep(sb, *args, cwd=job, head=head,
-                                                                         rounds=rounds),
-                "the repository is a partial clone", [rounds / f"{args[0]}-1"])
+    for name, args in (
+        ("extensions.partialClone", ["gates", "1"]),
+        ("extensions.partialClone, for a review round", ["review", "1", "--no-address"]),
+    ):
+        refused(
+            f"keep: a keep in a partial clone ({name}) exits 2",
+            keep(sb, *args, cwd=job, head=head, rounds=rounds),
+            "the repository is a partial clone",
+            [rounds / f"{args[0]}-1"],
+        )
         T.check(f"keep: a keep in a partial clone ({name}) runs no command", not marker.exists())
     sb.git("config", "--unset", "extensions.partialClone", cwd=job)
-    refused("keep: a keep with only remote.evil.promisor true exits 2",
-            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.promisor true",
-            [rounds / "gates-1"])
+    refused(
+        "keep: a keep with only remote.evil.promisor true exits 2",
+        keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds),
+        "remote.evil.promisor true",
+        [rounds / "gates-1"],
+    )
     T.check("keep: a keep with only remote.evil.promisor true runs no command", not marker.exists())
     sb.git("config", "--unset", "remote.evil.promisor", cwd=job)
     sb.git("config", "core.repositoryformatversion", "0", cwd=job)
     sb.git("config", "remote.evil.partialCloneFilter", "blob:none", cwd=job)
     subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
-    T.check("keep: with only remote.evil.partialCloneFilter, a plain git ls-tree runs the promisor's command",
-            marker.exists())
+    T.check(
+        "keep: with only remote.evil.partialCloneFilter, a plain git ls-tree runs the promisor's command",
+        marker.exists(),
+    )
     marker.unlink(missing_ok=True)
-    refused("keep: a keep with only remote.evil.partialCloneFilter exits 2",
-            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.partialclonefilter blob:none",
-            [rounds / "gates-1"])
+    refused(
+        "keep: a keep with only remote.evil.partialCloneFilter exits 2",
+        keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds),
+        "remote.evil.partialclonefilter blob:none",
+        [rounds / "gates-1"],
+    )
     T.check("keep: a keep with only remote.evil.partialCloneFilter runs no command", not marker.exists())
     sb.git("config", "--unset", "remote.evil.partialCloneFilter", cwd=job)
     sb.git("config", "Extensions.PartialClone", "evil", cwd=job)
-    refused("keep: a keep with extensions.partialClone spelled Extensions.PartialClone exits 2",
-            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "extensions.partialClone evil",
-            [rounds / "gates-1"])
+    refused(
+        "keep: a keep with extensions.partialClone spelled Extensions.PartialClone exits 2",
+        keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds),
+        "extensions.partialClone evil",
+        [rounds / "gates-1"],
+    )
     T.check("keep: a keep with Extensions.PartialClone runs no command", not marker.exists())
 
 
@@ -838,19 +1048,34 @@ def stale_tests(sb: Sandbox) -> Path:
     write(sb.outputs / "review.md", REVIEW_2.replace("round 2", "round 1"))
     proc = keep(sb, "review", "1", "--no-address", head=sb.base, rounds=rounds)
     T.check("keep: a review round kept at an ancestor of HEAD", proc.returncode == 0, detail(proc))
-    check_round("keep: the review round records the ancestor it judged", sb, "review", 1,
-                {"review.md": (sb.outputs / "review.md").read_bytes()}, rounds, sb.base)
+    check_round(
+        "keep: the review round records the ancestor it judged",
+        sb,
+        "review",
+        1,
+        {"review.md": (sb.outputs / "review.md").read_bytes()},
+        rounds,
+        sb.base,
+    )
     (sb.outputs / "review.md").unlink()
     return rounds
 
 
 SHORT_ROUNDS = [
     ("a report short of the input's gates", ["whitespace", "agents-drift"], {"whitespace": "passed"}, 1),
-    ("tests named out of the input's order", ["whitespace", "agents-drift"],
-     {"agents-drift": "passed", "whitespace": "passed"}, 1),
+    (
+        "tests named out of the input's order",
+        ["whitespace", "agents-drift"],
+        {"agents-drift": "passed", "whitespace": "passed"},
+        1,
+    ),
     ("an input with no gates", [], {"whitespace": "passed"}, 2),
-    ("a report that meets every condition", ["whitespace", "agents-drift"],
-     {"whitespace": "passed", "agents-drift": "passed"}, 0),
+    (
+        "a report that meets every condition",
+        ["whitespace", "agents-drift"],
+        {"whitespace": "passed", "agents-drift": "passed"},
+        0,
+    ),
 ]
 
 
@@ -883,6 +1108,7 @@ def agrees_with_run_gates(round_facts: dict, verdict: tuple) -> bool:
 
 # --- GitHub responses -----------------------------------------------------
 
+
 def user(login: str, kind: str = "User") -> dict:
     return {"login": login, "id": sum(map(ord, login)), "type": kind}
 
@@ -890,8 +1116,7 @@ def user(login: str, kind: str = "User") -> dict:
 BOT_USER = user("mintswarm-dev[bot]", "Bot")
 
 
-def comment(ident: int, who, created: str, body: str, where: str = "pull",
-            updated: Optional[str] = None) -> dict:
+def comment(ident: int, who, created: str, body: str, where: str = "pull", updated: Optional[str] = None) -> dict:
     number = PR if where == "pull" else ISSUE
     kind = "pull" if where == "pull" else "issues"
     return {
@@ -918,10 +1143,15 @@ def build_responses(head: str) -> dict:
         comment(1200, user("zmij"), at("11:00:00"), "before the approval\n", "issue"),
         comment(1201, user("zmij"), at("12:00:00"), "at the approval time\n", "issue"),
         comment(1202, BOT_USER, at("13:00:00"), f"{MARKER}\n## Decision\n\nDo it.\n", "issue"),
-        comment(1203, user("erin"), at("11:30:00"), "edited into a steer after the approval\n", "issue",
-                updated=at("12:50:00")),
-        comment(1204, user("erin"), at("11:00:00"), "edited before the approval\n", "issue",
-                updated=at("11:45:00")),
+        comment(
+            1203,
+            user("erin"),
+            at("11:30:00"),
+            "edited into a steer after the approval\n",
+            "issue",
+            updated=at("12:50:00"),
+        ),
+        comment(1204, user("erin"), at("11:00:00"), "edited before the approval\n", "issue", updated=at("11:45:00")),
     ]
     pr_comments = [
         comment(APPROVAL_ID, user("zmij"), at("12:00:01"), "approved\n"),
@@ -931,34 +1161,82 @@ def build_responses(head: str) -> dict:
         comment(2004, user("github-actions[bot]", "Bot"), at("12:45:00"), f"{MARKER}\n"),
     ]
     reviews = [
-        {"id": 3001, "user": user("bob"), "state": "COMMENTED", "submitted_at": at("14:00:00"), "body": "x",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3001"},
-        {"id": 3002, "user": user("bob"), "state": "PENDING", "body": "draft",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3002"},
-        {"id": 3003, "user": user("carol"), "state": "APPROVED", "submitted_at": at("11:30:00"), "body": "",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3003"},
+        {
+            "id": 3001,
+            "user": user("bob"),
+            "state": "COMMENTED",
+            "submitted_at": at("14:00:00"),
+            "body": "x",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3001",
+        },
+        {
+            "id": 3002,
+            "user": user("bob"),
+            "state": "PENDING",
+            "body": "draft",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3002",
+        },
+        {
+            "id": 3003,
+            "user": user("carol"),
+            "state": "APPROVED",
+            "submitted_at": at("11:30:00"),
+            "body": "",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3003",
+        },
     ]
     review_comments = [
-        {"id": 4001, "user": user("dave"), "created_at": at("15:00:00"), "body": "inline",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4001"},
-        {"id": 4002, "user": None, "created_at": at("15:30:00"), "body": "from a deleted user",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4002"},
-        {"id": 4003, "user": user("machine[bot]"), "created_at": at("15:40:00"), "body": "bot",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4003"},
-        {"id": APPROVAL_ID, "user": user("frank"), "created_at": at("15:50:00"), "body": "same id, other kind",
-         "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r{APPROVAL_ID}"},
+        {
+            "id": 4001,
+            "user": user("dave"),
+            "created_at": at("15:00:00"),
+            "body": "inline",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4001",
+        },
+        {
+            "id": 4002,
+            "user": None,
+            "created_at": at("15:30:00"),
+            "body": "from a deleted user",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4002",
+        },
+        {
+            "id": 4003,
+            "user": user("machine[bot]"),
+            "created_at": at("15:40:00"),
+            "body": "bot",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r4003",
+        },
+        {
+            "id": APPROVAL_ID,
+            "user": user("frank"),
+            "created_at": at("15:50:00"),
+            "body": "same id, other kind",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#discussion_r{APPROVAL_ID}",
+        },
     ]
     ci, other = {"id": 1, "slug": "ci"}, {"id": 2, "slug": "other-ci"}
-    check_runs = {"total_count": 4, "check_runs": [
-        {"id": 10, "name": "build", "status": "completed", "conclusion": "success", "app": ci},
-        {"id": 11, "name": "lint", "status": "in_progress", "conclusion": None, "app": ci},
-        {"id": 5, "name": "build", "status": "completed", "conclusion": "failure", "app": ci},
-        {"id": 3, "name": "build", "status": "completed", "conclusion": "failure", "app": other},
-    ]}
-    status = {"state": "success", "sha": head, "total_count": 1,
-              "statuses": [{"context": "ci/legacy", "state": "success"}]}
-    pull = {"number": PR, "state": "open", "head": {"sha": head, "ref": "mintswarm/47-landing-facts"},
-            "base": {"sha": "0" * 40, "ref": "master"}}
+    check_runs = {
+        "total_count": 4,
+        "check_runs": [
+            {"id": 10, "name": "build", "status": "completed", "conclusion": "success", "app": ci},
+            {"id": 11, "name": "lint", "status": "in_progress", "conclusion": None, "app": ci},
+            {"id": 5, "name": "build", "status": "completed", "conclusion": "failure", "app": ci},
+            {"id": 3, "name": "build", "status": "completed", "conclusion": "failure", "app": other},
+        ],
+    }
+    status = {
+        "state": "success",
+        "sha": head,
+        "total_count": 1,
+        "statuses": [{"context": "ci/legacy", "state": "success"}],
+    }
+    pull = {
+        "number": PR,
+        "state": "open",
+        "head": {"sha": head, "ref": "mintswarm/47-landing-facts"},
+        "base": {"sha": "0" * 40, "ref": "master"},
+    }
     repo = "repos/{owner}/{repo}"
     q = "per_page=100&page="
     pages = {
@@ -1019,12 +1297,14 @@ def fetch_env(sb: Sandbox, pages: dict, name: str) -> dict:
     served = sb.tmp / f"pages-{name}.json"
     served.write_text(json.dumps({path: body for (path, _), body in pages.items()}), encoding="utf-8")
     env = dict(sb.env)
-    env.update({
-        "PATH": f"{sb.stubs}{os.pathsep}{os.environ.get('PATH', '')}",
-        "MSW_TOKEN": DUMMY_TOKEN,
-        "MSW_STUB_STATE": str(sb.state),
-        "MSW_STUB_PAGES": str(served),
-    })
+    env.update(
+        {
+            "PATH": f"{sb.stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+            "MSW_TOKEN": DUMMY_TOKEN,
+            "MSW_STUB_STATE": str(sb.state),
+            "MSW_STUB_PAGES": str(served),
+        }
+    )
     return env
 
 
@@ -1051,39 +1331,63 @@ def fetch_tests(sb: Sandbox, pages: dict) -> bool:
     calls = recorded(sb)
     T.check("fetch: exits 0", proc.returncode == 0, detail(proc))
     T.check("fetch: one call per page", len(calls) == len(pages), f"{len(calls)} calls")
-    bad = [c["argv"] for c in calls
-           if c["argv"][:3] != ["api", "--method", "GET"] or len(c["argv"]) != 4
-           or FORBIDDEN & set(c["argv"]) or c["argv"][3].startswith("-")]
+    bad = [
+        c["argv"]
+        for c in calls
+        if c["argv"][:3] != ["api", "--method", "GET"]
+        or len(c["argv"]) != 4
+        or FORBIDDEN & set(c["argv"])
+        or c["argv"][3].startswith("-")
+    ]
     T.check("fetch: every call is api --method GET PATH with no field, input or paginate flag", not bad, str(bad))
-    T.check("fetch: bot-gh.sh passes the dummy token as GH_TOKEN and sets GH_REPO",
-            all(c["token_ok"] and c["repo"] == "mintswarm/mintswarm" and c["msw_token_unset"] for c in calls))
+    T.check(
+        "fetch: bot-gh.sh passes the dummy token as GH_TOKEN and sets GH_REPO",
+        all(c["token_ok"] and c["repo"] == "mintswarm/mintswarm" and c["msw_token_unset"] for c in calls),
+    )
     issue_paths = [c["argv"][3] for c in calls if f"/issues/{ISSUE}/comments" in c["argv"][3]]
-    T.check("fetch: the issue comments come in two pages",
-            issue_paths == [f"repos/{{owner}}/{{repo}}/issues/{ISSUE}/comments?per_page=100&page={k}" for k in (1, 2)],
-            str(issue_paths))
+    T.check(
+        "fetch: the issue comments come in two pages",
+        issue_paths == [f"repos/{{owner}}/{{repo}}/issues/{ISSUE}/comments?per_page=100&page={k}" for k in (1, 2)],
+        str(issue_paths),
+    )
     out = sb.repo / RESPONSES
     saved = sorted(p.name for p in out.iterdir()) if out.is_dir() else []
-    T.check("fetch: every page and request.json are saved",
-            saved == sorted([name for _, name in pages] + ["request.json"]), str(saved))
-    T.check("fetch: pages are saved byte for byte",
-            all((out / name).is_file() and (out / name).read_text(encoding="utf-8") == body
-                for (_, name), body in pages.items()))
+    T.check(
+        "fetch: every page and request.json are saved",
+        saved == sorted([name for _, name in pages] + ["request.json"]),
+        str(saved),
+    )
+    T.check(
+        "fetch: pages are saved byte for byte",
+        all(
+            (out / name).is_file() and (out / name).read_text(encoding="utf-8") == body
+            for (_, name), body in pages.items()
+        ),
+    )
     try:
         request = json.loads((out / "request.json").read_text(encoding="utf-8"))
-        ok = list(request) == ["pr", "issue", "head", "fetched_at"] and \
-            (request["pr"], request["issue"], request["head"]) == (PR, ISSUE, sb.head)
+        ok = list(request) == ["pr", "issue", "head", "fetched_at"] and (
+            request["pr"],
+            request["issue"],
+            request["head"],
+        ) == (PR, ISSUE, sb.head)
     except (OSError, ValueError, KeyError):
         ok = False
     T.check("fetch: request.json records pr, issue, head and fetched_at", ok)
-    T.check("fetch: the 100-item first page is read in full",
-            len(json.loads((out / "issue-comments.1.json").read_text())) == 100)
+    T.check(
+        "fetch: the 100-item first page is read in full",
+        len(json.loads((out / "issue-comments.1.json").read_text())) == 100,
+    )
 
     proc = sb.run(COLLECT, base_args, env=env)
     recorded(sb)
     parent = out.parent
     stray = [p.name for p in parent.iterdir() if p.name != out.name]
-    T.check("fetch: a second fetch replaces the first and leaves nothing beside it",
-            proc.returncode == 0 and out.is_dir() and not stray, detail(proc) + f" {stray}")
+    T.check(
+        "fetch: a second fetch replaces the first and leaves nothing beside it",
+        proc.returncode == 0 and out.is_dir() and not stray,
+        detail(proc) + f" {stray}",
+    )
 
     failing = {k: v for k, v in pages.items() if k[1] != "reviews.1.json"}
     not_json = {k: (v if k[1] != "status.1.json" else "not json\n") for k, v in pages.items()}
@@ -1091,17 +1395,22 @@ def fetch_tests(sb: Sandbox, pages: dict) -> bool:
     filler = json.dumps([comment(5000, BOT_USER, at("12:05:00"), "x", "issue")] * 100)
     for page in range(1, 32):
         endless[(f"repos/{{owner}}/{{repo}}/issues/{ISSUE}/comments?per_page=100&page={page}", f"p{page}")] = filler
-    for name, served in (("a failing call", failing), ("a page that is not JSON", not_json),
-                         ("more than 30 pages", endless)):
+    for name, served in (
+        ("a failing call", failing),
+        ("a page that is not JSON", not_json),
+        ("more than 30 pages", endless),
+    ):
         target = sb.tmp / f"responses-{name.replace(' ', '-')}"
         proc = sb.run(COLLECT, [*base_args, "--out", str(target)], env=fetch_env(sb, served, name.replace(" ", "-")))
         calls = recorded(sb)
         stray = [p.name for p in sb.tmp.iterdir() if p.name.startswith(target.name)]
-        T.check(f"fetch: {name} exits 1 and leaves no directory",
-                proc.returncode == 1 and not stray, detail(proc) + f" {stray}")
+        T.check(
+            f"fetch: {name} exits 1 and leaves no directory",
+            proc.returncode == 1 and not stray,
+            detail(proc) + f" {stray}",
+        )
         if name == "more than 30 pages":
-            T.check("fetch: no page after the 30th is requested",
-                    not any("page=31" in c["argv"][-1] for c in calls))
+            T.check("fetch: no page after the 30th is requested", not any("page=31" in c["argv"][-1] for c in calls))
     for args in (["--head", "HEAD"], ["--pr", "0"], ["--extra", "1"]):
         bad_args = list(base_args)
         if args[0] in bad_args:
@@ -1109,18 +1418,27 @@ def fetch_tests(sb: Sandbox, pages: dict) -> bool:
         else:
             bad_args += args
         proc = sb.run(COLLECT, bad_args, env=env)
-        T.check(f"fetch: bad argument {args} exits 2 without calling gh",
-                proc.returncode == 2 and not recorded(sb), detail(proc))
+        T.check(
+            f"fetch: bad argument {args} exits 2 without calling gh",
+            proc.returncode == 2 and not recorded(sb),
+            detail(proc),
+        )
     return True
 
 
 # --- assemble -------------------------------------------------------------
 
-def assemble(sb: Sandbox, extra: Optional[list] = None, replace: Optional[dict] = None,
-             cwd: Optional[Path] = None):
+
+def assemble(sb: Sandbox, extra: Optional[list] = None, replace: Optional[dict] = None, cwd: Optional[Path] = None):
     args = {
-        "--responses": str(RESPONSES), "--pr": str(PR), "--issue": str(ISSUE), "--head": "HEAD",
-        "--base": "HEAD~1", "--approver": "zmij", "--approved-at": APPROVED_AT, "--approval-url": APPROVAL_URL,
+        "--responses": str(RESPONSES),
+        "--pr": str(PR),
+        "--issue": str(ISSUE),
+        "--head": "HEAD",
+        "--base": "HEAD~1",
+        "--approver": "zmij",
+        "--approved-at": APPROVED_AT,
+        "--approval-url": APPROVAL_URL,
         "--rounds": str(sb.rounds),
     }
     args.update(replace or {})
@@ -1187,8 +1505,11 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
         want = [(1, sb.base, False, "passed"), (2, sb.head, True, "passed")]
         T.check("assemble: a gate round kept at the base is not current and keeps its verdict", got == want, str(got))
         got = [(r["round"], r["commit"], r["current"], r["verdict"]) for r in facts["review_rounds"]]
-        T.check("assemble: a review round kept at the base is not current and keeps its verdict",
-                got == [(1, sb.base, False, "pass")], str(got))
+        T.check(
+            "assemble: a review round kept at the base is not current and keeps its verdict",
+            got == [(1, sb.base, False, "pass")],
+            str(got),
+        )
     else:
         T.check("assemble: rounds kept at the base and the head", False, detail(proc))
 
@@ -1198,15 +1519,25 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
     outside = sb.tmp / "rounds-rewritten"
     shutil.copytree(writable, outside)
     proc, facts = assemble(sb, replace={"--rounds": str(outside)})
-    T.check("assemble: the rewritten copy, outside the repository, reads as passed",
-            written(proc, facts) and [g["verdict"] for g in facts["gate_rounds"]] == ["passed"] * 3, detail(proc))
+    T.check(
+        "assemble: the rewritten copy, outside the repository, reads as passed",
+        written(proc, facts) and [g["verdict"] for g in facts["gate_rounds"]] == ["passed"] * 3,
+        detail(proc),
+    )
     proc, facts = assemble(sb)
-    T.check("assemble: a rewritten copy under .mintswarm/job/rounds/ leaves the facts unchanged",
-            written(proc, facts) and {k: v for k, v in facts.items() if k != "fetched_at"}
-            == {k: v for k, v in baseline.items() if k != "fetched_at"}, detail(proc))
+    T.check(
+        "assemble: a rewritten copy under .mintswarm/job/rounds/ leaves the facts unchanged",
+        written(proc, facts)
+        and {k: v for k, v in facts.items() if k != "fetched_at"}
+        == {k: v for k, v in baseline.items() if k != "fetched_at"},
+        detail(proc),
+    )
     proc, facts = assemble(sb, replace={"--rounds": str(writable)})
-    T.check("assemble: the rewritten copy under .mintswarm/job/rounds/ given as --rounds exits 2",
-            proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr, detail(proc))
+    T.check(
+        "assemble: the rewritten copy under .mintswarm/job/rounds/ given as --rounds exits 2",
+        proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr,
+        detail(proc),
+    )
     name = "assemble: a case variant of the copy under .mintswarm/job/rounds/ given as --rounds exits 2"
     variant = case_variant(writable)
     if variant is None:
@@ -1217,23 +1548,34 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
 
     link = sb.runner_state / "assemble-link"
     link.symlink_to(sb.rounds)
-    for name, value, fragment in (("without --rounds", None, "missing --rounds"),
-                                  ("with a relative --rounds", "rounds", "must be an absolute path"),
-                                  ("with a symlinked --rounds", str(link), "is a symbolic link")):
+    for name, value, fragment in (
+        ("without --rounds", None, "missing --rounds"),
+        ("with a relative --rounds", "rounds", "must be an absolute path"),
+        ("with a symlinked --rounds", str(link), "is a symbolic link"),
+    ):
         proc, facts = assemble(sb, replace={"--rounds": value})
-        T.check(f"assemble: {name} exits 2 with no facts file",
-                proc.returncode == 2 and facts is None and fragment in proc.stderr, detail(proc))
+        T.check(
+            f"assemble: {name} exits 2 with no facts file",
+            proc.returncode == 2 and facts is None and fragment in proc.stderr,
+            detail(proc),
+        )
 
     nested = nested_worktree(sb)
     in_main = sb.repo / "state" / "rounds"
     shutil.copytree(sb.rounds, in_main)
     responses = str(sb.repo / RESPONSES)
     proc, facts = assemble(sb, replace={"--responses": responses, "--rounds": str(in_main)}, cwd=nested)
-    T.check("assemble: from a nested worktree, --rounds inside the main checkout exits 2 with no facts file",
-            proc.returncode == 2 and facts is None and "inside the main checkout" in proc.stderr, detail(proc))
+    T.check(
+        "assemble: from a nested worktree, --rounds inside the main checkout exits 2 with no facts file",
+        proc.returncode == 2 and facts is None and "inside the main checkout" in proc.stderr,
+        detail(proc),
+    )
     proc, facts = assemble(sb, replace={"--responses": responses}, cwd=nested)
-    T.check("assemble: from a nested worktree, rounds in runner state are read",
-            written(proc, facts) and facts["gate_rounds"] == baseline["gate_rounds"], detail(proc))
+    T.check(
+        "assemble: from a nested worktree, rounds in runner state are read",
+        written(proc, facts) and facts["gate_rounds"] == baseline["gate_rounds"],
+        detail(proc),
+    )
     for path in in_main.rglob("*"):
         path.chmod(0o755 if path.is_dir() else 0o644)
     shutil.rmtree(sb.repo / "state")
@@ -1241,31 +1583,52 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
 
 def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     proc, facts = assemble(sb)
-    if not T.check("assemble: exits 0 and writes facts.json", proc.returncode == 0 and isinstance(facts, dict),
-                   detail(proc)):
+    if not T.check(
+        "assemble: exits 0 and writes facts.json", proc.returncode == 0 and isinstance(facts, dict), detail(proc)
+    ):
         return
     T.check("assemble: keys in order", list(facts) == FACTS_KEYS, str(list(facts)))
-    T.check("assemble: tool, version, pr and issue",
-            (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 2, PR, ISSUE))
-    T.check("assemble: head and base are the full hashes", (facts["head"], facts["base"]) == (sb.head, sb.base),
-            f"{facts['head']} {facts['base']}")
+    T.check(
+        "assemble: tool, version, pr and issue",
+        (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 2, PR, ISSUE),
+    )
+    T.check(
+        "assemble: head and base are the full hashes",
+        (facts["head"], facts["base"]) == (sb.head, sb.base),
+        f"{facts['head']} {facts['base']}",
+    )
     request = json.loads((sb.repo / RESPONSES / "request.json").read_text(encoding="utf-8"))
-    T.check("assemble: fetched_at is request.json's", facts["fetched_at"] == request["fetched_at"],
-            f"{facts['fetched_at']} {request['fetched_at']}")
-    T.check("assemble: checks from check runs (latest per app and name) and statuses, sorted",
-            facts["checks"] == EXPECTED_CHECKS, json.dumps(facts["checks"]))
+    T.check(
+        "assemble: fetched_at is request.json's",
+        facts["fetched_at"] == request["fetched_at"],
+        f"{facts['fetched_at']} {request['fetched_at']}",
+    )
+    T.check(
+        "assemble: checks from check runs (latest per app and name) and statuses, sorted",
+        facts["checks"] == EXPECTED_CHECKS,
+        json.dumps(facts["checks"]),
+    )
     gates = facts["gate_rounds"]
-    T.check("assemble: three gate rounds in round order", [g["round"] for g in gates] == [1, 2, 3],
-            str([g.get("round") for g in gates]))
+    T.check(
+        "assemble: three gate rounds in round order",
+        [g["round"] for g in gates] == [1, 2, 3],
+        str([g.get("round") for g in gates]),
+    )
     for g, (verdict, failed, reason) in zip(gates, EXPECTED_GATES):
-        T.check(f"assemble: gate round {g['round']} verdict, failed tests and reason",
-                list(g) == GATE_KEYS and (g["commit"], g["current"]) == (sb.head, True)
-                and (g["verdict"], g["failed_tests"], g["reason"]) == (verdict, failed, reason)
-                and g["files"] == round_files(sb, "gates", g["round"]), json.dumps(g))
-    T.check("assemble: every gate round says what run-gates.py --verdict said",
-            len(gates) == len(sb.gate_verdicts)
-            and all(agrees_with_run_gates(g, v) for g, v in zip(gates, sb.gate_verdicts)),
-            f"{[(g['verdict'], g['reason']) for g in gates]} {sb.gate_verdicts}")
+        T.check(
+            f"assemble: gate round {g['round']} verdict, failed tests and reason",
+            list(g) == GATE_KEYS
+            and (g["commit"], g["current"]) == (sb.head, True)
+            and (g["verdict"], g["failed_tests"], g["reason"]) == (verdict, failed, reason)
+            and g["files"] == round_files(sb, "gates", g["round"]),
+            json.dumps(g),
+        )
+    T.check(
+        "assemble: every gate round says what run-gates.py --verdict said",
+        len(gates) == len(sb.gate_verdicts)
+        and all(agrees_with_run_gates(g, v) for g, v in zip(gates, sb.gate_verdicts)),
+        f"{[(g['verdict'], g['reason']) for g in gates]} {sb.gate_verdicts}",
+    )
     reviews = facts["review_rounds"]
     expected_reviews = [
         (1, "changes_required", {"blocker": 0, "major": 1, "minor": 2, "nit": 1}),
@@ -1273,71 +1636,126 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     ]
     T.check("assemble: two review rounds in round order", [r["round"] for r in reviews] == [1, 2])
     for r, (number, verdict, counts) in zip(reviews, expected_reviews):
-        T.check(f"assemble: review round {number} verdict and counts by severity",
-                list(r) == REVIEW_KEYS and (r["commit"], r["current"]) == (sb.head, True)
-                and (r["round"], r["verdict"], r["findings"]) == (number, verdict, counts)
-                and list(r["findings"]) == ["blocker", "major", "minor", "nit"]
-                and r["files"] == round_files(sb, "review", number), json.dumps(r))
-    T.check("assemble: steers (human, marked mintswarm-dev[bot], review, inline, ghost; not the rest)",
-            facts["steers"] == EXPECTED_STEERS, json.dumps(facts["steers"], indent=1))
+        T.check(
+            f"assemble: review round {number} verdict and counts by severity",
+            list(r) == REVIEW_KEYS
+            and (r["commit"], r["current"]) == (sb.head, True)
+            and (r["round"], r["verdict"], r["findings"]) == (number, verdict, counts)
+            and list(r["findings"]) == ["blocker", "major", "minor", "nit"]
+            and r["files"] == round_files(sb, "review", number),
+            json.dumps(r),
+        )
+    T.check(
+        "assemble: steers (human, marked mintswarm-dev[bot], review, inline, ghost; not the rest)",
+        facts["steers"] == EXPECTED_STEERS,
+        json.dumps(facts["steers"], indent=1),
+    )
     baseline = facts
     proc, short_facts = assemble(sb, replace={"--rounds": str(short)})
     gates = short_facts.get("gate_rounds", []) if written(proc, short_facts) else []
-    T.check("assemble: a report short of the input's gates is failed, as run-gates.py --verdict has it",
-            bool(gates) and (gates[0]["verdict"], gates[0]["reason"])
-            == ("failed", "summary.tests is 1, the input has 2 gates"), detail(proc) + f" {gates[:1]}")
+    T.check(
+        "assemble: a report short of the input's gates is failed, as run-gates.py --verdict has it",
+        bool(gates)
+        and (gates[0]["verdict"], gates[0]["reason"]) == ("failed", "summary.tests is 1, the input has 2 gates"),
+        detail(proc) + f" {gates[:1]}",
+    )
     for g, v, (name, *_) in zip(gates, sb.short_verdicts, SHORT_ROUNDS):
-        T.check(f"assemble: {name} says what run-gates.py --verdict said", agrees_with_run_gates(g, v),
-                f"{g['verdict']} {g['reason']!r} against {v}")
+        T.check(
+            f"assemble: {name} says what run-gates.py --verdict said",
+            agrees_with_run_gates(g, v),
+            f"{g['verdict']} {g['reason']!r} against {v}",
+        )
     T.check("assemble: every short-report round is in the facts", len(gates) == len(SHORT_ROUNDS), str(len(gates)))
-    T.check("assemble: the approval without kickoff floor or assessment",
-            facts["approval"] == {"approver": "zmij", "approved_at": APPROVED_AT, "approval_ref": APPROVAL_URL}
-            and list(facts["approval"]) == ["approver", "approved_at", "approval_ref"], json.dumps(facts["approval"]))
+    T.check(
+        "assemble: the approval without kickoff floor or assessment",
+        facts["approval"] == {"approver": "zmij", "approved_at": APPROVED_AT, "approval_ref": APPROVAL_URL}
+        and list(facts["approval"]) == ["approver", "approved_at", "approval_ref"],
+        json.dumps(facts["approval"]),
+    )
 
     proc, facts = assemble(sb, replace={"--approval-url": None, "--approval-id": str(APPROVAL_ID)})
-    T.check("assemble: the approval excluded by id",
-            written(proc, facts) and facts["steers"] == EXPECTED_STEERS
-            and facts["approval"]["approval_ref"] == str(APPROVAL_ID), detail(proc))
+    T.check(
+        "assemble: the approval excluded by id",
+        written(proc, facts)
+        and facts["steers"] == EXPECTED_STEERS
+        and facts["approval"]["approval_ref"] == str(APPROVAL_ID),
+        detail(proc),
+    )
     proc, facts = assemble(sb, replace={"--approval-url": None})
-    T.check("assemble: without URL or id the approval comment after the time is a steer",
-            written(proc, facts) and facts["steers"] == sorted(
-                EXPECTED_STEERS + [APPROVAL_STEER], key=lambda s: (s["time"], s["kind"], s["url"]))
-            and facts["approval"]["approval_ref"] is None, detail(proc))
+    T.check(
+        "assemble: without URL or id the approval comment after the time is a steer",
+        written(proc, facts)
+        and facts["steers"]
+        == sorted(EXPECTED_STEERS + [APPROVAL_STEER], key=lambda s: (s["time"], s["kind"], s["url"]))
+        and facts["approval"]["approval_ref"] is None,
+        detail(proc),
+    )
 
     empty = sb.tmp / "responses-no-checks"
     shutil.copytree(sb.repo / RESPONSES, empty)
     write(empty / "check-runs.1.json", '{"total_count": 0, "check_runs": []}\n')
     write(empty / "status.1.json", '{"state": "pending", "total_count": 0, "statuses": []}\n')
     proc, facts = assemble(sb, replace={"--responses": str(empty)})
-    T.check("assemble: no checks give an empty list", written(proc, facts) and facts.get("checks") == [],
-            detail(proc))
+    T.check("assemble: no checks give an empty list", written(proc, facts) and facts.get("checks") == [], detail(proc))
 
     floor_record = {"tool": "mintswarm-plan-floor", "version": 1, "verdict": "hit"}
     floor_data = write(sb.tmp / "floor.json", json.dumps(floor_record) + "\n")
     assessment = write(sb.tmp / "assessment.md", "# Assessment: x\n\nmedium risk: y\n\nRisk: medium\n")
     decision_record = {"tool": "mintswarm-approval-decision", "version": 1, "decision": "auto"}
     decision_data = write(sb.tmp / "decision.json", json.dumps(decision_record) + "\n")
-    proc, facts = assemble(sb, ["--kickoff-floor", str(sb.tmp / "floor.json"),
-                                "--assessment", str(sb.tmp / "assessment.md"),
-                                "--decision", str(sb.tmp / "decision.json")],
-                           {"--approver": "mintswarm-dev[bot]"})
+    proc, facts = assemble(
+        sb,
+        [
+            "--kickoff-floor",
+            str(sb.tmp / "floor.json"),
+            "--assessment",
+            str(sb.tmp / "assessment.md"),
+            "--decision",
+            str(sb.tmp / "decision.json"),
+        ],
+        {"--approver": "mintswarm-dev[bot]"},
+    )
     ok = written(proc, facts) and list(facts["approval"]) == [
-        "approver", "approved_at", "approval_ref", "decision", "kickoff_floor", "assessment"]
+        "approver",
+        "approved_at",
+        "approval_ref",
+        "decision",
+        "kickoff_floor",
+        "assessment",
+    ]
     if ok:
-        ok = facts["approval"]["approver"] == "mintswarm-dev[bot]" and facts["approval"]["decision"] == {
-            "path": str(sb.tmp / "decision.json"), "sha256": sha(decision_data), "record": decision_record,
-        } and facts["approval"]["kickoff_floor"] == {
-            "path": str(sb.tmp / "floor.json"), "sha256": sha(floor_data), "record": floor_record,
-        } and facts["approval"]["assessment"] == {
-            "path": str(sb.tmp / "assessment.md"), "sha256": sha(assessment), "risk": "medium",
-        }
-    T.check("assemble: an approval by mintswarm-dev[bot] with decision, kickoff floor and assessment", ok,
-            detail(proc))
+        ok = (
+            facts["approval"]["approver"] == "mintswarm-dev[bot]"
+            and facts["approval"]["decision"]
+            == {
+                "path": str(sb.tmp / "decision.json"),
+                "sha256": sha(decision_data),
+                "record": decision_record,
+            }
+            and facts["approval"]["kickoff_floor"]
+            == {
+                "path": str(sb.tmp / "floor.json"),
+                "sha256": sha(floor_data),
+                "record": floor_record,
+            }
+            and facts["approval"]["assessment"]
+            == {
+                "path": str(sb.tmp / "assessment.md"),
+                "sha256": sha(assessment),
+                "risk": "medium",
+            }
+        )
+    T.check("assemble: an approval by mintswarm-dev[bot] with decision, kickoff floor and assessment", ok, detail(proc))
     write(sb.tmp / "assessment-2.md", "# Assessment: x\n\nRisk: low\nRisk: high\n")
     proc, facts = assemble(sb, ["--assessment", str(sb.tmp / "assessment-2.md")])
-    T.check("assemble: an assessment with two Risk lines has risk null, and no decision or kickoff floor key",
-            written(proc, facts) and facts["approval"]["assessment"]["risk"] is None
-            and "kickoff_floor" not in facts["approval"] and "decision" not in facts["approval"], detail(proc))
+    T.check(
+        "assemble: an assessment with two Risk lines has risk null, and no decision or kickoff floor key",
+        written(proc, facts)
+        and facts["approval"]["assessment"]["risk"] is None
+        and "kickoff_floor" not in facts["approval"]
+        and "decision" not in facts["approval"],
+        detail(proc),
+    )
 
     tampered = copy_rounds(sb, "rounds-tampered")
     with open(tampered / "gates-1" / "gates.md", "a", encoding="utf-8") as f:
@@ -1390,18 +1808,24 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     ]
     for name, replace, extra in cases:
         proc, facts = assemble(sb, extra, replace)
-        T.check(f"assemble: {name} exits 2 with no facts file", proc.returncode == 2 and facts is None,
-                detail(proc))
+        T.check(f"assemble: {name} exits 2 with no facts file", proc.returncode == 2 and facts is None, detail(proc))
     proc, facts = assemble(sb, ["--kickoff-floor", str(sb.tmp / "assessment.md")])
-    T.check("assemble: a kickoff floor that is not floor.py's exits 2 with no facts file",
-            proc.returncode == 2 and facts is None, detail(proc))
+    T.check(
+        "assemble: a kickoff floor that is not floor.py's exits 2 with no facts file",
+        proc.returncode == 2 and facts is None,
+        detail(proc),
+    )
     proc, facts = assemble(sb, ["--decision", str(sb.tmp / "floor.json")])
-    T.check("assemble: a decision that is not decision.py's exits 2 with no facts file",
-            proc.returncode == 2 and facts is None, detail(proc))
+    T.check(
+        "assemble: a decision that is not decision.py's exits 2 with no facts file",
+        proc.returncode == 2 and facts is None,
+        detail(proc),
+    )
     runner_state_tests(sb, baseline, stale_rounds)
 
 
 # --- static ---------------------------------------------------------------
+
 
 def static_tests() -> None:
     for path in SCRIPTS:
@@ -1415,24 +1839,36 @@ def static_tests() -> None:
         outside = sorted(n for n in names if n not in sys.stdlib_module_names)
         T.check(f"static: {path.name} imports only the standard library", not outside, str(outside))
     doc = " ".join((ast.get_docstring(ast.parse(KEEP.read_text(encoding="utf-8"))) or "").split())
-    T.check("static: keep-round.py's docstring states the session sequence",
-            "report-gates.py --clean" in doc and "next review round" in doc
-            and "run-gates.py and report-gates.py are unchanged" in doc)
+    T.check(
+        "static: keep-round.py's docstring states the session sequence",
+        "report-gates.py --clean" in doc
+        and "next review round" in doc
+        and "run-gates.py and report-gates.py are unchanged" in doc,
+    )
     doc = " ".join((ast.get_docstring(ast.parse(COLLECT.read_text(encoding="utf-8"))) or "").split())
-    T.check("static: collect-facts.py's docstring states the steer gap",
-            "Steers given only in the session chat" in doc and MARKER in doc)
+    T.check(
+        "static: collect-facts.py's docstring states the steer gap",
+        "Steers given only in the session chat" in doc and MARKER in doc,
+    )
     sources = []
     for path in (KEEP, COLLECT):
         text = path.read_text(encoding="utf-8")
-        found = [ast.get_source_segment(text, node) for node in ast.parse(text).body
-                 if isinstance(node, ast.FunctionDef) and node.name == "check_rounds_location"]
+        found = [
+            ast.get_source_segment(text, node)
+            for node in ast.parse(text).body
+            if isinstance(node, ast.FunctionDef) and node.name == "check_rounds_location"
+        ]
         sources.append(found[0] if len(found) == 1 else None)
-    T.check("static: keep-round.py and collect-facts.py share check_rounds_location word for word",
-            sources[0] is not None and sources[0] == sources[1])
+    T.check(
+        "static: keep-round.py and collect-facts.py share check_rounds_location word for word",
+        sources[0] is not None and sources[0] == sources[1],
+    )
     for path in (KEEP, COLLECT):
         doc = " ".join((ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or "").split())
-        T.check(f"static: {path.name}'s docstring says rounds outside the worktree are a convention",
-                "not an OS barrier" in doc and "runner state" in doc)
+        T.check(
+            f"static: {path.name}'s docstring says rounds outside the worktree are a convention",
+            "not an OS barrier" in doc and "runner state" in doc,
+        )
 
 
 def main() -> int:

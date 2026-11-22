@@ -251,13 +251,23 @@ FACTS_TOOL = "mintswarm-landing-facts"  # collect-facts.py's TOOL and VERSION; f
 FACTS_VERSION = 2
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 DIFF_OPTIONS = (
-    "--no-renames", "-z", "--ignore-submodules=none", "--diff-algorithm=myers",
-    "--no-ext-diff", "--no-textconv", "--no-relative", "--no-color",
+    "--no-renames",
+    "-z",
+    "--ignore-submodules=none",
+    "--diff-algorithm=myers",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-relative",
+    "--no-color",
 )
 GITLINK = "160000"
 RAW_HEADER = re.compile(r":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) ([A-Z])")
 DROPPED_ENV = (
-    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
+    "GIT_REPLACE_REF_BASE",
 )
 BINARY_PROBE = 8000  # bytes git looks at for a NUL when it decides a blob is binary
 BLOB_MODES = ("100644", "100755", "120000")
@@ -313,6 +323,7 @@ def load_plan_floor():
 
 # --- arguments -----------------------------------------------------------
 
+
 def parse_args(argv: list) -> dict:
     args = {}
     i = 0
@@ -346,6 +357,7 @@ def parse_args(argv: list) -> dict:
 
 # --- base-ref configuration ---------------------------------------------
 
+
 def validate_landing(config: dict, components: dict) -> dict:
     pipeline = config.get("pipeline")
     if not isinstance(pipeline, dict) or "landing" not in pipeline:
@@ -373,15 +385,22 @@ def validate_landing(config: dict, components: dict) -> dict:
     undefined = [c for c in rh_components if c not in components]
     if undefined:
         raise InputError(
-            f"config: pipeline.landing.require_human.components names undefined components: {', '.join(undefined)}")
+            f"config: pipeline.landing.require_human.components names undefined components: {', '.join(undefined)}"
+        )
 
     footprint = landing.get("footprint")
     if not isinstance(footprint, dict) or set(footprint) != {"lines_factor"}:
         raise InputError("config: pipeline.landing.footprint must be a mapping with exactly lines_factor")
     factor = footprint["lines_factor"]
-    if (not isinstance(factor, (int, float)) or isinstance(factor, bool)
-            or (isinstance(factor, float) and not math.isfinite(factor)) or factor < 1):
-        raise InputError(f"config: pipeline.landing.footprint.lines_factor must be a number of 1 or more, not {factor!r}")
+    if (
+        not isinstance(factor, (int, float))
+        or isinstance(factor, bool)
+        or (isinstance(factor, float) and not math.isfinite(factor))
+        or factor < 1
+    ):
+        raise InputError(
+            f"config: pipeline.landing.footprint.lines_factor must be a number of 1 or more, not {factor!r}"
+        )
     return {"mode": mode, "rh_components": rh_components, "rh_paths": rh_paths, "lines_factor": factor}
 
 
@@ -392,6 +411,7 @@ def line_limit(estimated_lines: int, factor) -> int:
 
 
 # --- the diff ------------------------------------------------------------
+
 
 def resolve_head(ref: str) -> str:
     try:
@@ -451,8 +471,9 @@ def binary_blobs(blobs: set) -> set:
     if not blobs:
         return set()
     try:
-        proc = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(
+            ["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     binary = set()
@@ -506,8 +527,9 @@ def read_diff(base: str, head: str) -> tuple:
     changed = [path for path, _, _ in entries]
     if len(set(changed)) != len(changed):
         raise InputError("git diff --numstat: a path appears twice")
-    new = split_z(P.run(["git", "diff", "--name-only", "--diff-filter=A", *DIFF_OPTIONS, span]),
-                  "git diff --diff-filter=A")
+    new = split_z(
+        P.run(["git", "diff", "--name-only", "--diff-filter=A", *DIFF_OPTIONS, span]), "git diff --diff-filter=A"
+    )
     stray = [path for path in new if path not in changed]
     if stray or any(path == "" for path in new):
         raise InputError(f"git diff --diff-filter=A: paths missing from --numstat: {stray}")
@@ -523,6 +545,7 @@ def read_diff(base: str, head: str) -> tuple:
 
 
 # --- the facts file --------------------------------------------------------
+
 
 def brief(value) -> str:
     text = json.dumps(value, ensure_ascii=False)
@@ -603,16 +626,44 @@ def is_boolean(value) -> bool:
 
 
 FACTS_LISTS = (
-    ("checks", (("name", is_string, "a string"), ("conclusion", is_string_or_null, "a string or null"),
-                ("source", is_string, "a string"), ("app", is_string_or_null, "a string or null"))),
-    ("gate_rounds", (("round", is_integer, "an integer"), ("commit", is_hash, "a full commit hash"),
-                     ("current", is_boolean, "a boolean"), ("verdict", is_string, "a string"),
-                     ("failed_tests", is_list, "a list"),
-                     ("reason", is_string_or_null, "a string or null"))),
-    ("review_rounds", (("round", is_integer, "an integer"), ("commit", is_hash, "a full commit hash"),
-                       ("current", is_boolean, "a boolean"), ("verdict", is_string, "a string"))),
-    ("steers", (("kind", is_string, "a string"), ("author", is_string, "a string"),
-                ("time", is_string, "a string"), ("url", is_string, "a string"))),
+    (
+        "checks",
+        (
+            ("name", is_string, "a string"),
+            ("conclusion", is_string_or_null, "a string or null"),
+            ("source", is_string, "a string"),
+            ("app", is_string_or_null, "a string or null"),
+        ),
+    ),
+    (
+        "gate_rounds",
+        (
+            ("round", is_integer, "an integer"),
+            ("commit", is_hash, "a full commit hash"),
+            ("current", is_boolean, "a boolean"),
+            ("verdict", is_string, "a string"),
+            ("failed_tests", is_list, "a list"),
+            ("reason", is_string_or_null, "a string or null"),
+        ),
+    ),
+    (
+        "review_rounds",
+        (
+            ("round", is_integer, "an integer"),
+            ("commit", is_hash, "a full commit hash"),
+            ("current", is_boolean, "a boolean"),
+            ("verdict", is_string, "a string"),
+        ),
+    ),
+    (
+        "steers",
+        (
+            ("kind", is_string, "a string"),
+            ("author", is_string, "a string"),
+            ("time", is_string, "a string"),
+            ("url", is_string, "a string"),
+        ),
+    ),
 )
 
 
@@ -651,13 +702,16 @@ def read_facts(path: str, base: str, head: str) -> tuple:
                     raise InputError(f"{where}: {at}.{name} must be {what}, not {brief(entry[name])}")
             if key.endswith("_rounds") and entry["current"] != (entry["commit"] == head):
                 relation = "is" if entry["commit"] == head else "is not"
-                raise InputError(f"{where}: {at}.current is {brief(entry['current'])}, but its commit "
-                                 f"{entry['commit']} {relation} the head {head}")
+                raise InputError(
+                    f"{where}: {at}.current is {brief(entry['current'])}, but its commit "
+                    f"{entry['commit']} {relation} the head {head}"
+                )
         if key.endswith("_rounds"):
             numbers = [entry["round"] for entry in entries]
             if any(n < 1 for n in numbers) or any(a >= b for a, b in zip(numbers, numbers[1:])):
-                raise InputError(f"{where}: {key} round numbers must be positive and strictly increasing, "
-                                 f"not {brief(numbers)}")
+                raise InputError(
+                    f"{where}: {key} round numbers must be positive and strictly increasing, " f"not {brief(numbers)}"
+                )
     return data, facts
 
 
@@ -684,6 +738,7 @@ def has_workflows(base: str) -> bool:
 
 # --- rules ---------------------------------------------------------------
 
+
 def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
@@ -694,14 +749,18 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
     def rule(name: str, reasons: list) -> None:
         results.append({"rule": name, "result": "hit" if reasons else "clean", "reasons": reasons})
 
-    rule("undeclared-files", [
-        f"{path} is changed but is neither in files nor a new dependency's manifest"
-        for path, _, _ in entries if path not in declared
-    ])
-    rule("undeclared-new-files", [
-        f"{path} is added but is not in new_files"
-        for path in new if path not in footprint["new_files"]
-    ])
+    rule(
+        "undeclared-files",
+        [
+            f"{path} is changed but is neither in files nor a new dependency's manifest"
+            for path, _, _ in entries
+            if path not in declared
+        ],
+    )
+    rule(
+        "undeclared-new-files",
+        [f"{path} is added but is not in new_files" for path in new if path not in footprint["new_files"]],
+    )
 
     reasons = []
     limit = line_limit(footprint["estimated_lines"], landing["lines_factor"])
@@ -709,7 +768,8 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
     if total > limit:
         reasons.append(
             f"the diff counts {total} lines, over the limit of {limit} "
-            f"(estimated_lines {footprint['estimated_lines']} × lines_factor {landing['lines_factor']!r})")
+            f"(estimated_lines {footprint['estimated_lines']} × lines_factor {landing['lines_factor']!r})"
+        )
     for path, added, _ in entries:
         if path in gitlinks:
             reasons.append(f"{path} is a submodule (gitlink), whose change is not measured in lines")
@@ -817,18 +877,23 @@ def facts_rules(facts: dict, base: str, head: str) -> list:
         if last["verdict"] != "pass":
             reasons.append(f"the last review round, {last['round']}, has verdict {last['verdict']!r}, not 'pass'")
         if last["commit"] != head:
-            reasons.append(f"the last review round, {last['round']}, judged commit {last['commit']}, "
-                           f"not the head {head}")
+            reasons.append(
+                f"the last review round, {last['round']}, judged commit {last['commit']}, " f"not the head {head}"
+            )
     rule("review", reasons)
 
-    rule("steers", [
-        f"{steer['kind']} by {steer['author']} at {steer['time']} is a steer: {steer['url']}"
-        for steer in facts["steers"]
-    ])
+    rule(
+        "steers",
+        [
+            f"{steer['kind']} by {steer['author']} at {steer['time']} is a steer: {steer['url']}"
+            for steer in facts["steers"]
+        ],
+    )
     return results
 
 
 # --- verdict -------------------------------------------------------------
+
 
 def printable(text: str) -> str:
     """Escape control characters and line or paragraph separators, so a printed reason stays on its line."""
@@ -885,8 +950,10 @@ def landing_floor(argv: list) -> int:
         "facts": {
             "path": args["facts"],
             "sha256": hashlib.sha256(facts_data).hexdigest(),
-            "checks": [{"name": c["name"], "conclusion": c["conclusion"], "source": c["source"], "app": c["app"]}
-                       for c in facts["checks"]],
+            "checks": [
+                {"name": c["name"], "conclusion": c["conclusion"], "source": c["source"], "app": c["app"]}
+                for c in facts["checks"]
+            ],
         },
         "component": args["component"],
         "base": {"ref": args["base"], "commit": base},

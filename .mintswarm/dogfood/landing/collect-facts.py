@@ -240,9 +240,19 @@ STEER_SOURCES = (
 )
 FETCH_OPTIONS = {"--pr": True, "--issue": True, "--head": True, "--out": False}
 ASSEMBLE_OPTIONS = {
-    "--responses": True, "--pr": True, "--issue": True, "--head": True, "--base": True,
-    "--approver": True, "--approved-at": True, "--approval-url": False, "--approval-id": False,
-    "--decision": False, "--kickoff-floor": False, "--assessment": False, "--rounds": True,
+    "--responses": True,
+    "--pr": True,
+    "--issue": True,
+    "--head": True,
+    "--base": True,
+    "--approver": True,
+    "--approved-at": True,
+    "--approval-url": False,
+    "--approval-id": False,
+    "--decision": False,
+    "--kickoff-floor": False,
+    "--assessment": False,
+    "--rounds": True,
 }
 USAGE = (
     "usage: collect-facts.py fetch --pr N --issue N --head SHA [--out DIR]\n"
@@ -261,6 +271,7 @@ class FetchError(Exception):
 
 
 # --- common ---------------------------------------------------------------
+
 
 def parse_options(argv: list, spec: dict) -> dict:
     values = {}
@@ -344,6 +355,7 @@ def page_items(data, key):
 
 
 # --- fetch ----------------------------------------------------------------
+
 
 def gh_get(path: str) -> tuple:
     argv = [str(BOT_GH), "api", "--method", "GET", path]
@@ -442,6 +454,7 @@ def fetch(argv: list) -> int:
 
 # --- assemble: responses --------------------------------------------------
 
+
 class Responses:
     def __init__(self, directory: Path):
         self.dir = directory
@@ -518,8 +531,11 @@ def collect_checks(responses: Responses) -> list:
         for _, name, conclusion, slug in latest.values()
     ]
     for status in responses.listing("status", "statuses"):
-        if (not isinstance(status, dict) or not isinstance(status.get("context"), str)
-                or not isinstance(status.get("state"), str)):
+        if (
+            not isinstance(status, dict)
+            or not isinstance(status.get("context"), str)
+            or not isinstance(status.get("state"), str)
+        ):
             raise InputError(f"a commit status without a context or state: {status!r}")
         checks.append({"name": status["context"], "conclusion": status["state"], "source": "status", "app": None})
     checks.sort(key=lambda c: (c["source"], c["name"], str(c["app"]), str(c["conclusion"])))
@@ -562,8 +578,11 @@ def collect_steers(responses: Responses, approved_at: datetime, approval_url, ap
             else:
                 stamp = item.get("created_at")
                 updated = item.get("updated_at")
-                if updated is not None and updated != stamp \
-                        and parse_time(updated, f"the updated_at of {url}") > approved_at:
+                if (
+                    updated is not None
+                    and updated != stamp
+                    and parse_time(updated, f"the updated_at of {url}") > approved_at
+                ):
                     edited_at = updated
             if parse_time(stamp, f"the time of {url}") <= approved_at and edited_at is None:
                 continue
@@ -578,21 +597,24 @@ def collect_steers(responses: Responses, approved_at: datetime, approval_url, ap
                 via = "marker"
             else:
                 continue
-            steers.append({"kind": kind, "author": login, "time": stamp, "edited_at": edited_at,
-                           "url": url, "via": via})
+            steers.append(
+                {"kind": kind, "author": login, "time": stamp, "edited_at": edited_at, "url": url, "via": via}
+            )
     steers.sort(key=lambda s: (s["time"], s["kind"], s["url"]))
     return steers
 
 
 # --- assemble: kept rounds ------------------------------------------------
 
+
 def load_round(path: Path, kind: str, number: int) -> dict:
     record = strict_json(read_bytes(path / "round.json"), str(path / "round.json"))
     if not isinstance(record, dict) or list(record) != ROUND_KEYS:
         raise InputError(f"{path}/round.json does not have the keys {ROUND_KEYS}")
     if (record["tool"], record["version"], record["kind"], record["round"]) != (KEEP_TOOL, KEEP_VERSION, kind, number):
-        raise InputError(f"{path}/round.json is not keep-round.py's version {KEEP_VERSION} record "
-                         f"of {kind} round {number}")
+        raise InputError(
+            f"{path}/round.json is not keep-round.py's version {KEEP_VERSION} record " f"of {kind} round {number}"
+        )
     if not isinstance(record["head"], str) or not FULL_HASH.fullmatch(record["head"]):
         raise InputError(f"{path}/round.json: head is not a full commit hash: {record['head']!r}")
     files = record["files"]
@@ -600,8 +622,12 @@ def load_round(path: Path, kind: str, number: int) -> dict:
         raise InputError(f"{path}/round.json: files is not a list")
     names = []
     for entry in files:
-        if (not isinstance(entry, dict) or list(entry) != ["name", "sha256"]
-                or entry["name"] not in ROUND_FILES[kind] or not isinstance(entry["sha256"], str)):
+        if (
+            not isinstance(entry, dict)
+            or list(entry) != ["name", "sha256"]
+            or entry["name"] not in ROUND_FILES[kind]
+            or not isinstance(entry["sha256"], str)
+        ):
             raise InputError(f"{path}/round.json: unexpected file entry {entry!r}")
         names.append(entry["name"])
     if names != sorted(set(names)):
@@ -637,8 +663,10 @@ def check_rounds_location(value: str) -> Path:
     if path.is_symlink():
         raise InputError(f"--rounds {value} is a symbolic link")
     places = [("the worktree", Path.cwd())]
-    for name, args in (("the worktree", ["--show-toplevel"]),
-                       ("the main checkout", ["--path-format=absolute", "--git-common-dir"])):
+    for name, args in (
+        ("the worktree", ["--show-toplevel"]),
+        ("the main checkout", ["--path-format=absolute", "--git-common-dir"]),
+    ):
         try:
             proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
         except OSError as exc:
@@ -780,7 +808,7 @@ def scan_fences(lines: list) -> tuple:
         if fence is None:
             match = FENCE_OPEN.match(line)
             # a backtick fence's info string has no backticks (CommonMark)
-            if match and (match.group(1)[0] == "~" or "`" not in line[match.end(1):]):
+            if match and (match.group(1)[0] == "~" or "`" not in line[match.end(1) :]):
                 fence, info, content = match.group(1), match.group(2), []
             else:
                 outside.append((index, line))
@@ -815,11 +843,12 @@ def review_round(number: int, kept: dict, where: str, head: str) -> dict:
     headings = [index for index, line in outside if line.strip() == "## Verdict"]
     if len(headings) != 1:
         raise InputError(f"{where} has {len(headings)} '## Verdict' lines outside code fences, not one")
-    verdict = next((line.strip() for line in lines[headings[0] + 1:] if line.strip()), None)
+    verdict = next((line.strip() for line in lines[headings[0] + 1 :] if line.strip()), None)
     if verdict not in REVIEW_VERDICTS:
         raise InputError(f"{where}: the verdict {verdict!r} is not pass or changes_required")
-    found = [content for info, content in blocks
-             if info.lower() == "yaml" and content and content[0].startswith("findings:")]
+    found = [
+        content for info, content in blocks if info.lower() == "yaml" and content and content[0].startswith("findings:")
+    ]
     if len(found) != 1:
         raise InputError(f"{where} has {len(found)} yaml blocks starting with 'findings:', not one")
     parsed = yq_json("\n".join(found[0]) + "\n", where)
@@ -834,11 +863,18 @@ def review_round(number: int, kept: dict, where: str, head: str) -> dict:
         if severity not in counts:
             raise InputError(f"{where}: a finding with severity {severity!r}")
         counts[severity] += 1
-    return {"round": number, "commit": kept["head"], "current": kept["head"] == head, "verdict": verdict,
-            "findings": counts, "files": kept["files"]}
+    return {
+        "round": number,
+        "commit": kept["head"],
+        "current": kept["head"] == head,
+        "verdict": verdict,
+        "findings": counts,
+        "files": kept["files"],
+    }
 
 
 # --- assemble: approval ---------------------------------------------------
+
 
 def assessment_risk(data: bytes):
     try:
@@ -848,7 +884,7 @@ def assessment_risk(data: bytes):
     lines = [line for line in text.split("\n") if line.startswith("Risk:")]
     if len(lines) != 1:
         return None
-    level = lines[0][len("Risk: "):] if lines[0].startswith("Risk: ") else None
+    level = lines[0][len("Risk: ") :] if lines[0].startswith("Risk: ") else None
     return level if level in RISKS else None
 
 
@@ -866,8 +902,10 @@ def build_approval(opts: dict) -> dict:
         "approved_at": approved_at,
         "approval_ref": url if url is not None else ident,
     }
-    for option, key, tool, script in (("--decision", "decision", DECISION_TOOL, "decision.py"),
-                                      ("--kickoff-floor", "kickoff_floor", FLOOR_TOOL, "floor.py")):
+    for option, key, tool, script in (
+        ("--decision", "decision", DECISION_TOOL, "decision.py"),
+        ("--kickoff-floor", "kickoff_floor", FLOOR_TOOL, "floor.py"),
+    ):
         if option not in opts:
             continue
         path = opts[option]
@@ -884,6 +922,7 @@ def build_approval(opts: dict) -> dict:
 
 
 # --- assemble -------------------------------------------------------------
+
 
 def resolve(ref: str, name: str) -> str:
     if ref.startswith("-"):
@@ -959,8 +998,10 @@ def assemble(argv: list) -> int:
         "approval": approval,
     }
     write_facts(facts)
-    print(f"facts: {len(checks)} checks, {len(gate_rounds)} gate rounds, "
-          f"{len(review_rounds)} review rounds, {len(steers)} steers in {FACTS}")
+    print(
+        f"facts: {len(checks)} checks, {len(gate_rounds)} gate rounds, "
+        f"{len(review_rounds)} review rounds, {len(steers)} steers in {FACTS}"
+    )
     return 0
 
 
