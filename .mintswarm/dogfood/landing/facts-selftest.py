@@ -27,11 +27,18 @@ Checks:
   one, one inside the worktree, one inside the main checkout when run from
   a nested worktree (`git worktree add`) and a symbolic link each exit 2,
   naming the cause, and create nothing there, while the same round kept in
-  runner state succeeds;
+  runner state succeeds; on a case-insensitive file system a case variant
+  of a path inside the worktree is refused too (skipped otherwise);
 - the head: a gates --head that is not HEAD, a gates keep with a modified
   tracked file or an untracked file outside .mintswarm/job/, a review
   --head that is not an ancestor of HEAD and a --head that is not a full
-  hash each exit 2, naming the cause, and keep nothing;
+  hash each exit 2, naming the cause, and keep nothing; so does a gates
+  keep with a change a plain git status hides (each shown hidden first): a
+  skip-worktree or assume-unchanged entry, an untracked file listed in
+  .git/info/exclude or core.excludesFile, an untracked .gitignore that
+  ignores itself, a file staged but not committed, and a same-size change with its mtime restored under
+  core.checkStat minimal and core.trustctime off; with all undone the
+  round is kept;
 - commit binding: rounds kept at the base (gates with the base checked
   out, review as an ancestor) and at the head give `commit` and `current`,
   false for the base's rounds, with their raw verdicts;
@@ -66,19 +73,21 @@ Checks:
   round numbers, an unreadable review verdict, a bad --approved-at or
   --approver, and a decision or kickoff floor of the wrong tool;
 - reading rounds from runner state: assemble without --rounds, with a
-  relative one, a symbolic link, one inside the worktree and one inside the
-  main checkout from a nested worktree exits 2 with no facts file, naming
-  the cause; a full copy of the rounds under .mintswarm/job/rounds/,
+  relative one, a symbolic link, one inside the worktree, a case variant of
+  one (on a case-insensitive file system) and one inside the main checkout
+  from a nested worktree exits 2 with no facts file, naming the cause; a full copy of the rounds under .mintswarm/job/rounds/,
   rewritten to pass with recomputed sha256 values, leaves the facts
   unchanged, and given as --rounds exits 2 (the same copy outside the
   repository does read as passed);
 - static: every import of the three scripts is in the standard library,
   keep-round.py's docstring names report-gates.py --clean and the next
-  review round, and both scripts' docstrings say that keeping rounds out of
-  the worktree is not an OS barrier.
+  review round, both scripts' docstrings say that keeping rounds out of
+  the worktree is not an OS barrier, and both hold the same
+  check_rounds_location.
 
-Prints one `ok` or `FAIL` line per check, then `N passed, M failed`, and
-exits 0 only when none failed.
+Prints one `ok` or `FAIL` line per check, and `skip` for a check the file
+system cannot run, then `N passed, M failed`, and exits 0 only when none
+failed.
 """
 
 import ast
@@ -488,6 +497,22 @@ def nested_worktree(sb: Sandbox) -> Path:
     return nested
 
 
+def case_variant(path: Path) -> Optional[Path]:
+    """`path` with its letters' case swapped when the file system finds the same directory under it, else None."""
+    variant = Path(str(path).swapcase())
+    return variant if variant.exists() and os.path.samefile(variant, path) else None
+
+
+def skip(name: str, why: str) -> None:
+    print(f"skip {name}: {why}")
+
+
+def plain_status(sb: Sandbox, *args: str) -> str:
+    """What a plain `git status --porcelain` reports outside .mintswarm/job/."""
+    lines = sb.git("status", "--porcelain", *args).splitlines()
+    return "\n".join(line for line in lines if not line[3:].startswith(".mintswarm/"))
+
+
 def refused(name: str, proc, fragment: str, absent: list) -> None:
     gone = [str(path) for path in absent if os.path.lexists(path)]
     T.check(name, proc.returncode == 2 and fragment in proc.stderr and not gone,
@@ -510,6 +535,13 @@ def location_tests(sb: Sandbox) -> None:
     ]
     for name, rounds, fragment, absent in cases:
         refused(f"keep: {name} exits 2 and keeps nothing", keep(sb, "gates", "9", rounds=rounds), fragment, absent)
+    name = "keep: a case variant of a --rounds inside the worktree exits 2 and keeps nothing"
+    variant = case_variant(sb.repo)
+    if variant is None:
+        skip(name, "the file system is case-sensitive")
+    else:
+        refused(name, keep(sb, "gates", "9", rounds=variant / "state-case" / "rounds"), "inside the worktree",
+                [sb.repo / "state-case"])
 
     nested = nested_worktree(sb)
     ready_gates(nested, T0 + 3000)
@@ -550,6 +582,69 @@ def head_tests(sb: Sandbox) -> None:
             keep(sb, "gates", "9", rounds=rounds), "stray.txt", [rounds / "gates-9"])
     (sb.repo / "stray.txt").unlink()
     (sb.outputs / "review.md").unlink()
+
+    # changes that git's own status hides through the index, excludes or the stat cache
+    for flag in ("skip-worktree", "assume-unchanged"):
+        sb.git("update-index", f"--{flag}", "README.md")
+        write(sb.repo / "README.md", "changed behind a flag\n")
+        hidden = plain_status(sb)
+        T.check(f"keep: with {flag}, a plain git status hides the change", hidden == "", hidden)
+        refused(f"keep: a gates keep with a {flag} entry exits 2", keep(sb, "gates", "9", rounds=rounds),
+                "assume-unchanged or skip-worktree: README.md", [rounds / "gates-9"])
+        sb.git("update-index", f"--no-{flag}", "README.md")
+        sb.git("checkout", "-q", "--", "README.md")
+    exclude = sb.repo / ".git" / "info" / "exclude"
+    excludes_file = sb.tmp / "excludes"
+    excludes_file.write_text("evil.py\n", encoding="utf-8")
+    hiders = [
+        ("listed in .git/info/exclude", lambda: write(exclude, "evil.py\n"), lambda: write(exclude, "")),
+        ("listed in core.excludesFile", lambda: sb.git("config", "core.excludesFile", str(excludes_file)),
+         lambda: sb.git("config", "--unset", "core.excludesFile")),
+    ]
+    for name, hide, unhide in hiders:
+        hide()
+        write(sb.repo / "evil.py", "print('not what HEAD holds')\n")
+        hidden = plain_status(sb, "--untracked-files=all")
+        T.check(f"keep: an untracked file {name} is hidden from a plain git status", hidden == "", hidden)
+        refused(f"keep: a gates keep with an untracked file {name} exits 2", keep(sb, "gates", "9", rounds=rounds),
+                "evil.py", [rounds / "gates-9"])
+        (sb.repo / "evil.py").unlink()
+        unhide()
+    write(sb.repo / "evil" / ".gitignore", "*\n")
+    write(sb.repo / "evil" / "x.py", "print('hidden')\n")
+    hidden = plain_status(sb, "--untracked-files=all")
+    T.check("keep: an untracked .gitignore that ignores itself hides its directory from a plain git status",
+            hidden == "", hidden)
+    refused("keep: a gates keep with an untracked .gitignore that ignores itself exits 2",
+            keep(sb, "gates", "9", rounds=rounds), "untracked .gitignore files that hide paths: evil/.gitignore",
+            [rounds / "gates-9"])
+    shutil.rmtree(sb.repo / "evil")
+    write(sb.repo / "staged.py", "print('staged, never committed')\n")
+    sb.git("add", "staged.py")
+    refused("keep: a gates keep with a file staged but not committed exits 2", keep(sb, "gates", "9", rounds=rounds),
+            "staged.py", [rounds / "gates-9"])
+    sb.git("rm", "-q", "--cached", "staged.py")
+    (sb.repo / "staged.py").unlink()
+
+    readme = sb.repo / "README.md"
+    original = readme.read_bytes()
+    old = 1_000_000_000  # in the past, so git does not treat the entry as racy
+    os.utime(readme, (old, old))
+    sb.git("config", "core.checkStat", "minimal")
+    sb.git("config", "core.trustctime", "false")
+    sb.git("update-index", "--refresh")
+    write(readme, original.replace(b"a tracked", b"a TRACKED"), old)
+    hidden = plain_status(sb)
+    T.check("keep: a same-size change with its mtime restored is hidden from git status under core.checkStat "
+            "minimal", hidden == "", hidden)
+    refused("keep: a gates keep with a change hidden by the stat cache settings exits 2",
+            keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+    write(readme, original)
+    sb.git("config", "--unset", "core.checkStat")
+    sb.git("config", "--unset", "core.trustctime")
+    sb.git("update-index", "--really-refresh")
+    proc = keep(sb, "gates", "9", rounds=rounds)
+    T.check("keep: with every change undone the same gates round is kept", proc.returncode == 0, detail(proc))
 
 
 def stale_tests(sb: Sandbox) -> Path:
@@ -935,6 +1030,13 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
     proc, facts = assemble(sb, replace={"--rounds": str(writable)})
     T.check("assemble: the rewritten copy under .mintswarm/job/rounds/ given as --rounds exits 2",
             proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr, detail(proc))
+    name = "assemble: a case variant of the copy under .mintswarm/job/rounds/ given as --rounds exits 2"
+    variant = case_variant(writable)
+    if variant is None:
+        skip(name, "the file system is case-sensitive")
+    else:
+        proc, facts = assemble(sb, replace={"--rounds": str(variant)})
+        T.check(name, proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr, detail(proc))
 
     link = sb.runner_state / "assemble-link"
     link.symlink_to(sb.rounds)
@@ -1142,6 +1244,14 @@ def static_tests() -> None:
     doc = " ".join((ast.get_docstring(ast.parse(COLLECT.read_text(encoding="utf-8"))) or "").split())
     T.check("static: collect-facts.py's docstring states the steer gap",
             "Steers given only in the session chat" in doc and MARKER in doc)
+    sources = []
+    for path in (KEEP, COLLECT):
+        text = path.read_text(encoding="utf-8")
+        found = [ast.get_source_segment(text, node) for node in ast.parse(text).body
+                 if isinstance(node, ast.FunctionDef) and node.name == "check_rounds_location"]
+        sources.append(found[0] if len(found) == 1 else None)
+    T.check("static: keep-round.py and collect-facts.py share check_rounds_location word for word",
+            sources[0] is not None and sources[0] == sources[1])
     for path in (KEEP, COLLECT):
         doc = " ".join((ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or "").split())
         T.check(f"static: {path.name}'s docstring says rounds outside the worktree are a convention",

@@ -167,8 +167,11 @@ and are.
 
 The facts rules trust what the facts file says, apart from staleness: a
 last gate or review round that judged another commit is a hit whatever its
-verdict, so an old green round cannot stand for a later head. The boundary
-that remains: the kept rounds the facts are built from sit outside every
+verdict, so an old green round kept honestly at an earlier commit cannot
+stand for a later head. That is no defence against an edit: a round's
+`commit` comes from the kept round.json's `head`, a plain field that
+whoever can edit the kept rounds can set to the head. The boundary that
+remains: the kept rounds the facts are built from sit outside every
 repository by convention only (on one account any process can write
 them); facts.json and this verdict stay in job paths a stage can write; and
 the base, the head, the merge base, the diff and the config at the base

@@ -54,15 +54,19 @@ file.
 
 The kept rounds are read from the job's runner state, never from the
 worktree: --rounds DIR must be an existing directory, absolute and not a
-symbolic link, and, resolved, neither the resolved working directory nor
-under it, nor the main checkout (the parent of `git rev-parse
---path-format=absolute --git-common-dir`, resolved) nor under it, as
-keep-round.py requires. A copy of the rounds under .mintswarm/job/, such as
-the landing judge's inputs/rounds/, is refused. On one account this is a
-convention, not an OS barrier: any process of the account can write DIR.
-What a later edit of an old round cannot pass is the binding to a commit:
-each round records the head it judged, and a round whose `current` is
-false is not passed, whatever its verdict.
+symbolic link, and neither DIR resolved nor any of its existing ancestors
+may be, by identity (st_dev, st_ino), the working directory, the worktree
+root or the main checkout, as keep-round.py requires (the same check, word
+for word). A copy of the rounds under .mintswarm/job/, such as the landing
+judge's inputs/rounds/, is refused. On one account this is a convention,
+not an OS barrier: any process of the account can write DIR. Each round
+records the head it judged, and a round whose `current` is false is not
+passed, whatever its verdict; that catches a stale round kept honestly, at
+an earlier commit. It does not catch an edit of DIR: `head` is a plain
+field of round.json, which no sha256 covers, so whoever can edit DIR can
+set it to the current head. Against that the only protection is keeping
+DIR out of the stages' reach. A review round's head is the session's word,
+which keep-round.py checks only for ancestry.
 
 Inputs are checked before anything is written:
 
@@ -620,24 +624,45 @@ def load_round(path: Path, kind: str, number: int) -> dict:
 
 
 def check_rounds_location(value: str) -> Path:
-    """--rounds: absolute, not a link, outside the worktree and the main checkout (as keep-round.py checks)."""
+    """--rounds DIR: absolute, not a symbolic link, and inside neither the worktree nor the main checkout.
+
+    The same text in keep-round.py and collect-facts.py. DIR resolved and each of its existing ancestors
+    are compared by identity (st_dev, st_ino) with the working directory, the worktree root and the main
+    checkout, so neither a case variant on a case-insensitive file system nor `..` or a symbolic link
+    above DIR gets past it.
+    """
     path = Path(value)
     if not path.is_absolute():
         raise InputError(f"--rounds must be an absolute path, got {value!r}")
     if path.is_symlink():
         raise InputError(f"--rounds {value} is a symbolic link")
+    places = [("the worktree", Path.cwd())]
+    for name, args in (("the worktree", ["--show-toplevel"]),
+                       ("the main checkout", ["--path-format=absolute", "--git-common-dir"])):
+        try:
+            proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
+        except OSError as exc:
+            raise InputError(f"cannot run git: {exc}") from exc
+        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0 or not out:
+            raise InputError(f"git rev-parse {args[-1]} failed: the working directory is not a git checkout")
+        places.append((name, Path(out).parent if name == "the main checkout" else Path(out)))
+    identities = {}
+    for name, place in places:
+        try:
+            info = os.stat(place)
+        except OSError as exc:
+            raise InputError(f"cannot stat {name} {place}: {exc}") from exc
+        identities.setdefault((info.st_dev, info.st_ino), (name, place))
     resolved = path.resolve()
-    try:
-        proc = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                              stdin=subprocess.DEVNULL, capture_output=True)
-    except OSError as exc:
-        raise InputError(f"cannot run git: {exc}") from exc
-    common = proc.stdout.decode("utf-8", errors="replace").strip()
-    if proc.returncode != 0 or not common:
-        raise InputError("git rev-parse --git-common-dir failed: the working directory is not a git checkout")
-    for name, place in (("the worktree", Path.cwd().resolve()), ("the main checkout", Path(common).resolve().parent)):
-        if resolved == place or place in resolved.parents:
-            raise InputError(f"--rounds {value} is inside {name} {place}; kept rounds are read from runner state")
+    for candidate in (resolved, *resolved.parents):
+        try:
+            info = os.stat(candidate)
+        except OSError:  # not there yet: an ancestor further up decides
+            continue
+        found = identities.get((info.st_dev, info.st_ino))
+        if found:
+            raise InputError(f"--rounds {value} is inside {found[0]} {found[1]}; kept rounds live in runner state")
     return path
 
 

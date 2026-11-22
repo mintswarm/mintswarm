@@ -33,27 +33,56 @@ review round has no address and is kept with --no-address.
 Where rounds are kept. DIR is the job's runner state, outside every
 repository; the session passes
 ${XDG_STATE_HOME:-$HOME/.local/state}/mintswarm/jobs/<worktree name>/rounds/.
-DIR must be absolute and not a symbolic link, and, resolved, must be
-neither the resolved working directory nor under it, nor the main checkout
-(the parent of `git rev-parse --path-format=absolute --git-common-dir`,
-resolved) nor under it. There is no default inside the worktree. DIR is
-created with mode 0700 when missing.
+DIR must be absolute and not a symbolic link, and neither DIR resolved nor
+any of its existing ancestors may be, by identity (st_dev, st_ino), the
+working directory, the worktree root (`git rev-parse --show-toplevel`) or
+the main checkout (the parent of `git rev-parse --path-format=absolute
+--git-common-dir`), so a case variant of a path inside them is refused too.
+There is no default inside the worktree. DIR is created with mode 0700 when
+missing.
 
 The head. SHA is the full hash of the commit the round judged, and
 `git rev-parse --verify --quiet --end-of-options SHA^{commit}` must return
-it unchanged. For a gates round it must be HEAD, and
-`git status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none`
-must list no path outside .mintswarm/job/, so that the recorded commit is
-exactly what the gates ran on. For a review round, `git merge-base
---is-ancestor SHA HEAD` must succeed: the round judged the head of the
-diff.patch it was given, and address commits may follow it.
+it unchanged. For a gates round it must be HEAD, and the worktree must hold
+HEAD's content outside .mintswarm/job/, so that the recorded commit is what
+the gates ran on. The worktree is compared with a temporary index read from
+HEAD (`git read-tree HEAD` into a file outside the repository, as
+GIT_INDEX_FILE), whose entries carry no stat data and no flags, so git
+compares the content of every file HEAD holds, whatever the stat cache
+says, and a file staged but not committed counts as untracked:
+
+- `git status --porcelain=v1 -z --untracked-files=no
+  --ignore-submodules=none` lists no changed path;
+- `git ls-files --others -z --exclude-per-directory=.gitignore` lists no
+  untracked path outside .mintswarm/job/: only .gitignore files hide
+  paths, never .git/info/exclude or core.excludesFile;
+- in the repository's own index, `git ls-files -v -z` shows no entry marked
+  assume-unchanged (a lower-case tag) or skip-worktree (`S`);
+- no untracked .gitignore outside .mintswarm/job/ is itself ignored unless
+  a .gitignore that HEAD holds ignores it (`git check-ignore -v`), so an
+  untracked .gitignore cannot hide itself and the paths it names.
+
+Every git command runs with the neutral environment floor.py uses (no
+system, global or environment config, no replace objects or grafts) and
+with core.fsmonitor and core.untrackedCache off, core.checkStat default,
+core.trustctime on, core.ignoreStat off and core.excludesFile the null
+device, overriding the repository's config. Not covered: files that a
+.gitignore held by HEAD ignores, such as build output, can still differ.
+
+For a review round, `git merge-base --is-ancestor SHA HEAD` must succeed:
+the round judged the head of the diff.patch it was given, and address
+commits may follow it. That SHA is the session's word; it is checked only
+for ancestry.
 
 Trust boundary. On one account, keeping DIR outside the worktree and the
 main checkout is a convention the stage rules hold, not an OS barrier: any
 process of that account can write DIR. Mode 0444 and the sha256 values in
-round.json detect only accidental change. The binding to a commit is what
-lets the landing floor reject a stale round: a last gates or review round
-whose head is not the change's head is not passed, however it was edited.
+round.json detect only accidental change. The binding to a commit protects
+against stale rounds kept honestly: a last gates or review round kept at
+an earlier commit is not passed. It does not protect against an edit of
+DIR: `head` is a plain field of round.json, which no sha256 covers, so
+whoever can edit DIR can set it to the current head. Against that the only
+protection is keeping DIR out of the stages' reach.
 
 The round is kept in DIR/<kind>-<N>/ (gates-N or review-N). The files keep
 their names and are made mode 0444; round.json records, in this order,
@@ -123,6 +152,16 @@ ROUND_NUMBER = re.compile(r"[1-9][0-9]*")
 FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 USAGE = ("usage: keep-round.py gates N --head SHA --rounds DIR | "
          "keep-round.py review N --head SHA --rounds DIR [--no-address]")
+JOB_PREFIX = ".mintswarm/job/"
+# settings in the repository's config that could make git report a changed worktree as clean
+GIT_OVERRIDES = (
+    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.checkStat=default",
+    "-c", "core.trustctime=true", "-c", "core.ignoreStat=false", "-c", f"core.excludesFile={os.devnull}",
+)
+DROPPED_ENV = (
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE",
+)
+DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 
 class InputError(Exception):
@@ -158,30 +197,66 @@ def parse_args(argv: list) -> tuple:
     return kind, int(number), values["--head"], values["--rounds"], "--no-address" in values
 
 
-def git(*args: str) -> tuple:
-    """Run git in the working directory: (exit code, stdout as text)."""
+def neutral_git_config() -> None:
+    """Keep system, global and environment config, replace objects and grafts away from git, as floor.py does."""
+    for name in list(os.environ):
+        if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
+            del os.environ[name]
+    os.environ.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
+                       "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull})
+
+
+def git(*args: str, data: bytes = b"", index: str = None) -> tuple:
+    """Run git in the working directory with GIT_OVERRIDES, `data` on stdin and, when given, GIT_INDEX_FILE
+    `index`: (exit code, stdout as text)."""
+    env = dict(os.environ, GIT_INDEX_FILE=index) if index else None
     try:
-        proc = subprocess.run(["git", *args], stdin=subprocess.DEVNULL, capture_output=True)
+        proc = subprocess.run(["git", *GIT_OVERRIDES, *args], input=data, capture_output=True, env=env)
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     return proc.returncode, proc.stdout.decode("utf-8", errors="replace")
 
 
-def rounds_dir(value: str) -> Path:
-    """Check DIR's location: absolute, not a link, outside the worktree and the main checkout."""
+def check_rounds_location(value: str) -> Path:
+    """--rounds DIR: absolute, not a symbolic link, and inside neither the worktree nor the main checkout.
+
+    The same text in keep-round.py and collect-facts.py. DIR resolved and each of its existing ancestors
+    are compared by identity (st_dev, st_ino) with the working directory, the worktree root and the main
+    checkout, so neither a case variant on a case-insensitive file system nor `..` or a symbolic link
+    above DIR gets past it.
+    """
     path = Path(value)
     if not path.is_absolute():
         raise InputError(f"--rounds must be an absolute path, got {value!r}")
     if path.is_symlink():
         raise InputError(f"--rounds {value} is a symbolic link")
+    places = [("the worktree", Path.cwd())]
+    for name, args in (("the worktree", ["--show-toplevel"]),
+                       ("the main checkout", ["--path-format=absolute", "--git-common-dir"])):
+        try:
+            proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
+        except OSError as exc:
+            raise InputError(f"cannot run git: {exc}") from exc
+        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0 or not out:
+            raise InputError(f"git rev-parse {args[-1]} failed: the working directory is not a git checkout")
+        places.append((name, Path(out).parent if name == "the main checkout" else Path(out)))
+    identities = {}
+    for name, place in places:
+        try:
+            info = os.stat(place)
+        except OSError as exc:
+            raise InputError(f"cannot stat {name} {place}: {exc}") from exc
+        identities.setdefault((info.st_dev, info.st_ino), (name, place))
     resolved = path.resolve()
-    code, out = git("rev-parse", "--path-format=absolute", "--git-common-dir")
-    if code != 0 or not out.strip():
-        raise InputError("git rev-parse --git-common-dir failed: the working directory is not a git checkout")
-    for name, place in (("the worktree", Path.cwd().resolve()),
-                        ("the main checkout", Path(out.strip()).resolve().parent)):
-        if resolved == place or place in resolved.parents:
-            raise InputError(f"--rounds {value} is inside {name} {place}; kept rounds live in runner state")
+    for candidate in (resolved, *resolved.parents):
+        try:
+            info = os.stat(candidate)
+        except OSError:  # not there yet: an ancestor further up decides
+            continue
+        found = identities.get((info.st_dev, info.st_ino))
+        if found:
+            raise InputError(f"--rounds {value} is inside {found[0]} {found[1]}; kept rounds live in runner state")
     return path
 
 
@@ -200,24 +275,64 @@ def check_head(kind: str, head: str) -> None:
     code, out = git("rev-parse", "--verify", "HEAD")
     if code != 0 or out.strip() != head:
         raise InputError(f"--head {head} is not HEAD {out.strip()}: a gates round is kept at the commit it ran on")
-    code, out = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+    check_worktree()
+
+
+def git_records(*args: str, index: str = None) -> list:
+    """The NUL-separated records of a git command's output; a failing command is unusable input."""
+    code, out = git(*args, index=index)
     if code != 0:
-        raise InputError("git status failed")
-    records, dirty = out.split("\0"), []
-    i = 0
+        raise InputError(f"git {' '.join(args)} failed")
+    return out.split("\0")[:-1] if out else []
+
+
+def check_worktree() -> None:
+    """Refuse a worktree whose content can differ from HEAD outside .mintswarm/job/ (see the docstring)."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="msw-keep-round-") as scratch:
+            index = os.path.join(scratch, "index")
+            git_records("read-tree", "HEAD", index=index)
+            problems = worktree_problems(index)
+    except OSError as exc:
+        raise InputError(f"cannot make a temporary index: {exc}") from exc
+    if problems:
+        raise InputError("the worktree can differ from HEAD outside .mintswarm/job/, so HEAD is not what the "
+                         "gates ran on: " + "; ".join(problems))
+
+
+def worktree_problems(index: str) -> list:
+    """What makes the worktree differ from HEAD; `index` is a fresh index read from HEAD."""
+    problems = []
+    records, changed, i = git_records("status", "--porcelain=v1", "-z", "--untracked-files=no",
+                                      "--ignore-submodules=none", index=index), [], 0
     while i < len(records):
-        record = records[i]
-        i += 1
-        if not record:
-            continue
-        paths = [record[3:]]
+        record, i = records[i], i + 1
+        changed.append(record[3:])
         if "R" in record[:2] or "C" in record[:2]:  # a rename or copy is followed by its source path
-            paths.append(records[i] if i < len(records) else "")
+            changed.append(records[i] if i < len(records) else "")
             i += 1
-        dirty += [path for path in paths if not path.startswith(".mintswarm/job/")]
-    if dirty:
-        raise InputError(f"the worktree has changes outside .mintswarm/job/, so HEAD is not what the gates ran on: "
-                         f"{', '.join(sorted(dirty)[:10])}")
+    untracked = git_records("ls-files", "--others", "-z", "--exclude-per-directory=.gitignore", index=index)
+    changed += [path for path in untracked if not path.startswith(JOB_PREFIX)]
+    if changed:
+        problems.append(f"changed or untracked paths: {', '.join(sorted(set(changed))[:10])}")
+    # in the repository's own index, assume-unchanged shows as a lower-case tag, skip-worktree as S (s when both)
+    flagged = [record[2:] for record in git_records("ls-files", "-v", "-z") if record[0].islower() or record[0] == "S"]
+    if flagged:
+        problems.append(f"index entries marked assume-unchanged or skip-worktree: {', '.join(sorted(flagged)[:10])}")
+    hiding = [path for path in git_records("ls-files", "--others", "--ignored", "-z",
+                                           "--exclude-per-directory=.gitignore", index=index)
+              if path.rsplit("/", 1)[-1] == ".gitignore" and not path.startswith(JOB_PREFIX)]
+    if hiding:  # an untracked .gitignore that is itself ignored: only a tracked one may hide it
+        tracked = set(git_records("ls-files", "-z", index=index))
+        code, out = git("check-ignore", "-v", "-z", "--no-index", "--stdin",
+                        data=b"".join(path.encode("utf-8") + b"\0" for path in hiding))
+        fields = out.split("\0")[:-1] if out else []
+        if code not in (0, 1) or len(fields) % 4:
+            raise InputError("git check-ignore failed")
+        hiding = [path for source, _, _, path in zip(*[iter(fields)] * 4) if source not in tracked]
+        if hiding:
+            problems.append(f"untracked .gitignore files that hide paths: {', '.join(sorted(hiding)[:10])}")
+    return problems
 
 
 def mtime_ns(path: Path) -> int:
@@ -338,7 +453,8 @@ def keep(rounds: Path, kind: str, number: int, head: str, files: list) -> Path:
 
 def keep_round(argv: list) -> int:
     kind, number, head, value, no_address = parse_args(argv)
-    rounds = rounds_dir(value)
+    neutral_git_config()
+    rounds = check_rounds_location(value)
     check_head(kind, head)
     final = rounds / f"{kind}-{number}"
     if os.path.lexists(final):
