@@ -19,15 +19,20 @@ The approvers are pipeline.review.reviewers:
 
 A leading `@` is stripped. A login ending in `[bot]` is skipped with a note,
 so no bot is ever assigned; every other login must match ^[A-Za-z0-9-]+$. The
-logins are deduplicated and sorted, then posted with
-`bot-gh.sh api --method POST repos/{owner}/{repo}/issues/N/assignees --input -`.
-GitHub drops logins it cannot assign (and any over its 10-assignee cap)
-without an error, so a requested login missing from the response is named
-and the script fails.
+logins are deduplicated and sorted; when none is left, or pipeline or
+pipeline.review is not a mapping, the script exits 2, because an item waiting
+on a human must not end up with nobody assigned. Logins are compared without
+regard to case, as GitHub does. The item is read first, and only the
+approvers not already assigned are posted with
+`bot-gh.sh api --method POST repos/{owner}/{repo}/issues/N/assignees --input -`,
+so a person's own assignment gets no event of the bot's. GitHub drops logins
+it cannot assign (and any over its 10-assignee cap) without an error, so a
+posted login missing from the response is named and the script fails.
 
 release reads no config. It takes the item's current assignees and its event
-history (`--paginate --slurp`, oldest first). For each assignee, the last
-`assigned` event for that login decides: it is the bot's when actor.login or
+history (`--paginate --slurp`), sorted by created_at and then id (events
+without them keep their order). For each assignee, the latest `assigned` event
+for that login decides: it is the bot's when actor.login or
 assigner.login is mintswarm-dev[bot], or performed_via_github_app.slug is
 mintswarm-dev. Only those assignees are removed, with
 `bot-gh.sh api --method DELETE repos/{owner}/{repo}/issues/N/assignees --input -`;
@@ -86,11 +91,13 @@ def load_config(ref: str) -> dict:
 
 def approvers(config: dict) -> list:
     where = "pipeline.review.reviewers"
-    pipeline = config.get("pipeline") or {}
-    review = pipeline.get("review") if isinstance(pipeline, dict) else None
-    value = review.get("reviewers") if isinstance(review, dict) else None
-    if value is None:
-        return []
+    pipeline = config.get("pipeline")
+    if not isinstance(pipeline, dict):
+        raise UsageError("pipeline must be a mapping")
+    review = pipeline.get("review")
+    if not isinstance(review, dict):
+        raise UsageError("pipeline.review must be a mapping")
+    value = review.get("reviewers")
     if not isinstance(value, list):
         raise UsageError(f"{where} must be a list of logins")
     result = set()
@@ -101,10 +108,13 @@ def approvers(config: dict) -> list:
         if login.lower().endswith("[bot]"):
             print(f"assign-approvers.py: skipping {login}: a bot is never assigned", file=sys.stderr)
             continue
-        if not LOGIN.match(login):
+        if not LOGIN.fullmatch(login):
             raise UsageError(f"{where}: not a valid login: {item!r}")
-        result.add(login)
-    return sorted(result)
+        if login.lower() not in {r.lower() for r in result}:
+            result.add(login)
+    if not result:
+        raise UsageError(f"{where} names no human approver; nobody would be assigned")
+    return sorted(result, key=str.lower)
 
 
 def gh(args: list, body: dict = None):
@@ -127,22 +137,37 @@ def by_bot(event: dict) -> bool:
     return BOT_LOGIN in (actor, assigner) or app == BOT_SLUG
 
 
+def lowered(logins: list) -> set:
+    return {login.lower() for login in logins}
+
+
 def assign(number: int, reason: str, base: str, dry_run: bool) -> int:
     logins = approvers(load_config(base))
-    if not logins:
-        print("no approvers resolved; nothing assigned", file=sys.stderr)
-        return 0
     if dry_run:
         print("\n".join(logins))
         return 0
-    issue = gh(["--method", "POST", f"repos/{{owner}}/{{repo}}/issues/{number}/assignees"], {"assignees": logins})
-    missing = [login for login in logins if login not in assignee_logins(issue)]
+    current = lowered(assignee_logins(gh([f"repos/{{owner}}/{{repo}}/issues/{number}"])))
+    already = [login for login in logins if login.lower() in current]
+    todo = [login for login in logins if login.lower() not in current]
+    if already:
+        print(f"assign-approvers.py: already assigned to #{number}: {' '.join(already)}", file=sys.stderr)
+    if not todo:
+        print(f"nothing to assign: #{number} is assigned to every approver ({reason})")
+        return 0
+    issue = gh(["--method", "POST", f"repos/{{owner}}/{{repo}}/issues/{number}/assignees"], {"assignees": todo})
+    missing = [login for login in todo if login.lower() not in lowered(assignee_logins(issue))]
     if missing:
         print(f"assign-approvers.py: GitHub did not assign {' '.join(missing)} to #{number}"
               " (not assignable, or over the 10-assignee cap)", file=sys.stderr)
         return 1
-    print(f"assigned {' '.join(logins)} to #{number} ({reason})")
+    print(f"assigned {' '.join(todo)} to #{number} ({reason})")
     return 0
+
+
+def event_order(event: dict) -> tuple:
+    created = event.get("created_at")
+    ident = event.get("id")
+    return (created if isinstance(created, str) else "", ident if isinstance(ident, int) else 0)
 
 
 def release(number: int, reason: str, dry_run: bool) -> int:
@@ -152,12 +177,12 @@ def release(number: int, reason: str, dry_run: bool) -> int:
     for page in pages:
         events.extend(page if isinstance(page, list) else [page])
     latest = {}
-    for event in events:
-        if isinstance(event, dict) and event.get("event") == "assigned":
-            latest[(event.get("assignee") or {}).get("login")] = event
+    assigned = [e for e in events if isinstance(e, dict) and e.get("event") == "assigned"]
+    for event in sorted(assigned, key=event_order):
+        latest[((event.get("assignee") or {}).get("login") or "").lower()] = event
     mine = []
     for login in current:
-        event = latest.get(login)
+        event = latest.get(login.lower())
         if event is None:
             print(f"assign-approvers.py: leaving {login} alone: no assigned event", file=sys.stderr)
         elif not by_bot(event):
@@ -173,7 +198,7 @@ def release(number: int, reason: str, dry_run: bool) -> int:
         print("\n".join(mine))
         return 0
     issue = gh(["--method", "DELETE", f"repos/{{owner}}/{{repo}}/issues/{number}/assignees"], {"assignees": mine})
-    left = [login for login in mine if login in assignee_logins(issue)]
+    left = [login for login in mine if login.lower() in lowered(assignee_logins(issue))]
     if left:
         print(f"assign-approvers.py: GitHub did not remove {' '.join(left)} from #{number}", file=sys.stderr)
         return 1

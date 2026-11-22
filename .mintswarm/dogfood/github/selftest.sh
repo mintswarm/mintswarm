@@ -21,11 +21,12 @@
 # backend (selection, round trips, put --confirm, the file backend's modes and
 # refusals, rotate and jwt through each); the bot identity include; push.sh
 # pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
-# resolution; assignment and release of approvers. Secrets and the manifest code must appear in no recorded argv,
-# nothing may be left in TMPDIR, each create adds only its own App's config to
-# HOME, and .git/config stays byte-identical across pushes. Every background
-# process runs in its own process group, every wait is bounded, and any group
-# still there is killed on exit.
+# resolution; assignment and release of approvers. Secrets and the manifest
+# code must appear in no recorded argv, nothing may be left in TMPDIR, each
+# create adds only its own App's config to HOME, and .git/config stays
+# byte-identical across pushes. Every background process runs in its own
+# process group, every wait is bounded, and any group still there is killed on
+# exit.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
@@ -1807,6 +1808,14 @@ assign_drops() {  # assign on issue 13, where bob cannot be assigned: exit 1, na
   cat "$sandbox/aa.out"
   eq "$rc" 1 && grep -qF "did not assign bob" "$sandbox/aa.out"
 }
+commit_config() {  # commit_config YAML: commit YAML as .mintswarm/config.yaml and print the commit
+  printf '%s\n' "$1" > .mintswarm/config.yaml
+  git add .mintswarm/config.yaml
+  git commit -q -m "config"
+  git rev-parse HEAD
+}
+posts() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST"))' "$argv_log" | wc -l | tr -d ' '; }
+last_stdin() { tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1; }
 
 git checkout -q --no-track -b mintswarm/7-assign refs/remotes/origin/master
 mkdir -p .mintswarm
@@ -1814,14 +1823,15 @@ cp "$here/../../config.yaml" .mintswarm/config.yaml
 git add .mintswarm/config.yaml
 git commit -q -m "the real config"
 real_base="$(git rev-parse HEAD)"
-cat > .mintswarm/config.yaml <<'EOF'
-pipeline:
-  review: {reviewers: [alice, "@bob", "mintswarm-dev[bot]", "other[bot]", alice]}
-EOF
-git add .mintswarm/config.yaml
-git commit -q -m "approvers config"
+bots_base="$(commit_config 'pipeline: {review: {reviewers: ["mintswarm-dev[bot]", "other[bot]"]}}')"
+list_base="$(commit_config 'pipeline: [review]')"
+newline_base="$(commit_config 'pipeline: {review: {reviewers: ["alice\n"]}}')"
+commit_config 'pipeline: {review: {reviewers: [alice, "@bob", "mintswarm-dev[bot]", "other[bot]", alice, Alice]}}' >/dev/null
 check "approvers from the real config" eq "$(aa assign 1 plan --dry-run --base "$real_base")" "zmij"
-check "approvers from the base config: @ stripped, bots skipped, deduplicated" \
+check "assign with no human approver exits 2" exits_2 aa assign 1 plan --base "$bots_base"
+check "a pipeline that is not a mapping exits 2" exits_2 aa assign 1 plan --base "$list_base"
+check "a login with a trailing newline exits 2" exits_2 aa assign 1 plan --base "$newline_base"
+check "approvers from the base config: @ stripped, bots skipped, deduplicated without regard to case" \
   eq "$(aa assign 1 plan --dry-run --base HEAD 2>/dev/null | tr '\n' ' ')" "alice bob "
 check "a skipped bot is noted" present "skipping other[bot]" <(aa assign 1 plan --dry-run --base HEAD 2>&1)
 printf 'pipeline:\n  review: {reviewers: [mallory]}\n' > .mintswarm/config.yaml
@@ -1837,7 +1847,8 @@ check "assign prints the assigned logins and the reason" eq "$out" "assigned ali
 check "assign posts to the issue's assignees through bot-gh.sh" \
   eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/issues/11/assignees","--input","-"]'
 check "gh sees the minted token" eq "$(gh_env GH_TOKEN)" "$MINTED"
-check "assign sends the approvers on stdin" present '{"assignees": ["alice", "bob"]}' "$MSW_STUB_STATE/stdin-gh.log"
+check "assign reads the issue first" gh_argv_seen '["api","repos/{owner}/{repo}/issues/11"]'
+check "assign sends the approvers on stdin" eq "$(last_stdin)" '{"assignees": ["alice", "bob"]}'
 check "no bot login is in any request body" absent "[bot]" "$MSW_STUB_STATE/stdin-gh.log"
 check "issue 11 is assigned to alice and bob" eq "$(assignees 11)" "alice bob"
 seed 13 '{"assignees": [], "events": [], "unassignable": ["bob"]}'
@@ -1850,7 +1861,7 @@ check "release reads every page of the events" \
 check "release sends DELETE to the issue's assignees" \
   eq "$(last_gh_argv)" '["api","--method","DELETE","repos/{owner}/{repo}/issues/11/assignees","--input","-"]'
 check "release sends the bot's assignees on stdin" \
-  eq "$(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1)" '{"assignees": ["alice", "bob"]}'
+  eq "$(last_stdin)" '{"assignees": ["alice", "bob"]}'
 check "issue 11 has no assignees left" eq "$(assignees 11)" ""
 
 seed 12 '{"assignees": ["carol"], "events": [{"event": "assigned", "actor": {"login": "carol"}, "assignee": {"login": "carol"}}]}'
@@ -1861,7 +1872,9 @@ out="$(aa release 12 plan 2>/dev/null)" || out="(failed)"
 check "release removes only the bot's assignments" eq "$out" "released alice bob from #12 (plan)"
 check "carol, assigned by a person, stays" eq "$(assignees 12)" "carol"
 seed 14 '{"assignees": ["alice"], "events": [{"event": "assigned", "actor": {"login": "dave"}, "assigner": {"login": "dave"}, "assignee": {"login": "alice"}}]}'
-aa assign 14 needs_input --base HEAD >/dev/null 2>&1 || true
+aa assign 14 needs_input --base HEAD >"$sandbox/aa.out" 2>&1 || true
+check "an approver already assigned is noted" present "already assigned to #14: alice" "$sandbox/aa.out"
+check "and only the others are posted" eq "$(last_stdin)" '{"assignees": ["bob"]}'
 out="$(aa release 14 needs_input 2>/dev/null)" || out="(failed)"
 check "an approver a person assigned before the bot is not released" eq "$out" "released bob from #14 (needs_input)"
 check "alice stays on issue 14" eq "$(assignees 14)" "alice"
@@ -1869,6 +1882,21 @@ before="$(deletes)"
 out="$(aa release 12 plan 2>/dev/null)" || out="(failed)"
 check "release with nothing of the bot's is a no-op" eq "$out" "nothing to release"
 check "and sends no DELETE" eq "$(deletes)" "$before"
+seed 15 '{"assignees": ["alice"], "events": [
+  {"id": 2, "created_at": "2026-01-02T00:00:00Z", "event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "alice"}},
+  {"id": 1, "created_at": "2026-01-01T00:00:00Z", "event": "assigned", "actor": {"login": "mintswarm-dev[bot]"}, "assignee": {"login": "alice"}}]}'
+out="$(aa release 15 plan 2>/dev/null)" || out="(failed)"
+check "the latest assigned event is the latest by time, not by position" eq "$out" "nothing to release"
+check "alice stays on issue 15" eq "$(assignees 15)" "alice"
+seed 16 '{"assignees": ["Alice", "Bob"], "events": [
+  {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Alice"}},
+  {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Bob"}}]}'
+before="$(posts)"
+out="$(aa assign 16 pr --base HEAD 2>/dev/null)" || out="(failed)"
+check "approvers assigned in another case count as assigned" eq "$out" "nothing to assign: #16 is assigned to every approver (pr)"
+check "and nothing is posted" eq "$(posts)" "$before"
+out="$(aa release 16 pr 2>/dev/null)" || out="(failed)"
+check "release matches events without regard to case" eq "$out" "nothing to release"
 
 # --- summary -----------------------------------------------------------------
 
