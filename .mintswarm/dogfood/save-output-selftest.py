@@ -17,7 +17,8 @@ Checks:
   fence; a ```yaml result block without `msw-result:`; a document block that
   is never closed; an api-request-blob copy holding a valid block, which is
   ignored; a broken final reply after a good earlier one, whose fault is
-  reported; a CRLF reply, saved unchanged. Successes name the assistant
+  reported; a final message that is an unfenced document after a good
+  earlier draft, which is rejected rather than replaced by the draft; a CRLF reply, saved unchanged. Successes name the assistant
   message used (K of M) and save exactly the document; failures exit 1,
   name the message checked, and write no file;
 - --text mode, which saves the same document and names no message;
@@ -166,7 +167,8 @@ class SaveOutput(unittest.TestCase):
         self.assertFalse(self.out.exists(), "a file was written for a rejected reply")
         self.assertEqual(proc.stdout, "")
         found = BREAKS.search(proc.stderr)
-        self.assertIsNotNone(found, proc.stderr)
+        if found is None:
+            self.fail(f"no 'breaks <rule>' line in stderr: {proc.stderr}")
         self.assertEqual(found.group(1), rule, proc.stderr)
         quoted = proc.stderr[found.end():].rstrip("\n")
         self.assertIn(quoted, self.stages_md, "the quoted rule is not verbatim in .mintswarm/stages.md")
@@ -242,6 +244,19 @@ class SaveOutput(unittest.TestCase):
         )
         proc = self.run_script(str(path), str(self.out))
         self.assert_rejected(proc, "rule 6", "no msw-result block", message="assistant message 2 of 2 (msg_2)")
+
+    def test_unfenced_final_document_not_replaced(self):
+        draft = REPLY.replace("Pass, no findings.", "DRAFT")
+        path = self.transcript(
+            record("msg_1", text(draft)),
+            user("please revise"),
+            record("msg_2", handback("# Review round 1: An issue\n\nFINAL revised, changes_required\n")),
+        )
+        proc = self.run_script(str(path), str(self.out))
+        self.assert_rejected(
+            proc, "rule 1", "no document block", "'# ' title", "no earlier block is used",
+            message="assistant message 2 of 2 (msg_2)",
+        )
 
     def test_record_without_id_is_own_message(self):
         path = self.transcript(record(None, text(REPLY)), record(None, text(SUMMARY)))
@@ -344,10 +359,12 @@ class Skeletons(unittest.TestCase):
             self.assertEqual(title, TITLES[artefact], f"{stage}: skeleton title")
             self.assertIn(title, titles, f"{stage}: the skeleton title is not the template's title line")
             found = re.search(r"^\s*artefact:\s*(\S+)\s*$", proc.stdout, re.MULTILINE)
-            self.assertIsNotNone(found, proc.stdout)
+            if found is None:
+                self.fail(f"{stage}: no artefact line in the result block: {proc.stdout}")
             self.assertEqual(found.group(1), artefact, f"{stage}: artefact")
             outputs = re.search(r"^\s*outputs:\s*(\[.*\])\s*$", proc.stdout, re.MULTILINE)
-            self.assertIsNotNone(outputs, proc.stdout)
+            if outputs is None:
+                self.fail(f"{stage}: no outputs line in the result block: {proc.stdout}")
             self.assertEqual(outputs.group(1), f"[.mintswarm/job/outputs/{artefact}.md]", f"{stage}: outputs")
 
 

@@ -17,10 +17,14 @@ reads its assistant messages:
   tool calls are ignored, and messages without text are not counted.
 
 The reply is the last of these messages that has a document opening line
-(rule 1). If none has one, it is the last message, so its fault is
-reported. Only that message is checked: a broken final reply is reported,
-never replaced by an earlier draft. With --text, INPUT is the reply itself
-as plain text.
+(rule 1). It is the last message instead when that message has no opening
+line but its first non-blank line is a `# ` title (a revised document left
+unfenced), or when no message has an opening line; its fault is then
+reported. Only that message is checked, so a final message that has an
+opening line, or that starts with a `# ` title, is never replaced by an
+earlier draft. An earlier message is used only when every later one has
+neither, for example a final hand-back that holds only a summary. With
+--text, INPUT is the reply itself as plain text.
 
 The reply must follow "Returning the output" in .mintswarm/stages.md:
 
@@ -164,8 +168,21 @@ def has_opener(text: str) -> bool:
     return any(OPENER.fullmatch(line.removesuffix("\r")) for line in text.split("\n"))
 
 
+def unfenced_document(text: str) -> bool:
+    """Whether text has no document opener but starts with a '# ' title."""
+    if has_opener(text):
+        return False
+    for line in text.split("\n"):
+        if line.strip():
+            return line.startswith("# ")
+    return False
+
+
 def pick_reply(messages: list) -> int:
-    """Index of the last message with a document opener, else of the last message."""
+    """Index of the reply: the last message if it is an unfenced document,
+    else the last message with a document opener, else the last message."""
+    if unfenced_document(messages[-1][1]):
+        return len(messages) - 1
     for k in range(len(messages) - 1, -1, -1):
         if has_opener(messages[k][1]):
             return k
@@ -286,6 +303,7 @@ def main(argv: list) -> int:
         return 2
     source, output = args
     where = None
+    unfenced = False
     try:
         if text_mode:
             with open(source, encoding="utf-8", newline="") as f:
@@ -297,12 +315,19 @@ def main(argv: list) -> int:
                 k = pick_reply(messages)
                 text = messages[k][1]
                 where = describe(messages, k)
+                unfenced = unfenced_document(text)
     except (OSError, UnicodeDecodeError) as exc:
         print(f"save-output: cannot read {source}: {exc}", file=sys.stderr)
         return 2
     try:
         if not text or not text.strip():
             raise ReplyError("no reply text" if text_mode else "no assistant text in the transcript", "rule 1")
+        if unfenced:
+            raise ReplyError(
+                "no document block: the final message starts with a '# ' title but is not in a block"
+                " opened by a line of 4 or more backticks followed by 'markdown'; no earlier block is used",
+                "rule 1",
+            )
         document, result = extract(text)
     except ReplyError as exc:
         prefix = f"{where}: " if where else ""
