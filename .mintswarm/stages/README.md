@@ -16,7 +16,7 @@ A definition is Markdown with frontmatter:
 ---
 name: plan
 description: mintswarm plan stage. Turns one implementation issue into ordered steps, …
-capabilities: [read, search, shell, write-outputs]
+capabilities: [read, search, shell]
 tier: strong
 ---
 <instructions>
@@ -25,8 +25,8 @@ tier: strong
 The frontmatter is a subset of YAML:
 
 - The file starts with a `---` line; the frontmatter ends at the next `---` line.
-- Each line is `key: value`, split at the first `: `. The value is taken literally: no quoting, no multi-line values.
-- A value in `[ ]` is a comma-separated list.
+- Each line is `key: value`, split at the first `: `. The value is taken literally: no quoting, no multi-line values. The renderer writes `description` as a double-quoted YAML scalar, escaping `\` and `"`, so any text is safe there; it rejects the characters YAML does not allow (control characters other than tab, and U+FFFE, U+FFFF).
+- Only `capabilities` is a list: comma-separated in `[ ]`, and it must not be empty. In every other key, `[ ]` is literal text.
 - Blank lines and lines starting with `#` are ignored.
 - The keys are `name`, `description`, `capabilities` and `tier`, all required; no others are allowed. `name` equals the file name without `.md`.
 
@@ -39,7 +39,6 @@ The body is everything after the closing `---` line. It is the stage's instructi
 | `read` | read files in the worktree | `Read` |
 | `search` | search file names and contents | `Grep`, `Glob` |
 | `shell` | run shell commands | `Bash` |
-| `write-outputs` | write the stage's output files under `.mintswarm/job/outputs/` | `Write` |
 | `edit` | edit and create files in the repository | `Edit`, `Write` |
 
 Several capabilities can give the same tool; the renderer lists each tool once, in the order `Read, Grep, Glob, Bash, Edit, Write`.
@@ -54,7 +53,7 @@ Several capabilities can give the same tool; the renderer lists each tool once, 
 
 ## Limits
 
-- `write-outputs` and `shell` are coarse. On Claude, `Write` can write anywhere and `Bash` can run anything. "Outputs only" and "read-only" are instructions in `.mintswarm/stages.md`, enforced by the runner's checks and the sandbox, not by the tool list.
+- `shell` and `edit` are coarse. On Claude, `Bash` can run anything and `Write` can write anywhere. "Read-only" and "returns its document, writes no report files" are instructions in `.mintswarm/stages.md`, enforced by the runner's checks and the sandbox, not by the tool list.
 - Other harnesses may express capabilities as sandbox modes rather than per-tool lists, so a capability says what a stage needs, not which tool it gets.
 - Only Claude has a mapping. There is no Codex mapping yet.
 
@@ -73,3 +72,5 @@ The `agents-drift` gate (`render-agents.py --check`) fails when the generated fi
 ## Target system
 
 Repositories need no harness files. The runner's harness adapter builds each session from the stage template: the appended system prompt for Claude, the opening section of the prompt for Codex. `.claude/agents/` exists only while Claude Code is our runner.
+
+Stages return their documents as text in the final reply. While dogfooding, `.mintswarm/dogfood/save-output.py` saves them; in the target system the harness adapter hands them to the job (`put_artefact`).

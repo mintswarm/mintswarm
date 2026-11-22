@@ -7,16 +7,17 @@ definition in .mintswarm/stages/<stage>.md (README.md excepted):
     ---
     name: plan
     description: mintswarm plan stage. ...
-    capabilities: [read, search, shell, write-outputs]
+    capabilities: [read, search, shell]
     tier: strong
     ---
     <instructions>
 
 and writes .claude/agents/msw-<stage>.md, mapping capabilities to Claude tool
 names and the tier to a Claude model. The body is copied byte for byte.
-The frontmatter is a YAML subset: flat `key: value` lines and inline
-`key: [a, b]` lists; blank lines and `#` comments are ignored. The vocabulary
-is documented in .mintswarm/stages/README.md.
+The frontmatter is a YAML subset: flat `key: value` lines with literal values,
+and an inline `capabilities: [a, b]` list; blank lines and `#` comments are
+ignored. `description` is written out as a double-quoted YAML scalar. The
+vocabulary is documented in .mintswarm/stages/README.md.
 
 The renderer owns .claude/agents/msw-*.md and nothing else in .claude/agents/.
 Without arguments it writes every rendered file and removes msw-*.md files
@@ -28,6 +29,7 @@ sources are unusable. Standard library only.
 
 import difflib
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +41,6 @@ CAPABILITIES = {
     "read": ["Read"],
     "search": ["Grep", "Glob"],
     "shell": ["Bash"],
-    "write-outputs": ["Write"],
     "edit": ["Edit", "Write"],
 }
 TOOL_ORDER = ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]
@@ -90,7 +91,7 @@ def parse(path: Path) -> dict:
             raise SourceError(f"{where}:{index + 1}: unknown key {key!r}")
         if key in fields:
             raise SourceError(f"{where}:{index + 1}: duplicate key {key!r}")
-        if value.startswith("[") and value.endswith("]"):
+        if key == "capabilities" and value.startswith("[") and value.endswith("]"):
             items = [item.strip() for item in value[1:-1].split(",")]
             value = [item for item in items if item]
         fields[key] = value
@@ -102,8 +103,20 @@ def parse(path: Path) -> dict:
         raise SourceError(f"{where}: missing keys: {', '.join(missing)}")
     if fields["name"] != path.stem:
         raise SourceError(f"{where}: name {fields['name']!r} does not match the file name")
+    # YAML allows neither control characters (tab apart) nor U+FFFE, U+FFFF.
+    control = [
+        c for c in fields["description"]
+        if c != "\t" and (unicodedata.category(c) == "Cc" or c in "\ufffe\uffff")
+    ]
+    if control:
+        raise SourceError(
+            f"{where}: description contains characters YAML does not allow: "
+            + ", ".join(f"U+{ord(c):04X}" for c in control)
+        )
     if not isinstance(fields["capabilities"], list):
         raise SourceError(f"{where}: capabilities must be a [ ] list")
+    if not fields["capabilities"]:
+        raise SourceError(f"{where}: capabilities must not be empty")
     unknown = [c for c in fields["capabilities"] if c not in CAPABILITIES]
     if unknown:
         raise SourceError(f"{where}: unknown capabilities: {', '.join(unknown)}")
@@ -111,6 +124,11 @@ def parse(path: Path) -> dict:
         raise SourceError(f"{where}: unknown tier {fields['tier']!r}")
     fields["body"] = body
     return fields
+
+
+def quote(value: str) -> str:
+    """Return value as a YAML double-quoted scalar."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def render(stage: dict) -> str:
@@ -121,7 +139,7 @@ def render(stage: dict) -> str:
         "---\n"
         f"# Generated from .mintswarm/stages/{name}.md by {SCRIPT}; do not edit.\n"
         f"name: msw-{name}\n"
-        f"description: {stage['description']}\n"
+        f"description: {quote(stage['description'])}\n"
         f"tools: {', '.join(ordered)}\n"
         f"model: {TIERS[stage['tier']]}\n"
         "---\n"

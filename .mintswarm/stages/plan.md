@@ -1,7 +1,7 @@
 ---
 name: plan
-description: mintswarm plan stage. Turns one implementation issue into ordered steps, files to touch and tests derived from its acceptance criteria. Read-only apart from its output file.
-capabilities: [read, search, shell, write-outputs]
+description: mintswarm plan stage. Turns one implementation issue into ordered steps, files to touch and tests derived from its acceptance criteria. Read-only.
+capabilities: [read, search, shell]
 tier: strong
 ---
 
@@ -26,7 +26,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 
 ## Output
 
-Write `.mintswarm/job/outputs/plan.md`:
+Return `plan.md` as `.mintswarm/stages.md` describes:
 
 ```markdown
 # Plan: <issue title>

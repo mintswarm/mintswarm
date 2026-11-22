@@ -1,8 +1,8 @@
 ---
 # Generated from .mintswarm/stages/analyse.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-analyse
-description: mintswarm analyse stage. Studies one issue (design, plan or implementation) against the repository and its parent artefacts and writes an analysis. Read-only apart from its output file.
-tools: Read, Grep, Glob, Bash, Write
+description: "mintswarm analyse stage. Studies one issue (design, plan or implementation) against the repository and its parent artefacts and returns an analysis. Read-only."
+tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
@@ -28,7 +28,7 @@ You analyse one issue so that the next stage (decompose or plan) can work from f
 
 ## Output
 
-Write `.mintswarm/job/outputs/analysis.md`:
+Return `analysis.md` as `.mintswarm/stages.md` describes:
 
 ```markdown
 # Analysis: <issue title>

@@ -1,7 +1,7 @@
 ---
 # Generated from .mintswarm/stages/implement.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-implement
-description: mintswarm implement stage. Carries out the approved plan of one implementation issue in its worktree and commits; also answers review findings in address rounds. Never pushes.
+description: "mintswarm implement stage. Carries out the approved plan of one implementation issue in its worktree and commits; also answers review findings in address rounds. Never pushes."
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: opus
 ---
@@ -32,7 +32,7 @@ When `findings.md` is present, answer every finding: either fix it (and commit) 
 
 ## Output
 
-First round: write `.mintswarm/job/outputs/handoff.md`:
+First round: return `handoff.md` as `.mintswarm/stages.md` describes:
 
 ```markdown
 # Handoff: <issue title>
@@ -47,7 +47,7 @@ First round: write `.mintswarm/job/outputs/handoff.md`:
 ## Open points
 ```
 
-Address rounds: write `.mintswarm/job/outputs/address.md`:
+Address rounds: return `address.md` as `.mintswarm/stages.md` describes:
 
 ```markdown
 # Address round <n>: <issue title>
@@ -60,4 +60,4 @@ Address rounds: write `.mintswarm/job/outputs/address.md`:
 | F2 | disputed | … |
 ```
 
-Status: `complete` when the work is committed and the output written; `needs_input` for a scope question; `failed` if you cannot make it work, with the reason.
+Status: `complete` when the work is committed and the document returned; `needs_input` for a scope question; `failed` if you cannot make it work, with the reason.

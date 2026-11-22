@@ -1,8 +1,8 @@
 ---
 # Generated from .mintswarm/stages/review.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-review
-description: mintswarm review stage. Independently reviews one implementation issue's change from the issue, its acceptance criteria and the diff — never the implementer's reasoning — and returns structured findings. Read-only apart from its output file.
-tools: Read, Grep, Glob, Bash, Write
+description: "mintswarm review stage. Independently reviews one implementation issue's change from the issue, its acceptance criteria and the diff — never the implementer's reasoning — and returns structured findings. Read-only."
+tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
@@ -38,7 +38,7 @@ Only blocker and major findings send the change back for another round.
 
 ## Output
 
-Write `.mintswarm/job/outputs/review.md`:
+Return `review.md` as `.mintswarm/stages.md` describes:
 
 ````markdown
 # Review round <n>: <issue title>
