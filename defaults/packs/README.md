@@ -74,7 +74,7 @@ Parameters are not allowed in `detect`.
   - it is one line with no control characters: none of Unicode categories Cc and Cf, nor U+2028 or U+2029;
   - it fully matches `pattern`, if given;
   - if the parameter appears in a `target`, `alternatives` entry or `gates[].command`, it fully matches `[A-Za-z0-9._/+-]+` and does not start with `-`.
-- A template author places a string value in `conventions.md` or a settings template only where every value those rules allow is safe. A string parameter that appears inside a quoted string of a settings template (JSON, TOML, YAML, shell) declares a `pattern` that excludes that quote and the backslash.
+- A template author places a string value in `conventions.md` or a settings template only where every value those rules allow is safe. A string parameter that appears inside a quoted string of a settings template (JSON, TOML, YAML, shell) declares a `pattern` that excludes that quote and the backslash, and in a shell double-quoted string also `$` and the backtick.
 
 ### Settings entry
 
@@ -232,7 +232,7 @@ line-length = {{ line_length }}
 target-version = "{{ min_major }}.{{ min_minor }}"
 ```
 
-Rendered with defaults, its target is `pyproject.toml` at the repository root, and the fragment counts as present when that file has a `[tool.sample]` line or a `[tool.sample.<rest>]` line. A readiness check without the values looks for `**/pyproject.toml`.
+Rendered with defaults, its target is `pyproject.toml` at the repository root, and the fragment counts as present when that file has a `[tool.sample]` header line. A readiness check without the values looks for `**/pyproject.toml`.
 
 The opening of `defaults/packs/sample/conventions.md`:
 
