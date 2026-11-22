@@ -3,12 +3,14 @@
 
     floor.py --plan PATH --component NAME --base REF
 
-Every hit sends the plan to a human; a clean verdict only means that no rule
+Dogfooding stand-in for the control plane's plan-approval floor, the
+deterministic rules that run on a plan before the approval decision. Every
+hit sends the plan to a human; a clean verdict only means that no rule
 written here objects. Paths are relative to the working directory, which is
 the worktree root. All three arguments are required, each once, as
 `--name value`; anything else, a missing value or a REF starting with `-` is
 unusable input. The first action is to delete any stale
-.mintswarm/job/outputs/floor.json.
+.mintswarm/job/outputs/floor.json; when that fails, the input is unusable.
 
 Inputs:
 
@@ -45,7 +47,8 @@ new dependency's `manifest`.
                              JSON (no duplicate keys, NaN or Infinity), not
                              of the shape above (lists without null or
                              repeated values, `estimated_lines` an integer
-                             of 0 or more, every `new_files` path in `files`)
+                             of 0 or more, `files` not empty, every
+                             `new_files` path in `files`)
                              or declares a path that is empty, absolute,
                              starts with `./`, ends with `/`, has an empty,
                              `.` or `..` segment, a control character, `\\`,
@@ -53,7 +56,8 @@ new dependency's `manifest`.
   require-human-paths        a declared path matches require_human.paths,
                              compared case-insensitively
   require-human-components   NAME is in require_human.components, or a
-                             declared path is in the paths of one of them
+                             declared path is in the paths of one of them,
+                             compared case-insensitively
   component-scope            a declared path is in neither NAME's paths nor
                              `shared`
   no-component               a declared path is in no component's paths and
@@ -66,7 +70,8 @@ new dependency's `manifest`.
   external-steps             external_steps is not empty
   gate-changes               gate_changes is not empty, or a declared path is
                              .mintswarm/config.yaml or a word of a gates.run
-                             command (without a leading `./`)
+                             command (without a leading `./`), compared
+                             case-insensitively
   tests-none                 gates.tests is `none` and a declared path is
                              outside the `docs` component's paths
   overridden-assumptions     overridden_assumptions is not empty
@@ -85,8 +90,13 @@ identifiers skipped, in order). One line per evaluated rule is printed, then
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
 unresolvable base ref, no config at it, an invalid config, an unreadable
-plan, git or yq missing or failing, or any unexpected error. Unusable input
-leaves no verdict file. Standard library only, apart from running git and yq.
+plan, git or yq missing or failing, a stale verdict that cannot be deleted,
+or any unexpected error. Unusable input leaves no verdict file, unless a
+stale one could not be deleted. The interpreter itself exits 1 when it
+crashes outside main(), for example at import time, so exit 0 or 1 counts
+only together with a verdict file whose `plan.sha256` and `base.commit`
+match the request; exit 2 never comes with a valid verdict. Standard library
+only, apart from running git and yq.
 """
 
 import hashlib
@@ -478,6 +488,8 @@ def parse_footprint(text: str) -> dict:
             raise FootprintError(f"{key} must hold strings")
     check_entries(footprint["new_dependencies"], "new_dependencies", ("name", "manifest"))
     check_entries(footprint["overridden_assumptions"], "overridden_assumptions", ("assumption", "reason"))
+    if not footprint["files"]:
+        raise FootprintError("files is empty: a plan changes at least one file")
     for path in footprint["new_files"]:
         if path not in footprint["files"]:
             raise FootprintError(f"new_files: {path!r} is not in files")
@@ -515,7 +527,7 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
         reasons.append(f"the issue's component {component} is in require_human.components")
     for path in declared:
         for name in cfg["rh_components"]:
-            for glob in matching(paths[name], path):
+            for glob in matching(paths[name], path, ci=True):
                 reasons.append(f"{path} is in component {name} ({glob}), which requires a human")
     rule("require-human-components", reasons)
 
@@ -545,10 +557,10 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
 
     reasons = [f"declared gate change: {change}" for change in footprint["gate_changes"]]
     for path in declared:
-        if path == CONFIG:
+        if path.lower() == CONFIG.lower():
             reasons.append(f"{path} holds the gate definitions (gates.run)")
         for name, word in cfg["gate_words"]:
-            if path == word:
+            if path.lower() == word.lower():
                 reasons.append(f"{path} is named by gate {name}")
     rule("gate-changes", reasons)
 
@@ -569,6 +581,21 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
 
 # --- verdict -------------------------------------------------------------
 
+def remove(path) -> None:
+    """Delete a file if it exists; raises OSError when it cannot."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def remove_stale_verdict() -> None:
+    try:
+        remove(VERDICT)
+    except OSError as exc:
+        raise InputError(f"cannot delete the stale verdict {VERDICT}: {exc}") from exc
+
+
 def write_verdict(verdict: dict) -> None:
     VERDICT.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".floor.", suffix=".json", dir=VERDICT.parent)
@@ -577,12 +604,15 @@ def write_verdict(verdict: dict) -> None:
             out.write(json.dumps(verdict, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, VERDICT)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        try:
+            remove(tmp)
+        except OSError:
+            pass
         raise
 
 
 def floor(argv: list) -> int:
-    VERDICT.unlink(missing_ok=True)
+    remove_stale_verdict()
     args = parse_args(argv)
     commit = resolve_base(args["base"])
     cfg = validate_config(load_config(commit), args["component"])
@@ -626,7 +656,10 @@ def main(argv: list) -> int:
         print(f"floor.py: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # a crash must never read as a hit or clean
-        VERDICT.unlink(missing_ok=True)
+        try:
+            remove(VERDICT)
+        except Exception:  # the handler itself must always end in exit 2
+            pass
         message = " ".join(str(exc).split())
         print(f"floor.py: unexpected error: {type(exc).__name__}: {message}", file=sys.stderr)
         return 2

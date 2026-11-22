@@ -33,6 +33,9 @@ Checks:
   config give the expected 13 results and reasons;
 - unusable input: bad arguments, plans, refs and configs, and a missing
   `yq`, exit 2 and leave no verdict file, even a stale one;
+- verdict errors: a verdict path that is a directory, and a read-only
+  outputs directory with or without a stale verdict, exit 2 with a one-line
+  error and no traceback;
 - glob semantics: floor.py's glob_to_regex agrees with the one in
   .mintswarm/dogfood/github/request-review.py;
 - standard library: every import of floor.py and selftest.py is in the
@@ -184,14 +187,17 @@ class Sandbox:
         (self.repo / rel).write_bytes(data)
         return rel
 
+    def exec(self, args: list, env: dict = None):
+        return subprocess.run(
+            [sys.executable, str(FLOOR), *args],
+            cwd=self.repo, env=env or self.env, capture_output=True, text=True,
+        )
+
     def floor(self, args: list, env: dict = None):
         stale = self.repo / VERDICT
         stale.parent.mkdir(parents=True, exist_ok=True)
         stale.write_text('{"stale": true}\n', encoding="utf-8")
-        proc = subprocess.run(
-            [sys.executable, str(FLOOR), *args],
-            cwd=self.repo, env=env or self.env, capture_output=True, text=True,
-        )
+        proc = self.exec(args, env)
         verdict = None
         if stale.exists():
             try:
@@ -412,6 +418,11 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     expect_hit(r, "render-agents.py", base(files=[".mintswarm/dogfood/render-agents.py"]), "gate-changes",
                reason="agents-drift", component="agents")
     expect_hit(r, "config.yaml", base(files=[".mintswarm/config.yaml"]), "gate-changes", reason="gates.run")
+    expect_hit(r, ".GitHub/CODEOWNERS", base(files=[".GitHub/CODEOWNERS"]), "require-human-components",
+               reason="component tooling")
+    expect_hit(r, "Config.yaml case", base(files=[".MintSwarm/Config.yaml"]), "gate-changes", reason="gates.run")
+    expect_hit(r, "Render-Agents.py case", base(files=[".mintswarm/dogfood/Render-Agents.py"]), "gate-changes",
+               reason="agents-drift", component="agents")
     expect_hit(r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, component="web")
     expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
     expect_hit(r, "overridden assumption",
@@ -449,6 +460,7 @@ def unusable_footprints() -> list:
         ("estimated_lines -1", plan_text(footprint=base(estimated_lines=-1))),
         ("repeated value", plan_text(footprint=base(files=["CONTRIBUTING.md", "CONTRIBUTING.md"]))),
         ("new file not in files", plan_text(footprint=base(new_files=["docs/new.md"]))),
+        ("files empty", plan_text(footprint=base(files=[], estimated_lines=250))),
         ("dependency extra key", plan_text(footprint=base(
             new_dependencies=[{"name": "x", "manifest": "docs/requirements.txt", "version": "1"}]))),
         ("top level extra key", plan_text(block=json.dumps({"footprint": CLEAN_BASE, "more": 1}, indent=2))),
@@ -542,6 +554,51 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             f"exit {proc.returncode}: {proc.stderr.strip()}")
 
 
+def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
+    good = sb.write_plan("verdict errors good", plan_text())
+    nofootprint = sb.write_plan("verdict errors no footprint",
+                                plan_text(section="", opener="Nothing here.", block="", closer="\n"))
+    args = ["--component", "docs", "--base", commits["real"]]
+    verdict = sb.repo / VERDICT
+    outputs = verdict.parent
+
+    def exit_2(name: str, proc, unexpected: bool = False) -> None:
+        lines = proc.stderr.strip().splitlines()
+        ok = (proc.returncode == 2 and len(lines) == 1 and "Traceback" not in proc.stderr
+              and (not unexpected or "unexpected error" in proc.stderr))
+        T.check(name, ok, f"exit {proc.returncode}: {proc.stderr.strip()}")
+
+    outputs.mkdir(parents=True, exist_ok=True)
+    verdict.unlink(missing_ok=True)
+    verdict.mkdir()
+    proc = sb.exec(["--plan", good, *args])
+    exit_2("verdict a directory: exit 2, one-line error", proc)
+    T.check("verdict a directory: no verdict written", verdict.is_dir() and not any(verdict.iterdir())
+            and not list(outputs.glob(".floor.*")))
+    verdict.rmdir()
+
+    if os.geteuid() == 0:
+        print("ok   verdict errors: read-only outputs skipped, running as root")
+        return
+    proc = sb.exec(["--plan", good, *args])
+    T.check("read-only outputs: a clean verdict first", proc.returncode == 0 and verdict.is_file(), proc.stderr)
+    outputs.chmod(0o555)
+    try:
+        proc = sb.exec(["--plan", nofootprint, *args])
+        exit_2("read-only outputs, stale verdict: exit 2, one-line error", proc)
+    finally:
+        outputs.chmod(0o755)
+    verdict.unlink()
+    outputs.chmod(0o555)
+    try:
+        proc = sb.exec(["--plan", good, *args])
+        exit_2("read-only outputs, no stale verdict: exit 2 from the catch-all", proc, unexpected=True)
+        T.check("read-only outputs, no stale verdict: no verdict written",
+                not verdict.exists() and not list(outputs.glob(".floor.*")))
+    finally:
+        outputs.chmod(0o755)
+
+
 def load_module(name: str, path: Path):
     sys.dont_write_bytecode = True  # leave no __pycache__ next to either script
     spec = importlib.util.spec_from_file_location(name, path)
@@ -626,6 +683,7 @@ def main() -> int:
         check_base_ref(runner, sb)
         check_historic(runner)
         check_unusable_input(sb, commits)
+        check_verdict_errors(sb, commits)
     check_globs()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
