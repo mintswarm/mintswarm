@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Decide whether a plan needs a human, from the floor verdict and the assessment.
 
-    decision.py --issue N --component NAME --plan PATH --assessment PATH
-                --assessment-artifact REF --base REF --harness NAME --model NAME
+    decision.py --issue N --component NAME --plan PATH --issue-document PATH
+                --analysis PATH --assessment PATH --assessment-artifact REF
+                --base REF --harness NAME --model NAME
 
 Dogfooding stand-in for the control plane's plan-approval decision, which
 combines the two layers of plan approval in code: the deterministic floor
@@ -21,7 +22,10 @@ Inputs:
   resolves to, read and validated by floor.py's own code (loaded from the
   file next to this one), so the worktree's config is never opened. NAME
   given to --component must be a defined component.
-- PATH given to --plan, the plan; only its sha256 is used.
+- PATH given to --plan, the plan, and the PATHs given to --issue-document
+  and --analysis, the issue document and the analysis the floor read, all
+  read as UTF-8; an unreadable one is unusable input.
+- The history of the base commit, read by floor.py's own code.
 - The floor verdict, .mintswarm/job/outputs/floor.json, from floor.py.
 - PATH given to --assessment, the assess stage's assessment.md, and REF
   given to --assessment-artifact, where it was published.
@@ -31,17 +35,20 @@ Inputs:
 
 The floor layer is usable only if the verdict is strict JSON (no duplicate
 keys, NaN or Infinity) and all of these hold: its keys are floor.py's, in
-order; `tool` is `mintswarm-plan-floor` and `version` is 1; `plan.sha256`
-is the sha256 of the plan's bytes; `base.commit` is the resolved base;
-`component` is NAME; `mode` is the base config's mode; every rule is
-{`rule`, `result`, `reasons`} with `result` `hit` or `clean` and string
-reasons exactly when it is a hit; the identifiers across `rules` and
-`not_evaluated` are floor.py's 13, in order; rules are skipped only after a
-`footprint` hit; `verdict` agrees with the rules; and `rules` and
-`not_evaluated` equal what floor.py's own parse_footprint and evaluate give
-for the plan and the validated base config, recomputed here, so an edited
-verdict that is consistent in itself still does not count. A usable verdict
-is therefore clean only when all 13 rules ran and are clean.
+order; `tool` is `mintswarm-plan-floor` and `version` is 2; `plan.sha256`
+is the sha256 of the plan's bytes; `issue_document.sha256` and
+`analysis.sha256` are those of the documents given here, so a verdict made
+without them or with other ones does not count; `base.commit` is the
+resolved base; `component` is NAME; `mode` is the base config's mode; every
+rule is {`rule`, `result`, `reasons`} with `result` `hit` or `clean` and
+string reasons exactly when it is a hit; `rules` holds floor.py's rule
+identifiers in order, and `not_evaluated` is empty, or exactly the rules
+that read the footprint (floor.FOOTPRINT_RULES) after a `footprint` hit;
+`verdict` agrees with the rules; and `rules` and `not_evaluated` equal what
+floor.py's own conclude gives for the plan, the documents, the history and
+the validated base config, recomputed here, so an edited verdict that is
+consistent in itself still does not count. A usable verdict is therefore
+clean only when all of floor.py's rules ran and are clean.
 
 The judgement layer is usable only if the assessment is UTF-8 and, with
 lines split at LF only and trailing CR, space and tab removed from each:
@@ -94,8 +101,8 @@ strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
 record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, no config at it, an invalid
-config, an unknown component, an unreadable plan, git or yq missing or
-failing, a record that cannot be deleted or written, or any unexpected
+config, an unknown component, an unreadable plan, issue document or
+analysis, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it
 gives a record with that layer unusable. The interpreter itself exits 1 when
 it crashes outside main(), so exit 0 counts only together with a record
@@ -121,20 +128,21 @@ FLOOR = Path(__file__).resolve().parent / "floor.py"
 TOOL = "mintswarm-approval-decision"
 VERSION = 1
 FLOOR_TOOL = "mintswarm-plan-floor"
-FLOOR_VERSION = 1
+FLOOR_VERSION = 2
 FLOOR_KEYS = [
-    "tool", "version", "plan", "component", "base", "config", "mode",
-    "verdict", "rules", "not_evaluated",
+    "tool", "version", "plan", "issue_document", "analysis", "component", "base",
+    "config", "mode", "verdict", "rules", "not_evaluated",
 ]
 RISKS = ("low", "medium", "high")
 SPAN_LIMIT = 200
 ARGS = (
-    "--issue", "--component", "--plan", "--assessment", "--assessment-artifact",
-    "--base", "--harness", "--model",
+    "--issue", "--component", "--plan", "--issue-document", "--analysis", "--assessment",
+    "--assessment-artifact", "--base", "--harness", "--model",
 )
 USAGE = (
-    "usage: decision.py --issue N --component NAME --plan PATH --assessment PATH "
-    "--assessment-artifact REF --base REF --harness NAME --model NAME"
+    "usage: decision.py --issue N --component NAME --plan PATH --issue-document PATH "
+    "--analysis PATH --assessment PATH --assessment-artifact REF --base REF "
+    "--harness NAME --model NAME"
 )
 MODE_REASONS = {
     "always": "mode always: every plan goes to a human",
@@ -194,6 +202,8 @@ def parse_args(argv: list) -> dict:
         "issue": int(args["--issue"]),
         "component": args["--component"],
         "plan": args["--plan"],
+        "issue_document": args["--issue-document"],
+        "analysis": args["--analysis"],
         "assessment": args["--assessment"],
         "artifact": args["--assessment-artifact"],
         "base": args["--base"],
@@ -232,7 +242,11 @@ def is_rule(item) -> bool:
     return (item["result"] == "hit") == bool(reasons)
 
 
-def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: str) -> list:
+def bound(value, sha: str) -> bool:
+    return isinstance(value, dict) and value.get("sha256") == sha
+
+
+def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: str, documents: dict) -> list:
     if not isinstance(verdict, dict):
         return ["the floor verdict is not a JSON object"]
     if list(verdict) != FLOOR_KEYS:
@@ -243,6 +257,10 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     plan = verdict["plan"]
     if not isinstance(plan, dict) or plan.get("sha256") != plan_sha:
         problems.append("the floor verdict's plan.sha256 does not match the plan")
+    if not bound(verdict["issue_document"], documents["issue_document"]):
+        problems.append("the floor verdict's issue_document does not match --issue-document")
+    if not bound(verdict["analysis"], documents["analysis"]):
+        problems.append("the floor verdict's analysis does not match --analysis")
     base = verdict["base"]
     if not isinstance(base, dict) or base.get("commit") != commit:
         problems.append("the floor verdict's base.commit does not match the base")
@@ -258,10 +276,12 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     if not isinstance(skipped, list) or not all(isinstance(s, str) for s in skipped):
         problems.append("the floor verdict's not_evaluated is not a list of rule identifiers")
         return problems
-    if [r["rule"] for r in rules] + skipped != list(floor.RULES):
-        problems.append("the floor verdict's rule identifiers are not floor.py's 13, in order")
+    names = [r["rule"] for r in rules]
+    if skipped not in ([], list(floor.FOOTPRINT_RULES)) or names != [n for n in floor.RULES if n not in skipped]:
+        problems.append("the floor verdict's rule identifiers are not floor.py's, in order, "
+                        "with none or only the footprint rules not evaluated")
         return problems
-    if skipped and not (len(rules) == 1 and rules[0]["result"] == "hit"):
+    if skipped and rules[0]["result"] != "hit":
         problems.append("the floor verdict skips rules without a footprint hit")
     hit = any(r["result"] == "hit" for r in rules)
     if verdict["verdict"] != ("hit" if hit else "clean"):
@@ -269,21 +289,13 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     return problems
 
 
-def floor_rules(plan: bytes, component: str, cfg: dict) -> tuple:
-    """What floor.py concludes for this plan and base: (rules, not_evaluated, footprint or None)."""
-    try:
-        footprint = floor.parse_footprint(plan.decode("utf-8"))
-    except floor.FootprintError as exc:
-        footprint = None
-        rules = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
-    else:
-        rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        rules += floor.evaluate(footprint, component, cfg)
-    evaluated = [r["rule"] for r in rules]
-    return rules, [name for name in floor.RULES if name not in evaluated], footprint
+def floor_rules(plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str) -> tuple:
+    """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None)."""
+    return floor.conclude(plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"),
+                          component, cfg, floor.history(commit))
 
 
-def floor_layer(plan_sha: str, commit: str, component: str, mode: str, expected: tuple) -> dict:
+def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents: dict, expected: tuple) -> dict:
     layer = {
         "status": "unusable",
         "problems": [],
@@ -307,7 +319,7 @@ def floor_layer(plan_sha: str, commit: str, component: str, mode: str, expected:
     except (UnicodeDecodeError, ValueError, RecursionError):
         layer["problems"] = ["the floor verdict is not strict JSON"]
         return layer
-    problems = verdict_problems(verdict, plan_sha, commit, component, mode)
+    problems = verdict_problems(verdict, plan_sha, commit, component, mode, documents)
     if not problems and (verdict["rules"], verdict["not_evaluated"]) != expected:
         problems = ["the floor verdict's rules differ from what floor.py gives for this plan and base"]
     if problems:
@@ -563,13 +575,16 @@ def run(argv: list) -> int:
         config = floor.load_config(commit)
         cfg = floor.validate_config(config, args["component"])
         plan = floor.read_plan(args["plan"])
+        issue = floor.read_document(args["issue_document"], "issue document")
+        analysis = floor.read_document(args["analysis"], "analysis")
+        rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit)
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
     mode = cfg["mode"]
     plan_sha = sha256(plan)
-    rules, skipped, footprint = floor_rules(plan, args["component"], cfg)
+    documents = {"issue_document": sha256(issue), "analysis": sha256(analysis)}
 
-    floor_ = floor_layer(plan_sha, commit, args["component"], mode, (rules, skipped))
+    floor_ = floor_layer(plan_sha, commit, args["component"], mode, documents, (rules, skipped))
     judgement = judgement_layer(args, expected_judge(config))
     judged, decision, reasons = decide(mode, floor_, judgement)
     record = {
