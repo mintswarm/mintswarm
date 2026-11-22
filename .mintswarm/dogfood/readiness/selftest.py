@@ -28,12 +28,19 @@ Checks:
 - one mutation per signal and more (an overlap next to an uncovered file,
   an overlap with shared, a CODEOWNERS without an owner, an invalid login,
   a symlinked CLAUDE.md, an orphan, a missing and a symlinked rendered
-  agent, a broken stage source, several unreadable gate commands): exit 1
+  agent, a broken stage source, and gate commands the reader must fail:
+  `#` in a word, `$#`, env, exec, time and command with and without
+  options, builtin source, `.`, coproc, trap with an action, cd, wrappers,
+  find -exec, versioned and unmodelled interpreters, brace expansion,
+  preload and unknown interpreter options, code-injecting assignments, task
+  runners; when the wrapper or interpreter is not installed, gate-tools is
+  expected to fail too): exit 1
   with exactly the expected set of failing signals, each named on its line
   with its feature and the expected reason text; variants that must stay
   ready (docs/CODEOWNERS, a symlinked CLAUDE.md, a gate with assignments,
   exec, redirections and interpreter options, a ref without
-  render-agents.py, whose agents-drift passes as not applicable, and a ref
+  render-agents.py, whose agents-drift passes as not applicable, time -p,
+  command -v, trap -, env -i and `[`, and a ref
   whose renderer differs from the checker's, which is noted) exit 0;
 - no config: exit 1, every config signal fails naming its absence and the
   others pass;
@@ -51,7 +58,12 @@ Checks:
   gate reports `exit code 3`; a `sleep 30` gate with `timeout: 1` reports
   `timed out after 1 s` within seconds and leaves no process of its group;
   a file one gate writes is not in the next gate's worktree; gates get the
-  environment the check was started with; with no gate to run a single
+  environment the check was started with; a process a gate leaves in the
+  background is killed when it exits; a gate that makes its worktree and
+  its directory unwritable is still cleaned up; with GIT_DIR, GIT_WORK_TREE
+  and GIT_INDEX_FILE set, a gate's git sees its own clean worktree at the
+  ref and the checked repository's index is not written; with no gate to
+  run a single
   gate-run signal fails; without the option no gate runs; SIGTERM during a
   gate exits 2 with no verdict and leaves no process, worktree or
   directory; after every run `git worktree list --porcelain` is what it was
@@ -84,6 +96,7 @@ RENDERER_PATH = ".mintswarm/dogfood/render-agents.py"
 SYMLINK = "120000"
 PIDFILE = "MSW_READINESS_PIDFILE"
 GATE_OUT = "MSW_READINESS_OUT"
+BACKGROUND = "MSW_READINESS_BGPID"
 
 SIGNALS = [
     ("tracker", "tracker-kinds"),
@@ -277,6 +290,7 @@ class Sandbox:
                 "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
                 PIDFILE: str(tmp / "gate.pid"),
                 GATE_OUT: str(tmp / "gate-ran"),
+                BACKGROUND: str(tmp / "background.pid"),
             }
         )
         self.env = env
@@ -621,13 +635,13 @@ GAP_CASES = [
         "bash -c",
         m_gate("bash -c true; python3 tests/test_ok.py"),
         {"gate-scripts-named"},
-        {"gate-scripts-named": "gate unit: bash -c runs code given on the command line"},
+        {"gate-scripts-named": "gate unit: bash -c runs code given inline, from stdin or before its script"},
     ),
     (
         "python3 -m",
         m_gate("python3 -m unittest tests/test_ok.py"),
         {"gate-scripts-named"},
-        {"gate-scripts-named": "gate unit: python3 -m runs code given on the command line"},
+        {"gate-scripts-named": "gate unit: python3 -m runs code given inline"},
     ),
     (
         "an untracked script path",
@@ -644,7 +658,7 @@ GAP_CASES = [
     (
         "a command substitution",
         m_gate("python3 tests/test_ok.py $(echo -q)"),
-        {"gate-scripts-named"},
+        {"gate-scripts-named", "gate-tools"},
         {"gate-scripts-named": "gate unit: it runs a command substitution"},
     ),
     (
@@ -673,13 +687,219 @@ GAP_CASES = [
         "a process substitution",
         m_gate("python3 tests/test_ok.py <(true)"),
         {"gate-scripts-named", "gate-tools"},
-        {"gate-scripts-named": "a here-document or process substitution"},
+        {"gate-scripts-named": "a here-document, process substitution or other operator"},
+    ),
+    (
+        "a # inside a word",
+        m_gate("echo a#b; ./untracked.sh", name="shell"),
+        {"gate-tools", "gate-scripts-named"},
+        {
+            "gate-scripts-named": "gate shell: it holds #, which the check does not read",
+            "gate-tools": "gate shell: it holds #, which the check does not read, so its tools are unknown",
+        },
+        (),
+    ),
+    (
+        "$#",
+        m_gate("echo $#; bash -c x", name="shell"),
+        {"gate-tools", "gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it holds #"},
+        (),
+    ),
+    (
+        "env -u NAME",
+        m_gate("env -u X bash -c evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        (),
+    ),
+    (
+        "env -S",
+        m_gate("env -S 'bash -c evil'", name="shell"),
+        {"gate-tools", "gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: env -S is an option the check does not read"},
+        (),
+    ),
+    (
+        "exec -a NAME",
+        m_gate("exec -a name bash -c evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        (),
+    ),
+    (
+        "time -p",
+        m_gate("time -p bash -c evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        (),
+    ),
+    (
+        "time with an unknown option",
+        m_gate("time -x true", name="shell"),
+        {"gate-tools", "gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: time -x is an option the check does not read"},
+        (),
+    ),
+    (
+        "command",
+        m_gate("command bash -c evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: bash -c runs code given inline"},
+        (),
+    ),
+    (
+        "builtin source",
+        m_gate("builtin source /tmp/evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: source runs /tmp/evil, which is not a tracked file"},
+        (),
+    ),
+    (
+        ". of an untracked file",
+        m_gate(". ./untracked.sh", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: . runs ./untracked.sh, which is not a tracked file"},
+        (),
+    ),
+    (
+        "coproc",
+        m_gate("coproc bash -c evil", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs coproc, which runs or maps code the check does not follow"},
+        (),
+    ),
+    (
+        "trap with an action",
+        m_gate("trap 'bash -c evil' EXIT", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs trap with an action, which runs code as eval does"},
+        (),
+    ),
+    (
+        "cd",
+        m_gate("cd /tmp && true", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs cd, which runs or maps code the check does not follow"},
+        (),
+    ),
+    (
+        "timeout",
+        m_gate("timeout 600 ./scripts/missing.sh", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs timeout, which runs another command"},
+        ("timeout",),
+    ),
+    (
+        "nice",
+        m_gate("nice bash -c x", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs nice, which runs another command"},
+        ("nice",),
+    ),
+    (
+        "xargs",
+        m_gate("xargs sh -c x", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs xargs, which runs another command"},
+        ("xargs",),
+    ),
+    (
+        "sudo",
+        m_gate("sudo bash -c x", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs sudo, which runs another command"},
+        ("sudo",),
+    ),
+    (
+        "find -exec",
+        m_gate("find . -exec sh -c x \\;", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs find, which runs another command"},
+        ("find",),
+    ),
+    (
+        "a versioned interpreter",
+        m_gate("python3.12 -c x", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs python3.12, an interpreter the check does not read"},
+        ("python3.12",),
+    ),
+    (
+        "an unmodelled interpreter",
+        m_gate("awk 'BEGIN { print 1 }'", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs awk, an interpreter the check does not read"},
+        ("awk",),
+    ),
+    (
+        "brace expansion",
+        m_gate("{bash,-c,evil}", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: its command word {bash,-c,evil} is expanded when it runs"},
+        (),
+    ),
+    (
+        "node -r",
+        m_gate("node -r ./evil.js tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: node -r runs code given inline"},
+        ("node",),
+    ),
+    (
+        "ruby -r",
+        m_gate("ruby -rmodule tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: ruby -rmodule runs code given inline"},
+        ("ruby",),
+    ),
+    (
+        "perl -M",
+        m_gate("perl -MEvil tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: perl -MEvil runs code given inline"},
+        ("perl",),
+    ),
+    (
+        "node --require",
+        m_gate("node --require=./evil.js tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: node --require=./evil.js loads code before the script"},
+        ("node",),
+    ),
+    (
+        "an option the reader does not know",
+        m_gate("python3 -j tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: python3 -j is an option the check does not read"},
+        (),
+    ),
+    (
+        "BASH_ENV",
+        m_gate("BASH_ENV=evil.sh bash tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it sets BASH_ENV, which makes a program run code no gate names"},
+        (),
+    ),
+    (
+        "PATH",
+        m_gate("PATH=.:$PATH python3 tests/test_ok.py", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it sets PATH, which makes a program run code no gate names"},
+        (),
+    ),
+    (
+        "npm test",
+        m_gate("npm test", name="shell"),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "gate shell: it runs npm, which runs what an untracked recipe says"},
+        ("npm",),
     ),
     (
         "a missing tool",
         m_gate("msw-no-such-tool --flag", name="shell"),
         {"gate-tools"},
-        {"gate-tools": "msw-no-such-tool is not on PATH"},
+        {"gate-tools": "msw-no-such-tool is not on PATH, so the gates that call it cannot run here"},
     ),
     (
         "a test no gate runs",
@@ -747,6 +967,11 @@ READY_CASES = [
     ("CODEOWNERS under docs/", m_move_codeowners, {}),
     ("CLAUDE.md as a symlink to AGENTS.md", m_file("CLAUDE.md", (SYMLINK, b"AGENTS.md")), {}),
     ("a gate with assignments, exec, redirections and options", m_gate(PASS_GATE), {}),
+    (
+        "time -p, command -v, trap -, env -i and [",
+        m_gate("time -p true; command -v bash; trap - EXIT; env -i A=1 python3 tests/test_ok.py; [ -d src ]", "shell"),
+        {},
+    ),
     ("a ref without render-agents.py", m_no_renderer, {"agents-drift": "not applicable: the ref has no"}),
     (
         "a ref whose renderer differs",
@@ -774,9 +999,11 @@ def check_ready(sb: Sandbox) -> tuple:
 
 
 def check_gaps(sb: Sandbox) -> None:
-    for name, mutation, expected, fragments in GAP_CASES:
+    for name, mutation, expected, fragments, *needs in GAP_CASES:
         if name == "a missing tool" and shutil.which("msw-no-such-tool"):
             continue
+        if any(shutil.which(tool) is None for tool in (needs[0] if needs else ())):
+            expected = set(expected) | {"gate-tools"}  # the wrapper or interpreter is not installed here
         commit = sb.fixture(mutation)
         proc, data = sb.run(["--ref", commit])
         problems = shape_problems(sb, proc, data, commit, commit)
@@ -953,8 +1180,20 @@ def group_gone(pid: int) -> bool:
     return False
 
 
-def read_pid(sb: Sandbox, wait: float = 0.0):
-    path = Path(sb.env[PIDFILE])
+def process_gone(pid: int) -> bool:
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        time.sleep(0.1)
+    return False
+
+
+def read_pid(sb: Sandbox, wait: float = 0.0, variable: str = PIDFILE):
+    path = Path(sb.env[variable])
     deadline = time.monotonic() + wait
     while True:
         content = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -986,6 +1225,8 @@ def check_run_gates(sb: Sandbox, ready: str) -> None:
         {"name": "writes", "command": "touch marker"},
         {"name": "fresh", "command": "test ! -e marker"},
         {"name": "environment", "command": 'touch "$' + GATE_OUT + '"'},
+        {"name": "background", "command": 'sleep 40 & echo $! > "$' + BACKGROUND + '"', "timeout": 20},
+        {"name": "readonly", "command": "chmod -R a-w . && chmod a-w .."},
     ]
     commit = sb.fixture(lambda config, files: set_gates(config, gates))
     for path in (sb.env[PIDFILE], sb.env[GATE_OUT]):
@@ -1011,6 +1252,13 @@ def check_run_gates(sb: Sandbox, ready: str) -> None:
     pid = read_pid(sb)
     T.check("run-gates: the timed-out gate's process group is gone", pid is not None and group_gone(pid), f"{pid}")
     T.check("run-gates: gates get the environment the check was started with", os.path.exists(sb.env[GATE_OUT]))
+    background = read_pid(sb, variable=BACKGROUND)
+    T.check(
+        "run-gates: what a gate leaves running in the background is killed when it exits",
+        background is not None and process_gone(background),
+        f"{background}",
+    )
+    check_git_environment(sb, before)
 
     commit = sb.fixture(m_set("gates", "run", []))
     proc, data = sb.run(["--ref", commit, "--run-gates"])
@@ -1021,6 +1269,35 @@ def check_run_gates(sb: Sandbox, ready: str) -> None:
     T.check("run-gates: with no gate to run a single gate-run signal fails", not problems, "; ".join(problems))
 
     check_sigterm(sb, before)
+
+
+def check_git_environment(sb: Sandbox, before: str) -> None:
+    where = (
+        'python3 tests/test_ok.py && git rev-parse HEAD > "$'
+        + GATE_OUT
+        + '" && git status --porcelain >> "$'
+        + GATE_OUT
+        + '"'
+    )
+    commit = sb.fixture(lambda config, files: set_gates(config, [{"name": "where", "command": where}]))
+    if os.path.exists(sb.env[GATE_OUT]):
+        os.unlink(sb.env[GATE_OUT])
+    index = sb.repo / ".git" / "index"
+    existed = index.exists()
+    env = dict(sb.env, GIT_DIR=str(sb.repo / ".git"), GIT_WORK_TREE=str(sb.repo), GIT_INDEX_FILE=str(index))
+    proc, data = sb.run(["--ref", commit, "--run-gates"], env=env)
+    problems = shape_problems(sb, proc, data, commit, commit, gate_ids(["where"]))
+    problems += clean_state(sb, before)
+    out = Path(sb.env[GATE_OUT]).read_text(encoding="utf-8") if os.path.exists(sb.env[GATE_OUT]) else None
+    if out != commit + "\n":
+        problems.append(f"the gate saw {out!r}, not a clean worktree at {commit}")
+    if index.exists() and not existed:
+        problems.append("the checked repository's index was written")
+    T.check(
+        "run-gates: with GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE set, a gate's git works on its own worktree",
+        proc.returncode == 0 and not problems,
+        "; ".join(problems),
+    )
 
 
 def check_sigterm(sb: Sandbox, before: str) -> None:

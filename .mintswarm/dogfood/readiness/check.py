@@ -88,15 +88,12 @@ Globs match as in the plan floor; tracked paths are every ls-tree entry.
                                             and `command` strings, the names
                                             unique
   gates               gate-scripts-named *  a gate command, read as below,
-                                            does not split, holds `$(` or a
-                                            backtick, has a command word with
-                                            `$` or eval, runs make, just,
-                                            yarn, pnpm or npm run, runs an
-                                            interpreter that is not given a
-                                            tracked file as its script, or
-                                            runs a path that is not a tracked
-                                            file
-  gates               gate-tools *          bash, or the command word of a
+                                            cannot be read, or a simple
+                                            command of it runs code that no
+                                            tracked file named in the command
+                                            holds
+  gates               gate-tools *          a gate command cannot be read,
+                                            or bash, or the command word of a
                                             gate's simple command that is not
                                             a path or a shell builtin, is not
                                             found on PATH (only the name is
@@ -140,35 +137,87 @@ the tracked paths that are .mintswarm/stages.md or under .claude/agents/ or
 instructions; landing's fixed `protected` rule already covers the config and
 the gate words, so require-human-landing checks the agent instructions only.
 
-Gate commands are read as bash is approximated here: shlex in POSIX mode
-with the punctuation characters `();<>|&` and newline, whitespace space, tab
-and CR, split into simple commands at every operator other than a
-redirection (`;`, `|`, `&`, `(`, `)`, newline and their doubled forms).
-Redirection targets are dropped, and so is a word of digits just before a
-redirection. A here-document or a process substitution makes the command
-unreadable. Leading assignments, `env` and `exec` with their options, and
-the reserved words `! { } if then else elif fi do done while until time`
-are skipped to find the command word. An interpreter (bash, sh, zsh, dash,
-python, python3, node, perl, ruby, source, `.`) must be given a tracked file
-as its first argument after its options; an option that runs code given on
-the command line (-c for the shells and Python, -m for Python, -e or -p for
-node, -e for perl and ruby, clustered or not), `-` and no script at all
-fail. Functions, aliases, expansions and quoting inside -c are not followed,
-and an operator character quoted on its own reads as an operator, so the
-gate signals fail closed on what they cannot read.
+Gate commands are read by a deliberately small approximation of bash, and
+the gate signals fail closed: a form the reader does not model fails, it is
+never passed. A command that holds `#` anywhere, `$(` or a backtick cannot
+be read. Otherwise it is split by shlex in POSIX mode, comments off, with
+the punctuation characters `();<>|&` and newline, whitespace space, tab and
+CR, into simple commands at every operator other than a redirection (`;`,
+`|`, `&`, `(`, `)`, newline and their doubled forms). Redirection targets
+are dropped, and so is a word of digits just before a redirection; a
+here-document, a process substitution or any other operator cannot be
+read. Quotes are not seen after splitting, so an operator character quoted
+on its own reads as an operator; that only splits a command further.
+
+The command word is found by skipping leading assignments, the reserved
+words `! { } if then else elif fi do done while until`, `time` with `-p`,
+`env` with `-i`, `-`, `-u NAME` and `--unset`, `exec` with `-c`, `-l` and
+`-a NAME`, `command` with `-p` (with `-v` or `-V` nothing runs), and
+`builtin` before a builtin. Any other option of these cannot be read. A
+simple command fails gate-scripts-named when:
+
+- an assignment before it sets BASH_ENV, ENV, PATH, NODE_OPTIONS, PERL5OPT,
+  PERL5LIB, RUBYOPT, RUBYLIB, PYTHONPATH, PYTHONSTARTUP, PYTHONHOME,
+  LD_PRELOAD, LD_LIBRARY_PATH or DYLD_INSERT_LIBRARIES;
+- its command word holds `$`, `{`, `}`, `*`, `?`, `[` or `~` (it is expanded
+  when it runs), unless it is the builtin `[`;
+- it runs eval, alias, enable, fc, hash, mapfile, readarray, cd, pushd,
+  popd, function or coproc, or trap with an action;
+- it runs a wrapper that runs another command (timeout, nice, nohup,
+  stdbuf, xargs, sudo, doas, su, setsid, flock, watch, parallel, chroot,
+  ionice, taskset, caffeinate, unbuffer, script, nsenter, unshare, npx,
+  bunx), find with -exec, -execdir, -ok or -okdir, a task runner (make,
+  gmake, just, yarn, pnpm, rake, tox, nox, invoke), or npm run, run-script,
+  exec, x, test, t, start, restart or stop, bun run or x, uv, poetry, pdm,
+  hatch or pipenv run, or bundle exec;
+- it runs an interpreter the reader does not model: a versioned name such
+  as python3.12, or awk, gawk, mawk, nawk, ksh, mksh, ash, fish, csh, tcsh,
+  busybox, pypy, pypy3, python2, nodejs, deno, bun, php, lua, luajit,
+  tclsh, wish, Rscript, osascript, expect, pwsh, ts-node or tsx;
+- it runs a modelled interpreter (bash, sh, zsh, dash, python, python3,
+  node, perl, ruby, source, `.`) that is not given a tracked file as its
+  first argument after its options. Each interpreter's known options are
+  modelled (single-letter clusters, options that take an argument, and a
+  few long options such as --norc); an option that runs code given on the
+  command line or from stdin (-c, -i, -s for the shells, -c and -m for
+  Python, -e, -p, -i for node, -e, -E for perl, -e for ruby), one that
+  loads code before the script (-r and --require for node and ruby,
+  --import and --loader for node, -M and -m for perl, -l and --login,
+  --rcfile and --init-file for the shells), `-`, any other option and no
+  script at all fail;
+- its command word holds `/` and is not a tracked file.
+
+Any other command word is taken as a tool that runs its own code, so a tool
+that itself runs an inline program (sed's `e` command, a git alias, a
+compiler plugin) is not followed. The tests-gated signal reads gate words as
+the plan floor does, with shlex.split.
 
 With --run-gates, after the static signals, each gate of gates.run that
 gates-run accepts (the first of each name), in order, runs as
-`bash -c <command>` through run-gates.py's run_in_session: in a fresh
-detached worktree of the commit, added with hooks disabled under a new
-temporary directory and removed (`git worktree remove --force --force`, then
-the directory) right after the gate, with the environment the check was
-started with, stdin closed and its output discarded. The timeout is the
+`bash -c <command>` in its own session: in a fresh detached worktree of
+the commit, added under a new temporary directory and removed right after
+the gate (owner write permission restored on the tree, then
+`git worktree remove --force --force`, then the directory). Its stdin,
+stdout and stderr are the null device. Its environment is the one the check
+was started with, minus git's repository-local variables (GIT_DIR,
+GIT_WORK_TREE, GIT_IMPLICIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_COMMON_DIR, GIT_PREFIX, GIT_NAMESPACE,
+GIT_CONFIG, GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n,
+GIT_CONFIG_VALUE_n, GIT_GRAFT_FILE, GIT_NO_REPLACE_OBJECTS,
+GIT_REPLACE_REF_BASE, GIT_SHALLOW_FILE), so its git commands work on its
+own worktree. The worktree is added with GIT_INDEX_FILE, GIT_WORK_TREE and
+GIT_PREFIX dropped and hooks disabled; the repository's own configured
+filters (smudge, process) still run on its checkout, chosen by the ref's
+.gitattributes, which the static signals never do. The timeout is the
 gate's `timeout` when it is a positive integer, otherwise run-gates.py's
-default. Signal `gates gate:<name>` passes on exit 0 and otherwise gives
-`exit code N` or `timed out after N s`. With no such gate, one signal
-`gates gate-run` fails. SIGTERM while the gates run ends the gate's process
-group, removes its worktree and exits 2. No `git worktree prune` runs.
+DEFAULT_TIMEOUT_S. Whether the gate exits, times out or the check is
+stopped, its whole process group is then killed with run-gates.py's
+kill_group, so nothing it started in the background outlives it (a process
+that starts its own session escapes this). Signal `gates gate:<name>`
+passes on exit 0 and otherwise gives `exit code N` or `timed out after N s`.
+With no such gate, one signal `gates gate-run` fails. SIGTERM while the
+gates run ends the gate's process group, removes its worktree and exits 2.
+No `git worktree prune` runs.
 
 The verdict, written to PATH when --json is given (to a temporary file next
 to it, then renamed), has these keys in this order: `tool`
@@ -204,6 +253,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -240,34 +290,108 @@ ARGS = ("--ref", "--json", "--run-gates")
 VALUED = ("--ref", "--json")
 USAGE = "usage: check.py --ref REF [--json PATH] [--run-gates]"
 
-# Interpreters: (letters of options that run code given on the command line, letters that take an argument).
+# Interpreters: (option letters that run code inline, from stdin or before the script; letters that take an
+# argument; other known letters; known long options). Any other option fails.
+SHELL = ("cisl", "oO", "abefhkmnptuvxBCEHPT", ("--norc", "--noprofile", "--posix", "--restricted", "--noediting"))
+PYTHON = ("cm", "WX", "bBdEhiIOPqRsSuvVx", ())
 INTERPRETERS = {
-    "bash": ("c", "oO"),
-    "sh": ("c", "oO"),
-    "zsh": ("c", "oO"),
-    "dash": ("c", "oO"),
-    "python": ("cm", "WX"),
-    "python3": ("cm", "WX"),
-    "node": ("ep", "r"),
-    "perl": ("eE", "I"),
-    "ruby": ("e", "Ir"),
-    "source": ("", ""),
-    ".": ("", ""),
+    "bash": SHELL,
+    "sh": SHELL,
+    "zsh": SHELL,
+    "dash": SHELL,
+    "python": PYTHON,
+    "python3": PYTHON,
+    "node": ("epir", "", "c", ("--no-warnings", "--enable-source-maps", "--trace-warnings")),
+    "perl": ("eEMm", "I", "wWXTtcsnlap", ()),
+    "ruby": ("erCx", "IE", "wWvdcsl", ()),
+    "source": ("", "", "", ()),
+    ".": ("", "", "", ()),
 }
-CODE_OPTIONS = ("--eval", "--print", "--command")
-TASK_RUNNERS = ("make", "just", "yarn", "pnpm")
-PUNCTUATION = "();<>|&\n"
-REDIRECTIONS = (">", ">>", "<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")
-ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-RESERVED = frozenset("! { } if then else elif fi do done while until time".split())
-BUILTINS = frozenset(
+CODE_OPTIONS = {
+    "--eval": "runs code given on the command line",
+    "--print": "runs code given on the command line",
+    "--command": "runs code given on the command line",
+    "--require": "loads code before the script",
+    "--import": "loads code before the script",
+    "--loader": "loads code before the script",
+    "--experimental-loader": "loads code before the script",
+    "--rcfile": "loads code before the script",
+    "--init-file": "loads code before the script",
+    "--login": "loads code before the script",
+}
+UNMODELLED = frozenset(
     """
-    : . [ [[ alias bg bind break builtin caller case cd command compgen complete compopt continue coproc declare
-    dirs disown echo enable esac eval exec exit export false fc fg for function getopts hash help history in jobs
-    kill let local logout mapfile popd printf pushd pwd read readarray readonly return select set shift shopt source
-    suspend test times trap true type typeset ulimit umask unalias unset wait
+    awk gawk mawk nawk ksh mksh ash fish csh tcsh busybox pypy pypy3 python2 nodejs deno bun php lua luajit tclsh
+    wish Rscript osascript expect pwsh ts-node tsx
     """.split()
 )
+VERSIONED = re.compile(r"(?:python|pypy|perl|ruby|node|php|lua|bash|zsh|ksh|tclsh)[0-9][0-9.]*")
+WRAPPERS = frozenset(
+    """
+    timeout nice nohup stdbuf xargs sudo doas su setsid flock watch parallel chroot ionice taskset caffeinate
+    unbuffer script nsenter unshare npx bunx
+    """.split()
+)
+FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+TASK_RUNNERS = frozenset("make gmake just yarn pnpm rake tox nox invoke".split())
+SUBCOMMAND_RUNNERS = {
+    "npm": ("run", "run-script", "exec", "x", "test", "t", "start", "restart", "stop"),
+    "bun": ("run", "x"),
+    "uv": ("run",),
+    "poetry": ("run",),
+    "pdm": ("run",),
+    "hatch": ("run",),
+    "pipenv": ("run",),
+    "bundle": ("exec",),
+}
+RISKY_BUILTINS = frozenset("eval alias enable fc hash mapfile readarray cd pushd popd function coproc".split())
+INJECTING = frozenset(
+    """
+    BASH_ENV ENV PATH NODE_OPTIONS PERL5OPT PERL5LIB RUBYOPT RUBYLIB PYTHONPATH PYTHONSTARTUP PYTHONHOME LD_PRELOAD
+    LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES
+    """.split()
+)
+EXPANDED = "${}*?[~"
+# Options of the command-running builtins and env: {option: takes an argument}.
+PREFIX_OPTIONS = {
+    "env": {"-i": False, "-": False, "--ignore-environment": False, "-u": True, "--unset": True},
+    "exec": {"-c": False, "-l": False, "-a": True},
+    "command": {"-p": False},
+    "time": {"-p": False},
+}
+PUNCTUATION = "();<>|&\n"
+REDIRECTIONS = (">", ">>", "<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")
+ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+RESERVED = frozenset("! { } if then else elif fi do done while until".split())
+BUILTINS = frozenset(
+    """
+    : . [ [[ ]] alias bg bind break builtin caller case cd command compgen complete compopt continue coproc declare
+    dirs disown echo enable esac eval exec exit export false fc fg for function getopts hash help history in jobs
+    kill let local logout mapfile popd printf pushd pwd read readarray readonly return select set shift shopt source
+    suspend test time times trap true type typeset ulimit umask unalias unset wait
+    """.split()
+)
+# git's repository-local variables (git rev-parse --local-env-vars, and GIT_NAMESPACE), kept from the gates.
+GIT_LOCAL_ENV = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+)
+GIT_LOCAL_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+WORKTREE_DROPPED_ENV = ("GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX")
 
 SIGNALS = (
     ("tracker", "tracker-kinds", True),
@@ -606,7 +730,12 @@ def require_human(config: dict, section: str, globs: dict) -> tuple:
 
 def simple_commands(command: str) -> list:
     """The simple commands of a gate command, each a list of words; raises CommandError."""
+    if "#" in command:
+        raise CommandError("it holds #, which the check does not read")
+    if "$(" in command or "`" in command:
+        raise CommandError("it runs a command substitution")
     lexer = shlex.shlex(command, posix=True, punctuation_chars=PUNCTUATION)
+    lexer.commenters = ""
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
@@ -620,7 +749,7 @@ def simple_commands(command: str) -> list:
                 raise CommandError(f"a redirection without a target before {token!r}")
             if "<" in token or ">" in token:
                 if token not in REDIRECTIONS:
-                    raise CommandError(f"it uses {token!r}, a here-document or process substitution")
+                    raise CommandError(f"it uses {token!r}, a here-document, process substitution or other operator")
                 if current and current[-1].isdigit():
                     current.pop()  # the file descriptor of 2>file
                 target = True
@@ -638,25 +767,59 @@ def simple_commands(command: str) -> list:
     return commands
 
 
-def command_words(words: list) -> list:
-    """The words from the command word on: assignments, env, exec and reserved words skipped."""
+def skip_options(words: list, i: int, name: str) -> int:
+    """The index after the options of env, exec, command or time; raises CommandError on one not modelled."""
+    options = PREFIX_OPTIONS[name]
+    while i < len(words) and words[i].startswith("-"):
+        word = words[i]
+        if word == "--":
+            return i + 1
+        if word in options:
+            i += 2 if options[word] else 1
+            continue
+        long_name, equals, _ = word.partition("=")
+        if equals and options.get(long_name):
+            i += 1
+            continue
+        if not word.startswith("--") and options.get(word[:2]):
+            i += 1  # -uNAME
+            continue
+        raise CommandError(f"{name} {word} is an option the check does not read")
+    return i
+
+
+def command_word(words: list) -> tuple:
+    """(the words from the command word on, the names assigned before it); raises CommandError.
+
+    The words are empty when nothing runs, as after `command -v`."""
+    assigned = []
     i = 0
     while i < len(words):
         word = words[i]
-        if ASSIGNMENT.match(word) or word in RESERVED:
+        assignment = ASSIGNMENT.match(word)
+        if assignment:
+            assigned.append(assignment.group(1))
             i += 1
-        elif word in ("env", "exec"):
+        elif word in RESERVED:
             i += 1
-            while i < len(words) and words[i].startswith("-"):
-                i += 1
+        elif word in ("env", "exec", "time"):
+            i = skip_options(words, i + 1, word)
+        elif word == "command":
+            if any(w in ("-v", "-V") for w in words[i + 1 :]):
+                return [], assigned
+            i = skip_options(words, i + 1, word)
+        elif word == "builtin":
+            if i + 1 < len(words) and words[i + 1] not in BUILTINS:
+                raise CommandError(f"builtin {words[i + 1]}: not a builtin")
+            i += 1
         else:
             break
-    return words[i:]
+    return words[i:], assigned
 
 
 def interpreter_problem(words: list, tracked: set) -> str:
     first = words[0]
-    code, takes = INTERPRETERS[first]
+    code, takes, known, long_options = INTERPRETERS[first]
     i = 1
     while i < len(words):
         word = words[i]
@@ -669,16 +832,21 @@ def interpreter_problem(words: list, tracked: set) -> str:
             break
         i += 1
         if word.startswith("--"):
-            if word in CODE_OPTIONS:
-                return f"{first} {word} runs code given on the command line"
+            option = word.partition("=")[0]
+            if option in CODE_OPTIONS:
+                return f"{first} {word} {CODE_OPTIONS[option]}"
+            if word not in long_options:
+                return f"{first} {word} is an option the check does not read"
             continue
         for position, letter in enumerate(word[1:], start=1):
             if letter in code:
-                return f"{first} {word} runs code given on the command line"
+                return f"{first} {word} runs code given inline, from stdin or before its script"
             if letter in takes:
                 if position == len(word) - 1:
                     i += 1  # the option's argument is the next word
                 break
+            if letter not in known:
+                return f"{first} {word} is an option the check does not read"
     if i >= len(words):
         return f"{first} is given no script"
     if strip_dot(words[i]) not in tracked:
@@ -686,19 +854,40 @@ def interpreter_problem(words: list, tracked: set) -> str:
     return ""
 
 
-def script_problem(words: list, tracked: set) -> str:
-    """Why a simple command does not name its own script, or empty."""
+def trap_action(words: list) -> bool:
+    """True when trap is given an action to run."""
+    args = words[1:]
+    if args and args[0] in ("-p", "-l"):
+        return False
+    if args and args[0] == "--":
+        args = args[1:]
+    return len(args) >= 2 and args[0] not in ("-", "")
+
+
+def script_problem(words: list, assigned: list, tracked: set) -> str:
+    """Why a simple command does not run only code a tracked file it names holds, or empty."""
+    injected = [name for name in assigned if name in INJECTING]
+    if injected:
+        return f"it sets {injected[0]}, which makes a program run code no gate names"
     if not words:
         return ""
     first = words[0]
-    if "$" in first:
-        return f"its command word {first} is expanded when it runs"
-    if first == "eval":
-        return "it runs eval"
-    if first in TASK_RUNNERS or (first == "npm" and len(words) > 1 and words[1] == "run"):
-        return f"it runs {first}, which runs what an untracked recipe says"
+    if first in RISKY_BUILTINS:
+        return f"it runs {first}, which runs or maps code the check does not follow"
+    if first == "trap":
+        return "it runs trap with an action, which runs code as eval does" if trap_action(words) else ""
     if first in INTERPRETERS:
         return interpreter_problem(words, tracked)
+    if first in BUILTINS:
+        return ""
+    if any(c in first for c in EXPANDED):
+        return f"its command word {first} is expanded when it runs"
+    if first in WRAPPERS or (first == "find" and any(w in FIND_EXEC for w in words[1:])):
+        return f"it runs {first}, which runs another command the check does not follow"
+    if first in TASK_RUNNERS or (len(words) > 1 and words[1] in SUBCOMMAND_RUNNERS.get(first, ())):
+        return f"it runs {first}, which runs what an untracked recipe says"
+    if first in UNMODELLED or VERSIONED.fullmatch(first):
+        return f"it runs {first}, an interpreter the check does not read"
     if "/" in first and strip_dot(first) not in tracked:
         return f"it runs {first}, which is not a tracked file"
     return ""
@@ -989,16 +1178,13 @@ def gate_scripts_named(ref: Ref) -> tuple:
         return outcome([f"{error}, so the gates cannot be read"])
     reasons = []
     for label, command in commands:
-        if "$(" in command or "`" in command:
-            reasons.append(f"gate {label}: it runs a command substitution, so the floors cannot see what it runs")
-            continue
         try:
-            simple = simple_commands(command)
+            simple = [command_word(words) for words in simple_commands(command)]
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so the floors cannot see what it runs")
             continue
-        for words in simple:
-            problem = script_problem(command_words(words), ref.blobs)
+        for words, assigned in simple:
+            problem = script_problem(words, assigned, ref.blobs)
             if problem:
                 reasons.append(f"gate {label}: {problem}, so the floors cannot protect what it runs")
     return outcome(reasons)
@@ -1011,22 +1197,21 @@ def gate_tools(ref: Ref) -> tuple:
     reasons, tools = [], ["bash"]
     for label, command in commands:
         try:
-            simple = simple_commands(command)
+            simple = [command_word(words)[0] for words in simple_commands(command)]
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so its tools are unknown")
             continue
         for words in simple:
-            words = command_words(words)
             if not words:
                 continue
             first = words[0]
-            if "/" in first or "$" in first or first in BUILTINS or first in RESERVED or first in tools:
+            if "/" in first or any(c in first for c in EXPANDED) or first in BUILTINS or first in tools:
                 continue
             tools.append(first)
     for tool in tools:
         if shutil.which(tool) is None:
-            what = "no gate" if tool == "bash" else "the gates that call it"
-            reasons.append(f"{tool} is not on PATH, so {what} can run here")
+            what = "no gate can run here" if tool == "bash" else "the gates that call it cannot run here"
+            reasons.append(f"{tool} is not on PATH, so {what}")
     return outcome(reasons)
 
 
@@ -1227,13 +1412,55 @@ class Terminate:
             raise InputError("terminated by SIGTERM while running the gates")
 
 
+def gate_environment(env: dict) -> dict:
+    """The starting environment without git's repository-local variables."""
+    return {k: v for k, v in env.items() if k not in GIT_LOCAL_ENV and not k.startswith(GIT_LOCAL_PREFIXES)}
+
+
+def worktree_environment() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in WORKTREE_DROPPED_ENV}
+
+
+def restore_writable(path: str) -> None:
+    """Give the owner read, write and search permission on every directory under path, symbolic links not followed."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    try:
+        os.chmod(path, stat.S_IMODE(info.st_mode) | stat.S_IRWXU)
+        names = os.listdir(path)
+    except OSError:
+        return
+    for name in names:
+        restore_writable(os.path.join(path, name))
+
+
+def run_in_group(argv: list, timeout: int, **kwargs) -> tuple:
+    """Run argv in a new session; return (returncode or None, timed out). Its process group is always killed."""
+    proc = subprocess.Popen(argv, start_new_session=True, **kwargs)
+    try:
+        try:
+            return proc.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            return None, True
+    finally:
+        G.kill_group(proc)  # also what the gate left running in the background
+        proc.wait()
+
+
 def remove_worktree(name: str, parent, worktree: str, terminate: Terminate) -> None:
     with terminate.held():
         problems = []
         if parent is not None:
+            restore_writable(parent)
             if os.path.lexists(worktree):
                 proc = subprocess.run(
-                    ["git", "worktree", "remove", "--force", "--force", worktree], capture_output=True
+                    ["git", "worktree", "remove", "--force", "--force", worktree],
+                    capture_output=True,
+                    env=worktree_environment(),
                 )
                 if proc.returncode != 0:
                     detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
@@ -1259,19 +1486,20 @@ def run_gate(gate: dict, commit: str, env: dict, terminate: Terminate) -> dict:
         proc = subprocess.run(
             ["git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", worktree, commit],
             capture_output=True,
+            env=worktree_environment(),
         )
         if proc.returncode != 0:
             detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
             raise InputError(f"gate {name}: cannot add a worktree: {detail[-1] if detail else proc.returncode}")
         try:
-            code, _, timed_out = G.run_in_session(
+            code, timed_out = run_in_group(
                 ["bash", "-c", gate["command"]],
                 timeout,
                 cwd=worktree,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except OSError as exc:
             return signal_entry("gates", f"gate:{name}", "fail", [f"bash cannot start: {exc.strerror}"])
@@ -1293,7 +1521,7 @@ def run_gates(ref: Ref, env: dict) -> list:
     terminate = Terminate()
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
-        return [run_gate(gate, ref.commit, env, terminate) for gate in gates]
+        return [run_gate(gate, ref.commit, gate_environment(env), terminate) for gate in gates]
     finally:
         signal.signal(signal.SIGTERM, previous)
 
