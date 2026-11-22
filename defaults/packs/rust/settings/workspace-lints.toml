@@ -1,0 +1,9 @@
+[workspace.lints.rust]
+unsafe_code = "{{ unsafe_code }}"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
