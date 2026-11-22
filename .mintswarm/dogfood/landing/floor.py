@@ -36,21 +36,43 @@ Inputs:
 - REF after --head, the head of the change. The diff is
   `git diff --numstat --no-renames -z <base>...<head>`, which runs from the
   merge base of the two; added paths come from the same range with
-  `--diff-filter=A`, and file modes from `--raw`. A rename counts as its old
-  and its new path. Every diff also passes `--ignore-submodules=none`, so
+  `--diff-filter=A`, and file modes and blob ids from `--raw`. A rename
+  counts as its old and its new path. A head that the base already contains
+  (the merge base is the head, so there is no change to judge) is unusable.
+  Every diff also passes `--ignore-submodules=none`, so
   neither a `.gitmodules` `ignore` setting (read from the worktree, which
   the branch controls) nor any config can hide a gitlink, and
   `--diff-algorithm=myers`, `--no-ext-diff`, `--no-textconv`,
   `--no-relative` and `--no-color`, which override any `diff.*` config.
 
-Every git command runs with a neutral configuration: the system and global
-config files are not read (GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL set to
-the null device, GIT_ATTR_NOSYSTEM=1), and config, external-diff and
-diff-option settings passed through the environment (GIT_CONFIG_PARAMETERS,
-GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n,
-GIT_EXTERNAL_DIFF, GIT_DIFF_OPTS) are dropped. The repository's own config
-is still read, as git needs it; the options above override the settings in
-it that could hide or reshape entries.
+Every git command, the plan floor's included, runs with a neutral
+configuration set in this process's environment:
+
+- the system and global config files are not read (GIT_CONFIG_NOSYSTEM=1,
+  GIT_CONFIG_GLOBAL set to the null device, GIT_ATTR_NOSYSTEM=1);
+- config, external-diff and diff-option settings passed through the
+  environment (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT with its
+  GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, GIT_EXTERNAL_DIFF,
+  GIT_DIFF_OPTS) are dropped;
+- replace objects and grafts are off (GIT_NO_REPLACE_OBJECTS=1,
+  GIT_GRAFT_FILE set to the null device, GIT_REPLACE_REF_BASE dropped), so
+  neither refs/replace/ (`git replace`, `git replace --graft`) nor
+  info/grafts, which every worktree of the repository shares, can swap the
+  content of the base or the head, the config read at the base, or the
+  history the merge base is found in.
+
+The repository's own config is still read, as git needs it; the options
+above override the settings in it that could hide or reshape entries.
+
+Binary entries are found from their content, not from attributes: an entry
+is binary when either side's blob holds a NUL byte in its first 8000 bytes,
+git's own test, read with `git cat-file --batch`. Attributes can make git
+count an entry as binary (`-` in --numstat), and such an entry stays
+unmeasurable, which only adds `size` hits; they cannot make a binary entry
+count as text. That covers every attribute source: a tracked or untracked
+.gitattributes in the worktree, $GIT_DIR/info/attributes, the repository's
+core.attributesFile and its default $XDG_CONFIG_HOME/git/attributes (or
+~/.config/git/attributes), and the system file.
 
 The configuration must pass the plan floor's checks (components, shared,
 pipeline.plan_approval and gates) and NAME must be a defined component.
@@ -79,9 +101,9 @@ footprint's `files` plus each new dependency's `manifest`.
                              exactly
   size                       the added plus deleted lines of the diff are
                              over floor(estimated_lines × lines_factor),
-                             computed exactly, or an entry is binary,
-                             a submodule (gitlink) on either side, or
-                             otherwise unmeasurable
+                             computed exactly, or an entry is binary
+                             (see above) or a submodule (gitlink) on
+                             either side
   require-human-paths        a changed path matches require_human.paths,
                              compared case-insensitively
   require-human-components   NAME is in require_human.components, or a
@@ -114,9 +136,10 @@ skipped, in order). One line per evaluated rule is printed, then
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
 missing or broken plan-approval/floor.py, an unresolvable base or head, no
-merge base, no config at the base, an invalid config, an unreadable plan, a
-diff that does not parse, git or yq missing or failing, a stale verdict that
-cannot be deleted, or any unexpected error. Unusable input leaves no verdict
+merge base, a head the base already contains, no config at the base, an
+invalid config, an unreadable plan, a diff that does not parse, git or yq
+missing or failing, a stale verdict that cannot be deleted, or any
+unexpected error. Unusable input leaves no verdict
 file, unless a stale one could not be deleted. The interpreter itself exits
 1 when it crashes outside main(), for example at import time, so exit 0 or
 1 counts only together with a verdict file whose `plan.sha256`,
@@ -164,7 +187,11 @@ DIFF_OPTIONS = (
 )
 GITLINK = "160000"
 RAW_HEADER = re.compile(r":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) ([A-Z])")
-DROPPED_ENV = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS")
+DROPPED_ENV = (
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE",
+)
+BINARY_PROBE = 8000  # bytes git looks at for a NUL when it decides a blob is binary
+BLOB_MODES = ("100644", "100755", "120000")
 DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 P = None  # the plan floor's module, once loaded
@@ -197,6 +224,8 @@ def neutral_git_config() -> None:
     os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
     os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
     os.environ["GIT_ATTR_NOSYSTEM"] = "1"
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+    os.environ["GIT_GRAFT_FILE"] = os.devnull
 
 
 def load_plan_floor():
@@ -311,6 +340,8 @@ def merge_base(base: str, head: str) -> str:
     commit = proc.stdout.decode("ascii", errors="replace").strip()
     if proc.returncode != 0 or not HASH.fullmatch(commit):
         raise InputError(f"base {base} and head {head} have no merge base")
+    if commit == head:
+        raise InputError(f"head {head} is already in the history of base {base}: there is no change to judge")
     return commit
 
 
@@ -329,7 +360,7 @@ def split_z(data: bytes, what: str) -> list:
 
 
 def read_modes(span: str) -> tuple:
-    """Return ({path: (old mode, new mode)}, [added path]) from `git diff --raw`."""
+    """Return ({path: (old mode, new mode, old blob, new blob)}, [added path]) from `git diff --raw`."""
     records = split_z(P.run(["git", "diff", "--raw", "--no-abbrev", *DIFF_OPTIONS, span]), "git diff --raw")
     if len(records) % 2:
         raise InputError("git diff --raw: a header without a path")
@@ -338,10 +369,50 @@ def read_modes(span: str) -> tuple:
         match = RAW_HEADER.fullmatch(header)
         if not match or path == "" or path in modes:
             raise InputError(f"git diff --raw: unexpected record {header!r} {path!r}")
-        modes[path] = (match.group(1), match.group(2))
+        modes[path] = (match.group(1), match.group(2), match.group(3), match.group(4))
         if match.group(5) == "A":
             added.append(path)
     return modes, added
+
+
+def binary_blobs(blobs: set) -> set:
+    """Return the blobs that hold a NUL in their first BINARY_PROBE bytes."""
+    blobs = sorted(b for b in blobs if b.strip("0"))
+    if not blobs:
+        return set()
+    try:
+        proc = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        raise InputError(f"cannot run git: {exc}") from exc
+    binary = set()
+    try:
+        for blob in blobs:
+            proc.stdin.write(blob.encode("ascii") + b"\n")
+            proc.stdin.flush()
+            header = proc.stdout.readline().decode("ascii", errors="replace").split()
+            if len(header) != 3 or header[0] != blob or header[1] != "blob" or not header[2].isdigit():
+                raise InputError(f"git cat-file --batch: cannot read blob {blob}: {' '.join(header)!r}")
+            size = int(header[2])
+            probe = proc.stdout.read(min(size, BINARY_PROBE))
+            remaining = size - len(probe) + 1  # the rest of the content and its closing newline
+            while remaining > 0:
+                chunk = proc.stdout.read(min(remaining, 1 << 20))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            if len(probe) != min(size, BINARY_PROBE) or remaining:
+                raise InputError(f"git cat-file --batch: blob {blob} is cut short")
+            if b"\0" in probe:
+                binary.add(blob)
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        proc.stdout.close()
+        proc.wait()
+    return binary
 
 
 def read_diff(base: str, head: str) -> tuple:
@@ -373,8 +444,11 @@ def read_diff(base: str, head: str) -> tuple:
     modes, raw_added = read_modes(span)
     if sorted(modes) != sorted(changed) or sorted(raw_added) != sorted(new):
         raise InputError("git diff --raw and --numstat disagree on the changed or added paths")
-    gitlinks = {path for path, pair in modes.items() if GITLINK in pair}
-    entries = [(path, None, None) if path in gitlinks else (path, a, d) for path, a, d in entries]
+    gitlinks = {path for path, (old, new_, _, _) in modes.items() if GITLINK in (old, new_)}
+    blobs = {blob for old, new_, a, b in modes.values() for mode, blob in ((old, a), (new_, b)) if mode in BLOB_MODES}
+    binary = binary_blobs(blobs)
+    unmeasurable = gitlinks | {path for path, (_, _, a, b) in modes.items() if a in binary or b in binary}
+    entries = [(path, None, None) if path in unmeasurable else (path, a, d) for path, a, d in entries]
     return entries, new, gitlinks
 
 

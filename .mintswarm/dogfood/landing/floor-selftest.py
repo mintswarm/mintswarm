@@ -36,6 +36,12 @@ Checks:
   still a changed and added path, and every gitlink is unmeasurable for
   `size`; with hostile system, global, environment and repository config,
   the verdict does not change;
+- history tampering: a replace ref on the head or the base, info/grafts,
+  GIT_GRAFT_FILE, `git replace --graft` and GIT_REPLACE_REF_BASE leave the
+  hits in place, and a head the base already contains is unusable;
+- binary content: a blob with a NUL that an untracked .gitattributes,
+  info/attributes, the XDG attributes file or core.attributesFile forces to
+  text is still unmeasurable, on either side;
 - protected single entries: a symlink or gitlink at .github/workflows or at
   a directory above a protected path is a `protected` hit without
   require_human;
@@ -172,7 +178,9 @@ class Sandbox:
             "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
             "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
         })
-        self.env = env
+        self.env = env  # floor.py runs with this; it must neutralise replace objects and grafts itself
+        # the self-test's own git calls always see the true objects and history
+        self.git_env = dict(env, GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull)
         self.repo.mkdir()
         self.cases.mkdir()
         self.git("init", "-q", "-b", "master")
@@ -180,7 +188,7 @@ class Sandbox:
         self.trees = {}
 
     def raw(self, *args: str, data: bytes = None, env: dict = None, cwd: Path = None) -> bytes:
-        proc = subprocess.run(["git", *args], cwd=cwd or self.repo, env=env or self.env, input=data,
+        proc = subprocess.run(["git", *args], cwd=cwd or self.repo, env=env or self.git_env, input=data,
                               capture_output=True)
         if proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode(errors='replace').strip()}")
@@ -200,7 +208,7 @@ class Sandbox:
             mode, data = content if isinstance(content, tuple) else ("100644", content)
             sha = data if mode == GITLINK else self.git("hash-object", "-w", "--stdin", data=data)
             records += f"{mode} {sha}\t".encode("utf-8") + path.encode("utf-8") + b"\0"
-        env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{self.counter}"))
+        env = dict(self.git_env, GIT_INDEX_FILE=str(self.tmp / f"index-{self.counter}"))
         self.raw("update-index", "-z", "--index-info", data=records, env=env)
         tree = self.raw("write-tree", env=env).decode("ascii").strip()
         os.unlink(self.tmp / f"index-{self.counter}")
@@ -612,6 +620,123 @@ def check_submodules(r: Runner, sb: Sandbox) -> None:
         gitmodules.unlink()
 
 
+def check_history_tampering(r: Runner, sb: Sandbox) -> None:
+    """Replace objects and grafts in the repository or the environment must not change the verdict."""
+    base = r.commits["real"]
+    decoy = sb.child(base, appended("docs/guide.md", 1), "decoy")
+    head = sb.child(base, {**appended("docs/guide.md", 1), ".github/workflows/x.yml": text(1)}, "tampered head")
+    fp = footprint(["docs/guide.md"], estimated_lines=10)
+    hits = {
+        "undeclared-files": ".github/workflows/x.yml is changed but is neither in files nor a new dependency's manifest",
+        "undeclared-new-files": ".github/workflows/x.yml is added but is not in new_files",
+        "require-human-paths": ".github/workflows/x.yml matches require_human.paths .github/**",
+        "protected": ".github/workflows/x.yml is under .github/workflows/ (.github/workflows/**)",
+    }
+    grafts = sb.repo / ".git" / "info" / "grafts"
+    graft_file = sb.tmp / "grafts"
+    graft_file.write_text(f"{base} {head}\n", encoding="ascii")
+
+    def plain(*args: str, env: dict = None) -> str:
+        return sb.raw(*args, env=env or sb.env).decode("utf-8").strip()
+
+    def tamper_replace():
+        sb.git("update-ref", f"refs/replace/{head}", decoy)
+        return lambda: sb.git("update-ref", "-d", f"refs/replace/{head}")
+
+    def tamper_graft_file():
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(f"{base} {head}\n", encoding="ascii")
+        return grafts.unlink
+
+    def tamper_replace_graft():
+        sb.git("replace", "--graft", base, head)
+        return lambda: sb.git("update-ref", "-d", f"refs/replace/{base}")
+
+    def tamper_ref_base():
+        sb.git("update-ref", f"refs/elsewhere/{head}", decoy)
+        return lambda: sb.git("update-ref", "-d", f"refs/elsewhere/{head}")
+
+    cases = [
+        ("git replace on the head", tamper_replace, {}, "diff"),
+        ("info/grafts onto the head", tamper_graft_file, {}, "merge-base"),
+        ("GIT_GRAFT_FILE onto the head", lambda: (lambda: None), {"GIT_GRAFT_FILE": str(graft_file)}, "merge-base"),
+        ("git replace --graft onto the head", tamper_replace_graft, {}, "merge-base"),
+        ("GIT_REPLACE_REF_BASE on the head", tamper_ref_base, {"GIT_REPLACE_REF_BASE": "refs/elsewhere/"}, "diff"),
+    ]
+    for name, tamper, extra, effect in cases:
+        undo = tamper()
+        env = dict(sb.env, **extra)
+        try:
+            if effect == "diff":
+                seen = plain("diff", "--name-only", "--no-renames", f"{base}...{head}", env=env)
+                T.check(f"{name}: a plain git diff sees the decoy", seen == "docs/guide.md", seen)
+            else:
+                seen = plain("merge-base", base, head, env=env)
+                T.check(f"{name}: a plain git merge-base is the head", seen == head, seen)
+            r.expect(f"{name}: still hit", fp, None, hits, head=head, env=env)
+        finally:
+            undo()
+
+    # a replaced base would read a looser config at the base
+    loose_base = sb.commit({**BASE_TREE, CONFIG_PATH: CONFIG.read_bytes()}, (), "base to be replaced")
+    loose_head = sb.child(loose_base, {"CLAUDE.md": text(1)})
+    sb.git("update-ref", f"refs/replace/{loose_base}", r.commits["no-rh"])
+    try:
+        r.expect("git replace on the base: the real config still applies",
+                 footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=5), None,
+                 {"require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
+                 base=loose_base, head=loose_head)
+    finally:
+        sb.git("update-ref", "-d", f"refs/replace/{loose_base}")
+
+
+def check_binary_content(r: Runner, sb: Sandbox) -> None:
+    """Attributes from any source must not make a binary blob count as text."""
+    blob = b"x" * 7990 + b"\0" * 20000 + b"\n"  # the first NUL is just inside git's 8000-byte probe
+    path = "docs/x.bin"
+    line = f"{path} diff\n"
+    worktree = sb.repo / ".gitattributes"
+    info = sb.repo / ".git" / "info" / "attributes"
+    xdg = sb.tmp / "xdg"
+    attributes_file = sb.tmp / "repo-attributes"
+    env_xdg = dict(sb.env, XDG_CONFIG_HOME=str(xdg))
+
+    def write(target: Path) -> callable:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(line, encoding="utf-8")
+        return target.unlink
+
+    def core_attributes_file() -> callable:
+        attributes_file.write_text(line, encoding="utf-8")
+        sb.git("config", "core.attributesFile", str(attributes_file))
+        return lambda: (sb.git("config", "--unset", "core.attributesFile"), attributes_file.unlink())
+
+    sources = [
+        ("an untracked worktree .gitattributes", lambda: write(worktree), sb.env),
+        ("info/attributes", lambda: write(info), sb.env),
+        ("$XDG_CONFIG_HOME/git/attributes", lambda: write(xdg / "git" / "attributes"), env_xdg),
+        ("core.attributesFile", core_attributes_file, sb.env),
+    ]
+    added = sb.child(r.commits["real"], {path: blob}, "binary added")
+    was_binary = sb.child(r.commits["real"], {path: blob}, "binary at the base")
+    to_text = sb.child(was_binary, {path: text(2)}, "binary becomes text")
+    reason = f"{path} is binary or otherwise unmeasurable"
+    for name, source, env in sources:
+        undo = source()
+        try:
+            counted = sb.raw("diff", "--numstat", "--no-renames", f"{r.commits['real']}...{added}",
+                             env=env).decode("utf-8")
+            T.check(f"binary forced to text by {name}: a plain numstat counts it", not counted.startswith("-"),
+                    counted.strip())
+            r.expect(f"binary forced to text by {name}: still unmeasurable",
+                     footprint([path], [path], estimated_lines=10), None, {"size": reason}, head=added, env=env)
+            r.expect(f"binary at the base forced to text by {name}: still unmeasurable",
+                     footprint([path], estimated_lines=10), None, {"size": reason},
+                     base=was_binary, head=to_text, env=env)
+        finally:
+            undo()
+
+
 def check_protected_entries(r: Runner) -> None:
     """A single entry (symlink or gitlink) standing in for a protected directory, under no require_human."""
     base = r.commits["no-rh"]
@@ -663,6 +788,8 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         ("unresolvable head", args(head_="no-such-ref")),
         ("head is a blob", args(head_=sb.git("hash-object", "-w", "--stdin", data=b"blob\n"))),
         ("no merge base", args(head_=orphan)),
+        ("head equal to base", args(head_=real)),
+        ("head already in the base's history", args(base=head, head_=real)),
         ("base without config", args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)}))),
         ("unknown component", args(component="nope")),
     ]
@@ -884,6 +1011,8 @@ def main() -> int:
         check_footprint_hit(runner)
         check_submodules(runner, sb)
         check_protected_entries(runner)
+        check_history_tampering(runner, sb)
+        check_binary_content(runner, sb)
         check_base_ref(runner, sb, configs)
         check_unusable(sb, commits)
         check_isolation(runner, sb)
