@@ -29,8 +29,10 @@ Checks:
   an overlap with shared, a CODEOWNERS without an owner, an invalid login,
   a symlinked CLAUDE.md, an orphan, a missing and a symlinked rendered
   agent, a broken stage source, and gate commands outside the reader's
-  grammar or running unnamed code: `#`, `$` (also split across quotes, as
-  in a PS4 value), `((`, `<(`, assignments before a command and through
+  grammar or running unnamed code: characters outside its set (`#`, `$`,
+  quotes, `{` in a command word or an option's argument, `[`, `(`, `<`, a
+  lone `>` or `&`), a redirection other than the four allowed, a trailing
+  operator, digit words before a redirection, assignments before a command and through
   env, every class of builtin outside the allow-list (export, declare,
   typeset, local, readonly, read, unset, mapfile, let, `[[`, compgen,
   complete, bind, eval, trap, builtin, cd, coproc), printf -v, set -x,
@@ -552,7 +554,7 @@ def m_rename_docs(config, files):
     config["components"]["documentation"] = config["components"].pop("docs")
 
 
-PASS_GATE = "exec python3 -W ignore ./tests/test_ok.py > /dev/null 2>&1 || bash -e tests/test_ok.py"
+PASS_GATE = "exec python3 -W ignore ./tests/test_ok.py >/dev/null 2>&1 || bash -e tests/test_ok.py"
 
 GAP_CASES = [
     # (name, mutation, failing signals, {signal: reason fragment})
@@ -703,8 +705,8 @@ GAP_CASES = [
         m_gate("python3 tests/test_ok.py $(echo -q)"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate unit: it holds $, which the check does not read",
-            "gate-tools": "gate unit: it holds $, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate unit: it holds '$', which the check does not read",
+            "gate-tools": "gate unit: it holds '$', which the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -721,16 +723,16 @@ GAP_CASES = [
         m_gate("$PYTHON tests/test_ok.py"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate unit: it holds $, which the check does not read",
-            "gate-tools": "gate unit: it holds $, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate unit: it holds '$', which the check does not read",
+            "gate-tools": "gate unit: it holds '$', which the check does not read, so its tools are unknown",
         },
     ),
     (
         "a command that does not split",
         m_gate("python3 'tests/test_ok.py"),
-        {"gate-scripts-named", "gate-tools", "tests-gated", "plan-approval-config"},
+        ["gate-scripts-named", "gate-tools", "plan-approval-config", "tests-gated"],
         {
-            "gate-scripts-named": "the command does not split",
+            "gate-scripts-named": 'gate unit: it holds "\'", which the check does not read',
             "gate-tools": "its tools are unknown",
             "plan-approval-config": "command does not split",
         },
@@ -739,15 +741,18 @@ GAP_CASES = [
         "a process substitution",
         m_gate("python3 tests/test_ok.py <(true)"),
         ["gate-scripts-named", "gate-tools"],
-        {"gate-scripts-named": "gate unit: it uses '<(', an operator the check does not read"},
+        {
+            "gate-scripts-named": "gate unit: it holds '<', which the check does not read",
+            "gate-tools": "gate unit: it holds '<', which the check does not read, so its tools are unknown",
+        },
     ),
     (
         "a # inside a word",
         m_gate("echo a#b; ./untracked.sh", name="shell"),
-        {"gate-tools", "gate-scripts-named"},
+        ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it holds #, which the check does not read",
-            "gate-tools": "gate shell: it holds #, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it holds '#', which the check does not read",
+            "gate-tools": "gate shell: it holds '#', which the check does not read, so its tools are unknown",
         },
         (),
     ),
@@ -756,8 +761,8 @@ GAP_CASES = [
         m_gate("echo $#; bash -c x", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it holds $, which the check does not read",
-            "gate-tools": "gate shell: it holds $, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it holds '$', which the check does not read",
+            "gate-tools": "gate shell: it holds '$', which the check does not read, so its tools are unknown",
         },
         (),
     ),
@@ -770,9 +775,12 @@ GAP_CASES = [
     ),
     (
         "env -S",
-        m_gate("env -S 'bash -c evil'", name="shell"),
-        {"gate-tools", "gate-scripts-named"},
-        {"gate-scripts-named": "gate shell: env -S is an option the check does not read"},
+        m_gate("env -S bash", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: env -S is an option the check does not read",
+            "gate-tools": "gate shell: env -S is an option the check does not read, so its tools are unknown",
+        },
         (),
     ),
     (
@@ -832,7 +840,7 @@ GAP_CASES = [
     ),
     (
         "trap with an action",
-        m_gate("trap 'bash -c evil' EXIT", name="shell"),
+        m_gate("trap evil EXIT", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
             "gate-scripts-named": "gate shell: it runs trap, a builtin the check does not read",
@@ -880,8 +888,8 @@ GAP_CASES = [
     ),
     (
         "find -exec",
-        m_gate("find . -exec sh -c x \\;", name="shell"),
-        {"gate-scripts-named"},
+        m_gate("find . -exec sh -c x +", name="shell"),
+        ["gate-scripts-named"],
         {"gate-scripts-named": "gate shell: it runs find, which runs another command"},
         ("find",),
     ),
@@ -894,8 +902,8 @@ GAP_CASES = [
     ),
     (
         "an unmodelled interpreter",
-        m_gate("awk 'BEGIN { print 1 }'", name="shell"),
-        {"gate-scripts-named"},
+        m_gate("awk -f tests/test_ok.py", name="shell"),
+        ["gate-scripts-named"],
         {"gate-scripts-named": "gate shell: it runs awk, an interpreter the check does not read"},
         ("awk",),
     ),
@@ -904,8 +912,8 @@ GAP_CASES = [
         m_gate("{bash,-c,evil}", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: its command word {bash,-c,evil} would be expanded, which the check does not read",
-            "gate-tools": "gate shell: its command word {bash,-c,evil} would be expanded, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it holds '{', which the check does not read",
+            "gate-tools": "gate shell: it holds '{', which the check does not read, so its tools are unknown",
         },
         (),
     ),
@@ -1024,7 +1032,7 @@ GAP_CASES = [
     ),
     (
         "the builtin read",
-        m_gate("read BASH_ENV < tests/test_ok.py", name="shell"),
+        m_gate("read BASH_ENV", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
             "gate-scripts-named": "gate shell: it runs read, a builtin the check does not read",
@@ -1042,7 +1050,7 @@ GAP_CASES = [
     ),
     (
         "the builtin mapfile",
-        m_gate("mapfile -C evil x < tests/test_ok.py", name="shell"),
+        m_gate("mapfile -C evil x", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
             "gate-scripts-named": "gate shell: it runs mapfile, a builtin the check does not read",
@@ -1063,8 +1071,8 @@ GAP_CASES = [
         m_gate("[[ x -eq 0 ]]", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it runs [[, a builtin the check does not read",
-            "gate-tools": "gate shell: it runs [[, a builtin the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it holds '[', which the check does not read",
+            "gate-tools": "gate shell: it holds '[', which the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1117,8 +1125,8 @@ GAP_CASES = [
         m_gate("PS4='$''(touch pwn)'; set -x; true", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it holds $, which the check does not read",
-            "gate-tools": "gate shell: it holds $, which the check does not read, so its tools are unknown",
+            "gate-scripts-named": 'gate shell: it holds "\'", which the check does not read',
+            "gate-tools": 'gate shell: it holds "\'", which the check does not read, so its tools are unknown',
         },
     ),
     (
@@ -1126,8 +1134,8 @@ GAP_CASES = [
         m_gate("(( ls ))", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it uses '((', an operator the check does not read",
-            "gate-tools": "gate shell: it uses '((', an operator the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it holds '(', which the check does not read",
+            "gate-tools": "gate shell: it holds '(', which the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1157,6 +1165,108 @@ GAP_CASES = [
         ["gate-scripts-named"],
         {
             "gate-scripts-named": "gate shell: bash runs tests/run.sh, which is a tracked symbolic link, not a regular file"
+        },
+    ),
+    (
+        "env -u with a brace expansion",
+        m_gate("env -u {X,bash,-c,x}; python3 tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '{', which the check does not read",
+            "gate-tools": "gate shell: it holds '{', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "exec -a with a brace expansion",
+        m_gate("exec -a {x,bash,-c,x}", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '{', which the check does not read",
+            "gate-tools": "gate shell: it holds '{', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "python3 -W with a brace expansion",
+        m_gate("python3 -W {ignore,-c,x} tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '{', which the check does not read",
+            "gate-tools": "gate shell: it holds '{', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "bash -o with a brace expansion",
+        m_gate("bash -o {posix,-c,x} tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '{', which the check does not read",
+            "gate-tools": "gate shell: it holds '{', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "a digit word apart from >",
+        m_gate("echo touch pwn > 2; bash 2 > out tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '>', which the check does not read",
+            "gate-tools": "gate shell: it holds '>', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "a digit word before a redirection",
+        m_gate("bash 2 >/dev/null tests/test_ok.py", name="shell"),
+        ["gate-scripts-named"],
+        {"gate-scripts-named": "gate shell: bash runs 2, which is not a tracked file"},
+    ),
+    (
+        "python3 with a digit word apart from >",
+        m_gate("python3 1 > x tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '>', which the check does not read",
+            "gate-tools": "gate shell: it holds '>', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "python3 with a digit word before a redirection",
+        m_gate("python3 1 >/dev/null tests/test_ok.py", name="shell"),
+        ["gate-scripts-named"],
+        {"gate-scripts-named": "gate shell: python3 runs 1, which is not a tracked file"},
+    ),
+    (
+        "a quoted operator",
+        m_gate("echo touch pwn | tee '>' x; bash '>' x tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": 'gate shell: it holds "\'", which the check does not read',
+            "gate-tools": 'gate shell: it holds "\'", which the check does not read, so its tools are unknown',
+        },
+    ),
+    (
+        "a redirection to a file",
+        m_gate("python3 tests/test_ok.py 2>x", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '2>x', which the check does not read",
+            "gate-tools": "gate shell: it holds '2>x', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "a background &",
+        m_gate("true & python3 tests/test_ok.py", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it holds '&', which the check does not read",
+            "gate-tools": "gate shell: it holds '&', which the check does not read, so its tools are unknown",
+        },
+    ),
+    (
+        "a trailing operator",
+        m_gate("true &&", name="shell"),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": "gate shell: it ends with '&&', which the check does not read",
+            "gate-tools": "gate shell: it ends with '&&', which the check does not read, so its tools are unknown",
         },
     ),
     (
@@ -1232,10 +1342,10 @@ READY_CASES = [
     ("CLAUDE.md as a symlink to AGENTS.md", m_file("CLAUDE.md", (SYMLINK, b"AGENTS.md")), {}),
     ("a gate with exec, redirections and options", m_gate(PASS_GATE), {}),
     (
-        "time -p, command -v, env -i, [, set -euo pipefail and printf",
+        "time -p, command -v, env -i, test, set -euo pipefail and printf",
         m_gate(
-            "time -p true; command -v bash; command -pv bash; env -i python3 tests/test_ok.py; [ -d src ];"
-            " set -euo pipefail; printf '%s' ok",
+            "time -p true; command -v bash; command -pv bash; env -i python3 tests/test_ok.py; test -d src;"
+            " set -euo pipefail; printf %s ok",
             "shell",
         ),
         {},
@@ -1495,7 +1605,7 @@ def check_run_gates(sb: Sandbox, ready: str) -> None:
         {"name": "fails", "command": "exit 3"},
         {"name": "slow", "command": "python3 tests/slow.py", "timeout": 1},
         {"name": "writes", "command": "touch marker"},
-        {"name": "fresh", "command": "test ! -e marker"},
+        {"name": "fresh", "command": "if test -e marker; then exit 1; fi"},
         {"name": "environment", "command": "python3 tests/environment.py"},
         {"name": "background", "command": "python3 tests/background.py", "timeout": 20},
         {"name": "readonly", "command": "chmod -R a-w . && chmod a-w .."},

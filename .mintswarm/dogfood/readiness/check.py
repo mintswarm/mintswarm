@@ -137,40 +137,43 @@ the tracked paths that are .mintswarm/stages.md or under .claude/agents/ or
 instructions; landing's fixed `protected` rule already covers the config and
 the gate words, so require-human-landing checks the agent instructions only.
 
-Gate commands are read by a small allow-list grammar, not by modelling
-bash. A command outside the grammar is unreadable, and an unreadable command
-fails both gate-scripts-named and gate-tools. The grammar:
+Gate commands are read by a small allow-list grammar over their raw text,
+not by modelling bash's lexer, and no shlex is used, so what is read is
+what bash reads. A command outside the grammar is unreadable, and an
+unreadable command fails both gate-scripts-named and gate-tools. The
+grammar:
 
-- The raw text holds no `$`, backtick or `#`, so nothing in it is expanded,
-  substituted or commented out, however it is quoted.
-- shlex in POSIX mode, comments off, with the punctuation characters
-  `();<>|&` and newline and the whitespace space, tab and CR, splits it into
-  words and operators. A punctuation token, with any newlines after it, is
-  one operator: `;`, `&`, `|`, `&&`, `||`, `|&`, `(`, `)` or newline, which
-  end a simple command, or a redirection (`>`, `>>`, `<`, `<<<`, `>&`, `<&`,
-  `&>`, `&>>`, `>|`, `<>`), whose target word is dropped, together with a
-  word of digits just before it. Any other operator (`((`, `))`, `;;`,
-  `()`, `<<`, `<(`, `>(`, `);` and so on) is unreadable. Quotes are not
-  seen after splitting, so an operator character quoted on its own reads as
-  an operator; that only splits a command further.
-- A simple command is any of the reserved words `! { } if then else elif fi
+- Characters: the raw text holds only ASCII letters and digits, space,
+  newline and `._/:=+,@%-`, which make words, and `;`, `|`, `&` and `>`,
+  which make operators and redirections. Any other character is
+  unreadable: quotes of any kind, backslash, tab, CR, `{}[]()*?~!$#<`,
+  backtick and the rest. So nothing in a command is quoted, escaped,
+  expanded, substituted, grouped or commented out.
+- Splitting: the text is split on spaces and newlines, then each piece on
+  the operators `&&`, `||`, `;` and `|`. Newline, `;`, `&&`, `||` and `|`
+  end a simple command; `;`, `&&`, `||` and `|` must follow a word and
+  must not end the command. A piece that is exactly `>/dev/null`,
+  `2>/dev/null`, `2>&1` or `>&2` is a redirection and is dropped; any other
+  piece holding `>` or `&` is unreadable. Every other piece is a word as
+  written, digits included.
+- A simple command is any of the reserved words `if then else elif fi
   while until do done`, then any of the prefixes `time -p`, `env` with
   `-i`, `-`, `--ignore-environment`, `-u NAME` or `--unset=NAME`, `exec`
   with `-c`, `-l` or `-a NAME`, and `command` with `-p`, `-v` or `-V`
   (clustered or not) given before its command word, then the command word
   and its arguments. After `command -v` or `-V` nothing runs. Any other
   option of a prefix is unreadable.
-- The command word is not an assignment (`NAME=...`, so there are no
-  assignments at all, before a command or through env), and it holds none
-  of `*?[]{}~`, unless it is the builtin `[`.
+- The command word is not an assignment (`NAME=...`), so there are no
+  assignments at all, before a command or through env.
 - A command word that is a bash builtin or keyword must be one of `:`,
-  `true`, `false`, `echo`, `test`, `[`, `pwd`, `exit`, `shift`, `wait`,
-  `printf` not given `-v`, and `set` given only `-e`, `-u`, `+e`, `+u`
-  (clustered) and `-o` or `+o` with errexit, nounset or pipefail; `source`
-  and `.` are read as interpreters, below. Every other builtin or keyword
-  (export, declare, typeset, local, readonly, read, unset, let, `[[`,
-  eval, trap, builtin, cd, compgen, complete, bind, for, case, function,
-  coproc and the rest) is unreadable.
+  `true`, `false`, `echo`, `test`, `pwd`, `exit`, `shift`, `wait`, `printf`
+  not given `-v`, and `set` given only `-e`, `-u`, `+e`, `+u` (clustered)
+  and `-o` or `+o` with errexit, nounset or pipefail; `source` and `.` are
+  read as interpreters, below. `[` is outside the characters, so a test is
+  written with `test`. Every other builtin or keyword (export, declare,
+  typeset, local, readonly, read, unset, let, eval, trap, builtin, cd,
+  compgen, complete, bind, for, case, function, coproc and the rest) is
+  unreadable.
 
 A readable simple command fails gate-scripts-named when:
 
@@ -362,16 +365,15 @@ PREFIX_OPTIONS = {
     "exec": {"-c": False, "-l": False, "-a": True},
     "time": {"-p": False},
 }
-UNREADABLE_CHARACTERS = ("$", "`", "#")
-EXPANDED = "*?[]{}~"
-SEPARATORS = (";", "&", "|", "&&", "||", "|&", "(", ")", "\n")
-ALLOWED_BUILTINS = frozenset(": true false echo test [ pwd exit shift wait printf set".split())
+WORD = re.compile(r"[A-Za-z0-9._/:=+,@%-]+")
+COMMAND_CHARACTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/:=+,@%- \n;|&>")
+OPERATORS = re.compile(r"(&&|\|\||;|\|)")
+REDIRECTIONS = (">/dev/null", "2>/dev/null", "2>&1", ">&2")
+ALLOWED_BUILTINS = frozenset(": true false echo test pwd exit shift wait printf set".split())
 SET_LETTERS = "eu"
 SET_NAMES = ("errexit", "nounset", "pipefail")
-PUNCTUATION = "();<>|&\n"
-REDIRECTIONS = (">", ">>", "<", "<<<", ">&", "<&", "&>", "&>>", ">|", "<>")
 ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
-RESERVED = frozenset("! { } if then else elif fi do done while until".split())
+RESERVED = frozenset("if then else elif fi do done while until".split())
 # Every bash builtin and keyword; outside ALLOWED_BUILTINS, and apart from the prefixes, source and `.`, unreadable.
 BUILTINS = frozenset(
     """
@@ -740,50 +742,34 @@ def require_human(config: dict, section: str, globs: dict) -> tuple:
 # --- gate commands ---------------------------------------------------------
 
 
-def operator(token: str) -> str:
-    """The operator a punctuation token stands for, newlines after it dropped; raises CommandError."""
-    core = token.rstrip("\n") or "\n"
-    if core in SEPARATORS:
-        return core
-    if core in REDIRECTIONS and core == token:
-        return core
-    raise CommandError(f"it uses {token!r}, an operator the check does not read")
-
-
 def simple_commands(command: str) -> list:
-    """The simple commands of a gate command, each a list of words; raises CommandError."""
-    for character in UNREADABLE_CHARACTERS:
-        if character in command:
-            raise CommandError(f"it holds {character}, which the check does not read")
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=PUNCTUATION)
-    lexer.commenters = ""
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError as exc:
-        raise CommandError(f"the command does not split ({exc})") from exc
-    commands, current, target = [], [], False
-    for token in tokens:
-        if token and all(c in PUNCTUATION for c in token):
-            op = operator(token)
-            if target:
-                raise CommandError(f"a redirection without a target before {token!r}")
-            if op in REDIRECTIONS:
-                if current and current[-1].isdigit():
-                    current.pop()  # the file descriptor of 2>file
-                target = True
-            elif current:
-                commands.append(current)
-                current = []
-        elif target:
-            target = False
-        else:
-            current.append(token)
-    if target:
-        raise CommandError("a redirection without a target at the end")
-    if current:
-        commands.append(current)
+    """The simple commands of a gate command, each a list of words; raises CommandError outside the grammar."""
+    for character in command:
+        if character not in COMMAND_CHARACTERS:
+            raise CommandError(f"it holds {character!r}, which the check does not read")
+    commands, current, pending = [], [], None  # pending: the last operator, until a word follows it
+    for line in command.split("\n"):
+        for chunk in line.split(" "):
+            for piece in OPERATORS.split(chunk):
+                if piece == "" or piece in REDIRECTIONS:
+                    continue
+                if OPERATORS.fullmatch(piece):
+                    if not current:
+                        raise CommandError(
+                            f"it has {piece!r} without a command before it, which the check does not read"
+                        )
+                    commands.append(current)
+                    current, pending = [], piece
+                elif WORD.fullmatch(piece):
+                    current.append(piece)
+                    pending = None
+                else:
+                    raise CommandError(f"it holds {piece!r}, which the check does not read")
+        if current:  # a newline ends a simple command
+            commands.append(current)
+            current = []
+    if pending in ("&&", "||", "|"):
+        raise CommandError(f"it ends with {pending!r}, which the check does not read")
     return commands
 
 
@@ -872,8 +858,6 @@ def command_word(words: list) -> list:
         check_builtin(rest)
     elif first in BUILTINS and first not in INTERPRETERS:
         raise CommandError(f"it runs {first}, a builtin the check does not read")
-    elif any(c in first for c in EXPANDED):
-        raise CommandError(f"its command word {first} would be expanded, which the check does not read")
     return rest
 
 
