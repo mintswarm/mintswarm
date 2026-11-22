@@ -11,11 +11,16 @@ that happens. Paths are relative to the working directory, which is the
 worktree root. N is a positive integer without leading zeros; gate and
 review rounds are numbered independently, each from 1.
 
-A gates round copies whichever of .mintswarm/job/outputs/gates.ctrf.json and
-.mintswarm/job/outputs/gates.md exist. A round with neither is kept empty,
-with a warning, so that a gates stage that failed still counts as a round.
-It refuses when .mintswarm/job/inputs/gates.json is missing, or when either
-file is older than it (a report or document left from an earlier round).
+A gates round copies the round's input, .mintswarm/job/inputs/gates.json,
+as gates.input.json, so that collect-facts.py can apply every condition of
+run-gates.py --verdict, including the gate count and names. It also copies
+whichever of .mintswarm/job/outputs/gates.ctrf.json and
+.mintswarm/job/outputs/gates.md exist. A round with neither holds only the
+input, with a warning, so that a gates stage that failed still counts as a
+round. It refuses when inputs/gates.json is missing, or when either output
+is older than it (a report or document left from an earlier round), which
+is run-gates.py --verdict's staleness condition, checked here because the
+kept copies' own times say nothing.
 
 A review round copies .mintswarm/job/outputs/review.md, which is required
 and must be titled `# Review round N:`, and .mintswarm/job/outputs/address.md
@@ -77,6 +82,7 @@ ROUNDS = JOB / "rounds"
 TOOL = "mintswarm-keep-round"
 VERSION = 1
 GATES_FILES = ("gates.ctrf.json", "gates.md")
+GATES_INPUT_COPY = "gates.input.json"
 REVIEW = "review.md"
 ADDRESS = "address.md"
 ROUND_NUMBER = re.compile(r"[1-9][0-9]*")
@@ -135,10 +141,10 @@ def title(data: bytes, path: Path) -> str:
 
 
 def gates_files() -> list:
-    if not GATES_INPUT.is_file():
+    if not is_file(GATES_INPUT):
         raise InputError(f"{GATES_INPUT} is missing: no gates round is under way")
     started = mtime_ns(GATES_INPUT)
-    files = []
+    files = [(GATES_INPUT_COPY, read_bytes(GATES_INPUT))]
     for name in GATES_FILES:
         path = OUTPUTS / name
         if not is_file(path):
@@ -146,9 +152,9 @@ def gates_files() -> list:
         if mtime_ns(path) < started:
             raise InputError(f"stale {path}: it is older than {GATES_INPUT}")
         files.append((name, read_bytes(path)))
-    if not files:
-        print(f"keep-round: warning: neither {' nor '.join(GATES_FILES)} exists; keeping an empty gates round",
-              file=sys.stderr)
+    if len(files) == 1:
+        print(f"keep-round: warning: neither {' nor '.join(GATES_FILES)} exists; "
+              "keeping a gates round with only its input", file=sys.stderr)
     return files
 
 

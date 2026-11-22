@@ -4,7 +4,7 @@
     collect-facts.py fetch --pr N --issue N --head SHA [--out DIR]
     collect-facts.py assemble --responses DIR --pr N --issue N --head REF --base REF
                               --approver LOGIN --approved-at TIME
-                              [--approval-url URL] [--approval-id ID]
+                              [--approval-url URL] [--approval-id ID] [--decision PATH]
                               [--kickoff-floor PATH] [--assessment PATH] [--rounds DIR]
 
 Dogfooding stand-in for the control plane's landing facts, read by the
@@ -60,16 +60,19 @@ Inputs are checked before anything is written:
   equal to the head, and request.json must match --pr, --issue and the head,
   so the checks belong to the head commit. The PR's `base.sha` is not used:
   the base is the job's.
-- --approver matches ^[A-Za-z0-9-]+$; --approved-at is a UTC time,
-  YYYY-MM-DDTHH:MM:SSZ; --approval-url starts with https://; --approval-id
-  is a positive integer.
+- --approver is a GitHub login, ^[A-Za-z0-9-]+$, or an App's bot login,
+  the same followed by `[bot]` (mintswarm-dev[bot] for a plan approved
+  without a human); --approved-at is a UTC time, YYYY-MM-DDTHH:MM:SSZ;
+  --approval-url starts with https://; --approval-id is a positive integer;
+  request.json's fetched_at is a UTC time of the same form.
 - Every listing has pages 1 to k without gaps, every page but the last has
   100 items and the last fewer, so a truncated fetch is refused.
 - Under --rounds, every entry not starting with `.` is a directory named
   gates-<n> or review-<n>; each kind is numbered 1 to k without gaps; each
   round.json is keep-round.py's (tool, version, kind and round matching the
   directory) and lists exactly the files present apart from itself, each
-  with a matching sha256.
+  with a matching sha256; every gates round holds gates.input.json and every
+  review round review.md.
 
 facts.json holds, with keys in this order (written with indent 2,
 ensure_ascii off):
@@ -78,23 +81,32 @@ ensure_ascii off):
   version        1
   pr, issue      the numbers given
   head, base     full commit hashes
-  checks         one {name, conclusion, source} per check on the head:
-                 source "check-run" for check runs (the latest run per
-                 name; conclusion null while the run is not completed) and
+  fetched_at     when GitHub was read, from request.json: checks, steers
+                 and comments after it are not in these facts
+  checks         one {name, conclusion, source, app} per check on the head:
+                 source "check-run" for check runs (the latest run per app
+                 and name, app the run's app slug, or null when it has
+                 none; conclusion null while the run is not completed) and
                  "status" for commit statuses (name is the context,
-                 conclusion the state); sorted by source, then name; []
-                 when there are none
+                 conclusion the state, app null); sorted by source, name
+                 and app; [] when there are none
   gate_rounds    in round order, {round, verdict, failed_tests, reason,
                  files}: verdict "passed" only when the kept
                  gates.ctrf.json meets every condition of
-                 run-gates.py --verdict that needs no inputs/gates.json
-                 (CTRF, no results.errors, integer summary counts, at least
-                 one test, summary.tests equal to the tests held, all
-                 passed with none failed or other, every test passed),
-                 otherwise "failed" with reason the first unmet condition
-                 (null when passed); failed_tests the names of tests with
-                 status failed or other; files the {name, sha256} list of
-                 round.json
+                 run-gates.py --verdict against the kept gates.input.json,
+                 in run-gates.py's order and with its wording, otherwise
+                 "failed" with reason the first unmet condition (null when
+                 passed). The conditions: the report parses and is CTRF,
+                 has results without results.errors and with a summary and
+                 a tests list, integer summary counts; the input is usable
+                 (a non-empty `gates` list, each with a name and command);
+                 summary.tests equals the input's gate count (at least one)
+                 and the tests held; the tests name the input's gates in
+                 order; all passed with none failed or other; every test
+                 passed. Staleness, run-gates.py's remaining condition, is
+                 checked by keep-round.py when the round is kept.
+                 failed_tests are the names of tests with status failed or
+                 other; files the {name, sha256} list of round.json
   review_rounds  in round order, {round, verdict, findings, files}:
                  verdict the first non-blank line after the one `## Verdict`
                  line outside code fences, "pass" or "changes_required";
@@ -102,12 +114,15 @@ ensure_ascii off):
                  all four, from the one fenced yaml block whose first line
                  starts with `findings:`, parsed with yq -p=yaml -o=json;
                  the title must be `# Review round <n>:`
-  steers         sorted by time, kind and url, {kind, author, time, url,
-                 via}; see below
+  steers         sorted by time, kind and url, {kind, author, time,
+                 edited_at, url, via}; see below
   approval       {approver, approved_at, approval_ref (the URL, else the
-                 id, else null)}, then `kickoff_floor` {path, sha256,
-                 record} only when --kickoff-floor is given (the record is
-                 floor.py's verdict, a JSON object with tool
+                 id, else null)}, then `decision` {path, sha256, record}
+                 only when --decision is given (the record is decision.py's
+                 decision.json, a JSON object with tool
+                 "mintswarm-approval-decision"), then `kickoff_floor`
+                 {path, sha256, record} only when --kickoff-floor is given
+                 (the record is floor.py's verdict, a JSON object with tool
                  "mintswarm-plan-floor"), then `assessment` {path, sha256,
                  risk} only when --assessment is given (risk is low, medium
                  or high from the document's single `Risk:` line, or null
@@ -116,18 +131,25 @@ ensure_ascii off):
 Steers. Items come from issue-comments (kind issue-comment), pr-comments
 (pr-comment), reviews (review) and review-comments (review-comment). The
 time is `created_at`, or `submitted_at` for a review; reviews in state
-PENDING or without submitted_at are skipped. Only items strictly after
---approved-at count, other than the approval itself: the item whose
-html_url equals --approval-url or whose id equals --approval-id. Such an
-item is a steer when:
+PENDING or without submitted_at are skipped. An item counts when its time
+is strictly after --approved-at, or when it is a comment whose
+`updated_at` is: a comment edited after the approval may have been turned
+into a steer. `edited_at` is that `updated_at` when it is after the
+approval and differs from the time, otherwise null; reviews have no
+`updated_at` in the API, so an edited review body is not seen. The
+approval itself never counts: the item whose html_url equals
+--approval-url, or the issue-comment or pr-comment whose id equals
+--approval-id (the other kinds have their own id sequences). Such an item
+is a steer when:
 
 - its author is not a bot (user.type is not Bot and the login does not end
   in [bot]; a deleted user is login `ghost`): via "account";
 - or its author is mintswarm-dev[bot] and some line of its body, split at
   LF and trimmed of whitespace, is exactly `<!-- mintswarm: steer -->`:
-  via "marker". The session puts this marker on every comment it posts on
-  the maintainer's behalf. Lines inside code fences count; a marker in the
-  middle of a line does not.
+  via "marker". The session puts this marker on every decision it posts on
+  the maintainer's behalf, as .mintswarm/dogfood/plan-approval/README.md,
+  section "Decisions while a job is in flight", says. Lines inside code
+  fences count; a marker in the middle of a line does not.
 
 Other bot items are not steers. Steers given only in the session chat, or
 relayed to GitHub without the marker, are not seen.
@@ -156,6 +178,7 @@ TOOL = "mintswarm-landing-facts"
 VERSION = 1
 KEEP_TOOL = "mintswarm-keep-round"
 FLOOR_TOOL = "mintswarm-plan-floor"
+DECISION_TOOL = "mintswarm-approval-decision"
 REPO = "repos/{owner}/{repo}"
 PER_PAGE = 100
 MAX_PAGES = 30
@@ -166,11 +189,13 @@ REVIEW_VERDICTS = ("pass", "changes_required")
 RISKS = ("low", "medium", "high")
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
-LOGIN = re.compile(r"[A-Za-z0-9-]+")
+LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")
 NUMBER = re.compile(r"[1-9][0-9]*")
 FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 ROUND_DIR = re.compile(r"(gates|review)-([1-9][0-9]*)")
-ROUND_FILES = {"gates": ("gates.ctrf.json", "gates.md"), "review": ("address.md", "review.md")}
+GATES_INPUT = "gates.input.json"
+ROUND_FILES = {"gates": ("gates.ctrf.json", GATES_INPUT, "gates.md"), "review": ("address.md", "review.md")}
+REQUIRED_FILES = {"gates": GATES_INPUT, "review": "review.md"}
 ROUND_KEYS = ["tool", "version", "kind", "round", "kept_at", "files"]
 FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*([^`\s]*)")
 
@@ -183,6 +208,8 @@ LISTINGS = (
     ("review-comments", "pulls/{pr}/comments?", None),
     ("issue-comments", "issues/{issue}/comments?", None),
 )
+# the kinds an --approval-id can belong to: the approval is a comment
+APPROVAL_ID_KINDS = ("issue-comment", "pr-comment")
 STEER_SOURCES = (
     ("issue-comments", "issue-comment"),
     ("pr-comments", "pr-comment"),
@@ -193,13 +220,13 @@ FETCH_OPTIONS = {"--pr": True, "--issue": True, "--head": True, "--out": False}
 ASSEMBLE_OPTIONS = {
     "--responses": True, "--pr": True, "--issue": True, "--head": True, "--base": True,
     "--approver": True, "--approved-at": True, "--approval-url": False, "--approval-id": False,
-    "--kickoff-floor": False, "--assessment": False, "--rounds": False,
+    "--decision": False, "--kickoff-floor": False, "--assessment": False, "--rounds": False,
 }
 USAGE = (
     "usage: collect-facts.py fetch --pr N --issue N --head SHA [--out DIR]\n"
     "       collect-facts.py assemble --responses DIR --pr N --issue N --head REF --base REF "
     "--approver LOGIN --approved-at TIME [--approval-url URL] [--approval-id ID] "
-    "[--kickoff-floor PATH] [--assessment PATH] [--rounds DIR]"
+    "[--decision PATH] [--kickoff-floor PATH] [--assessment PATH] [--rounds DIR]"
 )
 
 
@@ -425,7 +452,8 @@ class Responses:
         return items
 
 
-def check_request(responses: Responses, pr: int, issue: int, head: str) -> None:
+def check_request(responses: Responses, pr: int, issue: int, head: str) -> str:
+    """Check the saved request and PR against the arguments; return the request's fetched_at."""
     request = responses.load("request.json")
     if not isinstance(request, dict):
         raise InputError("request.json is not an object")
@@ -439,6 +467,9 @@ def check_request(responses: Responses, pr: int, issue: int, head: str) -> None:
     if not isinstance(pull_head, dict) or pull_head.get("sha") != head:
         sha = pull_head.get("sha") if isinstance(pull_head, dict) else None
         raise InputError(f"PR {pr}'s head is {sha!r}, not the head {head}")
+    fetched_at = request.get("fetched_at")
+    parse_time(fetched_at, "request.json's fetched_at")
+    return fetched_at
 
 
 def collect_checks(responses: Responses) -> list:
@@ -450,18 +481,26 @@ def collect_checks(responses: Responses) -> list:
         if not isinstance(ident, int) or isinstance(ident, bool):
             raise InputError(f"check run {run['name']!r} has no integer id")
         conclusion = run.get("conclusion") if run.get("status") == "completed" else None
-        if run["name"] not in latest or ident > latest[run["name"]][0]:
-            latest[run["name"]] = (ident, conclusion)
+        app = run.get("app")
+        if app is not None and not isinstance(app, dict):
+            raise InputError(f"check run {run['name']!r} has an unreadable app")
+        app_id = app.get("id") if app else None
+        slug = app.get("slug") if app else None
+        if slug is not None and not isinstance(slug, str):
+            raise InputError(f"check run {run['name']!r} has an app slug that is not a string")
+        key = (str(app_id), run["name"])
+        if key not in latest or ident > latest[key][0]:
+            latest[key] = (ident, run["name"], conclusion, slug)
     checks = [
-        {"name": name, "conclusion": conclusion, "source": "check-run"}
-        for name, (_, conclusion) in latest.items()
+        {"name": name, "conclusion": conclusion, "source": "check-run", "app": slug}
+        for _, name, conclusion, slug in latest.values()
     ]
     for status in responses.listing("status", "statuses"):
         if (not isinstance(status, dict) or not isinstance(status.get("context"), str)
                 or not isinstance(status.get("state"), str)):
             raise InputError(f"a commit status without a context or state: {status!r}")
-        checks.append({"name": status["context"], "conclusion": status["state"], "source": "status"})
-    checks.sort(key=lambda c: (c["source"], c["name"], str(c["conclusion"])))
+        checks.append({"name": status["context"], "conclusion": status["state"], "source": "status", "app": None})
+    checks.sort(key=lambda c: (c["source"], c["name"], str(c["app"]), str(c["conclusion"])))
     return checks
 
 
@@ -490,20 +529,25 @@ def collect_steers(responses: Responses, approved_at: datetime, approval_url, ap
         for item in responses.listing(name, None):
             if not isinstance(item, dict):
                 raise InputError(f"an item of {name} is not an object")
+            url = item.get("html_url")
+            if not isinstance(url, str):
+                raise InputError(f"an item of {name} has no html_url")
+            edited_at = None
             if kind == "review":
                 if item.get("state") == "PENDING" or item.get("submitted_at") is None:
                     continue
                 stamp = item["submitted_at"]
             else:
                 stamp = item.get("created_at")
-            url = item.get("html_url")
-            if not isinstance(url, str):
-                raise InputError(f"an item of {name} has no html_url")
-            if parse_time(stamp, f"the time of {url}") <= approved_at:
+                updated = item.get("updated_at")
+                if updated is not None and updated != stamp \
+                        and parse_time(updated, f"the updated_at of {url}") > approved_at:
+                    edited_at = updated
+            if parse_time(stamp, f"the time of {url}") <= approved_at and edited_at is None:
                 continue
             if approval_url is not None and url == approval_url:
                 continue
-            if approval_id is not None and str(item.get("id")) == approval_id:
+            if approval_id is not None and kind in APPROVAL_ID_KINDS and str(item.get("id")) == approval_id:
                 continue
             login, is_bot = author(item)
             if not is_bot:
@@ -512,7 +556,8 @@ def collect_steers(responses: Responses, approved_at: datetime, approval_url, ap
                 via = "marker"
             else:
                 continue
-            steers.append({"kind": kind, "author": login, "time": stamp, "url": url, "via": via})
+            steers.append({"kind": kind, "author": login, "time": stamp, "edited_at": edited_at,
+                           "url": url, "via": via})
     steers.sort(key=lambda s: (s["time"], s["kind"], s["url"]))
     return steers
 
@@ -536,8 +581,8 @@ def load_round(path: Path, kind: str, number: int) -> dict:
         names.append(entry["name"])
     if names != sorted(set(names)):
         raise InputError(f"{path}/round.json: the files are repeated or not sorted")
-    if kind == "review" and "review.md" not in names:
-        raise InputError(f"{path} has no review.md")
+    if REQUIRED_FILES[kind] not in names:
+        raise InputError(f"{path} has no {REQUIRED_FILES[kind]}")
     try:
         present = set(os.listdir(path))
     except OSError as exc:
@@ -576,8 +621,27 @@ def load_rounds(rounds: Path) -> dict:
     return found
 
 
-def ctrf_unmet(data):
-    """Return (report or None, first unmet condition or None)."""
+def kept_gates(data: bytes) -> list:
+    """Return the gates of a kept gates.input.json, as run-gates.py's load_gates reads them."""
+    try:
+        spec = json.loads(data.decode("utf-8"))
+        gates = spec["gates"]
+        if not isinstance(gates, list) or not gates:
+            raise ValueError("no gates defined")
+        for gate in gates:
+            if not isinstance(gate, dict) or not gate.get("name") or not gate.get("command"):
+                raise ValueError(f"gate without name or command: {gate!r}")
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"unusable {GATES_INPUT}: {exc}") from exc
+    return gates
+
+
+def ctrf_unmet(data, input_data: bytes):
+    """Return (report or None, first unmet condition or None).
+
+    Mirrors run-gates.py's unmet_condition in order and wording, with the
+    kept file names; its staleness check is keep-round.py's.
+    """
     if data is None:
         return None, "no report: gates.ctrf.json was not kept"
     try:
@@ -600,29 +664,33 @@ def ctrf_unmet(data):
         if not isinstance(value, int) or isinstance(value, bool):
             return report, f"summary.{key} is not an integer"
         counts[key] = value
-    if counts["tests"] <= 0:
-        return report, f"summary.tests is {counts['tests']}"
+    try:
+        gates = kept_gates(input_data)
+    except ValueError as exc:
+        return report, str(exc)
+    if counts["tests"] != len(gates) or counts["tests"] <= 0:
+        return report, f"summary.tests is {counts['tests']}, the input has {len(gates)} gates"
     if counts["tests"] != len(tests):
         return report, f"summary.tests is {counts['tests']}, results.tests holds {len(tests)}"
+    names = [t.get("name") if isinstance(t, dict) else None for t in tests]
+    expected = [g["name"] for g in gates]
+    if names != expected:
+        return report, f"results.tests names {names}, the input has {expected}"
     if counts["passed"] != counts["tests"]:
         return report, f"summary.passed is {counts['passed']} of {counts['tests']}"
     if counts["failed"] != 0 or counts["other"] != 0:
         return report, f"summary.failed is {counts['failed']}, summary.other is {counts['other']}"
     for test in tests:
-        if not isinstance(test, dict) or test.get("status") != "passed":
-            name = test.get("name") if isinstance(test, dict) else None
-            status = test.get("status") if isinstance(test, dict) else None
-            return report, f"test {name} has status {status!r}"
+        if test.get("status") != "passed":
+            return report, f"test {test['name']} has status {test.get('status')!r}"
     return report, None
 
 
 def gate_round(number: int, kept: dict) -> dict:
-    report, reason = ctrf_unmet(kept["data"].get("gates.ctrf.json"))
+    report, reason = ctrf_unmet(kept["data"].get("gates.ctrf.json"), kept["data"][GATES_INPUT])
     failed = []
-    try:
-        tests = report["results"]["tests"]
-    except (TypeError, KeyError):
-        tests = []
+    results = report.get("results") if isinstance(report, dict) else None
+    tests = results.get("tests") if isinstance(results, dict) else None
     if isinstance(tests, list):
         failed = [t.get("name") for t in tests if isinstance(t, dict) and t.get("status") in ("failed", "other")]
     return {
@@ -637,7 +705,7 @@ def gate_round(number: int, kept: dict) -> dict:
 def scan_fences(lines: list) -> tuple:
     """Return (the (index, line) pairs outside code fences, the fenced blocks as (info, lines))."""
     outside, blocks = [], []
-    fence = None
+    fence, info, content = None, "", []
     for index, line in enumerate(lines):
         if fence is None:
             match = FENCE_OPEN.match(line)
@@ -716,7 +784,7 @@ def assessment_risk(data: bytes):
 def build_approval(opts: dict) -> dict:
     approver, approved_at = opts["--approver"], opts["--approved-at"]
     if not LOGIN.fullmatch(approver):
-        raise InputError(f"--approver is not a GitHub login: {approver!r}")
+        raise InputError(f"--approver is not a GitHub login or an App's bot login: {approver!r}")
     url, ident = opts.get("--approval-url"), opts.get("--approval-id")
     if url is not None and (not url.startswith("https://") or any(c.isspace() for c in url)):
         raise InputError(f"--approval-url is not an https URL: {url!r}")
@@ -727,13 +795,16 @@ def build_approval(opts: dict) -> dict:
         "approved_at": approved_at,
         "approval_ref": url if url is not None else ident,
     }
-    if "--kickoff-floor" in opts:
-        path = opts["--kickoff-floor"]
+    for option, key, tool, script in (("--decision", "decision", DECISION_TOOL, "decision.py"),
+                                      ("--kickoff-floor", "kickoff_floor", FLOOR_TOOL, "floor.py")):
+        if option not in opts:
+            continue
+        path = opts[option]
         data = read_bytes(Path(path))
         record = strict_json(data, path)
-        if not isinstance(record, dict) or record.get("tool") != FLOOR_TOOL:
-            raise InputError(f"{path} is not a floor.py verdict (tool {FLOOR_TOOL})")
-        approval["kickoff_floor"] = {"path": path, "sha256": sha256(data), "record": record}
+        if not isinstance(record, dict) or record.get("tool") != tool:
+            raise InputError(f"{path} is not a {script} record (tool {tool})")
+        approval[key] = {"path": path, "sha256": sha256(data), "record": record}
     if "--assessment" in opts:
         path = opts["--assessment"]
         data = read_bytes(Path(path))
@@ -792,7 +863,7 @@ def assemble(argv: list) -> int:
     head = resolve(opts["--head"], "--head")
     base = resolve(opts["--base"], "--base")
     responses = Responses(Path(opts["--responses"]))
-    check_request(responses, pr, issue, head)
+    fetched_at = check_request(responses, pr, issue, head)
     checks = collect_checks(responses)
     rounds_dir = Path(opts.get("--rounds", str(ROUNDS)))
     kept = load_rounds(rounds_dir)
@@ -809,6 +880,7 @@ def assemble(argv: list) -> int:
         "issue": issue,
         "head": head,
         "base": base,
+        "fetched_at": fetched_at,
         "checks": checks,
         "gate_rounds": gate_rounds,
         "review_rounds": review_rounds,
