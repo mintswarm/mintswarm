@@ -1,6 +1,6 @@
 # mintswarm
 
-mintswarm turns tickets into reviewed pull requests. You shape an idea into tickets; runners on your own machines carry each one through analyse, design, plan and implement; an independent reviewer checks the result; you approve the PR.
+mintswarm turns tickets into reviewed pull requests. You shape an idea into a design and tickets; runners on your own machines carry each ticket through analyse, decompose, plan and implement, and run its gates; each plan is approved by you or, where you allow it, by mintswarm when it judges the plan low-risk; an independent reviewer checks the result; you approve the PR.
 
 It is built first for a developer or small team running several projects on one AI subscription:
 
@@ -21,4 +21,4 @@ mintswarm is **fair source**, licensed under the [Functional Source License, Ver
 
 ## Contributing
 
-Contributions will require signing a Contributor Licence Agreement. Contribution guidelines will follow before the repository opens for outside changes.
+Contributions need a signed Contributor Licence Agreement. How to branch, commit and open a pull request is set out in [CONTRIBUTING.md](CONTRIBUTING.md).
