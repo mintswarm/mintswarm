@@ -16,7 +16,7 @@ How TypeScript is written, checked and formatted in the package at `{{ package_r
 - No non-null assertions (`x!`); narrow instead.
 - Prefer `readonly` properties and `readonly T[]` arrays (`ReadonlyMap`, `ReadonlySet` where relevant) for data that is not mutated.
 - Use unions of string literals, not `enum`.
-- Make a `switch` over a union exhaustive with a `default` that assigns the value to `never`.
+- Make a `switch` over a union exhaustive with a `default` that assigns the value to `never` and uses it: `` const unreachable: never = value; throw new Error(`Unhandled: ${String(unreachable)}`); ``.
 - `catch (error: unknown)`, and narrow before use; throw only `Error` objects.
 
 ## Modules
