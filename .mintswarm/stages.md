@@ -16,7 +16,7 @@ Rules every mintswarm stage agent follows, whatever its harness. Each stage's ow
 ## Boundaries
 
 - Never touch GitHub or any other remote: no `gh`, no `git push`, no `git fetch`, no network calls. The runner publishes and pushes.
-- Read-only stages (analyse, decompose, plan, gates, review) change nothing in the repository. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`) and, for gates, running the gate script.
+- Read-only stages (analyse, decompose, plan, assess, gates, review) change nothing in the repository. `Bash` is for reading (`git log`, `git diff`, `git show`, `ls`) and, for gates, running the gate script.
 - Only the implement stage edits files and commits. It never changes `.mintswarm/config.yaml` or the `agents` component's paths (`.claude/agents/`, `.mintswarm/stages.md`, `.mintswarm/stages/`, `.mintswarm/dogfood/`, `defaults/prompts/`) unless its issue's component is `agents`.
 - Do not declare success you cannot show. Gates are run by the runner; a stage passes only when the runner accepts your result.
 
@@ -46,7 +46,7 @@ End your final reply with exactly one block of this form; anything after it is i
 ```yaml
 msw-result:
   status: complete          # complete | needs_input | failed
-  artefact: analysis        # the document you return: analysis | decomposition | plan | handoff | address | gates | review
+  artefact: analysis        # the document you return: analysis | decomposition | plan | assessment | handoff | address | gates | review
   outputs: [.mintswarm/job/outputs/analysis.md]   # where the runner saves it
   questions: []             # needs_input: the blocking questions, one string each
   reason: ""                # failed: why, in one sentence
