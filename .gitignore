@@ -1,0 +1,11 @@
+# Rust
+/target/
+
+# Agent worktrees and job scratch
+.claude/worktrees/
+.claude/settings.local.json
+.mintswarm/job/
+.mintswarm/worktrees/
+
+# macOS
+.DS_Store

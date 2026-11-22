@@ -19,8 +19,11 @@ mintswarm/
 │
 ├── .claude/agents/         # stage agent definitions; the prototype of mintswarm's default stage templates
 ├── .mintswarm/             # this repository's own mintswarm config
-│   ├── config.yaml
-│   └── job/                # per-job scratch, never committed
+│   ├── config.yaml         # tracker mapping, components, stage models, pipeline, gates
+│   ├── stages.md           # conventions every stage agent follows
+│   ├── dogfood/            # stand-ins for runner functions while the system does not run (gate runner)
+│   ├── job/                # per-job inputs and outputs inside a worktree, never committed
+│   └── worktrees/          # job worktrees created by the session acting as runner, never committed
 │
 ├── api/                    # every contract, language-neutral
 │   ├── proto/              # the only hand-written API contract
