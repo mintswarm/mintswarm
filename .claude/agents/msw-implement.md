@@ -61,3 +61,39 @@ Address rounds: return `address.md` as `.mintswarm/stages.md` describes:
 ```
 
 Status: `complete` when the work is committed and the document returned; `needs_input` for a scope question; `failed` if you cannot make it work, with the reason.
+
+First round: end your final reply with exactly this, your document in place of `…`; open and close with five backticks if the document has a line starting with four:
+
+`````text
+````markdown
+# Handoff: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or needs_input (a scope question) or failed
+  artefact: handoff
+  outputs: [.mintswarm/job/outputs/handoff.md]
+  questions: []
+  reason: ""
+```
+`````
+
+Address rounds: end your final reply with exactly this, your document in place of `…`; open and close with five backticks if the document has a line starting with four:
+
+`````text
+````markdown
+# Address round <n>: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or needs_input (a scope question) or failed
+  artefact: address
+  outputs: [.mintswarm/job/outputs/address.md]
+  questions: []
+  reason: ""
+```
+`````

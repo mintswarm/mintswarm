@@ -73,3 +73,21 @@ children:
 ````
 
 Status: `needs_input` if a blocking question prevents a sound split, otherwise `complete`.
+
+End your final reply with exactly this, your document in place of `…`; open and close with five backticks if the document has a line starting with four:
+
+`````text
+````markdown
+# Decomposition: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or needs_input (a blocking question) or failed
+  artefact: decomposition
+  outputs: [.mintswarm/job/outputs/decomposition.md]
+  questions: []
+  reason: ""
+```
+`````

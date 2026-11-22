@@ -95,3 +95,21 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 ````
 
 Status: `needs_input` if the Questions hold any `- **Blocking:**` entry, including a recommended split, otherwise `complete`.
+
+End your final reply with exactly this, your document in place of `…`; open and close with five backticks if the document has a line starting with four:
+
+`````text
+````markdown
+# Plan: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or needs_input (a Blocking question) or failed
+  artefact: plan
+  outputs: [.mintswarm/job/outputs/plan.md]
+  questions: []
+  reason: ""
+```
+`````

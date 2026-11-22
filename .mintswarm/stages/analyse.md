@@ -46,3 +46,21 @@ Return `analysis.md` as `.mintswarm/stages.md` describes:
 ```
 
 Status: `needs_input` if there is any blocking question, otherwise `complete`.
+
+End your final reply with exactly this, your document in place of `…`; open and close with five backticks if the document has a line starting with four:
+
+`````text
+````markdown
+# Analysis: <issue title>
+…
+````
+
+```yaml
+msw-result:
+  status: complete          # or needs_input (a blocking question) or failed
+  artefact: analysis
+  outputs: [.mintswarm/job/outputs/analysis.md]
+  questions: []
+  reason: ""
+```
+`````

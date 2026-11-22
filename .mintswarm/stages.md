@@ -37,7 +37,7 @@ Your final reply carries your output document in one fenced block:
 6. After the closing line come only blank lines, then exactly one result block (below). Text after the result block is ignored. A few lines of text may come before the document block.
 
 - Never write the document with a file tool or the shell. Stages write no files under `.mintswarm/job/outputs/`; tools a stage runs, such as the gate script, may record their own results there.
-- The runner saves the block's content unchanged at the path in `outputs`. While mintswarm is dogfooded, the dispatching session saves it with `.mintswarm/dogfood/save-output.py`, which applies exactly these rules.
+- The runner saves the block's content unchanged at the path in `outputs`. While mintswarm is dogfooded, the dispatching session saves it with `.mintswarm/dogfood/save-output.py`, which applies exactly these rules. A reply the script rejects gets one corrective message quoting the rule it broke, and is never repaired by hand.
 
 ## Result block
 
