@@ -12,7 +12,10 @@
 #     system or global config, no config from the environment, no askpass, no
 #     prompts and no tracing.
 #   - msw_git_net ARGS... is msw_git_env plus a credential helper list reset to
-#     a single inline helper that answers with $MSW_TOKEN from the environment.
+#     a single inline helper that answers with $MSW_TOKEN from the environment,
+#     no hooks, and transports limited to https (and file, only when the caller
+#     sets MSW_GIT_ALLOW_FILE=1 itself; the environment cannot), so no redirect
+#     can reach ssh and the maintainer's key.
 #     The token is never in a URL, a file, a credential store or any argv.
 #
 # bash 3.2 compatible.
@@ -31,6 +34,10 @@ MSW_BRANCH_PREFIX=mintswarm/
 MSW_KEYCHAIN_SERVICE=mintswarm-dev-private-key
 MSW_CONFIG_DIR="$HOME/.config/mintswarm"
 MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/dev-app.json}"
+
+# Set by the sourcing script, never taken from the environment: only push.sh sets
+# it, and only for a file:// MSW_PUSH_URL (selftest.sh).
+MSW_GIT_ALLOW_FILE=0
 
 msw_die() {
   printf '%s: %s\n' "$(basename "$0")" "$*" >&2
@@ -65,10 +72,20 @@ msw_git_env() {
 }
 
 msw_git_net() {
+  local protocols=https file=never
+  if [ "$MSW_GIT_ALLOW_FILE" = 1 ]; then
+    protocols=https:file
+    file=always
+  fi
+  # GIT_ALLOW_PROTOCOL overrides any protocol.* config; the -c keys say the same.
   # The helper is single-quoted on purpose: git's shell expands $MSW_TOKEN from
   # the environment, so the token never appears in this argv.
   # shellcheck disable=SC2016
-  msw_git_env \
+  GIT_ALLOW_PROTOCOL="$protocols" msw_git_env \
+    -c protocol.allow=never \
+    -c protocol.https.allow=always \
+    -c "protocol.file.allow=$file" \
+    -c core.hooksPath=/dev/null \
     -c credential.helper= \
     -c 'credential.helper=!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$MSW_TOKEN"; }; f' \
     -c core.askPass= \

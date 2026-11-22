@@ -18,6 +18,7 @@
 #
 # The key passes only through shell variables and pipes: it reaches the Keychain
 # on the stdin of "security -i", never in argv, a temporary file or a here-string.
+# curl runs with -q first, so ~/.curlrc cannot trace the conversion response.
 # dev-app.json holds no secret: app_id, slug, client_id, keychain_service,
 # key_fingerprint.
 set -euo pipefail
@@ -81,7 +82,7 @@ convert() {
   expected="$(cat "$STATE_FILE")"
   [ "$state" = "$expected" ] || msw_die "state mismatch: not the request we started"
 
-  conv="$(curl -fsS -X POST -H "Accept: application/vnd.github+json" \
+  conv="$(curl -q -fsS -X POST -H "Accept: application/vnd.github+json" \
     "https://api.github.com/app-manifests/${code}/conversions")" \
     || msw_die "the manifest conversion failed (codes expire after an hour and work once)"
   id="$(printf '%s' "$conv" | jq -r '.id // empty')"

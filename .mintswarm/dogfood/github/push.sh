@@ -12,8 +12,10 @@
 #   - a missing refs/remotes/origin/master (fetch first) or an empty origin/master..BRANCH;
 #   - any commit in origin/master..BRANCH whose author or committer is not exactly
 #     mintswarm-dev[bot] <359856778+mintswarm-dev[bot]@users.noreply.github.com>;
-#   - repository-local config matching url.*, credential.* or http.*extraheader,
-#     which could change where the push goes or how it authenticates;
+#   - repository config matching url.*, credential.*, http.* or remote.<URL>.*
+#     (a remote section named after a URL applies to a push to that URL, so its
+#     url or pushurl would redirect it), which could change where the push goes
+#     or how it authenticates;
 #   - --force, a bare --force-with-lease, or any other option.
 # With --force-with-lease=SHA the push succeeds only if the branch on GitHub is at SHA
 # (a URL push has no remote-tracking ref for a bare lease to use).
@@ -21,6 +23,9 @@
 # The token is $MSW_TOKEN, or minted with contents:write when unset. It reaches git
 # only through the environment and an inline credential helper (common.sh,
 # msw_git_net); it is never in the URL, .git/config, a credential store or argv.
+# git runs with https as the only transport (file too for a file:// MSW_PUSH_URL), so
+# nothing can turn the push into ssh, and with hooks disabled (core.hooksPath=/dev/null
+# and --no-verify), so no hook sees MSW_TOKEN in its environment.
 # MSW_PUSH_URL overrides the URL only when it starts with file:// (selftest.sh).
 set -euo pipefail
 
@@ -74,13 +79,13 @@ if [ -n "$bad" ]; then
   msw_die "refusing: every commit in origin/master..$branch must be authored and committed by $MSW_BOT_NAME (see README.md, Pitfalls)"
 fi
 
-risky="$(msw_git_env config --name-only --get-regexp '^(url\.|credential\.|http\..*extraheader)' || true)"
+risky="$(msw_git_env config --name-only --get-regexp '^(url\.|credential\.|http\.|remote\..*://)' || true)"
 [ -z "$risky" ] || msw_die "refusing: repository config sets $(printf '%s' "$risky" | tr '\n' ' ')- remove it first"
 
 url="$MSW_REPO_URL"
 if [ -n "${MSW_PUSH_URL:-}" ]; then
   case "$MSW_PUSH_URL" in
-    file://*) url="$MSW_PUSH_URL" ;;
+    file://*) url="$MSW_PUSH_URL"; MSW_GIT_ALLOW_FILE=1 ;;
     *) msw_die "MSW_PUSH_URL may only be a file:// URL" ;;
   esac
 fi
@@ -92,8 +97,8 @@ export MSW_TOKEN
 tok=""
 
 if [ -n "$lease" ]; then
-  msw_git_net push "--force-with-lease=refs/heads/$branch:$lease" \
+  msw_git_net push --no-verify "--force-with-lease=refs/heads/$branch:$lease" \
     "$url" "refs/heads/$branch:refs/heads/$branch"
 else
-  msw_git_net push "$url" "refs/heads/$branch:refs/heads/$branch"
+  msw_git_net push --no-verify "$url" "refs/heads/$branch:refs/heads/$branch"
 fi

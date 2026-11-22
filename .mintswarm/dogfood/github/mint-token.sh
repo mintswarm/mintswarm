@@ -10,7 +10,10 @@
 #
 # The key reaches openssl only through a pipe. The JWT reaches curl on stdin
 # (-H @-), never in argv. The only temporary file holds the non-secret JWT
-# signing input (header and payload) and is removed on exit.
+# signing input (header and payload) and is removed on exit. curl runs with -q
+# first, so ~/.curlrc cannot add tracing or verbose output.
+#
+# The mode is required: a bare mint-token.sh prints usage, not a token.
 #
 # Do not run "token" bare in a session whose output is recorded: the token is
 # printed. push.sh and bot-gh.sh mint their own.
@@ -55,14 +58,14 @@ jwt() {
 api() {  # api METHOD PATH [DATA], authenticated with $JWT
   local method="$1" path="$2" data="${3:-}"
   if [ -n "$data" ]; then
-    printf 'Authorization: Bearer %s\n' "$JWT" | curl -fsS -X "$method" \
+    printf 'Authorization: Bearer %s\n' "$JWT" | curl -q -fsS -X "$method" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       -H @- \
       -d "$data" \
       "https://api.github.com$path"
   else
-    printf 'Authorization: Bearer %s\n' "$JWT" | curl -fsS -X "$method" \
+    printf 'Authorization: Bearer %s\n' "$JWT" | curl -q -fsS -X "$method" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
       -H @- \
@@ -70,7 +73,7 @@ api() {  # api METHOD PATH [DATA], authenticated with $JWT
   fi
 }
 
-mode="${1:-token}"
+mode="${1:-}"
 case "$mode" in
   jwt)
     [ $# -le 1 ] || usage

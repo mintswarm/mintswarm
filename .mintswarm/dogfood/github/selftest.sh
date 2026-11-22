@@ -18,9 +18,10 @@
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
 #
-# shellcheck disable=SC2016,SC2329
+# shellcheck disable=SC2016,SC2329,SC2030,SC2031
 # SC2016: sh -c '...' scripts take their values as positional parameters.
 # SC2329: check functions are invoked through check and refuses.
+# SC2030, SC2031: subshells that source common.sh change variables on purpose.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -320,6 +321,11 @@ check "TMPDIR is empty after minting" tmp_empty
 refuses "token fails when the API fails" env MSW_STUB_CURL_FAIL=1 "$M" token
 refuses "token fails without dev-app.json" env MSW_APP_CONFIG="$sandbox/missing.json" "$M" token
 refuses "token refuses non-object permissions" "$M" token '"contents"'
+curl_calls() { jq -r 'select(.cmd == "curl") | .cmd' "$argv_log" | wc -l | tr -d ' '; }
+calls="$(curl_calls)"
+refuses "a bare mint-token.sh prints usage, not a token" "$M"
+check "a bare mint-token.sh calls nothing" eq "$(curl_calls)" "$calls"
+check "a bare mint-token.sh prints no token" absent "$MINTED" "$sandbox/check.out"
 
 # --- key rotation ------------------------------------------------------------
 
@@ -458,6 +464,90 @@ git config --unset credential.helper
 git config http.https://github.com/.extraheader "AUTHORIZATION: basic eA=="
 refuses "push.sh refuses an extra header in the repository config" push_as_bot mintswarm/2-y
 git config --unset http.https://github.com/.extraheader
+git config http.proxy http://127.0.0.1:9
+refuses "push.sh refuses http.proxy in the repository config" push_as_bot mintswarm/2-y
+git config --unset http.proxy
+git config http.sslVerify false
+refuses "push.sh refuses http.sslVerify in the repository config" push_as_bot mintswarm/2-y
+git config --unset http.sslVerify
+git config http.https://github.com/.sslCAInfo /tmp/ca.pem
+refuses "push.sh refuses http.<url>.sslCAInfo in the repository config" push_as_bot mintswarm/2-y
+git config --unset http.https://github.com/.sslCAInfo
+
+# A remote section named after the URL given to git push applies to that push.
+other="$sandbox/other.git"
+git init -q --bare "$other"
+git config "remote.$url.pushurl" "file://$other"
+refuses "push.sh refuses remote.<push URL>.pushurl" push_as_bot mintswarm/2-y
+git config --unset "remote.$url.pushurl"
+git config "remote.$url.url" "file://$other"
+refuses "push.sh refuses remote.<push URL>.url" push_as_bot mintswarm/2-y
+git config --unset "remote.$url.url"
+git config remote.https://github.com/mintswarm/mintswarm.git.pushurl git@github.com:mintswarm/mintswarm.git
+refuses "push.sh refuses an ssh pushurl for the GitHub URL" push_as_bot mintswarm/2-y
+git config --unset remote.https://github.com/mintswarm/mintswarm.git.pushurl
+check "nothing reached the redirect target" eq "$(git --git-dir="$other" for-each-ref | wc -l | tr -d ' ')" "0"
+
+# Behind the refusal, msw_git_net allows only https (and file when the script says so).
+printf '#!/bin/sh\necho "ssh $*" >> "$MSW_STUB_STATE/ssh.log"\nexit 1\n' > "$stubs/ssh"
+chmod 755 "$stubs/ssh"
+net_push() {  # net_push ALLOW_FILE URL REFSPEC: msw_git_net push without push.sh's checks
+  (
+    # shellcheck source=common.sh
+    . "$here/common.sh"
+    MSW_GIT_ALLOW_FILE="$1"
+    MSW_TOKEN="$DUMMY"; export MSW_TOKEN
+    msw_git_net push --no-verify "$2" "$3"
+  )
+}
+redirect_blocked() {  # redirect_blocked PUSHURL: a planted redirect to PUSHURL fails before ssh runs
+  local rc=0
+  git config "remote.$url.pushurl" "$1"
+  GIT_SSH_COMMAND="$stubs/ssh" GIT_ALLOW_PROTOCOL=ssh:file:https net_push 1 "$url" \
+    refs/heads/mintswarm/2-y:refs/heads/redirected > "$sandbox/net.out" 2>&1 || rc=$?
+  git config --unset "remote.$url.pushurl"
+  cat "$sandbox/net.out"
+  [ "$rc" -ne 0 ] && grep -q "transport 'ssh' not allowed" "$sandbox/net.out" && [ ! -e "$MSW_STUB_STATE/ssh.log" ]
+}
+check "a planted ssh:// redirect fails without running ssh" redirect_blocked ssh://git@ssh.invalid/x.git
+check "a planted scp-style redirect fails without running ssh" redirect_blocked git@ssh.invalid:x.git
+check "the redirects reached neither remote" \
+  eq "$(git --git-dir="$remote" for-each-ref refs/heads/redirected; git --git-dir="$other" for-each-ref)" ""
+file_blocked() {  # MSW_GIT_ALLOW_FILE=1 in the environment is reset when common.sh is sourced
+  if (
+    export MSW_GIT_ALLOW_FILE=1
+    # shellcheck source=common.sh
+    . "$here/common.sh"
+    MSW_TOKEN="$DUMMY"; export MSW_TOKEN
+    msw_git_net push --no-verify "$url" refs/heads/mintswarm/2-y:refs/heads/by-file
+  ) > "$sandbox/net.out" 2>&1; then
+    return 1
+  fi
+  cat "$sandbox/net.out"
+  grep -q "transport 'file' not allowed" "$sandbox/net.out"
+}
+check "file is not allowed unless the script allows it, whatever the environment says" file_blocked
+
+# Hooks never run, so none sees MSW_TOKEN.
+for d in .git/hooks "$sandbox/hooks"; do
+  mkdir -p "$d"
+  printf '#!/bin/sh\necho "ran ${MSW_TOKEN:-no-token}" >> "%s/hook.log"\n' "$sandbox" > "$d/pre-push"
+  chmod 755 "$d/pre-push"
+done
+git push -q "$remote" mintswarm/2-y:refs/heads/hook-check
+check "a planted pre-push hook runs for a plain push (the test is not vacuous)" grep -q "ran no-token" "$sandbox/hook.log"
+rm -f "$sandbox/hook.log"
+git --git-dir="$remote" update-ref -d refs/heads/hook-check
+git checkout -q --no-track -b mintswarm/8-hooks mintswarm/1-x
+git commit -q --allow-empty -m "hook check 1"
+check "push.sh pushes with a pre-push hook in .git/hooks" push_as_bot mintswarm/8-hooks
+git config core.hooksPath "$sandbox/hooks"
+git commit -q --allow-empty -m "hook check 2"
+check "push.sh pushes with core.hooksPath set" push_as_bot mintswarm/8-hooks
+git config --unset core.hooksPath
+check "no hook ran during push.sh" test ! -e "$sandbox/hook.log"
+rm -f .git/hooks/pre-push
+git checkout -q mintswarm/1-x
 
 # --- credential helper -------------------------------------------------------
 
@@ -548,6 +638,8 @@ check "request-review.py sends the reviewers on stdin" present '{"reviewers": ["
 
 # --- summary -----------------------------------------------------------------
 
+check "every curl call starts with -q, so ~/.curlrc is ignored" \
+  eq "$(jq -r 'select(.cmd == "curl") | .argv[0]' "$argv_log" | sort -u)" "-q"
 check "TMPDIR is empty at the end" tmp_empty
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 if [ "$failed" -eq 0 ]; then exit 0; fi
