@@ -3,7 +3,10 @@
 # stdin and stdout only.
 #
 #   key-store.sh backend [SERVICE ACCOUNT]    print the backend put would use
-#   key-store.sh put SERVICE ACCOUNT [LABEL]  store the value read from stdin
+#   key-store.sh put [--confirm] SERVICE ACCOUNT [LABEL]
+#                                             store the value read from stdin;
+#                                             --confirm: every later use of it
+#                                             needs the user's confirmation
 #   key-store.sh get SERVICE ACCOUNT          print the value, byte for byte, to a
 #                                             pipe or file; refused to a terminal
 #   key-store.sh delete SERVICE ACCOUNT       remove it
@@ -24,7 +27,12 @@
 #
 # Where each backend keeps the value:
 #   keychain        a generic password -s SERVICE -a ACCOUNT -l LABEL in the login
-#                   Keychain, base64 on the stdin of "security -i"
+#                   Keychain, base64 on the stdin of "security -i". With --confirm
+#                   the item is created with no trusted application (-T ""), so
+#                   every read asks the user; an existing item is refused (delete
+#                   it first) rather than updated, so its access list is never
+#                   left as it was. The check reads attributes only, never the
+#                   value, so it never prompts.
 #   secret-service  an item with attributes service=SERVICE account=ACCOUNT,
 #                   written on the stdin of "secret-tool store". Every secret-tool
 #                   call is stopped after $MSW_KEY_STORE_TIMEOUT seconds (default
@@ -41,6 +49,8 @@
 #                   user's, or has any group or other permission, when ~/.config
 #                   or ~/.config/mintswarm is a symlink (a dotfiles link), and
 #                   when the directory is inside a git work tree. Every use warns.
+#
+# --confirm is available only in the keychain store; every other store refuses it.
 #
 # SERVICE and ACCOUNT match [A-Za-z0-9][A-Za-z0-9._-]*; LABEL matches
 # [A-Za-z0-9 ._-]+ and defaults to "mintswarm SERVICE ACCOUNT".
@@ -62,7 +72,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-  printf '%s\n' "usage: key-store.sh backend [SERVICE ACCOUNT] | put SERVICE ACCOUNT [LABEL] | get SERVICE ACCOUNT | delete SERVICE ACCOUNT" >&2
+  printf '%s\n' "usage: key-store.sh backend [SERVICE ACCOUNT] | put [--confirm] SERVICE ACCOUNT [LABEL] | get SERVICE ACCOUNT | delete SERVICE ACCOUNT" >&2
   exit 2
 }
 bad() { printf 'key-store.sh: %s\n' "$*" >&2; exit 2; }
@@ -151,12 +161,23 @@ select_backend() {  # select_backend [SERVICE ACCOUNT]: sets store
 }
 
 # --- backends ----------------------------------------------------------------
-# Each NAME_put SERVICE ACCOUNT LABEL reads $value; each NAME_get SERVICE ACCOUNT
-# writes the value to stdout; each NAME_delete SERVICE ACCOUNT removes it. They
-# return non-zero on failure.
+# Each NAME_put SERVICE ACCOUNT LABEL reads $value (and keychain_put $confirm);
+# each NAME_get SERVICE ACCOUNT writes the value to stdout; each NAME_delete
+# SERVICE ACCOUNT removes it. They return non-zero on failure.
 
 keychain_put() {
   local b64
+  if [ "$confirm" = 1 ]; then
+    # Without -w, find-generic-password reads the item's attributes only and
+    # never prompts.
+    if security find-generic-password -s "$1" -a "$2" >/dev/null 2>&1; then
+      say "$1/$2 already exists in the keychain store: delete it first (key-store.sh delete $1 $2)"
+      return 1
+    fi
+    b64="$(printf '%s' "$value" | openssl base64 -A)" || return 1
+    printf 'add-generic-password -s %s -a %s -l "%s" -T "" -w %s\n' "$1" "$2" "$3" "$b64" | security -i >/dev/null
+    return
+  fi
   b64="$(printf '%s' "$value" | openssl base64 -A)" || return 1
   printf 'add-generic-password -U -s %s -a %s -l "%s" -w %s\n' "$1" "$2" "$3" "$b64" | security -i >/dev/null
 }
@@ -292,6 +313,7 @@ backend_fn() {  # backend_fn BACKEND OP: the function name
 # --- main --------------------------------------------------------------------
 
 value=""
+confirm=0
 case "${1:-}" in
   backend)
     case $# in
@@ -303,11 +325,18 @@ case "${1:-}" in
     select_backend "$@"
     printf '%s\n' "$store" ;;
   put)
+    if [ "${2:-}" = --confirm ]; then
+      confirm=1
+      shift
+    fi
     [ $# -eq 3 ] || [ $# -eq 4 ] || usage
     check_name service "$2"; check_name account "$3"
     label="${4:-mintswarm $2 $3}"
     check_label "$label"
     select_backend "$2" "$3"
+    if [ "$confirm" = 1 ] && [ "$store" != keychain ]; then
+      msw_die "per-use confirmation is available only in the keychain store, not in $store"
+    fi
     value="$(cat && printf x)" || msw_die "cannot read the value on stdin"
     value="${value%x}"
     [ -n "$value" ] || msw_die "refusing an empty value"
