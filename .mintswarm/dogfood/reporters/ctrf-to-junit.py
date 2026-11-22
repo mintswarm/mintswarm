@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 
 USAGE = "usage: ctrf-to-junit.py CTRF_IN OUT_PATH"
 STATUSES = ("passed", "failed", "skipped", "pending", "other")
-NOT_XML_CHAR = re.compile("[^\t\n\r -퟿-�\U00010000-\U0010ffff]")
+NOT_XML_CHAR = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 class InputError(Exception):
@@ -42,7 +42,7 @@ class InputError(Exception):
 
 
 def clean(value) -> str:
-    return NOT_XML_CHAR.sub("�", str(value))
+    return NOT_XML_CHAR.sub("\ufffd", str(value))
 
 
 def seconds(ms) -> str:

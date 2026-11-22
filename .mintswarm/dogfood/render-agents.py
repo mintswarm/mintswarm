@@ -113,7 +113,7 @@ def parse(path: Path) -> dict:
     ]
     if control:
         raise SourceError(
-            f"{where}: description contains characters YAML does not allow: "
+            f"{where}: description contains characters that are not allowed: "
             + ", ".join(f"U+{ord(c):04X}" for c in control)
         )
     if not isinstance(fields["capabilities"], list):
