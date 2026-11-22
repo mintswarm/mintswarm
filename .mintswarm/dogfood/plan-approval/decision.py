@@ -130,14 +130,32 @@ VERSION = 1
 FLOOR_TOOL = "mintswarm-plan-floor"
 FLOOR_VERSION = 2
 FLOOR_KEYS = [
-    "tool", "version", "plan", "issue_document", "analysis", "component", "base",
-    "config", "mode", "verdict", "rules", "not_evaluated",
+    "tool",
+    "version",
+    "plan",
+    "issue_document",
+    "analysis",
+    "component",
+    "base",
+    "config",
+    "mode",
+    "verdict",
+    "rules",
+    "not_evaluated",
 ]
 RISKS = ("low", "medium", "high")
 SPAN_LIMIT = 200
 ARGS = (
-    "--issue", "--component", "--plan", "--issue-document", "--analysis", "--assessment",
-    "--assessment-artifact", "--base", "--harness", "--model",
+    "--issue",
+    "--component",
+    "--plan",
+    "--issue-document",
+    "--analysis",
+    "--assessment",
+    "--assessment-artifact",
+    "--base",
+    "--harness",
+    "--model",
 )
 USAGE = (
     "usage: decision.py --issue N --component NAME --plan PATH --issue-document PATH "
@@ -174,6 +192,7 @@ def sha256(data: bytes) -> str:
 
 
 # --- arguments -----------------------------------------------------------
+
 
 def parse_args(argv: list) -> dict:
     args = {}
@@ -231,6 +250,7 @@ def expected_judge(config: dict) -> dict:
 
 # --- floor layer ---------------------------------------------------------
 
+
 def is_rule(item) -> bool:
     if not isinstance(item, dict) or list(item) != ["rule", "result", "reasons"]:
         return False
@@ -278,8 +298,10 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
         return problems
     names = [r["rule"] for r in rules]
     if skipped not in ([], list(floor.FOOTPRINT_RULES)) or names != [n for n in floor.RULES if n not in skipped]:
-        problems.append("the floor verdict's rule identifiers are not floor.py's, in order, "
-                        "with none or only the footprint rules not evaluated")
+        problems.append(
+            "the floor verdict's rule identifiers are not floor.py's, in order, "
+            "with none or only the footprint rules not evaluated"
+        )
         return problems
     if skipped and rules[0]["result"] != "hit":
         problems.append("the floor verdict skips rules without a footprint hit")
@@ -291,8 +313,9 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
 
 def floor_rules(plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str) -> tuple:
     """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None)."""
-    return floor.conclude(plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"),
-                          component, cfg, floor.history(commit))
+    return floor.conclude(
+        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, floor.history(commit)
+    )
 
 
 def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents: dict, expected: tuple) -> dict:
@@ -325,12 +348,14 @@ def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents
     if problems:
         layer["problems"] = problems
         return layer
-    layer.update(status="usable", verdict=verdict["verdict"], rules=verdict["rules"],
-                 not_evaluated=verdict["not_evaluated"])
+    layer.update(
+        status="usable", verdict=verdict["verdict"], rules=verdict["rules"], not_evaluated=verdict["not_evaluated"]
+    )
     return layer
 
 
 # --- judgement layer -----------------------------------------------------
+
 
 def assessment_problems(text: str) -> tuple:
     """(problems, risk, reason) for an assessment's text."""
@@ -397,6 +422,7 @@ def judgement_layer(args: dict, expected: dict) -> dict:
 
 # --- decision ------------------------------------------------------------
 
+
 def floor_result(layer: dict) -> str:
     if layer["status"] != "usable":
         return "unusable"
@@ -431,6 +457,7 @@ def decide(mode: str, floor_: dict, judgement: dict) -> tuple:
 
 
 # --- comment -------------------------------------------------------------
+
 
 def inert(text) -> str:
     """Text on one line, without control or format characters or backticks."""
@@ -486,9 +513,11 @@ def comment(record: dict) -> str:
 def footprint_brief(footprint) -> str:
     if footprint is None:
         return "not readable (a `footprint` hit)"
-    return (f"{len(footprint['files'])} files ({len(footprint['new_files'])} new), "
-            f"about {footprint['estimated_lines']} lines, "
-            f"{len(footprint['new_dependencies'])} new dependencies")
+    return (
+        f"{len(footprint['files'])} files ({len(footprint['new_files'])} new), "
+        f"about {footprint['estimated_lines']} lines, "
+        f"{len(footprint['new_dependencies'])} new dependencies"
+    )
 
 
 def problems_line(layer: dict) -> str:
@@ -499,15 +528,24 @@ def shadow_comment(record: dict, footprint) -> str:
     floor_ = record["layers"]["floor"]
     judgement = record["layers"]["judgement"]
     subject = record["subject"]
-    configured = "as configured" if judgement["as_configured"] else (
-        f"not as configured: expected {span(judgement['expected']['harness'])} "
-        f"with {span(judgement['expected']['model'])}")
-    assess = (f"{span(judgement['harness'])} with {span(judgement['model'])}, {configured}; "
-              f"artifact {span(judgement['artifact'])}")
+    configured = (
+        "as configured"
+        if judgement["as_configured"]
+        else (
+            f"not as configured: expected {span(judgement['expected']['harness'])} "
+            f"with {span(judgement['expected']['model'])}"
+        )
+    )
+    assess = (
+        f"{span(judgement['harness'])} with {span(judgement['model'])}, {configured}; "
+        f"artifact {span(judgement['artifact'])}"
+    )
     if floor_["status"] == "usable":
         clean = [r["rule"] for r in floor_["rules"] if r["result"] == "clean"]
-        floor_detail = (f"{floor_line(floor_)} (`floor.py` exit {0 if floor_['verdict'] == 'clean' else 1}); "
-                        f"clean: {', '.join(f'`{rule}`' for rule in clean) or 'none'}")
+        floor_detail = (
+            f"{floor_line(floor_)} (`floor.py` exit {0 if floor_['verdict'] == 'clean' else 1}); "
+            f"clean: {', '.join(f'`{rule}`' for rule in clean) or 'none'}"
+        )
         if floor_["not_evaluated"]:
             floor_detail += f"; not evaluated: {', '.join(f'`{rule}`' for rule in floor_['not_evaluated'])}"
     else:
@@ -535,6 +573,7 @@ def shadow_comment(record: dict, footprint) -> str:
 
 
 # --- record --------------------------------------------------------------
+
 
 def remove(path) -> None:
     """Delete a file if it exists; raises OSError when it cannot."""
@@ -610,8 +649,11 @@ def run(argv: list) -> int:
     else:
         text = None
     write_record(record)
-    print(f"decision: {decision} (mode {mode}, floor {floor_result(floor_)}, "
-          f"judgement {judgement['risk'] or 'unusable'}, judged {judged})", file=sys.stderr)
+    print(
+        f"decision: {decision} (mode {mode}, floor {floor_result(floor_)}, "
+        f"judgement {judgement['risk'] or 'unusable'}, judged {judged})",
+        file=sys.stderr,
+    )
     if text is not None:
         sys.stdout.write(text)
         sys.stdout.flush()

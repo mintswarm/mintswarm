@@ -143,8 +143,19 @@ RULES = [
 DIFF_RULES = ["undeclared-files", "undeclared-new-files", "size"]
 FACTS_RULES = ["gates", "checks", "review", "steers"]
 VERDICT_KEYS = [
-    "tool", "version", "plan", "facts", "component", "base", "head", "merge_base", "config", "mode",
-    "verdict", "rules", "not_evaluated",
+    "tool",
+    "version",
+    "plan",
+    "facts",
+    "component",
+    "base",
+    "head",
+    "merge_base",
+    "config",
+    "mode",
+    "verdict",
+    "rules",
+    "not_evaluated",
 ]
 EXPECTED_LANDING = {
     "mode": "always",
@@ -153,17 +164,57 @@ EXPECTED_LANDING = {
 }
 HISTORIC = {
     "bb7f812": ("plan-20.md", "docs", {}),
-    "4e7ba0a": ("plan-19.md", "tooling", {
-        "require-human-paths": [".github/CODEOWNERS matches require_human.paths .github/**"],
-        "protected": [".github/CODEOWNERS is a CODEOWNERS location"],
-    }),
+    "4e7ba0a": (
+        "plan-19.md",
+        "tooling",
+        {
+            "require-human-paths": [".github/CODEOWNERS matches require_human.paths .github/**"],
+            "protected": [".github/CODEOWNERS is a CODEOWNERS location"],
+        },
+    ),
 }
-GLOB_PATTERNS = ["**", "docs/**", "**/x.md", "a/**/b", "a/**", "*.md", "docs/*.md", "?.md", "a?c",
-                 "a.b", "[ab].md", "a+b(c)", "README.md", ".mintswarm/dogfood/github/**", "crates/*/src/**"]
-GLOB_PATHS = ["docs", "docs/a.md", "docs/x/y.md", "x.md", "a/x.md", "a/b/x.md", "a/b", "a/c/d/b", "a/",
-              "a.md", "ab.md", "abc", "a/c", "aXb", "a.b", "[ab].md", "a+b(c)", "README.md", "readme.md",
-              ".mintswarm/dogfood/github/push.sh", ".mintswarm/dogfood/githubx", "crates/core/src/lib.rs",
-              "crates/core/x/src/lib.rs"]
+GLOB_PATTERNS = [
+    "**",
+    "docs/**",
+    "**/x.md",
+    "a/**/b",
+    "a/**",
+    "*.md",
+    "docs/*.md",
+    "?.md",
+    "a?c",
+    "a.b",
+    "[ab].md",
+    "a+b(c)",
+    "README.md",
+    ".mintswarm/dogfood/github/**",
+    "crates/*/src/**",
+]
+GLOB_PATHS = [
+    "docs",
+    "docs/a.md",
+    "docs/x/y.md",
+    "x.md",
+    "a/x.md",
+    "a/b/x.md",
+    "a/b",
+    "a/c/d/b",
+    "a/",
+    "a.md",
+    "ab.md",
+    "abc",
+    "a/c",
+    "aXb",
+    "a.b",
+    "[ab].md",
+    "a+b(c)",
+    "README.md",
+    "readme.md",
+    ".mintswarm/dogfood/github/push.sh",
+    ".mintswarm/dogfood/githubx",
+    "crates/core/src/lib.rs",
+    "crates/core/x/src/lib.rs",
+]
 
 
 class SelfTest:
@@ -199,6 +250,7 @@ BASE_TREE = {
 
 # --- sandbox --------------------------------------------------------------
 
+
 class Sandbox:
     def __init__(self, tmp: Path):
         self.tmp = tmp
@@ -207,17 +259,19 @@ class Sandbox:
         home = tmp / "home"
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        env.update({
-            "HOME": str(home),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_AUTHOR_NAME": "landing floor selftest",
-            "GIT_AUTHOR_EMAIL": "selftest@example.invalid",
-            "GIT_COMMITTER_NAME": "landing floor selftest",
-            "GIT_COMMITTER_EMAIL": "selftest@example.invalid",
-            "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
-            "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
-        })
+        env.update(
+            {
+                "HOME": str(home),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_AUTHOR_NAME": "landing floor selftest",
+                "GIT_AUTHOR_EMAIL": "selftest@example.invalid",
+                "GIT_COMMITTER_NAME": "landing floor selftest",
+                "GIT_COMMITTER_EMAIL": "selftest@example.invalid",
+                "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+                "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+            }
+        )
         self.env = env  # floor.py runs with this; it must neutralise replace objects and grafts itself
         # the self-test's own git calls always see the true objects and history
         self.git_env = dict(env, GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull)
@@ -228,8 +282,9 @@ class Sandbox:
         self.trees = {}
 
     def raw(self, *args: str, data: bytes = None, env: dict = None, cwd: Path = None) -> bytes:
-        proc = subprocess.run(["git", *args], cwd=cwd or self.repo, env=env or self.git_env, input=data,
-                              capture_output=True)
+        proc = subprocess.run(
+            ["git", *args], cwd=cwd or self.repo, env=env or self.git_env, input=data, capture_output=True
+        )
         if proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode(errors='replace').strip()}")
         return proc.stdout
@@ -287,15 +342,23 @@ class Sandbox:
 
     def commit_of(self, ref: str):
         """The full commit `ref` resolves to, or None."""
-        proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
-                              cwd=self.repo, env=self.git_env, capture_output=True, text=True)
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+            cwd=self.repo,
+            env=self.git_env,
+            capture_output=True,
+            text=True,
+        )
         commit = proc.stdout.strip()
         return commit if proc.returncode == 0 and HASH.fullmatch(commit) else None
 
     def exec(self, args: list, env: dict = None, script: Path = FLOOR):
         return subprocess.run(
             [sys.executable, "-I", str(script), *args],
-            cwd=self.repo, env=env or self.env, capture_output=True, text=True,
+            cwd=self.repo,
+            env=env or self.env,
+            capture_output=True,
+            text=True,
         )
 
     def floor(self, args: list, env: dict = None, script: Path = FLOOR):
@@ -333,6 +396,7 @@ def load_module(name: str, path: Path):
 
 # --- plans ----------------------------------------------------------------
 
+
 def footprint(files: list, new_files: list = (), estimated_lines: int = 50, new_dependencies: list = ()) -> dict:
     return {
         "files": list(files),
@@ -362,15 +426,29 @@ def appended(path: str, n: int, tag: str = "more") -> dict:
 
 # --- facts ----------------------------------------------------------------
 
+
 def gate_round(n: int, verdict: str = "passed", failed: list = (), reason: str = None, commit: str = None) -> dict:
     """A gate round; a missing commit and current are filled in for the facts' head (fill_rounds)."""
-    return {"round": n, "commit": commit, "current": None, "verdict": verdict, "failed_tests": list(failed),
-            "reason": reason, "files": []}
+    return {
+        "round": n,
+        "commit": commit,
+        "current": None,
+        "verdict": verdict,
+        "failed_tests": list(failed),
+        "reason": reason,
+        "files": [],
+    }
 
 
 def review_round(n: int, verdict: str = "pass", commit: str = None) -> dict:
-    return {"round": n, "commit": commit, "current": None, "verdict": verdict,
-            "findings": {"blocker": 0, "major": 0, "minor": 0, "nit": 0}, "files": []}
+    return {
+        "round": n,
+        "commit": commit,
+        "current": None,
+        "verdict": verdict,
+        "findings": {"blocker": 0, "major": 0, "minor": 0, "nit": 0},
+        "files": [],
+    }
 
 
 def fill_rounds(content: dict) -> dict:
@@ -396,20 +474,22 @@ def steer(author: str, url: str, kind: str = "pr-comment", time: str = "2026-01-
 
 def clean_facts(base: str, head: str) -> dict:
     """A clean facts file in collect-facts.py's key order: no checks, a passed gate round, a review pass."""
-    return fill_rounds({
-        "tool": "mintswarm-landing-facts",
-        "version": 2,
-        "pr": 1,
-        "issue": 1,
-        "head": head,
-        "base": base,
-        "fetched_at": "2026-01-01T00:00:00Z",
-        "checks": [],
-        "gate_rounds": [gate_round(1)],
-        "review_rounds": [review_round(1)],
-        "steers": [],
-        "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
-    })
+    return fill_rounds(
+        {
+            "tool": "mintswarm-landing-facts",
+            "version": 2,
+            "pr": 1,
+            "issue": 1,
+            "head": head,
+            "base": base,
+            "fetched_at": "2026-01-01T00:00:00Z",
+            "checks": [],
+            "gate_rounds": [gate_round(1)],
+            "review_rounds": [review_round(1)],
+            "steers": [],
+            "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
+        }
+    )
 
 
 def facts_bytes(facts) -> bytes:
@@ -430,6 +510,7 @@ def facts_for(base: str, head: str, facts=None):
 
 # --- verdict checks -------------------------------------------------------
 
+
 def printable(text: str) -> str:
     """A reason as floor.py prints it: control characters and line or paragraph separators as JSON escapes."""
     return "".join(json.dumps(c)[1:-1] if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c for c in text)
@@ -442,7 +523,9 @@ def in_order(names: list, order: list) -> bool:
 def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) -> bool:
     problems = []
     if not isinstance(verdict, dict):
-        return T.check(f"{name}: verdict shape", False, f"no verdict file (exit {proc.returncode}): {proc.stderr.strip()}")
+        return T.check(
+            f"{name}: verdict shape", False, f"no verdict file (exit {proc.returncode}): {proc.stderr.strip()}"
+        )
     if list(verdict) != VERDICT_KEYS:
         problems.append(f"keys {list(verdict)}")
     rules = verdict.get("rules", [])
@@ -474,8 +557,11 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
     facts_data = (sb.repo / args["facts"]).read_bytes()
     try:
         listed = json.loads(facts_data)["checks"]
-        expected_facts = {"path": args["facts"], "sha256": hashlib.sha256(facts_data).hexdigest(),
-                          "checks": [{k: c[k] for k in ("name", "conclusion", "source", "app")} for c in listed]}
+        expected_facts = {
+            "path": args["facts"],
+            "sha256": hashlib.sha256(facts_data).hexdigest(),
+            "checks": [{k: c[k] for k in ("name", "conclusion", "source", "app")} for c in listed],
+        }
     except (ValueError, KeyError, TypeError) as exc:
         expected_facts = f"a facts file the floor should have refused: {exc}"
     if verdict.get("facts") != expected_facts:
@@ -532,15 +618,27 @@ class Runner:
         self.commits = commits
         self.modes = modes
 
-    def run(self, name: str, content, changes: dict = None, component: str = "docs", config: str = "real",
-            base: str = None, head: str = None, mode: str = None, env: dict = None, facts=None):
+    def run(
+        self,
+        name: str,
+        content,
+        changes: dict = None,
+        component: str = "docs",
+        config: str = "real",
+        base: str = None,
+        head: str = None,
+        mode: str = None,
+        env: dict = None,
+        facts=None,
+    ):
         plan = self.sb.write_plan(name, content)
         base = base or self.commits[config]
         head = head or self.sb.child(self.sb.git("rev-parse", f"{base}^{{commit}}"), changes or {})
         facts_path = self.sb.write_facts(name, facts_for(self.sb.commit_of(base), self.sb.commit_of(head), facts))
         args = {"plan": plan, "component": component, "base": base, "head": head, "facts": facts_path}
-        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", base, "--head", head,
-                                       "--facts", facts_path], env=env)
+        proc, verdict = self.sb.floor(
+            ["--plan", plan, "--component", component, "--base", base, "--head", head, "--facts", facts_path], env=env
+        )
         check_shape(name, proc, verdict, self.sb, args, mode or self.modes[config])
         return proc, verdict
 
@@ -564,6 +662,7 @@ class Runner:
 
 # --- check groups ---------------------------------------------------------
 
+
 def check_config(sb: Sandbox, commits: dict) -> None:
     config = yq_json(CONFIG)
     landing = (config.get("pipeline") or {}).get("landing")
@@ -573,78 +672,150 @@ def check_config(sb: Sandbox, commits: dict) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
     proc = sb.exec(["--plan", plan, "--component", "docs", "--base", commits["real"]], script=PLAN_FLOOR)
-    T.check("config: plan-approval/floor.py accepts the real config",
-            proc.returncode in (0, 1) and target.is_file(), f"exit {proc.returncode}: {proc.stderr.strip()}")
+    T.check(
+        "config: plan-approval/floor.py accepts the real config",
+        proc.returncode in (0, 1) and target.is_file(),
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
 
 
 def check_clean(r: Runner) -> None:
     r.expect("clean change", footprint(["docs/guide.md"], estimated_lines=4), appended("docs/guide.md", 6), {})
-    r.expect("manifest through new_dependencies",
-             footprint(["docs/guide.md"], estimated_lines=4,
-                       new_dependencies=[{"name": "dep", "manifest": "docs/requirements.txt"}]),
-             {**appended("docs/guide.md", 2), **appended("docs/requirements.txt", 1)}, {})
+    r.expect(
+        "manifest through new_dependencies",
+        footprint(
+            ["docs/guide.md"],
+            estimated_lines=4,
+            new_dependencies=[{"name": "dep", "manifest": "docs/requirements.txt"}],
+        ),
+        {**appended("docs/guide.md", 2), **appended("docs/requirements.txt", 1)},
+        {},
+    )
     odd = "docs/sp ace é.md"
     r.expect("path with a space and non-ASCII", footprint([odd], [odd], estimated_lines=2), {odd: text(2)}, {})
     r.expect("deleted declared file", footprint(["README.md"], estimated_lines=2), {"README.md": None}, {})
     moved = {"docs/guide.md": None, "docs/moved.md": BASE_TREE["docs/guide.md"]}
-    r.expect("rename declared as both paths",
-             footprint(["docs/guide.md", "docs/moved.md"], ["docs/moved.md"], estimated_lines=8), moved, {})
-    r.expect("shadow mode", footprint(["docs/guide.md"], estimated_lines=4), appended("docs/guide.md", 2), {},
-             config="shadow")
+    r.expect(
+        "rename declared as both paths",
+        footprint(["docs/guide.md", "docs/moved.md"], ["docs/moved.md"], estimated_lines=8),
+        moved,
+        {},
+    )
+    r.expect(
+        "shadow mode",
+        footprint(["docs/guide.md"], estimated_lines=4),
+        appended("docs/guide.md", 2),
+        {},
+        config="shadow",
+    )
 
 
 def check_single_rules(r: Runner) -> None:
     fp = footprint(["docs/guide.md"], estimated_lines=10)
-    r.expect("undeclared path", fp, {**appended("docs/guide.md", 1), **appended("CONTRIBUTING.md", 1)},
-             {"undeclared-files": "CONTRIBUTING.md is changed but is neither in files nor a new dependency's manifest"})
-    r.expect("case-only variant of a declared path", fp, appended("docs/Guide.md", 1),
-             {"undeclared-files": "docs/Guide.md is changed but is neither in files nor a new dependency's manifest"})
-    r.expect("undeclared deletion", fp, {"README.md": None},
-             {"undeclared-files": "README.md is changed but is neither in files nor a new dependency's manifest"})
-    r.expect("rename without its old path", footprint(["docs/moved.md"], ["docs/moved.md"], estimated_lines=8),
-             {"docs/guide.md": None, "docs/moved.md": BASE_TREE["docs/guide.md"]},
-             {"undeclared-files": "docs/guide.md is changed but is neither in files nor a new dependency's manifest"})
-    r.expect("undeclared added file", footprint(["docs/guide.md", "docs/new.md"], estimated_lines=10),
-             {"docs/new.md": text(1)}, {"undeclared-new-files": "docs/new.md is added but is not in new_files"})
+    r.expect(
+        "undeclared path",
+        fp,
+        {**appended("docs/guide.md", 1), **appended("CONTRIBUTING.md", 1)},
+        {"undeclared-files": "CONTRIBUTING.md is changed but is neither in files nor a new dependency's manifest"},
+    )
+    r.expect(
+        "case-only variant of a declared path",
+        fp,
+        appended("docs/Guide.md", 1),
+        {"undeclared-files": "docs/Guide.md is changed but is neither in files nor a new dependency's manifest"},
+    )
+    r.expect(
+        "undeclared deletion",
+        fp,
+        {"README.md": None},
+        {"undeclared-files": "README.md is changed but is neither in files nor a new dependency's manifest"},
+    )
+    r.expect(
+        "rename without its old path",
+        footprint(["docs/moved.md"], ["docs/moved.md"], estimated_lines=8),
+        {"docs/guide.md": None, "docs/moved.md": BASE_TREE["docs/guide.md"]},
+        {"undeclared-files": "docs/guide.md is changed but is neither in files nor a new dependency's manifest"},
+    )
+    r.expect(
+        "undeclared added file",
+        footprint(["docs/guide.md", "docs/new.md"], estimated_lines=10),
+        {"docs/new.md": text(1)},
+        {"undeclared-new-files": "docs/new.md is added but is not in new_files"},
+    )
 
     # factor 1.5, estimated_lines 7: floor(10.5) = 10
-    r.expect("size at floor(7 × 1.5)", footprint(["docs/guide.md"], estimated_lines=7),
-             appended("docs/guide.md", 10), {})
-    r.expect("size one over floor(7 × 1.5)", footprint(["docs/guide.md"], estimated_lines=7),
-             appended("docs/guide.md", 11),
-             {"size": "the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"})
+    r.expect(
+        "size at floor(7 × 1.5)", footprint(["docs/guide.md"], estimated_lines=7), appended("docs/guide.md", 10), {}
+    )
+    r.expect(
+        "size one over floor(7 × 1.5)",
+        footprint(["docs/guide.md"], estimated_lines=7),
+        appended("docs/guide.md", 11),
+        {"size": "the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"},
+    )
     # factor 1.15, estimated_lines 100: exactly 115, where binary floats give 114
-    r.expect("size at 100 × 1.15", footprint(["docs/guide.md"], estimated_lines=100),
-             appended("docs/guide.md", 115), {}, config="factor-1.15")
-    r.expect("size one over 100 × 1.15", footprint(["docs/guide.md"], estimated_lines=100),
-             appended("docs/guide.md", 116),
-             {"size": "the diff counts 116 lines, over the limit of 115 (estimated_lines 100 × lines_factor 1.15)"},
-             config="factor-1.15")
-    r.expect("binary file", footprint(["docs/logo.png"], ["docs/logo.png"], estimated_lines=100),
-             {"docs/logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00binary\x00"},
-             {"size": "docs/logo.png is binary or otherwise unmeasurable"})
+    r.expect(
+        "size at 100 × 1.15",
+        footprint(["docs/guide.md"], estimated_lines=100),
+        appended("docs/guide.md", 115),
+        {},
+        config="factor-1.15",
+    )
+    r.expect(
+        "size one over 100 × 1.15",
+        footprint(["docs/guide.md"], estimated_lines=100),
+        appended("docs/guide.md", 116),
+        {"size": "the diff counts 116 lines, over the limit of 115 (estimated_lines 100 × lines_factor 1.15)"},
+        config="factor-1.15",
+    )
+    r.expect(
+        "binary file",
+        footprint(["docs/logo.png"], ["docs/logo.png"], estimated_lines=100),
+        {"docs/logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00binary\x00"},
+        {"size": "docs/logo.png is binary or otherwise unmeasurable"},
+    )
 
-    r.expect("CLAUDE.md", footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=2), {"CLAUDE.md": text(1)},
-             {"require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"})
-    r.expect("agents.md case variant", footprint(["agents.md"], ["agents.md"], estimated_lines=2),
-             {"agents.md": text(1)}, {"require-human-paths": "agents.md matches require_human.paths AGENTS.md"})
-    r.expect(".GitHub/dependabot.yml case variant",
-             footprint([".GitHub/dependabot.yml"], [".GitHub/dependabot.yml"], estimated_lines=2),
-             {".GitHub/dependabot.yml": text(1)},
-             {"require-human-paths": ".GitHub/dependabot.yml matches require_human.paths .github/**"})
+    r.expect(
+        "CLAUDE.md",
+        footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=2),
+        {"CLAUDE.md": text(1)},
+        {"require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
+    )
+    r.expect(
+        "agents.md case variant",
+        footprint(["agents.md"], ["agents.md"], estimated_lines=2),
+        {"agents.md": text(1)},
+        {"require-human-paths": "agents.md matches require_human.paths AGENTS.md"},
+    )
+    r.expect(
+        ".GitHub/dependabot.yml case variant",
+        footprint([".GitHub/dependabot.yml"], [".GitHub/dependabot.yml"], estimated_lines=2),
+        {".GitHub/dependabot.yml": text(1)},
+        {"require-human-paths": ".GitHub/dependabot.yml matches require_human.paths .github/**"},
+    )
 
-    r.expect("path in a listed component", footprint(["web/index.html"], ["web/index.html"], estimated_lines=2),
-             {"web/index.html": text(1)},
-             {"require-human-components": "web/index.html is in component web (web/**), which requires a human"},
-             config="rh-web")
-    r.expect("case variant in a listed component",
-             footprint(["Web/Index.html"], ["Web/Index.html"], estimated_lines=2), {"Web/Index.html": text(1)},
-             {"require-human-components": "Web/Index.html is in component web (web/**), which requires a human"},
-             config="rh-web")
-    r.expect("the issue's own component", footprint(["docs/guide.md"], estimated_lines=4),
-             appended("docs/guide.md", 1),
-             {"require-human-components": "the issue's component web is in require_human.components"},
-             component="web", config="rh-web")
+    r.expect(
+        "path in a listed component",
+        footprint(["web/index.html"], ["web/index.html"], estimated_lines=2),
+        {"web/index.html": text(1)},
+        {"require-human-components": "web/index.html is in component web (web/**), which requires a human"},
+        config="rh-web",
+    )
+    r.expect(
+        "case variant in a listed component",
+        footprint(["Web/Index.html"], ["Web/Index.html"], estimated_lines=2),
+        {"Web/Index.html": text(1)},
+        {"require-human-components": "Web/Index.html is in component web (web/**), which requires a human"},
+        config="rh-web",
+    )
+    r.expect(
+        "the issue's own component",
+        footprint(["docs/guide.md"], estimated_lines=4),
+        appended("docs/guide.md", 1),
+        {"require-human-components": "the issue's component web is in require_human.components"},
+        component="web",
+        config="rh-web",
+    )
 
 
 def check_protected(r: Runner, commits: dict) -> None:
@@ -674,18 +845,28 @@ def check_protected(r: Runner, commits: dict) -> None:
 
 
 def check_footprint_hit(r: Runner) -> None:
-    proc, verdict = r.run("no footprint", plan_text(None),
-                          {**appended("CONTRIBUTING.md", 1), "CLAUDE.md": text(1)})
-    ok = (proc.returncode == 1 and isinstance(verdict, dict)
-          and [x["rule"] for x in verdict["rules"]] == ["footprint", "require-human-paths",
-                                                        "require-human-components", "protected", *FACTS_RULES]
-          and verdict["not_evaluated"] == DIFF_RULES
-          and results_of(verdict) == {"footprint": "hit", "require-human-paths": "hit",
-                                      "require-human-components": "clean", "protected": "clean",
-                                      **{rule: "clean" for rule in FACTS_RULES}}
-          and "no '## Footprint' section" in reasons_of(verdict, "footprint"))
-    T.check("no footprint: diff rules not evaluated, the other seven are", ok,
-            f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}")
+    proc, verdict = r.run("no footprint", plan_text(None), {**appended("CONTRIBUTING.md", 1), "CLAUDE.md": text(1)})
+    ok = (
+        proc.returncode == 1
+        and isinstance(verdict, dict)
+        and [x["rule"] for x in verdict["rules"]]
+        == ["footprint", "require-human-paths", "require-human-components", "protected", *FACTS_RULES]
+        and verdict["not_evaluated"] == DIFF_RULES
+        and results_of(verdict)
+        == {
+            "footprint": "hit",
+            "require-human-paths": "hit",
+            "require-human-components": "clean",
+            "protected": "clean",
+            **{rule: "clean" for rule in FACTS_RULES},
+        }
+        and "no '## Footprint' section" in reasons_of(verdict, "footprint")
+    )
+    T.check(
+        "no footprint: diff rules not evaluated, the other seven are",
+        ok,
+        f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}",
+    )
 
 
 def check_base_ref(r: Runner, sb: Sandbox, configs: dict) -> None:
@@ -700,60 +881,106 @@ def check_base_ref(r: Runner, sb: Sandbox, configs: dict) -> None:
     first = sb.child(base, {CONFIG_PATH: as_json(loose), **appended("docs/guide.md", 12)}, "raise lines_factor")
     second = sb.child(first, {"docs/guide.md": sb.trees[first]["docs/guide.md"] + text(12, "again")}, "more")
     reason = "the diff counts 14 lines, over the limit of 10 (estimated_lines 10 × lines_factor 1)"
-    r.expect("base ref: head and worktree raise lines_factor", fp, None,
-             {"size": reason, "protected": None, "require-human-paths": None},
-             base="landing-base", head=first, config="factor-1")
-    r.expect("base ref: a later head still under the base's limit", fp, None,
-             {"size": "the diff counts 26 lines, over the limit of 10 (estimated_lines 10 × lines_factor 1)",
-              "protected": None, "require-human-paths": None},
-             base="landing-base", head=second, config="factor-1")
-    r.expect("base ref: --base at the raised commit", footprint(["docs/guide.md"], estimated_lines=10), None, {},
-             base=first, head=second, config="factor-1")
+    r.expect(
+        "base ref: head and worktree raise lines_factor",
+        fp,
+        None,
+        {"size": reason, "protected": None, "require-human-paths": None},
+        base="landing-base",
+        head=first,
+        config="factor-1",
+    )
+    r.expect(
+        "base ref: a later head still under the base's limit",
+        fp,
+        None,
+        {
+            "size": "the diff counts 26 lines, over the limit of 10 (estimated_lines 10 × lines_factor 1)",
+            "protected": None,
+            "require-human-paths": None,
+        },
+        base="landing-base",
+        head=second,
+        config="factor-1",
+    )
+    r.expect(
+        "base ref: --base at the raised commit",
+        footprint(["docs/guide.md"], estimated_lines=10),
+        None,
+        {},
+        base=first,
+        head=second,
+        config="factor-1",
+    )
 
 
 def check_submodules(r: Runner, sb: Sandbox) -> None:
     base = r.commits["real"]
     gitmodules = sb.repo / ".gitmodules"
     gitmodules.write_bytes(GITMODULES_HIDDEN)  # git reads it from the worktree, which the branch controls
-    hidden = sb.child(base, {".gitmodules": GITMODULES_HIDDEN, "docs/sub": SUBMODULE,
-                             **appended("docs/guide.md", 1)}, "hidden submodule")
+    hidden = sb.child(
+        base,
+        {".gitmodules": GITMODULES_HIDDEN, "docs/sub": SUBMODULE, **appended("docs/guide.md", 1)},
+        "hidden submodule",
+    )
     plain = sb.git("diff", "--numstat", "--no-renames", f"{base}...{hidden}")
     T.check("submodule: a plain git diff hides the gitlink under ignore = all", "docs/sub" not in plain, plain)
     gitlink_reason = "docs/sub is a submodule (gitlink), whose change is not measured in lines"
-    r.expect("undeclared submodule hidden by .gitmodules",
-             footprint(["docs/guide.md", ".gitmodules"], [".gitmodules"], estimated_lines=10), None,
-             {"undeclared-files": "docs/sub is changed but is neither in files nor a new dependency's manifest",
-              "undeclared-new-files": "docs/sub is added but is not in new_files",
-              "size": gitlink_reason},
-             head=hidden)
+    r.expect(
+        "undeclared submodule hidden by .gitmodules",
+        footprint(["docs/guide.md", ".gitmodules"], [".gitmodules"], estimated_lines=10),
+        None,
+        {
+            "undeclared-files": "docs/sub is changed but is neither in files nor a new dependency's manifest",
+            "undeclared-new-files": "docs/sub is added but is not in new_files",
+            "size": gitlink_reason,
+        },
+        head=hidden,
+    )
     declared = footprint(["docs/guide.md", ".gitmodules", "docs/sub"], [".gitmodules", "docs/sub"], estimated_lines=10)
     r.expect("declared submodule: unmeasurable", declared, None, {"size": gitlink_reason}, head=hidden)
-    r.expect("file replaced by a submodule", footprint(["docs/guide.md"], estimated_lines=10),
-             {"docs/guide.md": SUBMODULE},
-             {"size": "docs/guide.md is a submodule (gitlink), whose change is not measured in lines"})
+    r.expect(
+        "file replaced by a submodule",
+        footprint(["docs/guide.md"], estimated_lines=10),
+        {"docs/guide.md": SUBMODULE},
+        {"size": "docs/guide.md is a submodule (gitlink), whose change is not measured in lines"},
+    )
 
     attributes = sb.tmp / "hostile-attributes"
     attributes.write_text("*.md binary\n", encoding="utf-8")
     hostile = sb.tmp / "hostile-gitconfig"
     hostile.write_text(
         "[diff]\n\tignoreSubmodules = all\n\talgorithm = patience\n\texternal = false\n"
-        f"[core]\n\tattributesFile = {attributes}\n", encoding="utf-8")
+        f"[core]\n\tattributesFile = {attributes}\n",
+        encoding="utf-8",
+    )
     env = {k: v for k, v in sb.env.items() if k != "GIT_CONFIG_NOSYSTEM"}
-    env.update({
-        "GIT_CONFIG_GLOBAL": str(hostile),
-        "GIT_CONFIG_PARAMETERS": "'diff.ignoreSubmodules'='all'",
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "core.attributesFile",
-        "GIT_CONFIG_VALUE_0": str(attributes),
-        "GIT_EXTERNAL_DIFF": "false",
-    })
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": str(hostile),
+            "GIT_CONFIG_PARAMETERS": "'diff.ignoreSubmodules'='all'",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.attributesFile",
+            "GIT_CONFIG_VALUE_0": str(attributes),
+            "GIT_EXTERNAL_DIFF": "false",
+        }
+    )
     sb.git("config", "diff.ignoreSubmodules", "all")
     sb.git("config", "submodule.x.ignore", "all")
     try:
-        _, verdict = r.expect("hostile config: system, global and environment config ignored", declared, None,
-                              {"size": gitlink_reason}, head=hidden, env=env)
-        T.check("hostile config: only the gitlink is unmeasurable, no *.md is binary",
-                reasons_of(verdict, "size") == [gitlink_reason], str(reasons_of(verdict, "size")))
+        _, verdict = r.expect(
+            "hostile config: system, global and environment config ignored",
+            declared,
+            None,
+            {"size": gitlink_reason},
+            head=hidden,
+            env=env,
+        )
+        T.check(
+            "hostile config: only the gitlink is unmeasurable, no *.md is binary",
+            reasons_of(verdict, "size") == [gitlink_reason],
+            str(reasons_of(verdict, "size")),
+        )
     finally:
         sb.git("config", "--unset", "diff.ignoreSubmodules")
         sb.git("config", "--unset", "submodule.x.ignore")
@@ -822,10 +1049,14 @@ def check_history_tampering(r: Runner, sb: Sandbox) -> None:
     loose_head = sb.child(loose_base, {"CLAUDE.md": text(1)})
     sb.git("update-ref", f"refs/replace/{loose_base}", r.commits["no-rh"])
     try:
-        r.expect("git replace on the base: the real config still applies",
-                 footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=5), None,
-                 {"require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
-                 base=loose_base, head=loose_head)
+        r.expect(
+            "git replace on the base: the real config still applies",
+            footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=5),
+            None,
+            {"require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
+            base=loose_base,
+            head=loose_head,
+        )
     finally:
         sb.git("update-ref", "-d", f"refs/replace/{loose_base}")
 
@@ -864,15 +1095,31 @@ def check_binary_content(r: Runner, sb: Sandbox) -> None:
     for name, source, env in sources:
         undo = source()
         try:
-            counted = sb.raw("diff", "--numstat", "--no-renames", f"{r.commits['real']}...{added}",
-                             env=env).decode("utf-8")
-            T.check(f"binary forced to text by {name}: a plain numstat counts it", not counted.startswith("-"),
-                    counted.strip())
-            r.expect(f"binary forced to text by {name}: still unmeasurable",
-                     footprint([path], [path], estimated_lines=10), None, {"size": reason}, head=added, env=env)
-            r.expect(f"binary at the base forced to text by {name}: still unmeasurable",
-                     footprint([path], estimated_lines=10), None, {"size": reason},
-                     base=was_binary, head=to_text, env=env)
+            counted = sb.raw("diff", "--numstat", "--no-renames", f"{r.commits['real']}...{added}", env=env).decode(
+                "utf-8"
+            )
+            T.check(
+                f"binary forced to text by {name}: a plain numstat counts it",
+                not counted.startswith("-"),
+                counted.strip(),
+            )
+            r.expect(
+                f"binary forced to text by {name}: still unmeasurable",
+                footprint([path], [path], estimated_lines=10),
+                None,
+                {"size": reason},
+                head=added,
+                env=env,
+            )
+            r.expect(
+                f"binary at the base forced to text by {name}: still unmeasurable",
+                footprint([path], estimated_lines=10),
+                None,
+                {"size": reason},
+                base=was_binary,
+                head=to_text,
+                env=env,
+            )
         finally:
             undo()
 
@@ -882,17 +1129,37 @@ def check_protected_entries(r: Runner) -> None:
     base = r.commits["no-rh"]
     docs = [p for p in r.sb.trees[base] if p.startswith("docs/")]
     cases = [
-        (".github/workflows", (SYMLINK, b"../elsewhere"), {},
-         ".github/workflows is the protected directory itself, changed as a single entry"),
-        (".GitHub/Workflows", (SYMLINK, b"../elsewhere"), {},
-         ".GitHub/Workflows is the protected directory itself, changed as a single entry"),
-        (".github", SUBMODULE, {"size": ".github is a submodule (gitlink), whose change is not measured in lines"},
-         ".github is a single entry standing in for a directory above the protected .github/codeowners"),
-        (".mintswarm/dogfood", (SYMLINK, b"../elsewhere"), {},
-         ".mintswarm/dogfood is a single entry standing in for a directory above the protected "
-         ".mintswarm/dogfood/render-agents.py"),
-        ("docs", (SYMLINK, b"elsewhere"), {},
-         "docs is a single entry standing in for a directory above the protected docs/codeowners"),
+        (
+            ".github/workflows",
+            (SYMLINK, b"../elsewhere"),
+            {},
+            ".github/workflows is the protected directory itself, changed as a single entry",
+        ),
+        (
+            ".GitHub/Workflows",
+            (SYMLINK, b"../elsewhere"),
+            {},
+            ".GitHub/Workflows is the protected directory itself, changed as a single entry",
+        ),
+        (
+            ".github",
+            SUBMODULE,
+            {"size": ".github is a submodule (gitlink), whose change is not measured in lines"},
+            ".github is a single entry standing in for a directory above the protected .github/codeowners",
+        ),
+        (
+            ".mintswarm/dogfood",
+            (SYMLINK, b"../elsewhere"),
+            {},
+            ".mintswarm/dogfood is a single entry standing in for a directory above the protected "
+            ".mintswarm/dogfood/render-agents.py",
+        ),
+        (
+            "docs",
+            (SYMLINK, b"elsewhere"),
+            {},
+            "docs is a single entry standing in for a directory above the protected docs/codeowners",
+        ),
     ]
     for path, content, extra, reason in cases:
         changes = {path: content}
@@ -900,8 +1167,13 @@ def check_protected_entries(r: Runner) -> None:
         if path == "docs":
             changes.update({p: None for p in docs})
             files += docs
-        r.expect(f"protected single entry {path} under no-rh", footprint(files, [path], estimated_lines=50),
-                 changes, {"protected": reason, **extra}, config="no-rh")
+        r.expect(
+            f"protected single entry {path} under no-rh",
+            footprint(files, [path], estimated_lines=50),
+            changes,
+            {"protected": reason, **extra},
+            config="no-rh",
+        )
 
 
 def check_unusable(sb: Sandbox, commits: dict) -> None:
@@ -928,7 +1200,7 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
 
     def without(argv: list, name: str) -> list:
         i = argv.index(name)
-        return argv[:i] + argv[i + 2:]
+        return argv[:i] + argv[i + 2 :]
 
     def edited(change) -> str:
         content = clean_facts(real, head)
@@ -957,87 +1229,164 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         ("no merge base", args(head_=orphan), "have no merge base"),
         ("head equal to base", args(head_=real), "there is no change to judge"),
         ("head already in the base's history", args(base=head, head_=real), "there is no change to judge"),
-        ("base without config", args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)})),
-         f"no {CONFIG_PATH}"),
+        (
+            "base without config",
+            args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)})),
+            f"no {CONFIG_PATH}",
+        ),
         ("unknown component", args(component="nope"), "nope"),
         ("facts missing", args(facts="cases/missing.facts.json"), "cases/missing.facts.json is missing"),
         ("facts a directory", args(facts="cases"), "the facts file cases is not a regular file"),
         ("facts a symlink", args(facts=str(link.relative_to(sb.repo))), "is a symbolic link"),
         ("facts not UTF-8", args(facts=sb.write_facts("not utf-8", b'{"tool": "\xff"}\n')), "is not UTF-8"),
         ("facts not JSON", args(facts=sb.write_facts("not json", b"{\n")), "is not JSON"),
-        ("facts duplicate key", args(facts=sb.write_facts("duplicate", b'{"tool": 1, "tool": 2}\n')),
-         "duplicate key 'tool'"),
+        (
+            "facts duplicate key",
+            args(facts=sb.write_facts("duplicate", b'{"tool": 1, "tool": 2}\n')),
+            "duplicate key 'tool'",
+        ),
         ("facts NaN", args(facts=sb.write_facts("nan", nan)), "NaN is not JSON"),
         ("facts top-level list", args(facts=sb.write_facts("list", b"[]\n")), "is not a JSON object"),
-        ("facts wrong tool", args(facts=edited(lambda c: c.update(tool="mintswarm-plan-floor"))),
-         "tool must be 'mintswarm-landing-facts'"),
+        (
+            "facts wrong tool",
+            args(facts=edited(lambda c: c.update(tool="mintswarm-plan-floor"))),
+            "tool must be 'mintswarm-landing-facts'",
+        ),
         ("facts wrong version", args(facts=edited(lambda c: c.update(version=3))), "version must be 2, not 3"),
         ("facts of version 1", args(facts=edited(lambda c: c.update(version=1))), "version must be 2, not 1"),
-        ("facts current true on a stale round",
-         args(facts=edited(lambda c: c["gate_rounds"][0].update(commit=other, current=True))),
-         f"gate_rounds[0].current is true, but its commit {other} is not the head {head}"),
-        ("facts current false on a current round",
-         args(facts=edited(lambda c: c["review_rounds"][0].update(current=False))),
-         f"review_rounds[0].current is false, but its commit {head} is the head {head}"),
-        ("facts round commit not a hash", args(facts=edited(lambda c: c["gate_rounds"][0].update(commit="abc123"))),
-         "gate_rounds[0].commit must be a full commit hash, not \"abc123\""),
-        ("facts current a string", args(facts=edited(lambda c: c["review_rounds"][0].update(current="true"))),
-         "review_rounds[0].current must be a boolean, not \"true\""),
-        ("facts short head", args(facts=edited(lambda c: c.update(head=head[:12]))),
-         "head must be a full commit hash"),
-        ("facts head of another commit", args(facts=edited(lambda c: c.update(head=real))),
-         f"is for head {real}, not the floor's head {head}"),
-        ("facts base of another commit", args(facts=edited(lambda c: c.update(base=other))),
-         f"is for base {other}, not the floor's base {real}"),
+        (
+            "facts current true on a stale round",
+            args(facts=edited(lambda c: c["gate_rounds"][0].update(commit=other, current=True))),
+            f"gate_rounds[0].current is true, but its commit {other} is not the head {head}",
+        ),
+        (
+            "facts current false on a current round",
+            args(facts=edited(lambda c: c["review_rounds"][0].update(current=False))),
+            f"review_rounds[0].current is false, but its commit {head} is the head {head}",
+        ),
+        (
+            "facts round commit not a hash",
+            args(facts=edited(lambda c: c["gate_rounds"][0].update(commit="abc123"))),
+            'gate_rounds[0].commit must be a full commit hash, not "abc123"',
+        ),
+        (
+            "facts current a string",
+            args(facts=edited(lambda c: c["review_rounds"][0].update(current="true"))),
+            'review_rounds[0].current must be a boolean, not "true"',
+        ),
+        ("facts short head", args(facts=edited(lambda c: c.update(head=head[:12]))), "head must be a full commit hash"),
+        (
+            "facts head of another commit",
+            args(facts=edited(lambda c: c.update(head=real))),
+            f"is for head {real}, not the floor's head {head}",
+        ),
+        (
+            "facts base of another commit",
+            args(facts=edited(lambda c: c.update(base=other))),
+            f"is for base {other}, not the floor's base {real}",
+        ),
         ("facts checks not a list", args(facts=edited(lambda c: c.update(checks={}))), "checks must be a list"),
-        ("facts check without name", args(facts=edited(lambda c: c.update(checks=[
-            {"conclusion": "success", "source": "check-run", "app": None}]))), "checks[0] has no name"),
-        ("facts boolean round", args(facts=edited(lambda c: c["gate_rounds"][0].update(round=True))),
-         "gate_rounds[0].round must be an integer, not true"),
-        ("facts failed_tests not a list", args(facts=edited(lambda c: c["gate_rounds"][0].update(
-            failed_tests="whitespace"))), "gate_rounds[0].failed_tests must be a list, not \"whitespace\""),
-        ("facts review round without verdict", args(facts=edited(lambda c: c["review_rounds"][0].pop("verdict"))),
-         "review_rounds[0] has no verdict"),
-        ("facts steer without url", args(facts=edited(lambda c: c.update(steers=[
-            {k: v for k, v in steer("alice", "https://example.invalid/1").items() if k != "url"}]))),
-         "steers[0] has no url"),
-        ("facts rounds out of order",
-         args(facts=edited(lambda c: c.update(gate_rounds=[gate_round(2), gate_round(1)]))),
-         "gate_rounds round numbers must be positive and strictly increasing, not [2, 1]"),
+        (
+            "facts check without name",
+            args(
+                facts=edited(lambda c: c.update(checks=[{"conclusion": "success", "source": "check-run", "app": None}]))
+            ),
+            "checks[0] has no name",
+        ),
+        (
+            "facts boolean round",
+            args(facts=edited(lambda c: c["gate_rounds"][0].update(round=True))),
+            "gate_rounds[0].round must be an integer, not true",
+        ),
+        (
+            "facts failed_tests not a list",
+            args(facts=edited(lambda c: c["gate_rounds"][0].update(failed_tests="whitespace"))),
+            'gate_rounds[0].failed_tests must be a list, not "whitespace"',
+        ),
+        (
+            "facts review round without verdict",
+            args(facts=edited(lambda c: c["review_rounds"][0].pop("verdict"))),
+            "review_rounds[0] has no verdict",
+        ),
+        (
+            "facts steer without url",
+            args(
+                facts=edited(
+                    lambda c: c.update(
+                        steers=[{k: v for k, v in steer("alice", "https://example.invalid/1").items() if k != "url"}]
+                    )
+                )
+            ),
+            "steers[0] has no url",
+        ),
+        (
+            "facts rounds out of order",
+            args(facts=edited(lambda c: c.update(gate_rounds=[gate_round(2), gate_round(1)]))),
+            "gate_rounds round numbers must be positive and strictly increasing, not [2, 1]",
+        ),
     ]
-    for variant in ("no-landing", "landing-null", "landing-unknown-key", "require-human-unknown-key",
-                    "footprint-unknown-key", "mode-sometimes", "mode-missing", "factor-0.9", "factor-true",
-                    "factor-string", "factor-1e400", "factor-inf", "factor-missing", "footprint-missing",
-                    "undefined-component", "plan-approval-invalid"):
+    for variant in (
+        "no-landing",
+        "landing-null",
+        "landing-unknown-key",
+        "require-human-unknown-key",
+        "footprint-unknown-key",
+        "mode-sometimes",
+        "mode-missing",
+        "factor-0.9",
+        "factor-true",
+        "factor-string",
+        "factor-1e400",
+        "factor-inf",
+        "factor-missing",
+        "footprint-missing",
+        "undefined-component",
+        "plan-approval-invalid",
+    ):
         base = commits[variant]
         # a value yq cannot convert (.inf) fails in yq, before the config is checked
-        cases.append((f"config {variant}", args(base=base, head_=sb.child(base, appended("docs/guide.md", 1))),
-                      ("config", "yq -p=yaml failed")))
+        cases.append(
+            (
+                f"config {variant}",
+                args(base=base, head_=sb.child(base, appended("docs/guide.md", 1))),
+                ("config", "yq -p=yaml failed"),
+            )
+        )
     for name, argv, fragment in cases:
         if name not in ("no arguments", "missing --facts") and "--facts" not in argv:
             T.check(f"unusable {name}: --facts given", False, "selftest bug: the case lacks --facts")
             continue
         proc, verdict = sb.floor(argv)
-        T.check(f"unusable {name}: exit 2, no verdict", proc.returncode == 2 and verdict is None
-                and len(proc.stderr.strip().splitlines()) == 1 and "Traceback" not in proc.stderr
-                and any(f in proc.stderr for f in ((fragment,) if isinstance(fragment, str) else fragment)),
-                f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}, "
-                f"expected {fragment!r}: {proc.stderr.strip()}")
+        T.check(
+            f"unusable {name}: exit 2, no verdict",
+            proc.returncode == 2
+            and verdict is None
+            and len(proc.stderr.strip().splitlines()) == 1
+            and "Traceback" not in proc.stderr
+            and any(f in proc.stderr for f in ((fragment,) if isinstance(fragment, str) else fragment)),
+            f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}, "
+            f"expected {fragment!r}: {proc.stderr.strip()}",
+        )
 
     bindir = sb.tmp / "git-only"
     bindir.mkdir()
     (bindir / "git").symlink_to(shutil.which("git"))
     proc, verdict = sb.floor(args(), env=dict(sb.env, PATH=str(bindir)))
-    T.check("unusable yq missing: exit 2, no verdict", proc.returncode == 2 and verdict is None,
-            f"exit {proc.returncode}: {proc.stderr.strip()}")
+    T.check(
+        "unusable yq missing: exit 2, no verdict",
+        proc.returncode == 2 and verdict is None,
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
 
     lonely = sb.tmp / "lonely" / "landing"
     lonely.mkdir(parents=True)
     shutil.copy2(FLOOR, lonely / "floor.py")
     proc, verdict = sb.floor(args(), script=lonely / "floor.py")
-    T.check("unusable plan-approval/floor.py missing: exit 2, no verdict",
-            proc.returncode == 2 and verdict is None and "plan floor" in proc.stderr,
-            f"exit {proc.returncode}: {proc.stderr.strip()}")
+    T.check(
+        "unusable plan-approval/floor.py missing: exit 2, no verdict",
+        proc.returncode == 2 and verdict is None and "plan floor" in proc.stderr,
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
 
 
 def check_facts_rules(r: Runner) -> None:
@@ -1048,126 +1397,228 @@ def check_facts_rules(r: Runner) -> None:
         return r.expect(f"facts {name}", fp, change, hits, facts=facts, **kwargs)
 
     # gates
-    expect("gates: failed then passed", {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed"),
-                                                         gate_round(2)]}, {})
+    expect(
+        "gates: failed then passed",
+        {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed"), gate_round(2)]},
+        {},
+    )
     expect("gates: no gate round", {"gate_rounds": []}, {"gates": "there is no gate round"})
-    _, verdict = expect("gates: last round failed",
-                        {"gate_rounds": [gate_round(1), gate_round(2, "failed", ["whitespace"], "a test failed")]},
-                        {"gates": "gate whitespace failed in the last gate round, 2"})
-    T.check("facts gates: last round failed names the round and its reason",
-            "the last gate round, 2, has verdict 'failed', not 'passed': a test failed" in reasons_of(verdict, "gates"),
-            str(reasons_of(verdict, "gates")))
-    expect("gates: passed with a failed test", {"gate_rounds": [gate_round(1, "passed", ["agents-drift"])]},
-           {"gates": "gate agents-drift failed in the last gate round, 1"})
-    expect("gates: unknown verdict", {"gate_rounds": [gate_round(1, "skipped")]},
-           {"gates": "the last gate round, 1, has verdict 'skipped', not 'passed'"})
-    _, verdict = expect("gates: unnamed failed tests",
-                        {"gate_rounds": [gate_round(1, "failed", [None, 7, "whitespace"], "a test failed")]},
-                        {"gates": "an unnamed gate (null) failed in the last gate round, 1"})
-    T.check("facts gates: unnamed failed tests are each a reason",
-            reasons_of(verdict, "gates")[1:] == ["an unnamed gate (null) failed in the last gate round, 1",
-                                                 "an unnamed gate (7) failed in the last gate round, 1",
-                                                 "gate whitespace failed in the last gate round, 1"],
-            str(reasons_of(verdict, "gates")))
+    _, verdict = expect(
+        "gates: last round failed",
+        {"gate_rounds": [gate_round(1), gate_round(2, "failed", ["whitespace"], "a test failed")]},
+        {"gates": "gate whitespace failed in the last gate round, 2"},
+    )
+    T.check(
+        "facts gates: last round failed names the round and its reason",
+        "the last gate round, 2, has verdict 'failed', not 'passed': a test failed" in reasons_of(verdict, "gates"),
+        str(reasons_of(verdict, "gates")),
+    )
+    expect(
+        "gates: passed with a failed test",
+        {"gate_rounds": [gate_round(1, "passed", ["agents-drift"])]},
+        {"gates": "gate agents-drift failed in the last gate round, 1"},
+    )
+    expect(
+        "gates: unknown verdict",
+        {"gate_rounds": [gate_round(1, "skipped")]},
+        {"gates": "the last gate round, 1, has verdict 'skipped', not 'passed'"},
+    )
+    _, verdict = expect(
+        "gates: unnamed failed tests",
+        {"gate_rounds": [gate_round(1, "failed", [None, 7, "whitespace"], "a test failed")]},
+        {"gates": "an unnamed gate (null) failed in the last gate round, 1"},
+    )
+    T.check(
+        "facts gates: unnamed failed tests are each a reason",
+        reasons_of(verdict, "gates")[1:]
+        == [
+            "an unnamed gate (null) failed in the last gate round, 1",
+            "an unnamed gate (7) failed in the last gate round, 1",
+            "gate whitespace failed in the last gate round, 1",
+        ],
+        str(reasons_of(verdict, "gates")),
+    )
 
     base = r.commits["real"]
     other = r.commits["shadow"]
     head = r.sb.child(base, change, "stale rounds")
     reason = f"the last gate round, 1, judged commit {base}, not the head {head}"
-    _, verdict = expect("gates: a passed last round from the base commit", {"gate_rounds": [gate_round(1, commit=base)]},
-                        {"gates": reason}, head=head)
-    T.check("facts gates: a stale passed round gives only the commit reason", reasons_of(verdict, "gates") == [reason],
-            str(reasons_of(verdict, "gates")))
-    expect("gates: a stale earlier round, then a current pass",
-           {"gate_rounds": [gate_round(1, commit=base), gate_round(2)]}, {}, head=head)
-    _, verdict = expect("gates: a stale failed last round",
-                        {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed", commit=base)]},
-                        {"gates": reason}, head=head)
-    T.check("facts gates: a stale failed round gives the verdict and the commit reasons",
-            len(reasons_of(verdict, "gates")) == 3, str(reasons_of(verdict, "gates")))
+    _, verdict = expect(
+        "gates: a passed last round from the base commit",
+        {"gate_rounds": [gate_round(1, commit=base)]},
+        {"gates": reason},
+        head=head,
+    )
+    T.check(
+        "facts gates: a stale passed round gives only the commit reason",
+        reasons_of(verdict, "gates") == [reason],
+        str(reasons_of(verdict, "gates")),
+    )
+    expect(
+        "gates: a stale earlier round, then a current pass",
+        {"gate_rounds": [gate_round(1, commit=base), gate_round(2)]},
+        {},
+        head=head,
+    )
+    _, verdict = expect(
+        "gates: a stale failed last round",
+        {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed", commit=base)]},
+        {"gates": reason},
+        head=head,
+    )
+    T.check(
+        "facts gates: a stale failed round gives the verdict and the commit reasons",
+        len(reasons_of(verdict, "gates")) == 3,
+        str(reasons_of(verdict, "gates")),
+    )
 
     # checks
     _, verdict = expect("checks: zero checks", {"checks": []}, {})
-    T.check("facts checks: zero checks lists none", isinstance(verdict, dict) and verdict["facts"]["checks"] == [],
-            str(verdict.get("facts") if isinstance(verdict, dict) else verdict))
+    T.check(
+        "facts checks: zero checks lists none",
+        isinstance(verdict, dict) and verdict["facts"]["checks"] == [],
+        str(verdict.get("facts") if isinstance(verdict, dict) else verdict),
+    )
     green = [check_entry("build", "success"), check_entry("ci/lint", "success", "status", None)]
     _, verdict = expect("checks: two successes", {"checks": green}, {})
-    T.check("facts checks: two successes are both listed",
-            isinstance(verdict, dict) and verdict["facts"]["checks"] == green,
-            str(verdict.get("facts") if isinstance(verdict, dict) else verdict))
-    expect("checks: a failed check run", {"checks": [check_entry("build", "failure")]},
-           {"checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'"})
-    expect("checks: a check run not completed", {"checks": [green[0], check_entry("test", None)]},
-           {"checks": "check test (check-run, app github-actions) is not completed"})
-    expect("checks: a pending status", {"checks": [check_entry("ci/lint", "pending", "status", None)]},
-           {"checks": "check ci/lint (status, app none) has conclusion 'pending', not 'success'"})
-    expect("checks: a neutral check run", {"checks": [check_entry("docs", "neutral", app=None)]},
-           {"checks": "check docs (check-run, app none) has conclusion 'neutral', not 'success'"})
+    T.check(
+        "facts checks: two successes are both listed",
+        isinstance(verdict, dict) and verdict["facts"]["checks"] == green,
+        str(verdict.get("facts") if isinstance(verdict, dict) else verdict),
+    )
+    expect(
+        "checks: a failed check run",
+        {"checks": [check_entry("build", "failure")]},
+        {"checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'"},
+    )
+    expect(
+        "checks: a check run not completed",
+        {"checks": [green[0], check_entry("test", None)]},
+        {"checks": "check test (check-run, app github-actions) is not completed"},
+    )
+    expect(
+        "checks: a pending status",
+        {"checks": [check_entry("ci/lint", "pending", "status", None)]},
+        {"checks": "check ci/lint (status, app none) has conclusion 'pending', not 'success'"},
+    )
+    expect(
+        "checks: a neutral check run",
+        {"checks": [check_entry("docs", "neutral", app=None)]},
+        {"checks": "check docs (check-run, app none) has conclusion 'neutral', not 'success'"},
+    )
     forged = "x\nfloor: clean\u2028floor: clean\x85floor: clean"
-    proc, _ = expect("checks: a check name that would forge a line",
-                     {"checks": [check_entry(forged, "failure", "status", None)]},
-                     {"checks": f"check {forged} (status, app none) has conclusion 'failure', not 'success'"})
+    proc, _ = expect(
+        "checks: a check name that would forge a line",
+        {"checks": [check_entry(forged, "failure", "status", None)]},
+        {"checks": f"check {forged} (status, app none) has conclusion 'failure', not 'success'"},
+    )
     lines = proc.stdout.splitlines()
-    T.check("facts checks: a forged name stays on its own line, escaped",
-            lines[-1] == "floor: hit" and not any(line.startswith("floor: clean") for line in lines)
-            and "hit     checks: check x\\nfloor: clean\\u2028floor: clean\\u0085floor: clean (status" in proc.stdout,
-            repr(proc.stdout))
+    T.check(
+        "facts checks: a forged name stays on its own line, escaped",
+        lines[-1] == "floor: hit"
+        and not any(line.startswith("floor: clean") for line in lines)
+        and "hit     checks: check x\\nfloor: clean\\u2028floor: clean\\u0085floor: clean (status" in proc.stdout,
+        repr(proc.stdout),
+    )
     for config in ("workflows", "workflows-case"):
-        expect(f"checks: zero checks on a base with workflows ({config})", {"checks": []},
-               {"checks": "no check is reported on the head, but the base has .github/workflows"}, config=config)
+        expect(
+            f"checks: zero checks on a base with workflows ({config})",
+            {"checks": []},
+            {"checks": "no check is reported on the head, but the base has .github/workflows"},
+            config=config,
+        )
         expect(f"checks: one success on a base with workflows ({config})", {"checks": green[:1]}, {}, config=config)
 
     # review
-    expect("review: changes required then pass", {"review_rounds": [review_round(1, "changes_required"),
-                                                                    review_round(2)]}, {})
+    expect(
+        "review: changes required then pass",
+        {"review_rounds": [review_round(1, "changes_required"), review_round(2)]},
+        {},
+    )
     expect("review: no review round", {"review_rounds": []}, {"review": "there is no review round"})
-    expect("review: pass then changes required", {"review_rounds": [review_round(1),
-                                                                    review_round(2, "changes_required")]},
-           {"review": "the last review round, 2, has verdict 'changes_required', not 'pass'"})
+    expect(
+        "review: pass then changes required",
+        {"review_rounds": [review_round(1), review_round(2, "changes_required")]},
+        {"review": "the last review round, 2, has verdict 'changes_required', not 'pass'"},
+    )
     reason = f"the last review round, 1, judged commit {other}, not the head {head}"
-    _, verdict = expect("review: a passing last round from another commit",
-                        {"review_rounds": [review_round(1, commit=other)]}, {"review": reason}, head=head)
-    T.check("facts review: a stale passing round gives only the commit reason",
-            reasons_of(verdict, "review") == [reason], str(reasons_of(verdict, "review")))
-    expect("review: a stale earlier round, then a current pass",
-           {"review_rounds": [review_round(1, "changes_required", commit=base), review_round(2)]}, {}, head=head)
+    _, verdict = expect(
+        "review: a passing last round from another commit",
+        {"review_rounds": [review_round(1, commit=other)]},
+        {"review": reason},
+        head=head,
+    )
+    T.check(
+        "facts review: a stale passing round gives only the commit reason",
+        reasons_of(verdict, "review") == [reason],
+        str(reasons_of(verdict, "review")),
+    )
+    expect(
+        "review: a stale earlier round, then a current pass",
+        {"review_rounds": [review_round(1, "changes_required", commit=base), review_round(2)]},
+        {},
+        head=head,
+    )
 
     # steers
     expect("steers: none", {"steers": []}, {})
     one = steer("alice", "https://github.com/o/r/pull/1#issuecomment-1")
     two = steer("bob", "https://github.com/o/r/issues/2#issuecomment-2", "issue-comment", "2026-01-03T00:00:00Z")
     first = "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: https://github.com/o/r/pull/1#issuecomment-1"
-    second = ("issue-comment by bob at 2026-01-03T00:00:00Z is a steer: "
-              "https://github.com/o/r/issues/2#issuecomment-2")
+    second = (
+        "issue-comment by bob at 2026-01-03T00:00:00Z is a steer: " "https://github.com/o/r/issues/2#issuecomment-2"
+    )
     expect("steers: one steer", {"steers": [one]}, {"steers": first})
     _, verdict = expect("steers: two steers", {"steers": [one, two]}, {"steers": second})
-    T.check("facts steers: two steers give two reasons", reasons_of(verdict, "steers") == [first, second],
-            str(reasons_of(verdict, "steers")))
+    T.check(
+        "facts steers: two steers give two reasons",
+        reasons_of(verdict, "steers") == [first, second],
+        str(reasons_of(verdict, "steers")),
+    )
 
     # all four together, also with an unusable footprint
     def all_hit(c: dict) -> dict:
         c.update(gate_rounds=[], checks=[check_entry("build", "failure")], review_rounds=[], steers=[one])
         return c
 
-    hits = {"gates": "there is no gate round",
-            "checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'",
-            "review": "there is no review round", "steers": first}
+    hits = {
+        "gates": "there is no gate round",
+        "checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'",
+        "review": "there is no review round",
+        "steers": first,
+    }
     expect("all four rules hit", all_hit, hits)
-    _, verdict = r.expect("facts all four rules hit with no footprint", plan_text(None), change,
-                          {"footprint": "no '## Footprint' section", **hits}, facts=all_hit)
-    T.check("facts all four rules hit with no footprint: only the diff rules are skipped",
-            isinstance(verdict, dict) and verdict["not_evaluated"] == DIFF_RULES,
-            str(verdict.get("not_evaluated") if isinstance(verdict, dict) else verdict))
+    _, verdict = r.expect(
+        "facts all four rules hit with no footprint",
+        plan_text(None),
+        change,
+        {"footprint": "no '## Footprint' section", **hits},
+        facts=all_hit,
+    )
+    T.check(
+        "facts all four rules hit with no footprint: only the diff rules are skipped",
+        isinstance(verdict, dict) and verdict["not_evaluated"] == DIFF_RULES,
+        str(verdict.get("not_evaluated") if isinstance(verdict, dict) else verdict),
+    )
 
 
 def ctrf_report(tests: list) -> dict:
     passed = sum(1 for t in tests if t.get("status") == "passed")
     return {
-        "reportFormat": "CTRF", "specVersion": "0.3.0",
+        "reportFormat": "CTRF",
+        "specVersion": "0.3.0",
         "results": {
             "tool": {"name": "mintswarm-gates"},
-            "summary": {"tests": len(tests), "passed": passed, "failed": len(tests) - passed,
-                        "skipped": 0, "pending": 0, "other": 0, "start": 1, "stop": 2},
+            "summary": {
+                "tests": len(tests),
+                "passed": passed,
+                "failed": len(tests) - passed,
+                "skipped": 0,
+                "pending": 0,
+                "other": 0,
+                "start": 1,
+                "stop": 2,
+            },
             "tests": tests,
         },
     }
@@ -1188,12 +1639,23 @@ def kept_round(rounds: Path, kind: str, number: int, files: dict, head: str) -> 
     for name in sorted(files):
         (directory / name).write_bytes(files[name])
         listed.append({"name": name, "sha256": hashlib.sha256(files[name]).hexdigest()})
-    write_json(directory / "round.json", {"tool": "mintswarm-keep-round", "version": 2, "kind": kind,
-                                          "round": number, "head": head, "kept_at": "2026-01-01T00:00:00Z", "files": listed})
+    write_json(
+        directory / "round.json",
+        {
+            "tool": "mintswarm-keep-round",
+            "version": 2,
+            "kind": kind,
+            "round": number,
+            "head": head,
+            "kept_at": "2026-01-01T00:00:00Z",
+            "files": listed,
+        },
+    )
 
 
-def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list,
-                    pr_comments: list, kept_at: str) -> tuple:
+def collected_facts(
+    sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list, pr_comments: list, kept_at: str
+) -> tuple:
     """Run collect-facts.py assemble on saved responses and rounds kept at `kept_at` in runner state outside
     the repository; return (exit, facts bytes or None)."""
     responses = sb.tmp / f"collected-{name}" / "responses"
@@ -1202,20 +1664,52 @@ def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, c
     write_json(responses / "pull.1.json", {"number": 1, "head": {"sha": head}, "base": {"sha": base}})
     write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
     write_json(responses / "status.1.json", {"statuses": []})
-    for listing, items in (("pr-comments", pr_comments), ("reviews", []), ("review-comments", []),
-                           ("issue-comments", [])):
+    for listing, items in (
+        ("pr-comments", pr_comments),
+        ("reviews", []),
+        ("review-comments", []),
+        ("issue-comments", []),
+    ):
         write_json(responses / f"{listing}.1.json", items)
     gates_input = json.dumps({"gates": [{"name": "whitespace", "command": "true"}]}).encode("utf-8")
-    kept_round(rounds, "gates", 1, {"gates.input.json": gates_input,
-                                    "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")}, kept_at)
+    kept_round(
+        rounds,
+        "gates",
+        1,
+        {"gates.input.json": gates_input, "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")},
+        kept_at,
+    )
     review = "# Review round 1: collected\n\n## Verdict\n\npass\n\n```yaml\nfindings: []\n```\n"
     kept_round(rounds, "review", 1, {"review.md": review.encode("utf-8")}, kept_at)
     facts = sb.repo / ".mintswarm" / "job" / "inputs" / "landing" / "facts.json"
     proc = subprocess.run(
-        [sys.executable, "-I", str(COLLECT_FACTS), "assemble", "--responses", str(responses), "--pr", "1",
-         "--issue", "2", "--head", head, "--base", base, "--approver", "maintainer",
-         "--approved-at", "2026-01-01T00:00:00Z", "--rounds", str(rounds)],
-        cwd=sb.repo, env=sb.env, capture_output=True, text=True)
+        [
+            sys.executable,
+            "-I",
+            str(COLLECT_FACTS),
+            "assemble",
+            "--responses",
+            str(responses),
+            "--pr",
+            "1",
+            "--issue",
+            "2",
+            "--head",
+            head,
+            "--base",
+            base,
+            "--approver",
+            "maintainer",
+            "--approved-at",
+            "2026-01-01T00:00:00Z",
+            "--rounds",
+            str(rounds),
+        ],
+        cwd=sb.repo,
+        env=sb.env,
+        capture_output=True,
+        text=True,
+    )
     data = facts.read_bytes() if proc.returncode == 0 and facts.is_file() else None
     return proc, data
 
@@ -1227,26 +1721,49 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
     green = [{"id": 1, "name": "build", "status": "completed", "conclusion": "success", "app": {"slug": "ci"}}]
     cases = [
         ("clean", [{"name": "whitespace", "status": "passed"}], green, [], {}),
-        ("stale", [{"name": "whitespace", "status": "passed"}], green, [],
-         {"gates": f"the last gate round, 1, judged commit {base}, not the head {{head}}",
-          "review": f"the last review round, 1, judged commit {base}, not the head {{head}}"}),
-        ("hits", [{"status": "failed"}],
-         [{"id": 1, "name": "build", "status": "completed", "conclusion": "failure", "app": {"slug": "ci"}}],
-         [{"id": 9, "html_url": "https://github.com/o/r/pull/1#issuecomment-9", "user": {"login": "alice",
-           "type": "User"}, "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
-           "body": "please also do X\n"}],
-         {"gates": "an unnamed gate (null) failed in the last gate round, 1",
-          "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
-          "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
-                    "https://github.com/o/r/pull/1#issuecomment-9"}),
+        (
+            "stale",
+            [{"name": "whitespace", "status": "passed"}],
+            green,
+            [],
+            {
+                "gates": f"the last gate round, 1, judged commit {base}, not the head {{head}}",
+                "review": f"the last review round, 1, judged commit {base}, not the head {{head}}",
+            },
+        ),
+        (
+            "hits",
+            [{"status": "failed"}],
+            [{"id": 1, "name": "build", "status": "completed", "conclusion": "failure", "app": {"slug": "ci"}}],
+            [
+                {
+                    "id": 9,
+                    "html_url": "https://github.com/o/r/pull/1#issuecomment-9",
+                    "user": {"login": "alice", "type": "User"},
+                    "created_at": "2026-01-02T00:00:00Z",
+                    "updated_at": "2026-01-02T00:00:00Z",
+                    "body": "please also do X\n",
+                }
+            ],
+            {
+                "gates": "an unnamed gate (null) failed in the last gate round, 1",
+                "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
+                "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
+                "https://github.com/o/r/pull/1#issuecomment-9",
+            },
+        ),
     ]
     for name, tests, check_runs, comments, hits in cases:
         head = sb.child(base, appended("docs/guide.md", 1), f"collected {name}")
-        proc, data = collected_facts(sb, name, base, head, tests, check_runs, comments,
-                                     base if name == "stale" else head)
+        proc, data = collected_facts(
+            sb, name, base, head, tests, check_runs, comments, base if name == "stale" else head
+        )
         hits = {rule: reason.replace("{head}", head) for rule, reason in hits.items()}
-        if not T.check(f"collected facts {name}: collect-facts.py assemble writes them", data is not None,
-                       f"exit {proc.returncode}: {proc.stderr.strip()}"):
+        if not T.check(
+            f"collected facts {name}: collect-facts.py assemble writes them",
+            data is not None,
+            f"exit {proc.returncode}: {proc.stderr.strip()}",
+        ):
             continue
         r.expect(f"collected facts {name}", fp, None, hits, head=head, facts=data)
 
@@ -1254,10 +1771,13 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
 def check_facts_contract() -> None:
     collector = load_module("msw_collect_facts_for_selftest", COLLECT_FACTS)
     floor = load_module("msw_landing_floor_for_selftest", FLOOR)
-    T.check("facts contract: collect-facts.py writes the tool and version the floor reads",
-            (collector.TOOL, collector.VERSION) == ("mintswarm-landing-facts", 2)
-            == (floor.FACTS_TOOL, floor.FACTS_VERSION),
-            f"collector {collector.TOOL!r} {collector.VERSION!r}, floor {floor.FACTS_TOOL!r} {floor.FACTS_VERSION!r}")
+    T.check(
+        "facts contract: collect-facts.py writes the tool and version the floor reads",
+        (collector.TOOL, collector.VERSION)
+        == ("mintswarm-landing-facts", 2)
+        == (floor.FACTS_TOOL, floor.FACTS_VERSION),
+        f"collector {collector.TOOL!r} {collector.VERSION!r}, floor {floor.FACTS_TOOL!r} {floor.FACTS_VERSION!r}",
+    )
 
 
 def check_isolation(r: Runner, sb: Sandbox) -> None:
@@ -1268,14 +1788,28 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
     fp = footprint(["docs/guide.md"], estimated_lines=4)
     r.expect("isolation clean", fp, appended("docs/guide.md", 1), {})
     T.check("plan verdict untouched after a clean run", target.read_bytes() == sentinel)
-    r.expect("isolation hit", fp, appended("CONTRIBUTING.md", 1),
-             {"undeclared-files": None})
+    r.expect("isolation hit", fp, appended("CONTRIBUTING.md", 1), {"undeclared-files": None})
     T.check("plan verdict untouched after a hit", target.read_bytes() == sentinel)
     same = sb.write_facts("isolation exit 2", clean_facts(r.commits["real"], r.commits["real"]))
-    proc, verdict = sb.floor(["--plan", "cases/missing.md", "--component", "docs", "--base", r.commits["real"],
-                              "--head", r.commits["real"], "--facts", same])
-    T.check("plan verdict untouched after exit 2",
-            proc.returncode == 2 and verdict is None and target.read_bytes() == sentinel, proc.stderr.strip())
+    proc, verdict = sb.floor(
+        [
+            "--plan",
+            "cases/missing.md",
+            "--component",
+            "docs",
+            "--base",
+            r.commits["real"],
+            "--head",
+            r.commits["real"],
+            "--facts",
+            same,
+        ]
+    )
+    T.check(
+        "plan verdict untouched after exit 2",
+        proc.returncode == 2 and verdict is None and target.read_bytes() == sentinel,
+        proc.stderr.strip(),
+    )
 
     copy_root = sb.tmp / "copy"
     for name, source in (("landing", FLOOR), ("plan-approval", PLAN_FLOOR)):
@@ -1287,11 +1821,20 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
     argv = ["--plan", plan, "--component", "docs", "--base", r.commits["real"], "--head", head, "--facts", facts]
     proc, verdict = sb.floor(argv)
     copied, copied_verdict = sb.floor(argv, script=copy_root / "landing" / "floor.py")
-    T.check("copied scripts: the same exit, output and verdict",
-            isinstance(verdict, dict) and verdict == copied_verdict and proc.returncode == copied.returncode == 1
-            and proc.stdout == copied.stdout, f"exit {proc.returncode} and {copied.returncode}: {copied.stderr.strip()}")
-    T.check("copied scripts: no bytecode written", not list(sb.tmp.rglob("__pycache__"))
-            and not (HERE / "__pycache__").exists() and not (PLAN_FLOOR.parent / "__pycache__").exists())
+    T.check(
+        "copied scripts: the same exit, output and verdict",
+        isinstance(verdict, dict)
+        and verdict == copied_verdict
+        and proc.returncode == copied.returncode == 1
+        and proc.stdout == copied.stdout,
+        f"exit {proc.returncode} and {copied.returncode}: {copied.stderr.strip()}",
+    )
+    T.check(
+        "copied scripts: no bytecode written",
+        not list(sb.tmp.rglob("__pycache__"))
+        and not (HERE / "__pycache__").exists()
+        and not (PLAN_FLOOR.parent / "__pycache__").exists(),
+    )
 
 
 def check_historic(r: Runner, sb: Sandbox) -> None:
@@ -1305,9 +1848,20 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
         try:
             root("cat-file", "-e", f"{commit}^{{commit}}")
             root("cat-file", "-e", f"{commit}^^{{commit}}")
-            paths = [p.decode("utf-8") for p in root(
-                "diff-tree", "-r", "--no-renames", "--no-commit-id", "--name-only", "-z", f"{commit}^", commit,
-            ).split(b"\0") if p]
+            paths = [
+                p.decode("utf-8")
+                for p in root(
+                    "diff-tree",
+                    "-r",
+                    "--no-renames",
+                    "--no-commit-id",
+                    "--name-only",
+                    "-z",
+                    f"{commit}^",
+                    commit,
+                ).split(b"\0")
+                if p
+            ]
             versions = {}
             for rev in (f"{commit}^", commit):
                 versions[rev] = {}
@@ -1316,8 +1870,9 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
                     if entry:
                         mode, _, sha = entry.split(b"\t", 1)[0].decode("ascii").split(" ")
                         versions[rev][path] = (mode, root("cat-file", "blob", sha))
-            expected_numstat = sorted(root("show", "--numstat", "--no-renames", "--format=", commit)
-                                      .decode("utf-8").splitlines())
+            expected_numstat = sorted(
+                root("show", "--numstat", "--no-renames", "--format=", commit).decode("utf-8").splitlines()
+            )
         except RuntimeError as exc:
             T.check(f"{name}: replay", False, f"full local history is needed (not a shallow clone): {exc}")
             continue
@@ -1328,15 +1883,22 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
         head_files = {CONFIG_PATH: real, **versions[commit]}
         head = sb.commit(head_files, (base,), f"replay of {commit}")
         replayed = sorted(l for l in sb.git("diff", "--numstat", "--no-renames", base, head).splitlines() if l)
-        T.check(f"{name}: replayed numstat equals the original", replayed == [l for l in expected_numstat if l],
-                f"{replayed} against {expected_numstat}")
+        T.check(
+            f"{name}: replayed numstat equals the original",
+            replayed == [l for l in expected_numstat if l],
+            f"{replayed} against {expected_numstat}",
+        )
         proc, verdict = r.run(name, (FIXTURES / fixture).read_bytes(), component=component, base=base, head=head)
-        expected = [{"rule": rule, "result": "hit" if rule in hits else "clean", "reasons": hits.get(rule, [])}
-                    for rule in RULES]
+        expected = [
+            {"rule": rule, "result": "hit" if rule in hits else "clean", "reasons": hits.get(rule, [])}
+            for rule in RULES
+        ]
         got = verdict.get("rules") if isinstance(verdict, dict) else None
-        T.check(f"{name}: the recorded verdict", got == expected and verdict.get("not_evaluated") == []
-                and proc.returncode == (1 if hits else 0),
-                f"exit {proc.returncode}, rules {json.dumps(got)}")
+        T.check(
+            f"{name}: the recorded verdict",
+            got == expected and verdict.get("not_evaluated") == [] and proc.returncode == (1 if hits else 0),
+            f"exit {proc.returncode}, rules {json.dumps(got)}",
+        )
 
 
 def partition(paths: list) -> list:
@@ -1359,17 +1921,32 @@ def check_globs(r: Runner, sb: Sandbox) -> None:
     expected, got = [], []
     for index, group in enumerate(partition(paths)):
         _, verdict = r.run(f"glob group {index}", plan, {p: text(1) for p in group}, config="globs")
-        expected += [f"{p} matches require_human.paths {g}"
-                     for p in group for g in GLOB_PATTERNS if plan_floor.matching([g], p, ci=True)]
+        expected += [
+            f"{p} matches require_human.paths {g}"
+            for p in group
+            for g in GLOB_PATTERNS
+            if plan_floor.matching([g], p, ci=True)
+        ]
         got += reasons_of(verdict, "require-human-paths")
     pairs = len(GLOB_PATTERNS) * len(paths)
-    T.check(f"glob semantics: require-human-paths agrees with plan-approval/floor.py on {pairs} pairs",
-            sorted(got) == sorted(expected), f"only landing: {sorted(set(got) - set(expected))[:5]}, "
-            f"only plan floor: {sorted(set(expected) - set(got))[:5]}")
-    pinned = [("**/x.md", "x.md", True), ("**/x.md", "a/b/x.md", True), ("*.md", "docs/a.md", False),
-              ("?.md", "a.md", True), ("a?c", "a/c", False), ("a.b", "aXb", False),
-              ("[ab].md", "a.md", False), ("[ab].md", "[ab].md", True), ("docs/**", "docs", False),
-              ("README.md", "readme.md", True)]
+    T.check(
+        f"glob semantics: require-human-paths agrees with plan-approval/floor.py on {pairs} pairs",
+        sorted(got) == sorted(expected),
+        f"only landing: {sorted(set(got) - set(expected))[:5]}, "
+        f"only plan floor: {sorted(set(expected) - set(got))[:5]}",
+    )
+    pinned = [
+        ("**/x.md", "x.md", True),
+        ("**/x.md", "a/b/x.md", True),
+        ("*.md", "docs/a.md", False),
+        ("?.md", "a.md", True),
+        ("a?c", "a/c", False),
+        ("a.b", "aXb", False),
+        ("[ab].md", "a.md", False),
+        ("[ab].md", "[ab].md", True),
+        ("docs/**", "docs", False),
+        ("README.md", "readme.md", True),
+    ]
     wrong = [(g, p) for g, p, want in pinned if (f"{p} matches require_human.paths {g}" in got) != want]
     T.check("glob semantics: pinned cases", not wrong, str(wrong))
 
@@ -1384,8 +1961,11 @@ def check_stdlib() -> None:
             elif isinstance(node, ast.ImportFrom):
                 names.add("." if node.level else node.module.split(".")[0])
         outside = sorted(n for n in names if n not in sys.stdlib_module_names)
-        T.check(f"standard library: {path.name} imports only {', '.join(sorted(names))}", not outside,
-                f"not standard library: {outside}")
+        T.check(
+            f"standard library: {path.name} imports only {', '.join(sorted(names))}",
+            not outside,
+            f"not standard library: {outside}",
+        )
 
 
 def build_commits(sb: Sandbox) -> tuple:

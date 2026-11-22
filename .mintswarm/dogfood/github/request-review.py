@@ -112,7 +112,7 @@ def resolve(config: dict, files: list) -> list:
             raise UsageError(f"components.{name}.paths must be a list of globs")
         regexes = [glob_to_regex(p) for p in paths]
         components.append((regexes, logins(component.get("reviewers"), f"components.{name}.reviewers")))
-    review = ((config.get("pipeline") or {}).get("review") or {})
+    review = (config.get("pipeline") or {}).get("review") or {}
     default = logins(review.get("reviewers"), "pipeline.review.reviewers")
 
     resolved = set()
@@ -128,7 +128,8 @@ def resolve(config: dict, files: list) -> list:
 def changed_files(base: str, branch: str) -> list:
     proc = subprocess.run(
         ["git", "diff", "--name-only", "--no-renames", f"{base}...{branch}"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"git diff {base}...{branch} failed: {proc.stderr.strip()}")
@@ -138,9 +139,18 @@ def changed_files(base: str, branch: str) -> list:
 def request(pr: int, reviewers: list) -> list:
     body = json.dumps({"reviewers": reviewers})
     proc = subprocess.run(
-        [str(BOT_GH), "api", "--method", "POST",
-         f"repos/{{owner}}/{{repo}}/pulls/{pr}/requested_reviewers", "--input", "-"],
-        input=body, capture_output=True, text=True,
+        [
+            str(BOT_GH),
+            "api",
+            "--method",
+            "POST",
+            f"repos/{{owner}}/{{repo}}/pulls/{pr}/requested_reviewers",
+            "--input",
+            "-",
+        ],
+        input=body,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"requesting reviewers on #{pr} failed: {proc.stderr.strip()}")

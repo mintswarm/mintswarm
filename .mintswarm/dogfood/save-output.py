@@ -283,7 +283,7 @@ def find_result(lines: list, after: int) -> str:
             break
     else:
         raise ReplyError(f"line {i + 1}: result block is never closed", "Result block")
-    return "\n".join(lines[i + 1:j])
+    return "\n".join(lines[i + 1 : j])
 
 
 def extract(text: str) -> tuple:

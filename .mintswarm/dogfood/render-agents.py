@@ -82,7 +82,7 @@ def parse(path: Path) -> dict:
     for index, piece in enumerate(pieces[1:], start=1):
         stripped = piece.removesuffix("\r")
         if stripped == "---":
-            body = "\n".join(pieces[index + 1:])
+            body = "\n".join(pieces[index + 1 :])
             break
         if not stripped.strip() or stripped.lstrip().startswith("#"):
             continue
@@ -108,7 +108,8 @@ def parse(path: Path) -> dict:
     # YAML allows neither control characters (tab apart) nor U+FFFE, U+FFFF;
     # line and paragraph separators (U+2028, U+2029) would break the line.
     control = [
-        c for c in fields["description"]
+        c
+        for c in fields["description"]
         if c != "\t" and (unicodedata.category(c) == "Cc" or c in "\ufffe\uffff\u2028\u2029")
     ]
     if control:
@@ -167,12 +168,14 @@ def check(rendered: dict) -> int:
         current = read_text(path)
         if current != text:
             print(f"differs: {rel(path)}")
-            sys.stdout.writelines(difflib.unified_diff(
-                current.splitlines(keepends=True),
-                text.splitlines(keepends=True),
-                fromfile=f"{rel(path)} (on disk)",
-                tofile=f"{rel(path)} (rendered)",
-            ))
+            sys.stdout.writelines(
+                difflib.unified_diff(
+                    current.splitlines(keepends=True),
+                    text.splitlines(keepends=True),
+                    fromfile=f"{rel(path)} (on disk)",
+                    tofile=f"{rel(path)} (rendered)",
+                )
+            )
             drift = True
     for path in sorted(TARGET.glob("msw-*.md")):
         if path not in rendered:

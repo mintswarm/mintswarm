@@ -173,8 +173,13 @@ DOCS = "docs"
 MODES = ("always", "shadow", "judged", "never")
 LIMITS = ("files", "lines", "new_files", "new_dependencies")
 FOOTPRINT_KEYS = (
-    "files", "new_files", "estimated_lines", "new_dependencies",
-    "external_steps", "gate_changes", "overridden_assumptions",
+    "files",
+    "new_files",
+    "estimated_lines",
+    "new_dependencies",
+    "external_steps",
+    "gate_changes",
+    "overridden_assumptions",
 )
 RULES = (
     "footprint",
@@ -198,8 +203,7 @@ FOOTPRINT_RULES = RULES[1:13]  # the rules that read the footprint, skipped afte
 REQUIRED = ("--plan", "--component", "--base")
 OPTIONAL = ("--issue-document", "--analysis")
 ARGS = REQUIRED + OPTIONAL
-USAGE = ("usage: floor.py --plan PATH --component NAME --base REF "
-         "[--issue-document PATH] [--analysis PATH]")
+USAGE = "usage: floor.py --plan PATH --component NAME --base REF " "[--issue-document PATH] [--analysis PATH]"
 FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})json", re.IGNORECASE)
 REASON_LIMIT = 200
 BLOCKING = "- **Blocking:**"
@@ -259,6 +263,7 @@ def matching(globs: list, path: str, ci: bool = False) -> list:
 
 # --- strict JSON ---------------------------------------------------------
 
+
 def _no_duplicates(pairs: list) -> dict:
     result = {}
     for key, value in pairs:
@@ -281,6 +286,7 @@ def canonical(value) -> str:
 
 
 # --- arguments -----------------------------------------------------------
+
 
 def parse_args(argv: list) -> dict:
     args = {}
@@ -313,6 +319,7 @@ def parse_args(argv: list) -> dict:
 
 
 # --- base-ref configuration ---------------------------------------------
+
 
 def run(argv: list, data: bytes = None) -> bytes:
     try:
@@ -453,6 +460,7 @@ def validate_config(config: dict, component: str) -> dict:
 
 # --- footprint -----------------------------------------------------------
 
+
 def read_plan(path: str) -> bytes:
     try:
         data = Path(path).read_bytes()
@@ -494,7 +502,7 @@ def locate_footprint(lines: list) -> str:
             break
         if lines[i].strip():
             raise FootprintError(f"line {i + 1}: text after the footprint block")
-    return "\n".join(lines[start + 1:end])
+    return "\n".join(lines[start + 1 : end])
 
 
 def check_path(path: str, where: str) -> None:
@@ -585,6 +593,7 @@ def parse_footprint(text: str) -> dict:
 
 # --- rules ---------------------------------------------------------------
 
+
 def evaluate(footprint: dict, component: str, cfg: dict) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
@@ -653,14 +662,18 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
                 reasons.append(f"gates.tests is none and {path} is outside component {DOCS}")
     rule("tests-none", reasons)
 
-    rule("overridden-assumptions", [
-        f"overridden assumption: {item['assumption']} ({item['reason']})"
-        for item in footprint["overridden_assumptions"]
-    ])
+    rule(
+        "overridden-assumptions",
+        [
+            f"overridden assumption: {item['assumption']} ({item['reason']})"
+            for item in footprint["overridden_assumptions"]
+        ],
+    )
     return results
 
 
 # --- documents -----------------------------------------------------------
+
 
 def read_document(path: str, what: str) -> bytes:
     try:
@@ -683,8 +696,12 @@ def headings(lines: list) -> list:
         stripped = line.lstrip(" \t")
         run = re.match(r"`{3,}|~{3,}", stripped)
         if fence is not None:
-            if run and run.group()[0] == fence[0] and len(run.group()) >= fence[1] \
-                    and not stripped[len(run.group()):].strip():
+            if (
+                run
+                and run.group()[0] == fence[0]
+                and len(run.group()) >= fence[1]
+                and not stripped[len(run.group()) :].strip()
+            ):
                 fence = None
             continue
         if run:
@@ -708,14 +725,14 @@ def section(lines: list, title: str, what: str, ends: tuple = (1, 2)) -> tuple:
         raise DocumentError(f"{what}: {len(starts)} '## {title}' sections")
     start = starts[0]
     end = next((i for i, level in marks if i > start and level in ends), len(lines))
-    return start + 1, lines[start + 1:end]
+    return start + 1, lines[start + 1 : end]
 
 
 def issue_body(text: str) -> list:
     """The issue document's lines before its first `## Comments` heading."""
     lines = document_lines(text)
     comments = [i for i, level in headings(lines) if level == 2 and lines[i].rstrip() == "## Comments"]
-    return lines[:comments[0]] if comments else lines
+    return lines[: comments[0]] if comments else lines
 
 
 def flat(text: str) -> str:
@@ -743,8 +760,9 @@ def question_reasons(text: str, what: str) -> list:
         elif line.startswith("# "):
             reasons.append(f"{what}: line {number} of '## Questions' is a '# ' heading inside the section")
         elif not line.startswith(NON_BLOCKING):
-            reasons.append(f"{what}: line {number} of '## Questions' is neither a "
-                           f"'{BLOCKING}' nor a '{NON_BLOCKING}' entry")
+            reasons.append(
+                f"{what}: line {number} of '## Questions' is neither a " f"'{BLOCKING}' nor a '{NON_BLOCKING}' entry"
+            )
     return reasons
 
 
@@ -826,7 +844,7 @@ def header_value(header: list, marker: str) -> tuple:
     found = [line for line in header if line.startswith(marker)]
     if len(found) != 1:
         return None, f"the issue document's header has {len(found)} '{marker}' lines, expected 1"
-    return found[0][len(marker):].strip(), None
+    return found[0][len(marker) :].strip(), None
 
 
 def first_of_kind_reasons(issue: str, component: str, subjects: list) -> list:
@@ -848,8 +866,9 @@ def first_of_kind_reasons(issue: str, component: str, subjects: list) -> list:
         return reasons
     scoped = re.compile(rf"[A-Za-z]+\({re.escape(component)}\)!?: ")
     if not any(scoped.match(subject) for subject in subjects):
-        reasons.append(f"first of its kind: no commit reachable from the base commit has a subject "
-                       f"scoped ({component})")
+        reasons.append(
+            f"first of its kind: no commit reachable from the base commit has a subject " f"scoped ({component})"
+        )
     return reasons
 
 
@@ -905,6 +924,7 @@ def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subject
 
 # --- verdict -------------------------------------------------------------
 
+
 def remove(path) -> None:
     """Delete a file if it exists; raises OSError when it cannot."""
     try:
@@ -948,11 +968,14 @@ def floor(argv: list) -> int:
     subjects = history(commit)
 
     texts = {key: None if doc is None else doc[1].decode("utf-8") for key, doc in documents.items()}
-    results, skipped, _ = conclude(data.decode("utf-8"), texts["issue_document"], texts["analysis"],
-                                   args["component"], cfg, subjects)
+    results, skipped, _ = conclude(
+        data.decode("utf-8"), texts["issue_document"], texts["analysis"], args["component"], cfg, subjects
+    )
     hit = any(r["result"] == "hit" for r in results)
-    bound = {key: None if doc is None else {"path": doc[0], "sha256": hashlib.sha256(doc[1]).hexdigest()}
-             for key, doc in documents.items()}
+    bound = {
+        key: None if doc is None else {"path": doc[0], "sha256": hashlib.sha256(doc[1]).hexdigest()}
+        for key, doc in documents.items()
+    }
     verdict = {
         "tool": TOOL,
         "version": VERSION,

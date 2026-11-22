@@ -95,8 +95,9 @@ def total_ms(summary: dict, tests: list) -> int:
 
 
 def testcase(parent: ET.Element, test: dict, tool: str) -> None:
-    case = ET.SubElement(parent, "testcase", name=clean(test["name"]), classname=clean(tool),
-                         time=seconds(test["duration"]))
+    case = ET.SubElement(
+        parent, "testcase", name=clean(test["name"]), classname=clean(tool), time=seconds(test["duration"])
+    )
     status = test["status"]
     message = test.get("message")
     trace = test.get("trace") if isinstance(test.get("trace"), str) else ""
@@ -134,8 +135,9 @@ def convert(report: dict) -> ET.ElementTree:
     summary = results.get("summary") if isinstance(results.get("summary"), dict) else {}
 
     failures = sum(1 for t in tests if t["status"] == "failed" and t.get("rawStatus") != "timeout")
-    errors = sum(1 for t in tests if t["status"] == "other"
-                 or (t["status"] == "failed" and t.get("rawStatus") == "timeout"))
+    errors = sum(
+        1 for t in tests if t["status"] == "other" or (t["status"] == "failed" and t.get("rawStatus") == "timeout")
+    )
     skipped = sum(1 for t in tests if t["status"] in ("skipped", "pending"))
     time = seconds(total_ms(summary, tests))
     counts = {"tests": str(len(tests)), "failures": str(failures), "errors": str(errors)}

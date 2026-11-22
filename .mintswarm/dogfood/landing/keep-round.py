@@ -173,19 +173,31 @@ REVIEW = "review.md"
 ADDRESS = "address.md"
 ROUND_NUMBER = re.compile(r"[1-9][0-9]*")
 FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-USAGE = ("usage: keep-round.py gates N --head SHA --rounds DIR | "
-         "keep-round.py review N --head SHA --rounds DIR [--no-address]")
+USAGE = (
+    "usage: keep-round.py gates N --head SHA --rounds DIR | "
+    "keep-round.py review N --head SHA --rounds DIR [--no-address]"
+)
 JOB_PREFIX = ".mintswarm/job/"
 # settings in the repository's config that could make git list fewer untracked files, or run a command
 GIT_OVERRIDES = (
-    "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", f"core.excludesFile={os.devnull}",
-    "-c", "core.ignoreCase=false",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    f"core.excludesFile={os.devnull}",
+    "-c",
+    "core.ignoreCase=false",
 )
 FALSE_WORDS = ("false", "no", "off", "0")
 GITLINK = "160000"
 SYMLINK = "120000"
 DROPPED_ENV = (
-    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
+    "GIT_REPLACE_REF_BASE",
 )
 DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
@@ -208,8 +220,11 @@ def parse_args(argv: list) -> tuple:
     values, i = {}, 0
     while i < len(rest):
         name = rest[i]
-        if name in values or name not in ("--head", "--rounds", "--no-address") \
-                or (name == "--no-address" and kind != "review"):
+        if (
+            name in values
+            or name not in ("--head", "--rounds", "--no-address")
+            or (name == "--no-address" and kind != "review")
+        ):
             raise InputError(USAGE)
         if name == "--no-address":
             values[name], i = True, i + 1
@@ -228,9 +243,16 @@ def neutral_git_config() -> None:
     for name in list(os.environ):
         if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
             del os.environ[name]
-    os.environ.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1",
-                       "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull,
-                       "GIT_NO_LAZY_FETCH": "1"})  # git 2.45 and later; older git ignores it
+    os.environ.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_GRAFT_FILE": os.devnull,
+            "GIT_NO_LAZY_FETCH": "1",
+        }
+    )  # git 2.45 and later; older git ignores it
 
 
 def check_no_promisor() -> None:
@@ -249,14 +271,19 @@ def check_no_promisor() -> None:
         key, newline, value = entry.partition("\n")
         if key == "extensions.partialclone":
             found.append(f"extensions.partialClone {value}")
-        elif key.startswith("remote.") and key.endswith(".promisor") \
-                and (not newline or value.lower() not in FALSE_WORDS):
+        elif (
+            key.startswith("remote.")
+            and key.endswith(".promisor")
+            and (not newline or value.lower() not in FALSE_WORDS)
+        ):
             found.append(f"{key} {value or 'true'}")
         elif key.startswith("remote.") and key.endswith(".partialclonefilter"):  # whatever its value
             found.append(f"{key} {value}")
     if found:
-        raise InputError(f"the repository is a partial clone ({', '.join(found)}): reading its objects could fetch "
-                         "them and run a configured command, so no round is kept here")
+        raise InputError(
+            f"the repository is a partial clone ({', '.join(found)}): reading its objects could fetch "
+            "them and run a configured command, so no round is kept here"
+        )
 
 
 def git(*args: str, data: bytes = b"", index: str = None) -> tuple:
@@ -290,8 +317,10 @@ def check_rounds_location(value: str) -> Path:
     if path.is_symlink():
         raise InputError(f"--rounds {value} is a symbolic link")
     places = [("the worktree", Path.cwd())]
-    for name, args in (("the worktree", ["--show-toplevel"]),
-                       ("the main checkout", ["--path-format=absolute", "--git-common-dir"])):
+    for name, args in (
+        ("the worktree", ["--show-toplevel"]),
+        ("the main checkout", ["--path-format=absolute", "--git-common-dir"]),
+    ):
         try:
             proc = subprocess.run(["git", "rev-parse", *args], stdin=subprocess.DEVNULL, capture_output=True)
         except OSError as exc:
@@ -355,8 +384,10 @@ def check_worktree() -> None:
     except OSError as exc:
         raise InputError(f"cannot make a temporary index: {exc}") from exc
     if problems:
-        raise InputError("the worktree can differ from HEAD outside .mintswarm/job/, so HEAD is not what the "
-                         "gates ran on: " + "; ".join(problems))
+        raise InputError(
+            "the worktree can differ from HEAD outside .mintswarm/job/, so HEAD is not what the "
+            "gates ran on: " + "; ".join(problems)
+        )
 
 
 def worktree_mode(path: bytes):
@@ -430,8 +461,9 @@ def worktree_problems(index: str) -> list:
     problems = []
     changed, gitlinks = head_differences()
     if gitlinks:
-        problems.append(f"HEAD holds submodules (gitlinks), whose content is not checked: "
-                        f"{', '.join(sorted(gitlinks)[:10])}")
+        problems.append(
+            f"HEAD holds submodules (gitlinks), whose content is not checked: " f"{', '.join(sorted(gitlinks)[:10])}"
+        )
     untracked = git_records("ls-files", "--others", "-z", "--exclude-per-directory=.gitignore", index=index)
     changed += [path for path in untracked if not path.startswith(JOB_PREFIX)]
     if changed:
@@ -440,13 +472,23 @@ def worktree_problems(index: str) -> list:
     flagged = [record[2:] for record in git_records("ls-files", "-v", "-z") if record[0].islower() or record[0] == "S"]
     if flagged:
         problems.append(f"index entries marked assume-unchanged or skip-worktree: {', '.join(sorted(flagged)[:10])}")
-    hiding = [path for path in git_records("ls-files", "--others", "--ignored", "-z",
-                                           "--exclude-per-directory=.gitignore", index=index)
-              if path.rsplit("/", 1)[-1] == ".gitignore" and not path.startswith(JOB_PREFIX)]
+    hiding = [
+        path
+        for path in git_records(
+            "ls-files", "--others", "--ignored", "-z", "--exclude-per-directory=.gitignore", index=index
+        )
+        if path.rsplit("/", 1)[-1] == ".gitignore" and not path.startswith(JOB_PREFIX)
+    ]
     if hiding:  # an untracked .gitignore that is itself ignored: only a tracked one may hide it
         tracked = set(git_records("ls-files", "-z", index=index))
-        code, out = git("check-ignore", "-v", "-z", "--no-index", "--stdin",
-                        data=b"".join(os.fsencode(path) + b"\0" for path in hiding))
+        code, out = git(
+            "check-ignore",
+            "-v",
+            "-z",
+            "--no-index",
+            "--stdin",
+            data=b"".join(os.fsencode(path) + b"\0" for path in hiding),
+        )
         fields = out.split("\0")[:-1] if out else []
         if code not in (0, 1) or len(fields) % 4:
             raise InputError("git check-ignore failed")
@@ -499,8 +541,11 @@ def gates_files() -> list:
             raise InputError(f"stale {path}: it is older than {GATES_INPUT}")
         files.append((name, read_bytes(path)))
     if len(files) == 1:
-        print(f"keep-round: warning: neither {' nor '.join(GATES_FILES)} exists; "
-              "keeping a gates round with only its input", file=sys.stderr)
+        print(
+            f"keep-round: warning: neither {' nor '.join(GATES_FILES)} exists; "
+            "keeping a gates round with only its input",
+            file=sys.stderr,
+        )
     return files
 
 
@@ -547,10 +592,7 @@ def keep(rounds: Path, kind: str, number: int, head: str, files: list) -> Path:
             "round": number,
             "head": head,
             "kept_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "files": [
-                {"name": name, "sha256": hashlib.sha256(data).hexdigest()}
-                for name, data in sorted(files)
-            ],
+            "files": [{"name": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in sorted(files)],
         }
         for name, data in files:
             write_file(tmp / name, data)
