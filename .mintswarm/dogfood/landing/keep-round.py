@@ -77,9 +77,12 @@ GIT_NO_LAZY_FETCH=1 (git 2.45 and later), and core.fsmonitor and
 core.untrackedCache off, core.excludesFile the null device and
 core.ignoreCase false, overriding the repository's config. Before any git
 command reads an object, a repository whose own config sets
-extensions.partialClone or any remote.<name>.promisor to true is refused:
-reading it could fetch a missing object and run the command that config
-names. Not covered: files that a .gitignore held by HEAD ignores, such as
+extensions.partialClone, any remote.<name>.promisor to true or any
+remote.<name>.partialCloneFilter, in any spelling, is refused: these are
+the keys that make a remote a promisor in git 2.44 (its
+technical/partial-clone.txt), and reading the repository could fetch a
+missing object and run the command that config names. So no fetch and no
+configured command runs. Not covered: files that a .gitignore held by HEAD ignores, such as
 build output, can still differ.
 
 What this check is. It runs git over a repository and an object store
@@ -232,7 +235,12 @@ def neutral_git_config() -> None:
 
 def check_no_promisor() -> None:
     """Refuse a partial clone before any git command reads objects: a missing object would be fetched lazily
-    from a promisor remote, running whatever command its config names."""
+    from a promisor remote, running whatever command its config names.
+
+    git 2.44 makes a remote a promisor through extensions.partialClone, a true remote.<name>.promisor or any
+    remote.<name>.partialCloneFilter (Documentation/technical/partial-clone.txt, "Using many promisor
+    remotes"). `git config --list` gives section and key names in lower case, so every spelling matches.
+    """
     code, out = git("config", "-z", "--list")
     if code != 0:
         raise InputError("git config --list failed")
@@ -244,6 +252,8 @@ def check_no_promisor() -> None:
         elif key.startswith("remote.") and key.endswith(".promisor") \
                 and (not newline or value.lower() not in FALSE_WORDS):
             found.append(f"{key} {value or 'true'}")
+        elif key.startswith("remote.") and key.endswith(".partialclonefilter"):  # whatever its value
+            found.append(f"{key} {value}")
     if found:
         raise InputError(f"the repository is a partial clone ({', '.join(found)}): reading its objects could fetch "
                          "them and run a configured command, so no round is kept here")

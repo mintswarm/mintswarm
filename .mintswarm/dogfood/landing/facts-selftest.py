@@ -51,9 +51,11 @@ Checks:
   unchanged, and each changed while HEAD holds a twin `x` with the same
   blob (which `git hash-object --stdin-paths` is shown to hash instead) is
   refused; in a partial clone whose promisor remote runs a marker command
-  (shown to run under a plain `git ls-tree`), a gates and a review keep,
-  and a keep with only remote.<name>.promisor set, exit 2 and the command
-  does not run;
+  (shown to run under a plain `git ls-tree`), a gates and a review keep, a
+  keep with only remote.<name>.promisor set, one with only
+  remote.<name>.partialCloneFilter set (also shown to run the command
+  under a plain `git ls-tree`) and one with Extensions.PartialClone, exit
+  2 and the command does not run;
 - commit binding: rounds kept at the base (gates with the base checked
   out, review as an ancestor) and at the head give `commit` and `current`,
   false for the base's rounds, with their raw verdicts;
@@ -803,6 +805,23 @@ def promisor_tests(sb: Sandbox) -> None:
             keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.promisor true",
             [rounds / "gates-1"])
     T.check("keep: a keep with only remote.evil.promisor true runs no command", not marker.exists())
+    sb.git("config", "--unset", "remote.evil.promisor", cwd=job)
+    sb.git("config", "core.repositoryformatversion", "0", cwd=job)
+    sb.git("config", "remote.evil.partialCloneFilter", "blob:none", cwd=job)
+    subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
+    T.check("keep: with only remote.evil.partialCloneFilter, a plain git ls-tree runs the promisor's command",
+            marker.exists())
+    marker.unlink(missing_ok=True)
+    refused("keep: a keep with only remote.evil.partialCloneFilter exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.partialclonefilter blob:none",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with only remote.evil.partialCloneFilter runs no command", not marker.exists())
+    sb.git("config", "--unset", "remote.evil.partialCloneFilter", cwd=job)
+    sb.git("config", "Extensions.PartialClone", "evil", cwd=job)
+    refused("keep: a keep with extensions.partialClone spelled Extensions.PartialClone exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "extensions.partialClone evil",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with Extensions.PartialClone runs no command", not marker.exists())
 
 
 def stale_tests(sb: Sandbox) -> Path:
