@@ -29,7 +29,7 @@ exp/3-claude-headless-interrupt
 - Keep branches short-lived: aim to merge within a few days. Large work lands in steps behind a disabled code path or config flag, not on a long-running branch.
 - Rebase on `master` to pick up changes; do not merge `master` into your branch.
 - Force-push your own work branch freely (`--force-with-lease`); never anyone else's.
-- `exp/*` branches hold spikes under `experiments/`. They may never merge; what must survive is the findings report in `docs/experiments/`, which lands through a normal PR.
+- `exp/*` branches hold spikes. They never merge: the findings go to the spike's issue, and what they settle goes into `docs/architecture/` through a normal PR.
 
 ### Reserved prefix
 
@@ -41,15 +41,15 @@ When one change depends on another unmerged one, base the second PR on the first
 
 ## Commits
 
-[Conventional Commits](https://www.conventionalcommits.org/), with the crate or area as scope:
+[Conventional Commits](https://www.conventionalcommits.org/), with the component as scope:
 
 ```
 feat(runner): reconnect and replay job events after stream loss
 fix(core): renew leases on heartbeat, not on claim
-docs(adr): record repository layout
+docs(architecture): describe the repository layout
 ```
 
-Scopes: crate directory names (`domain`, `config`, `proto`, `core`, `server`, `runner`, `console-mcp`, `cli`), web packages (`ui`, `api`), plus `docker`, `packaging`, `ci`, `docs`, `adr`, `xtask`. A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
+Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`; a change that is not part of any component (CI, repository tooling) uses `ci`, `build` or `docs` as its scope. A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
 
 Inside a work branch commits can be as small as you like; the PR title is what lands on `master`.
 
@@ -61,7 +61,7 @@ Inside a work branch commits can be as small as you like; the PR title is what l
 - Link the issue (`Closes #12`). Describe what changed, why, and how it was verified.
 - Required before merge: all checks green, one approving review, conversations resolved, branch up to date with `master`.
 - A change to a contract (anything under `api/`, `crates/core/migrations/`, or the job MCP tool list) states its compatibility impact in the description.
-- A decision that others will need to know the reason for gets an ADR in `docs/adr/` in the same PR.
+- The repository describes the current state. A change that alters how the system works updates `docs/architecture/` in the same PR; the reasoning goes in the PR description or the issue, never in a file of its own.
 
 ## `master` protection
 
