@@ -11,8 +11,12 @@ included) is refused. After binding it writes
 
     listening on 127.0.0.1:PORT; open PAGE in the browser
 
-to stderr. It then serves one connection at a time, each with a 10-second
-socket timeout, until TIMEOUT_SECS have passed since it started.
+to stderr. It then serves one connection at a time until TIMEOUT_SECS have
+passed since it started. Both bounds are absolute: a connection is dropped 10
+seconds after it was accepted, or at the overall deadline if that comes first,
+however slowly its client sends, because every read waits only for the time
+left. A client that holds a connection open can delay the redirect by at most
+those 10 seconds, and never keeps the listener past TIMEOUT_SECS.
 
 It accepts the first request that is a GET of the path / with a single Host
 header of exactly 127.0.0.1:PORT or localhost:PORT, and with exactly one code
@@ -36,15 +40,19 @@ Standard library only; Python 3.9 or later.
 """
 
 import hmac
+import io
 import re
+import socket
 import socketserver
 import sys
 import time
+import typing
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qsl
 
-CODE = re.compile(r"^[A-Za-z0-9._-]{1,256}$")
-STATE = re.compile(r"^[0-9a-f]{32}$")
+# Used with fullmatch: "$" would also match before a trailing newline.
+CODE = re.compile(r"[A-Za-z0-9._-]{1,256}")
+STATE = re.compile(r"[0-9a-f]{32}")
 REQUEST_TIMEOUT = 10
 REJECTED = b"rejected\n"
 RECEIVED = b"received; return to the terminal\n"
@@ -59,10 +67,38 @@ class UsageError(Exception):
     pass
 
 
+class DeadlineReader(io.RawIOBase):
+    """The connection's bytes, where every read waits only until an absolute deadline."""
+
+    def __init__(self, sock, deadline):
+        io.RawIOBase.__init__(self)
+        self.sock = sock
+        self.deadline = deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise socket.timeout("connection deadline passed")
+        self.sock.settimeout(left)
+        return self.sock.recv_into(buffer)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "manifest-listener"
     sys_version = ""
     timeout = REQUEST_TIMEOUT
+
+    def setup(self):
+        BaseHTTPRequestHandler.setup(self)
+        server = typing.cast("Server", self.server)
+        deadline = min(time.monotonic() + REQUEST_TIMEOUT, server.deadline)
+        # The parser's reads go through this, so no client can stretch the bound
+        # by sending a byte at a time; socket.timeout ends the request silently.
+        self.rfile.close()
+        self.rfile = io.BufferedReader(DeadlineReader(self.connection, deadline))
 
     def log_message(self, format, *args):  # no request log: the request line holds the code
         pass
@@ -89,7 +125,8 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(400, REJECTED)
 
     def do_GET(self):
-        port = self.server.server_address[1]
+        server = typing.cast("Server", self.server)
+        port = server.port
         target = self.path
         path, _, query = target.partition("?")
         if path != "/":
@@ -105,21 +142,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.reject("unexpected parameters")
         values = dict(params)
         state = values["state"].encode("utf-8")
-        if not hmac.compare_digest(state, self.server.expected):
+        if not hmac.compare_digest(state, server.expected):
             return self.reject("wrong state")
         code = values["code"]
-        if not CODE.match(code):
+        if not CODE.fullmatch(code):
             return self.reject("malformed code")
         self.respond(200, RECEIVED)
-        self.server.code = code
+        server.code = code
 
 
 class Server(socketserver.TCPServer):
     allow_reuse_address = False
 
-    def __init__(self, port, expected):
+    def __init__(self, port, expected, deadline):
+        self.port = port
         self.expected = expected
-        self.code = None
+        self.deadline = deadline
+        self.code = None  # type: typing.Optional[str]
         socketserver.TCPServer.__init__(self, ("127.0.0.1", port), Handler)
 
     def handle_error(self, request, client_address):
@@ -144,18 +183,18 @@ def main(argv):
         say("cannot read the state on stdin")
         return 1
     expected = line.rstrip("\n")
-    if not STATE.match(expected):
+    if not STATE.fullmatch(expected):
         raise UsageError("the state on stdin must be one line of 32 hex digits")
 
+    deadline = time.monotonic() + limit
     try:
-        server = Server(port, expected.encode("ascii"))
+        server = Server(port, expected.encode("ascii"), deadline)
     except OSError:
         say("cannot listen on 127.0.0.1:%d: is it in use? After an earlier run, wait a minute and retry" % port)
         return 1
     try:
         host, bound = server.socket.getsockname()[:2]
         say("listening on %s:%d; open %s in the browser" % (host, bound, page))
-        deadline = time.monotonic() + limit
         while server.code is None:
             left = deadline - time.monotonic()
             if left <= 0:

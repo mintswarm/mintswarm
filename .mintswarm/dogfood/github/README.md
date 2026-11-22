@@ -19,7 +19,7 @@ A second App, `mintswarm-dev-steward`, is the landing identity: it has its own k
 | `bot-identity.sh install\|status\|uninstall` | Makes every commit on a `mintswarm/*` branch authored and committed by `mintswarm-dev[bot]`, through a conditional include in the repository's shared git config. | none |
 | `store-credentials.sh create\|rotate` | `create MANIFEST [--unconfirmed-key]` runs the whole manifest flow: it writes a page that posts the manifest to GitHub, catches the redirect on `127.0.0.1` with `manifest-listener.py`, converts the code and stores the key and the identifiers in that App's own key-store item and config. `rotate PEM_PATH [--keep]` stores a new key for the App whose config `MSW_APP_CONFIG` names. | the code, from the listener to `curl` on stdin; the key, from GitHub or the downloaded PEM to `key-store.sh` on stdin |
 | `manifests/*.json` | One manifest per App. `mintswarm-dev.json`: `contents`, `pull_requests` and `issues` write; `checks`, `statuses` and `metadata` read. `mintswarm-dev-steward.json`: the same without `issues`. Both private, with no events and no webhook, redirecting to `http://127.0.0.1:8765/`. | none |
-| `manifest-listener.py PORT TIMEOUT_SECS PAGE` | Run by `create`. Listens on `127.0.0.1:PORT` only, accepts the first redirect whose `state` (given on stdin) matches, rejects every other request, prints the code on stdout and exits; gives up after the timeout. Logs no request. | the code, on stdout to `create` |
+| `manifest-listener.py PORT TIMEOUT_SECS PAGE` | Run by `create`. Listens on `127.0.0.1:PORT` only, accepts the first redirect whose `state` (given on stdin) matches, rejects every other request, prints the code on stdout and exits; gives up after the timeout, an absolute bound that no slow client can stretch (each connection gets at most 10 seconds). Logs no request. | the code, on stdout to `create` |
 | `selftest.sh` | Offline test of all of the above against stubs of `security`, `secret-tool`, `pass`, `systemd-creds`, `uname`, `curl` and `gh` in a temporary sandbox; the file backend is tested for real inside the sandbox. Reaches no real key store and not GitHub. | throwaway keys and dummy tokens only |
 | `linux-check.sh` | Runs `selftest.sh` and the real Linux backends in a throwaway Debian container (see [Linux check](#linux-check)). `linux/` holds its image and in-container script. | throwaway keys generated in the container only |
 
@@ -77,8 +77,9 @@ An App's config records `key_confirm`: `keychain-acl` when every use of its key 
 
 - `key-store.sh put --confirm SERVICE ACCOUNT [LABEL]` creates the Keychain item with no trusted application (`-T ""` on the stdin of `security -i`, and no `-U`). Not even `security` itself is trusted, so every read of the value asks for confirmation in a dialogue, and a read with no GUI session, such as over SSH, fails. It refuses an item that exists already, rather than update it with an access list it cannot see: delete the item first. The check reads attributes only, so it never asks.
 - **Answer "Allow", never "Always Allow".** "Always Allow" adds `security` to the item's trusted applications, after which reads stop asking, silently: nothing here can tell. To undo it, delete the item and store the key again (see [Steward](#steward), Rotation).
-- Only the `keychain` store has this. Every other store refuses `put --confirm`, and `create` refuses an App whose profile asks for confirmation (the steward) when the key would go elsewhere, unless `--unconfirmed-key` is given, which records `key_confirm` `none`. On Linux that is the only way to create the steward; its key is then as well protected as the store makes it, and no more.
-- `rotate` keeps the confirmation: for `keychain-acl` it stores the new key with `put --confirm`, in the keychain only.
+- Only the `keychain` store has this. Every other store refuses `put --confirm`. Where the keychain store is available, as on a Mac, the key of an App whose profile asks for confirmation (the steward) always goes there with confirmation: `create` and `rotate` refuse any other `MSW_KEY_STORE`, and `create` refuses `--unconfirmed-key`.
+- Where there is no keychain store, as on Linux, `create` refuses such an App unless `--unconfirmed-key` is given, which records `key_confirm` `none`. That is the only way to create the steward there; its key is then as well protected as the store makes it, and no more.
+- `rotate` keeps the confirmation: for `keychain-acl` it stores the new key with `put --confirm`, in the keychain only. Where the keychain store is available it does so for the steward even when its config says `none`, and records `keychain-acl`.
 
 Before the first `put --confirm` on a Mac, check once, with a dummy item, that it behaves as described:
 
@@ -143,7 +144,7 @@ key-store.sh delete msw-selftest t
 .mintswarm/dogfood/github/store-credentials.sh create .mintswarm/dogfood/github/manifests/mintswarm-dev-steward.json
 ```
 
-It runs as for `mintswarm-dev` (Setup, step 1), with a browser signed in as an owner of the `mintswarm` organisation. It refuses to start when `steward-app.json` exists, when `MSW_STEWARD_CONFIG` points at a `mintswarm-dev` config, and when the key would not go to the Keychain (on Linux, see `--unconfirmed-key` above). If GitHub answers for another App, nothing is stored. Whenever it fails after the code was used, the App exists on GitHub without a usable key here: it prints the App's id and says to delete that App and run `create` again. Reading the key back after storing it asks for confirmation once: answer "Allow", never "Always Allow". Compare the printed fingerprint with the App's settings page.
+It runs as for `mintswarm-dev` (Setup, step 1), with a browser signed in as an owner of the `mintswarm` organisation. It refuses to start when `steward-app.json` exists, when `MSW_STEWARD_CONFIG` points at a `mintswarm-dev` config, and when the key would not go to the Keychain with confirmation: on a Mac it refuses another `MSW_KEY_STORE` and `--unconfirmed-key` (on Linux, see `--unconfirmed-key` above). If GitHub answers for another App, nothing is stored. Whenever it fails after the code was used, the App exists on GitHub without a usable setup here: it prints the App's id and says to delete that App and run `create` again, and, when the key had been stored already (for example when Deny was answered at the read-back), the `key-store.sh delete` command for its item. Reading the key back after storing it asks for confirmation once: answer "Allow", never "Always Allow". Compare the printed fingerprint with the App's settings page.
 
 **Rotation:** generate a new key in the App's settings, delete the item, then rotate:
 
@@ -152,7 +153,7 @@ key-store.sh delete mintswarm-dev-steward-private-key <client id>
 MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json store-credentials.sh rotate ~/Downloads/mintswarm-dev-steward.<date>.private-key.pem
 ```
 
-`rotate` refuses while the item exists, and refuses any store other than the keychain for this App.
+`rotate` refuses while the item exists, and refuses any store other than the keychain for this App wherever the keychain store is available.
 
 **The maintainer's admin steps.** They need the organisation's admin rights, so the scripts never run them:
 

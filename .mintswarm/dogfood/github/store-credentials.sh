@@ -10,13 +10,15 @@
 #       http://127.0.0.1:PORT/ with PORT from 1024 to 65535), that the App's
 #       config does not exist yet and is not the other App's, that
 #       MSW_MANIFEST_TIMEOUT (seconds, default 600) is valid and that a key
-#       store is available; for an App whose key needs confirmation that store
-#       must be the keychain, unless --unconfirmed-key is given, which records
-#       key_confirm none.
+#       store is available. For an App whose key needs confirmation: where the
+#       keychain store is available, the key goes there with confirmation and
+#       --unconfirmed-key is refused; elsewhere create is refused unless
+#       --unconfirmed-key is given, which records key_confirm none.
 #       It then writes ~/.config/mintswarm/create-NAME.html (removed on exit),
 #       which posts the manifest to GitHub with a random state, and starts
-#       manifest-listener.py on 127.0.0.1:PORT. Open the page in a browser
-#       signed in as an owner of the organisation. The listener takes the first
+#       manifest-listener.py on 127.0.0.1:PORT. Once the listener says it is
+#       listening, open the page it names in a browser signed in as an owner of
+#       the organisation. The listener takes the first
 #       redirect whose state matches and hands the code over on a pipe; curl
 #       exchanges it for the App's credentials, reading the URL from its stdin
 #       (-K -). The App must come back with the manifest's name as slug and
@@ -33,7 +35,9 @@
 #       key_store and key_confirm and delete the downloaded file unless --keep.
 #       The label and the confirmation come from the App's profile, found by
 #       the config's slug. A key that needs confirmation stays in the keychain,
-#       whose existing item must be deleted first. Moving to another key store
+#       whose existing item must be deleted first; where the keychain store is
+#       available, such an App's key always goes there with confirmation, even
+#       when its config says none. Moving to another key store
 #       leaves the old item where it is.
 #
 # The code passes only through a pipe, a shell variable and curl's stdin; it is
@@ -79,7 +83,12 @@ canon() {  # canon PATH: PATH with its existing directories resolved, for compar
   printf '%s/%s\n' "${p%/}" "$rest"
 }
 
+keychain_here() {  # the keychain store is available here; runs no backend command
+  MSW_KEY_STORE=keychain "$MSW_HERE/key-store.sh" backend >/dev/null 2>&1
+}
+
 KEY_FINGERPRINT=""
+KEY_PUT=""  # after a successful put: the command that deletes the item again
 import_key() {  # import_key SERVICE CLIENT_ID PEM STORE LABEL CONFIRM(0|1); sets KEY_FINGERPRINT
   local service="$1" client_id="$2" pem="$3" store="$4" label="$5" stored
   local put=(put)
@@ -91,6 +100,7 @@ import_key() {  # import_key SERVICE CLIENT_ID PEM STORE LABEL CONFIRM(0|1); set
   KEY_FINGERPRINT="$(printf '%s\n' "$pem" | fingerprint)"
   printf '%s\n' "$pem" | MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" "${put[@]}" "$service" "$client_id" "$label" \
     || msw_die "storing the key in the $store key store failed"
+  KEY_PUT="MSW_KEY_STORE=$store $MSW_HERE/key-store.sh delete $service $client_id"
   stored="$(MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" get "$service" "$client_id" | fingerprint)" \
     || msw_die "reading the key back from the $store key store failed"
   [ "$stored" = "$KEY_FINGERPRINT" ] \
@@ -100,10 +110,14 @@ import_key() {  # import_key SERVICE CLIENT_ID PEM STORE LABEL CONFIRM(0|1); set
 # --- create ------------------------------------------------------------------
 
 PAGE=""
-PENDING=""  # set while an App exists on GitHub whose key is not stored yet
+PENDING=""  # set while an App exists on GitHub and create has not finished
 on_exit() {
   if [ -n "$PAGE" ]; then rm -f "$PAGE"; fi
-  if [ -n "$PENDING" ]; then
+  [ -n "$PENDING" ] || return 0
+  if [ -n "$KEY_PUT" ]; then
+    printf '%s\n' "store-credentials.sh: $PENDING exists on GitHub and its key is in the key store, but create did not finish." >&2
+    printf '%s\n' "store-credentials.sh: delete the App (organisation settings, GitHub Apps) and the key ($KEY_PUT), then run create again." >&2
+  else
     printf '%s\n' "store-credentials.sh: $PENDING exists on GitHub, but its key was not stored." >&2
     printf '%s\n' "store-credentials.sh: delete it (organisation settings, GitHub Apps) and run create again." >&2
   fi
@@ -156,10 +170,16 @@ create() {
   # A code works once: fail before asking for one when there is nowhere to keep the key.
   store="$("$MSW_HERE/key-store.sh" backend)" || exit 1
   confirm="$MSW_PROFILE_CONFIRM"
+  if [ "$unconfirmed" = 1 ] && keychain_here; then
+    msw_die "--unconfirmed-key is only for a machine without the keychain store; here every use of the key can be confirmed: leave it out"
+  fi
   if [ "$confirm" = keychain-acl ]; then
-    if [ "$unconfirmed" = 1 ]; then
+    if keychain_here; then
+      [ "$store" = keychain ] \
+        || msw_die "every use of $name's key must be confirmed, which only the keychain store does, and it is available here: unset MSW_KEY_STORE or set it to keychain (not $store)"
+    elif [ "$unconfirmed" = 1 ]; then
       confirm=none
-    elif [ "$store" != keychain ]; then
+    else
       msw_die "every use of $name's key must be confirmed, which only the keychain store does, and the key would go to the $store store: on this machine add --unconfirmed-key to accept a key without confirmation"
     fi
   fi
@@ -189,9 +209,8 @@ create() {
     "<script>document.getElementById(\"f\").submit();</script>"' > "$PAGE"
   chmod 600 "$PAGE"
 
-  printf '%s\n' "creating $name: open the page below in a browser signed in as an owner of the $MSW_REPO_OWNER organisation"
-  printf '%s\n' "$PAGE"
-  printf '%s\n' "waiting up to $timeout seconds for GitHub's redirect to $redirect"
+  printf '%s\n' "creating $name: once the listener says it is listening, open the page it names in a browser"
+  printf '%s\n' "signed in as an owner of the $MSW_REPO_OWNER organisation; it waits up to $timeout seconds for GitHub's redirect to $redirect"
   code="$(printf '%s\n' "$state" | python3 -I "$MSW_HERE/manifest-listener.py" "$port" "$timeout" "$PAGE")" \
     || msw_die "no code was received, so no App was converted (if GitHub created $name anyway, delete it and run create again)"
   state=""
@@ -245,7 +264,7 @@ create() {
           --arg fingerprint "SHA256:$KEY_FINGERPRINT" --arg key_confirm "$confirm" \
           '{app_id: ($id|tonumber), slug: $slug, client_id: $client_id, keychain_service: $keychain_service, key_store: $key_store, key_fingerprint: $fingerprint, key_confirm: $key_confirm}' \
       > "$cfg"
-  ) || msw_die "cannot write $cfg; the key is stored in the $store key store under $MSW_PROFILE_SERVICE $client_id"
+  ) || msw_die "cannot write $cfg"
   PENDING=""
 
   printf '%s\n' "created: app $slug (id $id, client $client_id)"
@@ -283,6 +302,12 @@ rotate() {
   store="${MSW_KEY_STORE:-}"
   if [ -z "$store" ]; then
     store="$(msw_recorded_key_store)" || exit 1
+  fi
+  if [ "$MSW_PROFILE_CONFIRM" = keychain-acl ] && keychain_here; then
+    # Where the keychain can confirm every use, this App's key never goes without it.
+    [ "$store" = keychain ] \
+      || msw_die "every use of $slug's key must be confirmed, which only the keychain store does, and it is available here: not $store"
+    confirm=keychain-acl
   fi
   case "$confirm" in
     none) ;;

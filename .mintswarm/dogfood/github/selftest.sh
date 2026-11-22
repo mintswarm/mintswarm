@@ -15,9 +15,9 @@
 #
 # Checks: shellcheck and py_compile; the per-App table; the manifests; App
 # creation with store-credentials.sh create, whose listener is driven over
-# 127.0.0.1 (matching and wrong states, loopback only, the timeout, a held port)
-# with the conversion answered by the curl stub; the JWT and the installation
-# token; key rotation, with and without per-use confirmation; every key store
+# 127.0.0.1 (matching and wrong states, loopback only, the timeout, a client that
+# trickles bytes, a held port) with the conversion answered by the curl stub;
+# the JWT and the installation token; key rotation, with and without per-use confirmation; every key store
 # backend (selection, round trips, put --confirm, the file backend's modes and
 # refusals, rotate and jwt through each); the bot identity include; push.sh
 # pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
@@ -56,7 +56,8 @@ unset MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_EN
       GIT_ASKPASS SSH_ASKPASS GIT_SSL_NO_VERIFY GIT_SSL_CAINFO GIT_SSL_CAPATH \
       MSW_KEY_STORE DBUS_SESSION_BUS_ADDRESS PASSWORD_STORE_DIR GNUPGHOME CREDENTIALS_DIRECTORY \
       MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION MSW_STUB_SECRET_TOOL_HANG MSW_KEY_STORE_TIMEOUT \
-      MSW_STEWARD_CONFIG MSW_MANIFEST_TIMEOUT MSW_STUB_CONV_SLUG MSW_STUB_CONV_MANIFEST MSW_STUB_CURL_FAIL
+      MSW_STEWARD_CONFIG MSW_MANIFEST_TIMEOUT MSW_STUB_CONV_SLUG MSW_STUB_CONV_MANIFEST MSW_STUB_CURL_FAIL \
+      MSW_STUB_SECURITY_READ_FAIL
 export HOME="$sandbox/home"
 export TMPDIR="$sandbox/tmp"
 export XDG_RUNTIME_DIR="$sandbox/run"
@@ -143,6 +144,10 @@ if argv and argv[0] in ("find-generic-password", "delete-generic-password"):
         del kc[key]
         json.dump(kc, open(path, "w"))
         sys.exit(0)
+    if "-w" in argv and os.environ.get("MSW_STUB_SECURITY_READ_FAIL"):
+        # As when the confirmation prompt is denied, or there is no GUI session.
+        print("security: User interaction is not allowed.", file=sys.stderr)
+        sys.exit(36)
     print(kc[key] if "-w" in argv else 'keychain: "stub"')
     sys.exit(0)
 
@@ -560,7 +565,9 @@ cat > "$sandbox/probe.py" <<'EOF'
 # probe.py get PORT TARGET HOST   GET TARGET from 127.0.0.1:PORT with that Host header;
 #                                 the status, headers and body as JSON
 # probe.py connect HOST PORT      exit 0 if a TCP connection opens within 1 second
-import html, http.client, json, re, socket, sys
+# probe.py trickle PORT SECS      connect to 127.0.0.1:PORT, print "connected", then send
+#                                 a request one byte every 0.2 seconds for SECS seconds
+import html, http.client, json, re, socket, sys, time
 
 cmd = sys.argv[1]
 if cmd == "page":
@@ -587,6 +594,19 @@ elif cmd == "connect":
     except OSError:
         sys.exit(1)
     s.close()
+elif cmd == "trickle":
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[2])), timeout=1)
+    print("connected", flush=True)
+    end = time.monotonic() + float(sys.argv[3])
+    data = b"GET /?code=" + b"a" * 10000
+    i = 0
+    try:
+        while time.monotonic() < end:
+            s.sendall(data[i:i + 1])
+            i += 1
+            time.sleep(0.2)
+    except OSError:
+        print("dropped", flush=True)
 else:
     sys.exit(2)
 EOF
@@ -768,6 +788,8 @@ check "an extra parameter is rejected" rejected extra "/?code=$CODE&state=$state
 check "a repeated parameter is rejected" rejected repeated "/?code=$CODE&code=$CODE&state=$state"
 check "another path is rejected" rejected path "/x?code=$CODE&state=$state"
 check "a malformed code with the right state is rejected" rejected bad-code "/?code=bad%2Fcode&state=$state"
+check "a code with a trailing newline is rejected" rejected nl-code "/?code=$CODE%0A&state=$state"
+check "a state with a trailing newline is rejected" rejected nl-state "/?code=$CODE&state=$state%0A"
 check "another Host is rejected" rejected host "/?code=$CODE&state=$state" "evil.example:$lport"
 reasons_logged() {
   local r
@@ -852,6 +874,33 @@ check "it succeeds" created
 check "and warns that the permissions differ" present "warning: mintswarm-dev's permissions differ from the manifest's" "$create_out.err"
 check "and writes its config" test -f "$sandbox/warn/dev-app.json"
 
+# Failures after the conversion say what is left behind.
+m_put="$(manifest_copy mintswarm-dev-steward)"
+lport="$(port_of "$m_put")"
+check "create while the steward's item exists: the listener starts" \
+  start_create c-put env MSW_STEWARD_CONFIG="$sandbox/put/steward-app.json" MSW_STUB_CONV_SLUG=mintswarm-dev-steward \
+  MSW_STUB_CONV_MANIFEST="$m_put" "$S" create "$m_put"
+state="$(create_state)" || state=""
+check "its redirect is accepted" accept put
+check "it fails, saying the App exists and its key was not stored" \
+  failed_saying "the App mintswarm-dev-steward (id 5874301) exists on GitHub, but its key was not stored."
+check "and writes no config" test ! -e "$sandbox/put/steward-app.json"
+"$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
+m_rb="$(manifest_copy mintswarm-dev-steward)"
+lport="$(port_of "$m_rb")"
+check "create whose read-back fails (as on Deny): the listener starts" \
+  start_create c-rb env MSW_STUB_SECURITY_READ_FAIL=1 MSW_STEWARD_CONFIG="$sandbox/rb/steward-app.json" \
+  MSW_STUB_CONV_SLUG=mintswarm-dev-steward MSW_STUB_CONV_MANIFEST="$m_rb" "$S" create "$m_rb"
+state="$(create_state)" || state=""
+check "its redirect is accepted" accept rb
+check "it fails, saying the App exists and its key is in the key store" \
+  failed_saying "(id 5874301) exists on GitHub and its key is in the key store, but create did not finish."
+check "and names the command that deletes the key" \
+  present "MSW_KEY_STORE=keychain $here/key-store.sh delete mintswarm-dev-steward-private-key $CLIENT_ID" "$create_out.err"
+check "and writes no config" test ! -e "$sandbox/rb/steward-app.json"
+check "the listener's line comes before any instruction to open the page" \
+  sh -c '! grep -qF "create-mintswarm-dev-steward.html" "$1" && grep -qF "once the listener says it is listening" "$1"' sh "$create_out.out"
+
 # Timeout, and a port held by another socket.
 m_to="$(manifest_copy mintswarm-dev-steward)"
 lport="$(port_of "$m_to")"
@@ -863,6 +912,31 @@ check "with no redirect, create fails within 10 seconds" failed_saying "no match
 check "and calls no curl" eq "$(curl_calls)" "$calls"
 check "and writes no config" test ! -e "$sandbox/to/steward-app.json"
 check "and removes the page" test ! -e "$page"
+m_tr="$(manifest_copy mintswarm-dev-steward)"
+trickle_bounded() {  # a client sending a byte every 0.2 seconds; create with a 2-second timeout ends within 5
+  local start end i=0 tpid rc=0
+  lport="$(port_of "$m_tr")"
+  start="$(date +%s)"
+  start_create c-tr env MSW_MANIFEST_TIMEOUT=2 MSW_STEWARD_CONFIG="$sandbox/tr/steward-app.json" "$S" create "$m_tr" || return 1
+  python3 "$sandbox/setsid.py" python3 "$sandbox/probe.py" trickle "$lport" 15 > "$sandbox/trickle.out" 2>&1 &
+  tpid=$!
+  bg_groups="$bg_groups $tpid"
+  until grep -q connected "$sandbox/trickle.out" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 50 ] || { cat "$sandbox/trickle.out"; return 1; }
+    sleep 0.1
+  done
+  finish_create || rc=$?
+  end="$(date +%s)"
+  kill -TERM -- "-$tpid" 2>/dev/null || true
+  wait "$tpid" 2>/dev/null || true
+  cat "$create_out.out" "$create_out.err"
+  { [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; } || { echo "create's status: $rc"; return 1; }
+  grep -qF "no matching redirect within 2 seconds" "$create_out.err" || return 1
+  [ $((end - start)) -le 5 ] || { echo "took $((end - start)) seconds"; return 1; }
+}
+check "a client sending one byte at a time cannot keep the listener past its timeout" trickle_bounded
+check "and nothing was converted or written" test ! -e "$sandbox/tr/steward-app.json"
 m_held="$(manifest_copy mintswarm-dev-steward)"
 held_port="$(port_of "$m_held")"
 held_pid=""
@@ -887,6 +961,19 @@ check "with the port held, create fails before listening" \
   refused_early "cannot listen on 127.0.0.1:$held_port" env MSW_STEWARD_CONFIG="$sandbox/held/steward-app.json" "$S" create "$m_held"
 kill -TERM -- "-$held_pid" 2>/dev/null || true
 wait "$held_pid" 2>/dev/null || true
+
+# macOS: the keychain can confirm every use, so the steward's key never goes without it.
+check "on macOS the steward's create refuses --unconfirmed-key" \
+  refused_early "--unconfirmed-key is only for a machine without the keychain store" \
+  env MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" "$S" create "$(manifest_copy mintswarm-dev-steward)" --unconfirmed-key
+check "on macOS the steward's create refuses another key store" \
+  refused_early "it is available here: unset MSW_KEY_STORE or set it to keychain (not file)" \
+  env MSW_KEY_STORE=file MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" "$S" create "$(manifest_copy mintswarm-dev-steward)"
+check "even with --unconfirmed-key" \
+  refused_early "--unconfirmed-key is only for a machine without the keychain store" \
+  env MSW_KEY_STORE=file MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" \
+  "$S" create "$(manifest_copy mintswarm-dev-steward)" --unconfirmed-key
+check "the refusals wrote no key file" test ! -e "$HOME/.config/mintswarm/keys"
 
 # Linux: no per-use confirmation, so the steward needs --unconfirmed-key.
 lx_env=(HOME="$sandbox/lx" MSW_STUB_UNAME=Linux DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent)
@@ -993,7 +1080,7 @@ check "the refused rotation kept the file and the fingerprint" \
   sh -c 'test -f "$1" && test "$(jq -r .key_fingerprint "$2")" = "SHA256:$3"' sh \
   "$sandbox/steward-new.pem" "$steward_cfg" "$(fingerprint_of "$keys/key1.pem")"
 check "rotating the steward's key into the file store is refused" \
-  fails_saying "only the keychain store does: not file" env MSW_KEY_STORE=file MSW_APP_CONFIG="$steward_cfg" \
+  fails_saying "only the keychain store does, and it is available here: not file" env MSW_KEY_STORE=file MSW_APP_CONFIG="$steward_cfg" \
   "$S" rotate "$sandbox/steward-new.pem"
 check "and wrote no key file" test ! -e "$HOME/.config/mintswarm/keys"
 "$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
@@ -1011,6 +1098,23 @@ check "it keeps keychain-acl and records the new fingerprint" \
      "keychain-acl keychain SHA256:$(fingerprint_of "$keys/key2.pem")"
 steward_jwt() { ( export MSW_APP_CONFIG="$steward_cfg"; verify_jwt "$keys/pub2.pem" ); }
 check "the steward's rotated key signs its JWT" steward_jwt
+jq '.key_confirm = "none"' "$steward_cfg" > "$sandbox/steward-none.json"
+cp "$keys/key2.pem" "$sandbox/steward-none.pem"
+check "on macOS a steward config saying none still rotates with confirmation, so its item must go first" \
+  fails_saying "delete it first" env MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
+check "and another key store is refused" \
+  fails_saying "it is available here: not file" \
+  env MSW_KEY_STORE=file MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
+"$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
+check "after deleting the item it rotates" env MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
+check "with -T \"\" and the steward's label" steward_rotated_line
+check "and upgrades the config to keychain-acl" eq "$(jq -r .key_confirm "$sandbox/steward-none.json")" keychain-acl
+lx_cfg="$sandbox/lx/.config/mintswarm/steward-app.json"
+cp "$keys/key2.pem" "$sandbox/lx-new.pem"
+check "on Linux the steward's unconfirmed key rotates as none" \
+  env "${lx_env[@]}" MSW_APP_CONFIG="$lx_cfg" "$S" rotate "$sandbox/lx-new.pem"
+check "and stays in secret-service with no confirmation" \
+  eq "$(jq -r '[.key_store, .key_confirm] | join(" ")' "$lx_cfg")" "secret-service none"
 cp "$keys/key1.pem" "$sandbox/any.pem"
 jq '.slug = "mintswarm-other"' "$steward_cfg" > "$sandbox/other-slug.json"
 check "rotate refuses a config naming an unknown App" \
