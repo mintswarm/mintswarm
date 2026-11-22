@@ -15,7 +15,8 @@ committed as JSON text at the same path. floor.py runs as
 `sys.executable -I floor.py ...` with that repository as its working
 directory and plans and facts files written under `cases/`. Every run gets
 a facts file for its own base and head: clean (no checks, a passed gate
-round, a review `pass`, no steers) unless the case changes it.
+round, a review `pass`, both judging the head, no steers) unless the case
+changes it.
 
 Checks:
 
@@ -37,13 +38,16 @@ Checks:
   evaluates the other seven;
 - facts rules, each clean and hit: `gates` (failed then passed is clean; no
   round, a last round failed, passed with a failed test, an unknown
-  verdict, failed tests without a string name), `checks` (zero checks and
+  verdict, failed tests without a string name, a passed last round from
+  the base commit), `checks` (zero checks and
   successes are clean and listed; a failure, a run not completed, a
   pending status, a neutral run, a name holding a newline, U+2028 and
   U+0085 that stays escaped on its printed line; on a base
   with .github/workflows, in either case, zero checks hits and a success
   is clean), `review` (changes required then pass is clean; no round, pass
-  then changes required), `steers` (none is clean; one and two steers,
+  then changes required, a passing last round from another commit),
+  stale earlier rounds followed by current passing ones are clean, `steers`
+  (none is clean; one and two steers,
   named by author and URL), and all four at once, also with an unusable
   footprint;
 - submodules: a gitlink hidden by a worktree `.gitmodules` `ignore = all` is
@@ -64,15 +68,18 @@ Checks:
 - unusable input: bad arguments (a missing or repeated --facts included),
   refs, history, configs and plans, a facts file that is missing, a
   directory, a symlink, not UTF-8, not JSON, has a duplicate key or NaN, is
-  not an object, has the wrong tool or version, a short head, the head or
-  base of another commit, mistyped or missing fields, or rounds out of
-  order, a missing `yq` and a missing plan-approval/floor.py exit 2 with a
+  not an object, has the wrong tool or version (1 included), a short head,
+  the head or base of another commit, mistyped or missing fields, a round
+  `commit` that is not a hash, a `current` that is a string, `current` true
+  on a stale round or false on a current one, or rounds out of order, a
+  missing `yq` and a missing plan-approval/floor.py exit 2 with a
   one-line message naming the cause and leave no verdict file, even a
   stale one; every case but those without it passes --facts for its own
   base and head, so it fails for its own reason;
-- facts contract: collect-facts.py's TOOL and VERSION are the ones
+- facts contract: collect-facts.py's TOOL and VERSION (2) are the ones
   floor.py reads, and facts written by the real `collect-facts.py
-  assemble`, from saved responses and kept rounds made here, are read by
+  assemble`, from saved responses and version 2 kept rounds made here, in a
+  runner-state directory outside the repository, are read by
   the floor: clean ones are clean, and a CTRF test without a name, a
   failed check run and a human comment after the approval give `gates`
   (an unnamed gate), `checks` and `steers` hits;
@@ -355,13 +362,28 @@ def appended(path: str, n: int, tag: str = "more") -> dict:
 
 # --- facts ----------------------------------------------------------------
 
-def gate_round(n: int, verdict: str = "passed", failed: list = (), reason: str = None) -> dict:
-    return {"round": n, "verdict": verdict, "failed_tests": list(failed), "reason": reason, "files": []}
+def gate_round(n: int, verdict: str = "passed", failed: list = (), reason: str = None, commit: str = None) -> dict:
+    """A gate round; a missing commit and current are filled in for the facts' head (fill_rounds)."""
+    return {"round": n, "commit": commit, "current": None, "verdict": verdict, "failed_tests": list(failed),
+            "reason": reason, "files": []}
 
 
-def review_round(n: int, verdict: str = "pass") -> dict:
-    return {"round": n, "verdict": verdict, "findings": {"blocker": 0, "major": 0, "minor": 0, "nit": 0},
-            "files": []}
+def review_round(n: int, verdict: str = "pass", commit: str = None) -> dict:
+    return {"round": n, "commit": commit, "current": None, "verdict": verdict,
+            "findings": {"blocker": 0, "major": 0, "minor": 0, "nit": 0}, "files": []}
+
+
+def fill_rounds(content: dict) -> dict:
+    """Give each round without a commit the head, and without current whether its commit is the head."""
+    for key in ("gate_rounds", "review_rounds"):
+        rounds = content.get(key)
+        for entry in rounds if isinstance(rounds, list) else []:
+            if isinstance(entry, dict):
+                if entry.get("commit") is None:
+                    entry["commit"] = content["head"]
+                if entry.get("current") is None:
+                    entry["current"] = entry["commit"] == content["head"]
+    return content
 
 
 def check_entry(name: str, conclusion, source: str = "check-run", app="github-actions") -> dict:
@@ -374,9 +396,9 @@ def steer(author: str, url: str, kind: str = "pr-comment", time: str = "2026-01-
 
 def clean_facts(base: str, head: str) -> dict:
     """A clean facts file in collect-facts.py's key order: no checks, a passed gate round, a review pass."""
-    return {
+    return fill_rounds({
         "tool": "mintswarm-landing-facts",
-        "version": 1,
+        "version": 2,
         "pr": 1,
         "issue": 1,
         "head": head,
@@ -387,7 +409,7 @@ def clean_facts(base: str, head: str) -> dict:
         "review_rounds": [review_round(1)],
         "steers": [],
         "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
-    }
+    })
 
 
 def facts_bytes(facts) -> bytes:
@@ -403,7 +425,7 @@ def facts_for(base: str, head: str, facts=None):
         content = facts(content)
     elif facts is not None:
         content.update(facts)
-    return content
+    return fill_rounds(content)
 
 
 # --- verdict checks -------------------------------------------------------
@@ -911,7 +933,7 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
     def edited(change) -> str:
         content = clean_facts(real, head)
         change(content)
-        return sb.write_facts("edited", content)
+        return sb.write_facts("edited", fill_rounds(content))
 
     link = sb.repo / "cases" / "link.facts.json"
     link.symlink_to(Path(good_facts).name)
@@ -949,7 +971,18 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         ("facts top-level list", args(facts=sb.write_facts("list", b"[]\n")), "is not a JSON object"),
         ("facts wrong tool", args(facts=edited(lambda c: c.update(tool="mintswarm-plan-floor"))),
          "tool must be 'mintswarm-landing-facts'"),
-        ("facts wrong version", args(facts=edited(lambda c: c.update(version=2))), "version must be 1, not 2"),
+        ("facts wrong version", args(facts=edited(lambda c: c.update(version=3))), "version must be 2, not 3"),
+        ("facts of version 1", args(facts=edited(lambda c: c.update(version=1))), "version must be 2, not 1"),
+        ("facts current true on a stale round",
+         args(facts=edited(lambda c: c["gate_rounds"][0].update(commit=other, current=True))),
+         f"gate_rounds[0].current is true, but its commit {other} is not the head {head}"),
+        ("facts current false on a current round",
+         args(facts=edited(lambda c: c["review_rounds"][0].update(current=False))),
+         f"review_rounds[0].current is false, but its commit {head} is the head {head}"),
+        ("facts round commit not a hash", args(facts=edited(lambda c: c["gate_rounds"][0].update(commit="abc123"))),
+         "gate_rounds[0].commit must be a full commit hash, not \"abc123\""),
+        ("facts current a string", args(facts=edited(lambda c: c["review_rounds"][0].update(current="true"))),
+         "review_rounds[0].current must be a boolean, not \"true\""),
         ("facts short head", args(facts=edited(lambda c: c.update(head=head[:12]))),
          "head must be a full commit hash"),
         ("facts head of another commit", args(facts=edited(lambda c: c.update(head=real))),
@@ -1037,6 +1070,22 @@ def check_facts_rules(r: Runner) -> None:
                                                  "gate whitespace failed in the last gate round, 1"],
             str(reasons_of(verdict, "gates")))
 
+    base = r.commits["real"]
+    other = r.commits["shadow"]
+    head = r.sb.child(base, change, "stale rounds")
+    reason = f"the last gate round, 1, judged commit {base}, not the head {head}"
+    _, verdict = expect("gates: a passed last round from the base commit", {"gate_rounds": [gate_round(1, commit=base)]},
+                        {"gates": reason}, head=head)
+    T.check("facts gates: a stale passed round gives only the commit reason", reasons_of(verdict, "gates") == [reason],
+            str(reasons_of(verdict, "gates")))
+    expect("gates: a stale earlier round, then a current pass",
+           {"gate_rounds": [gate_round(1, commit=base), gate_round(2)]}, {}, head=head)
+    _, verdict = expect("gates: a stale failed last round",
+                        {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed", commit=base)]},
+                        {"gates": reason}, head=head)
+    T.check("facts gates: a stale failed round gives the verdict and the commit reasons",
+            len(reasons_of(verdict, "gates")) == 3, str(reasons_of(verdict, "gates")))
+
     # checks
     _, verdict = expect("checks: zero checks", {"checks": []}, {})
     T.check("facts checks: zero checks lists none", isinstance(verdict, dict) and verdict["facts"]["checks"] == [],
@@ -1075,6 +1124,13 @@ def check_facts_rules(r: Runner) -> None:
     expect("review: pass then changes required", {"review_rounds": [review_round(1),
                                                                     review_round(2, "changes_required")]},
            {"review": "the last review round, 2, has verdict 'changes_required', not 'pass'"})
+    reason = f"the last review round, 1, judged commit {other}, not the head {head}"
+    _, verdict = expect("review: a passing last round from another commit",
+                        {"review_rounds": [review_round(1, commit=other)]}, {"review": reason}, head=head)
+    T.check("facts review: a stale passing round gives only the commit reason",
+            reasons_of(verdict, "review") == [reason], str(reasons_of(verdict, "review")))
+    expect("review: a stale earlier round, then a current pass",
+           {"review_rounds": [review_round(1, "changes_required", commit=base), review_round(2)]}, {}, head=head)
 
     # steers
     expect("steers: none", {"steers": []}, {})
@@ -1124,23 +1180,24 @@ def write_json(path: Path, value) -> bytes:
     return data
 
 
-def kept_round(rounds: Path, kind: str, number: int, files: dict) -> None:
-    """Write a kept round as keep-round.py records it: the files and a round.json listing their sha256."""
+def kept_round(rounds: Path, kind: str, number: int, files: dict, head: str) -> None:
+    """Write a kept round as keep-round.py records it: the files and a round.json with the head and sha256s."""
     directory = rounds / f"{kind}-{number}"
     directory.mkdir(parents=True)
     listed = []
     for name in sorted(files):
         (directory / name).write_bytes(files[name])
         listed.append({"name": name, "sha256": hashlib.sha256(files[name]).hexdigest()})
-    write_json(directory / "round.json", {"tool": "mintswarm-keep-round", "version": 1, "kind": kind,
-                                          "round": number, "kept_at": "2026-01-01T00:00:00Z", "files": listed})
+    write_json(directory / "round.json", {"tool": "mintswarm-keep-round", "version": 2, "kind": kind,
+                                          "round": number, "head": head, "kept_at": "2026-01-01T00:00:00Z", "files": listed})
 
 
 def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list,
-                    pr_comments: list) -> tuple:
-    """Run collect-facts.py assemble on saved responses and kept rounds; return (exit, facts bytes or None)."""
-    work = sb.tmp / f"collected-{name}"
-    responses, rounds = work / "responses", work / "rounds"
+                    pr_comments: list, kept_at: str) -> tuple:
+    """Run collect-facts.py assemble on saved responses and rounds kept at `kept_at` in runner state outside
+    the repository; return (exit, facts bytes or None)."""
+    responses = sb.tmp / f"collected-{name}" / "responses"
+    rounds = sb.tmp / "runner-state" / f"collected-{name}" / "rounds"
     write_json(responses / "request.json", {"pr": 1, "issue": 2, "head": head, "fetched_at": "2026-01-03T00:00:00Z"})
     write_json(responses / "pull.1.json", {"number": 1, "head": {"sha": head}, "base": {"sha": base}})
     write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
@@ -1150,9 +1207,9 @@ def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, c
         write_json(responses / f"{listing}.1.json", items)
     gates_input = json.dumps({"gates": [{"name": "whitespace", "command": "true"}]}).encode("utf-8")
     kept_round(rounds, "gates", 1, {"gates.input.json": gates_input,
-                                    "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")})
+                                    "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")}, kept_at)
     review = "# Review round 1: collected\n\n## Verdict\n\npass\n\n```yaml\nfindings: []\n```\n"
-    kept_round(rounds, "review", 1, {"review.md": review.encode("utf-8")})
+    kept_round(rounds, "review", 1, {"review.md": review.encode("utf-8")}, kept_at)
     facts = sb.repo / ".mintswarm" / "job" / "inputs" / "landing" / "facts.json"
     proc = subprocess.run(
         [sys.executable, "-I", str(COLLECT_FACTS), "assemble", "--responses", str(responses), "--pr", "1",
@@ -1167,10 +1224,12 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
     """Facts written by the real collect-facts.py assemble, read by the floor."""
     base = r.commits["real"]
     fp = footprint(["docs/guide.md"], estimated_lines=4)
+    green = [{"id": 1, "name": "build", "status": "completed", "conclusion": "success", "app": {"slug": "ci"}}]
     cases = [
-        ("clean", [{"name": "whitespace", "status": "passed"}],
-         [{"id": 1, "name": "build", "status": "completed", "conclusion": "success", "app": {"slug": "ci"}}],
-         [], {}),
+        ("clean", [{"name": "whitespace", "status": "passed"}], green, [], {}),
+        ("stale", [{"name": "whitespace", "status": "passed"}], green, [],
+         {"gates": f"the last gate round, 1, judged commit {base}, not the head {{head}}",
+          "review": f"the last review round, 1, judged commit {base}, not the head {{head}}"}),
         ("hits", [{"status": "failed"}],
          [{"id": 1, "name": "build", "status": "completed", "conclusion": "failure", "app": {"slug": "ci"}}],
          [{"id": 9, "html_url": "https://github.com/o/r/pull/1#issuecomment-9", "user": {"login": "alice",
@@ -1183,7 +1242,9 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
     ]
     for name, tests, check_runs, comments, hits in cases:
         head = sb.child(base, appended("docs/guide.md", 1), f"collected {name}")
-        proc, data = collected_facts(sb, name, base, head, tests, check_runs, comments)
+        proc, data = collected_facts(sb, name, base, head, tests, check_runs, comments,
+                                     base if name == "stale" else head)
+        hits = {rule: reason.replace("{head}", head) for rule, reason in hits.items()}
         if not T.check(f"collected facts {name}: collect-facts.py assemble writes them", data is not None,
                        f"exit {proc.returncode}: {proc.stderr.strip()}"):
             continue
@@ -1194,7 +1255,7 @@ def check_facts_contract() -> None:
     collector = load_module("msw_collect_facts_for_selftest", COLLECT_FACTS)
     floor = load_module("msw_landing_floor_for_selftest", FLOOR)
     T.check("facts contract: collect-facts.py writes the tool and version the floor reads",
-            (collector.TOOL, collector.VERSION) == ("mintswarm-landing-facts", 1)
+            (collector.TOOL, collector.VERSION) == ("mintswarm-landing-facts", 2)
             == (floor.FACTS_TOOL, floor.FACTS_VERSION),
             f"collector {collector.TOOL!r} {collector.VERSION!r}, floor {floor.FACTS_TOOL!r} {floor.FACTS_VERSION!r}")
 

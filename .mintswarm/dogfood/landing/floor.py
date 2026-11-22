@@ -50,18 +50,21 @@ Inputs:
   is refused; symbolic links among the directories above it are followed. It is read after the merge base is found and
   before the plan, and must be strict UTF-8 JSON (no duplicate keys, no
   NaN or Infinity) holding an object with `tool`
-  `mintswarm-landing-facts`, `version` 1, and `head` and `base` full
+  `mintswarm-landing-facts`, `version` 2, and `head` and `base` full
   hashes equal to the commits resolved from --head and --base. Only the
   fields the rules read are checked, by type: `checks` a list of objects
   with `name` and `source` strings and `conclusion` and `app` a string or
-  null; `gate_rounds` with `round` an integer (never a boolean),
-  `verdict` a string, `failed_tests` a list and `reason` a string or null
-  (a failed test that is not a string, such as a CTRF test without a
-  name, is an unnamed failed test); `review_rounds` with `round` an integer and `verdict` a
-  string; `steers` with `kind`, `author`, `time` and `url` strings. Round
-  numbers are positive and strictly increasing, so the last entry is the
-  latest round. A verdict or conclusion value the rules do not know is a
-  hit, not unusable input.
+  null; `gate_rounds` with `round` an integer (never a boolean), `commit`
+  a full hash, `current` a boolean, `verdict` a string, `failed_tests` a
+  list and `reason` a string or null (a failed test that is not a string,
+  such as a CTRF test without a name, is an unnamed failed test);
+  `review_rounds` with `round` an integer, `commit` a full hash, `current`
+  a boolean and `verdict` a string; `steers` with `kind`, `author`, `time`
+  and `url` strings. Round numbers are positive and strictly increasing,
+  so the last entry is the latest round. A round whose `current` is not
+  whether its `commit` is the head is unusable input; the rules recompute
+  staleness from `commit` and never read `current`. A verdict or
+  conclusion value the rules do not know is a hit, not unusable input.
 
 Every git command, the plan floor's included, runs with a neutral
 configuration set in this process's environment:
@@ -140,7 +143,8 @@ footprint's `files` plus each new dependency's `manifest`.
   gates                      there is no gate round, or the last one's
                              verdict is not `passed`, or it lists a failed
                              test (each named, or called unnamed when its
-                             name is not a string)
+                             name is not a string), or its `commit` is not
+                             the head (a round from another commit)
   checks                     a check on the head has a conclusion other
                              than `success`, a null conclusion (not
                              completed) included, each named with its
@@ -152,7 +156,8 @@ footprint's `files` plus each new dependency's `manifest`.
                              no workflows; revisit both with the
                              required-checks list, once CI exists
   review                     there is no review round, or the last one's
-                             verdict is not `pass`
+                             verdict is not `pass`, or its `commit` is not
+                             the head
   steers                     a steer is listed, each named with its kind,
                              author, time and URL
 
@@ -160,11 +165,19 @@ When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff or the facts
 and are.
 
-The facts rules trust what the facts file says. Kept rounds record no
-commit, so the last kept gate and review round are trusted to belong to
-the head. `fetched_at` and `approval` are not judged here. The facts file
-and the kept rounds it is built from sit in job paths a stage can write, so
-running the floor from trusted state is the landing decision's concern, not
+The facts rules trust what the facts file says, apart from staleness: a
+last gate or review round that judged another commit is a hit whatever its
+verdict, so an old green round kept honestly at an earlier commit cannot
+stand for a later head. That is no defence against an edit: a round's
+`commit` comes from the kept round.json's `head`, a plain field that
+whoever can edit the kept rounds can set to the head. The boundary that
+remains: the kept rounds the facts are built from sit outside every
+repository by convention only (on one account any process can write
+them); facts.json and this verdict stay in job paths a stage can write; and
+the base, the head, the merge base, the diff and the config at the base
+are still read from the job repository's shared object store, which every
+job's stages can write. `fetched_at` and `approval` are not judged here.
+Running the floor from trusted state is the landing decision's concern, not
 this script's.
 
 The verdict is .mintswarm/job/outputs/landing-floor.json, written to a
@@ -235,7 +248,7 @@ PROTECTED_GLOBS = (".github/workflows/**",)
 ARGS = ("--plan", "--component", "--base", "--head", "--facts")
 USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF --facts PATH"
 FACTS_TOOL = "mintswarm-landing-facts"  # collect-facts.py's TOOL and VERSION; floor-selftest.py checks both
-FACTS_VERSION = 1
+FACTS_VERSION = 2
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 DIFF_OPTIONS = (
     "--no-renames", "-z", "--ignore-submodules=none", "--diff-algorithm=myers",
@@ -581,13 +594,23 @@ def is_list(value) -> bool:
     return isinstance(value, list)
 
 
+def is_hash(value) -> bool:
+    return isinstance(value, str) and HASH.fullmatch(value) is not None
+
+
+def is_boolean(value) -> bool:
+    return isinstance(value, bool)
+
+
 FACTS_LISTS = (
     ("checks", (("name", is_string, "a string"), ("conclusion", is_string_or_null, "a string or null"),
                 ("source", is_string, "a string"), ("app", is_string_or_null, "a string or null"))),
-    ("gate_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"),
+    ("gate_rounds", (("round", is_integer, "an integer"), ("commit", is_hash, "a full commit hash"),
+                     ("current", is_boolean, "a boolean"), ("verdict", is_string, "a string"),
                      ("failed_tests", is_list, "a list"),
                      ("reason", is_string_or_null, "a string or null"))),
-    ("review_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"))),
+    ("review_rounds", (("round", is_integer, "an integer"), ("commit", is_hash, "a full commit hash"),
+                       ("current", is_boolean, "a boolean"), ("verdict", is_string, "a string"))),
     ("steers", (("kind", is_string, "a string"), ("author", is_string, "a string"),
                 ("time", is_string, "a string"), ("url", is_string, "a string"))),
 )
@@ -626,6 +649,10 @@ def read_facts(path: str, base: str, head: str) -> tuple:
                     raise InputError(f"{where}: {at} has no {name}")
                 if not valid(entry[name]):
                     raise InputError(f"{where}: {at}.{name} must be {what}, not {brief(entry[name])}")
+            if key.endswith("_rounds") and entry["current"] != (entry["commit"] == head):
+                relation = "is" if entry["commit"] == head else "is not"
+                raise InputError(f"{where}: {at}.current is {brief(entry['current'])}, but its commit "
+                                 f"{entry['commit']} {relation} the head {head}")
         if key.endswith("_rounds"):
             numbers = [entry["round"] for entry in entries]
             if any(n < 1 for n in numbers) or any(a >= b for a, b in zip(numbers, numbers[1:])):
@@ -743,7 +770,7 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
     return results
 
 
-def facts_rules(facts: dict, base: str) -> list:
+def facts_rules(facts: dict, base: str, head: str) -> list:
     results = []
 
     def rule(name: str, reasons: list) -> None:
@@ -764,6 +791,8 @@ def facts_rules(facts: dict, base: str) -> list:
                 reasons.append(f"gate {test} failed in the last gate round, {last['round']}")
             else:  # the collector names a CTRF test without a string name as it found it
                 reasons.append(f"an unnamed gate ({brief(test)}) failed in the last gate round, {last['round']}")
+        if last["commit"] != head:
+            reasons.append(f"the last gate round, {last['round']}, judged commit {last['commit']}, not the head {head}")
     rule("gates", reasons)
 
     reasons = []
@@ -787,6 +816,9 @@ def facts_rules(facts: dict, base: str) -> list:
         last = facts["review_rounds"][-1]
         if last["verdict"] != "pass":
             reasons.append(f"the last review round, {last['round']}, has verdict {last['verdict']!r}, not 'pass'")
+        if last["commit"] != head:
+            reasons.append(f"the last review round, {last['round']}, judged commit {last['commit']}, "
+                           f"not the head {head}")
     rule("review", reasons)
 
     rule("steers", [
@@ -843,7 +875,7 @@ def landing_floor(argv: list) -> int:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
         results += footprint_rules(footprint, entries, new, gitlinks, landing)
     results += policy_rules(entries, args["component"], cfg, landing)
-    results += facts_rules(facts, base)
+    results += facts_rules(facts, base, head)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
     verdict = {

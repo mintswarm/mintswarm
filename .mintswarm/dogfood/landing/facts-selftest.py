@@ -6,20 +6,59 @@
 Needs python3, `git` and `yq` on PATH, and bash for bot-gh.sh; no network.
 It works in a temporary sandbox with its own HOME, no system or global git
 config and a fixed identity: a throwaway repository with a base and a head
-commit and the job layout under .mintswarm/job/. Both scripts run as
-`sys.executable SCRIPT ...` with that repository as their working directory.
+commit and the job layout under .mintswarm/job/, and a runner-state
+directory beside it, outside the repository, where the rounds are kept.
+Both scripts run as `sys.executable SCRIPT ...` with that repository as
+their working directory; jobs made elsewhere are repositories of their own.
 
 Checks:
 
 - keeping rounds: three gates rounds and two review rounds are kept (review
-  2 with --no-address) and every copy, the gates input as gates.input.json
-  included, is byte-identical under its round number, with mode 0444 and a
-  matching round.json; keeping gates 2 again exits 1 and leaves bytes,
-  modes and mtimes unchanged; a wrong review title, a stale address title
-  without --no-address, a gates.md older than inputs/gates.json and a
-  missing review.md each exit 2 and leave no final directory and no
-  temporary one; a gates round with neither output keeps only its input,
-  with a warning; bad arguments and a missing inputs/gates.json exit 2;
+  2 with --no-address) in the runner-state directory, and every copy, the
+  gates input as gates.input.json included, is byte-identical under its
+  round number, with mode 0444 and a version 2 round.json holding the head;
+  keeping gates 2 again exits 1 and leaves bytes, modes and mtimes
+  unchanged; a wrong review title, a stale address title without
+  --no-address, a gates.md older than inputs/gates.json and a missing
+  review.md each exit 2 and leave no final directory and no temporary one;
+  a gates round with neither output keeps only its input, with a warning;
+  bad arguments and a missing inputs/gates.json exit 2;
+- where rounds are kept: keep-round.py without --rounds, with a relative
+  one, one inside the worktree, one inside the main checkout when run from
+  a nested worktree (`git worktree add`) and a symbolic link each exit 2,
+  naming the cause, and create nothing there, while the same round kept in
+  runner state succeeds; on a case-insensitive file system a case variant
+  of a path inside the worktree is refused too (skipped otherwise);
+- the head: a gates --head that is not HEAD, a gates keep with a modified
+  tracked file or an untracked file outside .mintswarm/job/, a review
+  --head that is not an ancestor of HEAD and a --head that is not a full
+  hash each exit 2, naming the cause, and keep nothing; so does a gates
+  keep with a change a plain git status hides (each shown hidden first): a
+  skip-worktree or assume-unchanged entry, an untracked file listed in
+  .git/info/exclude or core.excludesFile, an untracked .gitignore that
+  ignores itself, a file staged but not committed, and a same-size change
+  with its mtime restored under core.checkStat minimal and core.trustctime
+  off; and so does a change git status on a fresh index from HEAD hides
+  (shown hidden first): a clean filter that returns HEAD's blob, set
+  through .git/info/attributes or core.attributesFile, which keep-round.py
+  must not run; core.autocrlf with CRLF line endings; core.fileMode false
+  with an executable bit; a tracked symbolic link retargeted or replaced by
+  a file holding its target; a tracked file renamed in case only, whatever
+  core.ignoreCase says; with all undone the round is kept. The sandbox's
+  HEAD holds a tracked symbolic link, so every kept gates round also
+  checks one that is unchanged; a gates keep at a HEAD holding a gitlink
+  exits 2; tracked names `"x"/y` and `x` followed by a CR are kept when
+  unchanged, and each changed while HEAD holds a twin `x` with the same
+  blob (which `git hash-object --stdin-paths` is shown to hash instead) is
+  refused; in a partial clone whose promisor remote runs a marker command
+  (shown to run under a plain `git ls-tree`), a gates and a review keep, a
+  keep with only remote.<name>.promisor set, one with only
+  remote.<name>.partialCloneFilter set (also shown to run the command
+  under a plain `git ls-tree`) and one with Extensions.PartialClone, exit
+  2 and the command does not run;
+- commit binding: rounds kept at the base (gates with the base checked
+  out, review as an ancestor) and at the head give `commit` and `current`,
+  false for the base's rounds, with their raw verdicts;
 - run-gates.py agreement: in a job of its own, a report short of the
   input's gates, tests named out of the input's order, an input with no
   gates and a report that meets every condition are each checked with the
@@ -43,24 +82,36 @@ Checks:
   a review comment sharing the approval's id, bots without the marker,
   mintswarm-dev[bot] with the marker line, indented and inside a code
   fence, the marker mid-line, another bot with the marker, a pending
-  review, an inline review comment, a deleted user); the approval with and
-  without decision, kickoff floor and assessment, and by mintswarm-dev[bot];
-  exit 2 with no facts file for a head mismatch, a bad fetched_at, a
-  tampered kept file, a gates round without its input, a gap in round
-  numbers, an unreadable review verdict, a bad --approved-at or
+  review, an inline review comment, a deleted user); every round with
+  `commit` the head and `current` true; the approval with and without
+  decision, kickoff floor and assessment, and by mintswarm-dev[bot]; exit 2
+  with no facts file for a head mismatch, a bad fetched_at, a tampered kept
+  file, a version 1 round.json, a gates round without its input, a gap in
+  round numbers, an unreadable review verdict, a bad --approved-at or
   --approver, and a decision or kickoff floor of the wrong tool;
+- reading rounds from runner state: assemble without --rounds, with a
+  relative one, a symbolic link, one inside the worktree, a case variant of
+  one (on a case-insensitive file system) and one inside the main checkout
+  from a nested worktree exits 2 with no facts file, naming the cause; a full copy of the rounds under .mintswarm/job/rounds/,
+  rewritten to pass with recomputed sha256 values, leaves the facts
+  unchanged, and given as --rounds exits 2 (the same copy outside the
+  repository does read as passed);
 - static: every import of the three scripts is in the standard library,
-  and keep-round.py's docstring names report-gates.py --clean and the next
-  review round.
+  keep-round.py's docstring names report-gates.py --clean and the next
+  review round, both scripts' docstrings say that keeping rounds out of
+  the worktree is not an OS barrier, and both hold the same
+  check_rounds_location.
 
-Prints one `ok` or `FAIL` line per check, then `N passed, M failed`, and
-exits 0 only when none failed.
+Prints one `ok` or `FAIL` line per check, and `skip` for a check the file
+system cannot run, then `N passed, M failed`, and exits 0 only when none
+failed.
 """
 
 import ast
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -87,7 +138,10 @@ MARKER = "<!-- mintswarm: steer -->"
 FORBIDDEN = {"-f", "-F", "--field", "--raw-field", "--input", "--paginate", "-X"}
 FACTS_KEYS = ["tool", "version", "pr", "issue", "head", "base", "fetched_at", "checks",
               "gate_rounds", "review_rounds", "steers", "approval"]
-ROUND_KEYS = ["tool", "version", "kind", "round", "kept_at", "files"]
+ROUND_KEYS = ["tool", "version", "kind", "round", "head", "kept_at", "files"]
+GATE_KEYS = ["round", "commit", "current", "verdict", "failed_tests", "reason", "files"]
+REVIEW_KEYS = ["round", "commit", "current", "verdict", "findings", "files"]
+DEFAULT = object()  # keep(): the sandbox's head or rounds
 T0 = 1_800_000_000
 
 
@@ -138,23 +192,34 @@ class Sandbox:
         })
         self.env = env
         self.git("init", "-q", "-b", "master")
-        self.git("commit", "-q", "--allow-empty", "-m", "base")
+        write(self.repo / "README.md", "a tracked file\n")
+        os.symlink("README.md", self.repo / "link")
+        self.git("add", "README.md", "link")
+        self.git("commit", "-q", "-m", "base")
         self.base = self.git("rev-parse", "HEAD")
         self.git("commit", "-q", "--allow-empty", "-m", "head")
         self.head = self.git("rev-parse", "HEAD")
         self.outputs = self.repo / JOB / "outputs"
         self.inputs = self.repo / JOB / "inputs"
-        self.rounds = self.repo / JOB / "rounds"
+        self.runner_state = tmp / "runner-state"  # outside every repository, as the session's state is
+        self.rounds = self.runner_state / "jobs" / "repo" / "rounds"
         self.outputs.mkdir(parents=True)
         self.inputs.mkdir(parents=True)
         self.gate_verdicts = []
         self.short_verdicts = []
 
-    def git(self, *args: str) -> str:
-        proc = subprocess.run(["git", *args], cwd=self.repo, env=self.env, capture_output=True, text=True)
+    def git(self, *args: str, cwd: Optional[Path] = None) -> str:
+        proc = subprocess.run(["git", *args], cwd=cwd or self.repo, env=self.env, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
         return proc.stdout.strip()
+
+    def job(self, path: Path) -> str:
+        """Make `path` a job repository of its own with one commit; return its head."""
+        (path / JOB / "outputs").mkdir(parents=True)
+        self.git("init", "-q", "-b", "master", cwd=path)
+        self.git("commit", "-q", "--allow-empty", "-m", "job", cwd=path)
+        return self.git("rev-parse", "HEAD", cwd=path)
 
     def run(self, script: Path, args: list, env: Optional[dict] = None, cwd: Optional[Path] = None):
         return subprocess.run(
@@ -300,12 +365,21 @@ pass
 """
 
 
-def keep(sb: Sandbox, *args: str, cwd: Optional[Path] = None):
-    return sb.run(KEEP, list(args), cwd=cwd)
+def keep(sb: Sandbox, *args: str, cwd: Optional[Path] = None, head=DEFAULT, rounds=DEFAULT):
+    """keep-round.py with --head (the sandbox's head) and --rounds (its runner state); None leaves one out."""
+    argv = list(args)
+    head = sb.head if head is DEFAULT else head
+    rounds = sb.rounds if rounds is DEFAULT else rounds
+    if head is not None:
+        argv += ["--head", head]
+    if rounds is not None:
+        argv += ["--rounds", str(rounds)]
+    return sb.run(KEEP, argv, cwd=cwd)
 
 
-def check_round(name: str, sb: Sandbox, kind: str, number: int, expected: dict) -> None:
-    path = sb.rounds / f"{kind}-{number}"
+def check_round(name: str, sb: Sandbox, kind: str, number: int, expected: dict,
+                rounds: Optional[Path] = None, head: Optional[str] = None) -> None:
+    path = (rounds or sb.rounds) / f"{kind}-{number}"
     problems = []
     if not path.is_dir():
         T.check(name, False, f"{path} is missing")
@@ -323,8 +397,8 @@ def check_round(name: str, sb: Sandbox, kind: str, number: int, expected: dict) 
         record = json.loads((path / "round.json").read_text(encoding="utf-8"))
         if list(record) != ROUND_KEYS:
             problems.append(f"round.json keys {list(record)}")
-        want = {"tool": "mintswarm-keep-round", "version": 1, "kind": kind, "round": number,
-                "files": [{"name": f, "sha256": sha(d)} for f, d in sorted(expected.items())]}
+        want = {"tool": "mintswarm-keep-round", "version": 2, "kind": kind, "round": number,
+                "head": head or sb.head, "files": [{"name": f, "sha256": sha(d)} for f, d in sorted(expected.items())]}
         for key, value in want.items():
             if record.get(key) != value:
                 problems.append(f"round.json {key} is {record.get(key)!r}")
@@ -404,24 +478,370 @@ def keep_tests(sb: Sandbox) -> None:
     T.check("keep: no temporary directory is left", not leftovers(sb.rounds), str(leftovers(sb.rounds)))
 
     for args in (["gates", "0"], ["gates", "01"], ["gates"], ["review", "1", "--extra"],
-                 ["gates", "5", "--no-address"], ["other", "1"]):
+                 ["gates", "5", "--no-address"], ["other", "1"], ["gates", "5", "--head", sb.head],
+                 ["gates", "5", "--rounds"]):
         proc = keep(sb, *args)
-        T.check(f"keep: bad arguments {args} exit 2", proc.returncode == 2, detail(proc))
+        T.check(f"keep: bad arguments {args[:4]} exit 2", proc.returncode == 2, detail(proc))
 
     other = sb.tmp / "other"
-    (other / JOB / "outputs").mkdir(parents=True)
-    proc = keep(sb, "gates", "1", cwd=other)
+    other_head = sb.job(other)
+    other_rounds = sb.runner_state / "jobs" / "other" / "rounds"
+    proc = keep(sb, "gates", "1", cwd=other, head=other_head, rounds=other_rounds)
     T.check("keep: a gates round without inputs/gates.json exits 2",
-            proc.returncode == 2 and not (other / JOB / "rounds" / "gates-1").exists(), detail(proc))
+            proc.returncode == 2 and not (other_rounds / "gates-1").exists(), detail(proc))
     data = write(other / JOB / "inputs" / "gates.json", gates_input)
-    proc = keep(sb, "gates", "1", cwd=other)
-    empty = other / JOB / "rounds" / "gates-1"
+    proc = keep(sb, "gates", "1", cwd=other, head=other_head, rounds=other_rounds)
+    empty = other_rounds / "gates-1"
     ok = proc.returncode == 0 and "warning" in proc.stderr and empty.is_dir()
     if ok:
         record = json.loads((empty / "round.json").read_text(encoding="utf-8"))
         ok = record["files"] == [{"name": "gates.input.json", "sha256": sha(data)}] \
             and sorted(p.name for p in empty.iterdir()) == ["gates.input.json", "round.json"]
     T.check("keep: a gates round with neither output keeps only its input, with a warning", ok, detail(proc))
+
+
+def ready_gates(job: Path, start: int) -> None:
+    """A gates round in `job` that keep-round.py would keep: an input and both outputs, newer than it."""
+    write(job / JOB / "inputs" / "gates.json", gates_input_text(list(GATE_ROUNDS[2])), start)
+    write(job / JOB / "outputs" / "gates.ctrf.json", ctrf(GATE_ROUNDS[2]), start + 10)
+    write(job / JOB / "outputs" / "gates.md", "# Gates: Keep rounds\n\nReady.\n", start + 20)
+
+
+def nested_worktree(sb: Sandbox) -> Path:
+    """A second worktree of the sandbox repository at its head, outside it, made once."""
+    nested = sb.tmp / "nested"
+    if not nested.exists():
+        sb.git("worktree", "add", "-q", "--detach", str(nested), "HEAD")
+        (nested / JOB / "outputs").mkdir(parents=True)
+    return nested
+
+
+def case_variant(path: Path) -> Optional[Path]:
+    """`path` with its letters' case swapped when the file system finds the same directory under it, else None."""
+    variant = Path(str(path).swapcase())
+    return variant if variant.exists() and os.path.samefile(variant, path) else None
+
+
+def skip(name: str, why: str) -> None:
+    print(f"skip {name}: {why}")
+
+
+def plain_status(sb: Sandbox, *args: str) -> str:
+    """What a plain `git status --porcelain` reports outside .mintswarm/job/."""
+    lines = sb.git("status", "--porcelain", *args).splitlines()
+    return "\n".join(line for line in lines if not line[3:].startswith(".mintswarm/"))
+
+
+def fresh_status(sb: Sandbox) -> str:
+    """What `git status --porcelain` reports outside .mintswarm/job/ against a fresh index read from HEAD."""
+    index = sb.tmp / "fresh-index"
+    env = dict(sb.env, GIT_INDEX_FILE=str(index))
+    lines = []
+    for args in (["read-tree", "HEAD"], ["status", "--porcelain"]):
+        proc = subprocess.run(["git", *args], cwd=sb.repo, env=env, capture_output=True, text=True)
+        lines = proc.stdout.splitlines()
+    index.unlink(missing_ok=True)
+    return "\n".join(line for line in lines if not line[3:].startswith(".mintswarm/"))
+
+
+def refused(name: str, proc, fragment: str, absent: list) -> None:
+    gone = [str(path) for path in absent if os.path.lexists(path)]
+    T.check(name, proc.returncode == 2 and fragment in proc.stderr and not gone,
+            detail(proc) + (f"; left {gone}" if gone else ""))
+
+
+def location_tests(sb: Sandbox) -> None:
+    """keep-round.py keeps rounds only in runner state, outside the worktree and the main checkout."""
+    ready_gates(sb.repo, T0 + 3000)
+    inside = sb.repo / JOB / "rounds"
+    target = sb.runner_state / "linked"
+    target.mkdir(parents=True)
+    link = sb.runner_state / "rounds-link"
+    link.symlink_to(target)
+    cases = [
+        ("without --rounds", None, "missing --rounds", [sb.rounds / "gates-9"]),
+        ("with a relative --rounds", "state/rounds", "must be an absolute path", [sb.repo / "state"]),
+        ("with --rounds inside the worktree", inside, "inside the worktree", [inside]),
+        ("with a symlinked --rounds", link, "is a symbolic link", [target / "gates-9"]),
+    ]
+    for name, rounds, fragment, absent in cases:
+        refused(f"keep: {name} exits 2 and keeps nothing", keep(sb, "gates", "9", rounds=rounds), fragment, absent)
+    name = "keep: a case variant of a --rounds inside the worktree exits 2 and keeps nothing"
+    variant = case_variant(sb.repo)
+    if variant is None:
+        skip(name, "the file system is case-sensitive")
+    else:
+        refused(name, keep(sb, "gates", "9", rounds=variant / "state-case" / "rounds"), "inside the worktree",
+                [sb.repo / "state-case"])
+
+    nested = nested_worktree(sb)
+    ready_gates(nested, T0 + 3000)
+    in_main = sb.repo / "state" / "rounds"
+    refused("keep: from a nested worktree, --rounds inside the main checkout exits 2 and keeps nothing",
+            keep(sb, "gates", "1", cwd=nested, rounds=in_main), "inside the main checkout", [sb.repo / "state"])
+    control = sb.runner_state / "jobs" / "nested" / "rounds"
+    proc = keep(sb, "gates", "1", cwd=nested, rounds=control)
+    T.check("keep: from a nested worktree, the same round kept in runner state succeeds",
+            proc.returncode == 0 and (control / "gates-1" / "round.json").is_file(), detail(proc))
+    T.check("keep: the rounds directory is made mode 0700", stat.S_IMODE(control.stat().st_mode) == 0o700,
+            oct(stat.S_IMODE(control.stat().st_mode)))
+
+
+def head_tests(sb: Sandbox) -> None:
+    """keep-round.py records only a head the round can have judged."""
+    rounds = sb.runner_state / "jobs" / "refused" / "rounds"
+    ready_gates(sb.repo, T0 + 4000)
+    tree = sb.git("rev-parse", "HEAD^{tree}")
+    unrelated = sb.git("commit-tree", tree, "-m", "unrelated")
+    write(sb.outputs / "review.md", REVIEW_2.replace("round 2", "round 9"))
+    refused("keep: a gates --head that is not HEAD exits 2", keep(sb, "gates", "9", head=sb.base, rounds=rounds),
+            "is not HEAD", [rounds / "gates-9"])
+    refused("keep: a --head that is not a full hash exits 2",
+            keep(sb, "gates", "9", head=sb.head[:12], rounds=rounds), "must be a full commit hash",
+            [rounds / "gates-9"])
+    refused("keep: a --head HEAD exits 2", keep(sb, "gates", "9", head="HEAD", rounds=rounds),
+            "must be a full commit hash", [rounds / "gates-9"])
+    refused("keep: a review --head that is not an ancestor of HEAD exits 2",
+            keep(sb, "review", "9", "--no-address", head=unrelated, rounds=rounds), "not HEAD or an ancestor",
+            [rounds / "review-9"])
+    write(sb.repo / "README.md", "changed after the gates ran\n")
+    refused("keep: a gates keep with a modified tracked file exits 2", keep(sb, "gates", "9", rounds=rounds),
+            "README.md", [rounds / "gates-9"])
+    sb.git("checkout", "-q", "--", "README.md")
+    write(sb.repo / "stray.txt", "untracked\n")
+    refused("keep: a gates keep with an untracked file outside .mintswarm/job/ exits 2",
+            keep(sb, "gates", "9", rounds=rounds), "stray.txt", [rounds / "gates-9"])
+    (sb.repo / "stray.txt").unlink()
+    (sb.outputs / "review.md").unlink()
+
+    # changes that git's own status hides through the index, excludes or the stat cache
+    for flag in ("skip-worktree", "assume-unchanged"):
+        sb.git("update-index", f"--{flag}", "README.md")
+        write(sb.repo / "README.md", "changed behind a flag\n")
+        hidden = plain_status(sb)
+        T.check(f"keep: with {flag}, a plain git status hides the change", hidden == "", hidden)
+        refused(f"keep: a gates keep with a {flag} entry exits 2", keep(sb, "gates", "9", rounds=rounds),
+                "assume-unchanged or skip-worktree: README.md", [rounds / "gates-9"])
+        sb.git("update-index", f"--no-{flag}", "README.md")
+        sb.git("checkout", "-q", "--", "README.md")
+    exclude = sb.repo / ".git" / "info" / "exclude"
+    excludes_file = sb.tmp / "excludes"
+    excludes_file.write_text("evil.py\n", encoding="utf-8")
+    hiders = [
+        ("listed in .git/info/exclude", lambda: write(exclude, "evil.py\n"), lambda: write(exclude, "")),
+        ("listed in core.excludesFile", lambda: sb.git("config", "core.excludesFile", str(excludes_file)),
+         lambda: sb.git("config", "--unset", "core.excludesFile")),
+    ]
+    for name, hide, unhide in hiders:
+        hide()
+        write(sb.repo / "evil.py", "print('not what HEAD holds')\n")
+        hidden = plain_status(sb, "--untracked-files=all")
+        T.check(f"keep: an untracked file {name} is hidden from a plain git status", hidden == "", hidden)
+        refused(f"keep: a gates keep with an untracked file {name} exits 2", keep(sb, "gates", "9", rounds=rounds),
+                "evil.py", [rounds / "gates-9"])
+        (sb.repo / "evil.py").unlink()
+        unhide()
+    write(sb.repo / "evil" / ".gitignore", "*\n")
+    write(sb.repo / "evil" / "x.py", "print('hidden')\n")
+    hidden = plain_status(sb, "--untracked-files=all")
+    T.check("keep: an untracked .gitignore that ignores itself hides its directory from a plain git status",
+            hidden == "", hidden)
+    refused("keep: a gates keep with an untracked .gitignore that ignores itself exits 2",
+            keep(sb, "gates", "9", rounds=rounds), "untracked .gitignore files that hide paths: evil/.gitignore",
+            [rounds / "gates-9"])
+    shutil.rmtree(sb.repo / "evil")
+    write(sb.repo / "staged.py", "print('staged, never committed')\n")
+    sb.git("add", "staged.py")
+    refused("keep: a gates keep with a file staged but not committed exits 2", keep(sb, "gates", "9", rounds=rounds),
+            "staged.py", [rounds / "gates-9"])
+    sb.git("rm", "-q", "--cached", "staged.py")
+    (sb.repo / "staged.py").unlink()
+
+    readme = sb.repo / "README.md"
+    original = readme.read_bytes()
+    old = 1_000_000_000  # in the past, so git does not treat the entry as racy
+    os.utime(readme, (old, old))
+    sb.git("config", "core.checkStat", "minimal")
+    sb.git("config", "core.trustctime", "false")
+    sb.git("update-index", "--refresh")
+    write(readme, original.replace(b"a tracked", b"a TRACKED"), old)
+    hidden = plain_status(sb)
+    T.check("keep: a same-size change with its mtime restored is hidden from git status under core.checkStat "
+            "minimal", hidden == "", hidden)
+    refused("keep: a gates keep with a change hidden by the stat cache settings exits 2",
+            keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+    write(readme, original)
+    sb.git("config", "--unset", "core.checkStat")
+    sb.git("config", "--unset", "core.trustctime")
+    sb.git("update-index", "--really-refresh")
+
+    # conversions that make changed content compare equal to HEAD's
+    marker = sb.tmp / "filter-ran"
+    attributes = sb.repo / ".git" / "info" / "attributes"
+    attributes_file = sb.tmp / "attributes"
+    sources = [
+        (".git/info/attributes", lambda: write(attributes, "README.md filter=h\n"), attributes.unlink),
+        ("core.attributesFile", lambda: (write(attributes_file, "README.md filter=h\n"),
+                                         sb.git("config", "core.attributesFile", str(attributes_file))),
+         lambda: sb.git("config", "--unset", "core.attributesFile")),
+    ]
+    for source, add, remove in sources:
+        sb.git("config", "filter.h.clean", f"touch {shlex.quote(str(marker))}; git cat-file blob HEAD:%f")
+        add()
+        write(readme, "a longer change that the clean filter turns back into HEAD's blob\n")
+        hidden = fresh_status(sb)
+        T.check(f"keep: a clean filter set through {source} hides a change from git status on a fresh index",
+                hidden == "" and marker.exists(), hidden)
+        marker.unlink(missing_ok=True)
+        refused(f"keep: a gates keep with a change a clean filter set through {source} hides exits 2",
+                keep(sb, "gates", "9", rounds=rounds), "README.md", [rounds / "gates-9"])
+        T.check(f"keep: keep-round.py does not run the clean filter set through {source}", not marker.exists())
+        remove()
+        sb.git("config", "--remove-section", "filter.h")
+        write(readme, original)
+    conversions = [
+        ("core.autocrlf true and CRLF line endings", ("core.autocrlf", "true"),
+         lambda: write(readme, original.replace(b"\n", b"\r\n")), lambda: write(readme, original)),
+        ("core.fileMode false and an executable bit", ("core.fileMode", "false"),
+         lambda: readme.chmod(0o755), lambda: readme.chmod(0o644)),
+    ]
+    for name, (key, value), change, undo in conversions:
+        sb.git("config", key, value)
+        change()
+        hidden = fresh_status(sb)
+        T.check(f"keep: {name} hide a change from git status on a fresh index", hidden == "", hidden)
+        refused(f"keep: a gates keep with {name} exits 2", keep(sb, "gates", "9", rounds=rounds), "README.md",
+                [rounds / "gates-9"])
+        undo()
+        sb.git("config", "--unset", key)
+    link = sb.repo / "link"
+    for name, change in (("retargeted", lambda: os.symlink("elsewhere", link)),
+                         ("replaced by a file holding its target", lambda: write(link, "README.md"))):
+        link.unlink()
+        change()
+        refused(f"keep: a gates keep with the tracked symbolic link {name} exits 2",
+                keep(sb, "gates", "9", rounds=rounds), "link", [rounds / "gates-9"])
+        link.unlink()
+        os.symlink("README.md", link)
+
+    submodule = sb.tmp / "with-gitlink"
+    sb.job(submodule)
+    sb.git("update-index", "--add", "--cacheinfo", f"160000,{sb.head},sub", cwd=submodule)
+    sb.git("commit", "-q", "-m", "a gitlink", cwd=submodule)
+    ready_gates(submodule, T0 + 4500)
+    gitlink_rounds = sb.runner_state / "jobs" / "with-gitlink" / "rounds"
+    refused("keep: a gates keep at a HEAD holding a gitlink exits 2",
+            keep(sb, "gates", "1", cwd=submodule, head=sb.git("rev-parse", "HEAD", cwd=submodule),
+                 rounds=gitlink_rounds), "submodules (gitlinks), whose content is not checked: sub",
+            [gitlink_rounds / "gates-1"])
+    readme.rename(sb.repo / "readme.md")  # a case-only rename: the same file on a case-insensitive file system
+    refused("keep: a gates keep with a tracked file renamed in case only exits 2, whatever core.ignoreCase says",
+            keep(sb, "gates", "9", rounds=rounds), "readme.md", [rounds / "gates-9"])
+    (sb.repo / "readme.md").rename(readme)
+    proc = keep(sb, "gates", "9", rounds=rounds)
+    T.check("keep: with every change undone the same gates round is kept", proc.returncode == 0, detail(proc))
+    twin_tests(sb)
+    promisor_tests(sb)
+
+
+def twin_tests(sb: Sandbox) -> None:
+    """Tracked names that git hash-object --stdin-paths would read as another file, their twin."""
+    job = sb.tmp / "twins"
+    sb.job(job)
+    names = ['"x"/y', "x\r", "x"]
+    for name in names:
+        write(job / name, "x = 1\n")
+    sb.git("add", "--", *names, cwd=job)
+    sb.git("commit", "-q", "-m", "twins", cwd=job)
+    head = sb.git("rev-parse", "HEAD", cwd=job)
+    rounds = sb.runner_state / "jobs" / "twins" / "rounds"
+    ready_gates(job, T0 + 6000)
+    proc = keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds)
+    T.check("keep: tracked names holding quotes and a CR are checked and kept when unchanged",
+            proc.returncode == 0, detail(proc))
+    for number, (name, label) in enumerate(((names[0], 'a changed "x"/y with a twin x'),
+                                            (names[1], "a changed x followed by a CR, with a twin x")), 2):
+        write(job / name, "import os; os.system('echo pwned')\n")
+        piped = subprocess.run(["git", "hash-object", "--no-filters", "--stdin-paths"], cwd=job, env=sb.env,
+                               input=name.encode("utf-8") + b"\n", capture_output=True).stdout.decode().strip()
+        T.check(f"keep: for {label}, git hash-object --stdin-paths hashes the twin",
+                piped == sb.git("rev-parse", "HEAD:x", cwd=job), piped)
+        refused(f"keep: a gates keep with {label} exits 2", keep(sb, "gates", str(number), cwd=job, head=head,
+                                                                 rounds=rounds),
+                "changed or untracked paths", [rounds / f"gates-{number}"])
+        write(job / name, "x = 1\n")
+    proc = keep(sb, "gates", "2", cwd=job, head=head, rounds=rounds)
+    T.check("keep: with the twins restored the next round is kept", proc.returncode == 0, detail(proc))
+
+
+def promisor_tests(sb: Sandbox) -> None:
+    """A partial clone whose promisor remote would run a command when an object is missing."""
+    job = sb.tmp / "promisor"
+    sb.job(job)
+    write(job / "d" / "f", "content\n")
+    sb.git("add", "d/f", cwd=job)
+    sb.git("commit", "-q", "-m", "a tree", cwd=job)
+    head = sb.git("rev-parse", "HEAD", cwd=job)
+    tree = sb.git("rev-parse", "HEAD:d", cwd=job)
+    (job / ".git" / "objects" / tree[:2] / tree[2:]).unlink()
+    marker = sb.tmp / "promisor-ran"
+    for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "evil"),
+                       ("remote.evil.promisor", "true"), ("remote.evil.url", str(sb.tmp / "nowhere")),
+                       ("remote.evil.uploadpack", f"sh -c 'touch {shlex.quote(str(marker))}; exit 1'")):
+        sb.git("config", key, value, cwd=job)
+    subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
+    T.check("keep: in the partial clone, a plain git ls-tree runs the promisor's command", marker.exists())
+    marker.unlink(missing_ok=True)
+    ready_gates(job, T0 + 7000)
+    rounds = sb.runner_state / "jobs" / "promisor" / "rounds"
+    for name, args in (("extensions.partialClone", ["gates", "1"]),
+                       ("extensions.partialClone, for a review round", ["review", "1", "--no-address"])):
+        refused(f"keep: a keep in a partial clone ({name}) exits 2", keep(sb, *args, cwd=job, head=head,
+                                                                         rounds=rounds),
+                "the repository is a partial clone", [rounds / f"{args[0]}-1"])
+        T.check(f"keep: a keep in a partial clone ({name}) runs no command", not marker.exists())
+    sb.git("config", "--unset", "extensions.partialClone", cwd=job)
+    refused("keep: a keep with only remote.evil.promisor true exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.promisor true",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with only remote.evil.promisor true runs no command", not marker.exists())
+    sb.git("config", "--unset", "remote.evil.promisor", cwd=job)
+    sb.git("config", "core.repositoryformatversion", "0", cwd=job)
+    sb.git("config", "remote.evil.partialCloneFilter", "blob:none", cwd=job)
+    subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=job, env=sb.env, capture_output=True)
+    T.check("keep: with only remote.evil.partialCloneFilter, a plain git ls-tree runs the promisor's command",
+            marker.exists())
+    marker.unlink(missing_ok=True)
+    refused("keep: a keep with only remote.evil.partialCloneFilter exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "remote.evil.partialclonefilter blob:none",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with only remote.evil.partialCloneFilter runs no command", not marker.exists())
+    sb.git("config", "--unset", "remote.evil.partialCloneFilter", cwd=job)
+    sb.git("config", "Extensions.PartialClone", "evil", cwd=job)
+    refused("keep: a keep with extensions.partialClone spelled Extensions.PartialClone exits 2",
+            keep(sb, "gates", "1", cwd=job, head=head, rounds=rounds), "extensions.partialClone evil",
+            [rounds / "gates-1"])
+    T.check("keep: a keep with Extensions.PartialClone runs no command", not marker.exists())
+
+
+def stale_tests(sb: Sandbox) -> Path:
+    """Keep rounds at the base and at the head in their own runner state; return its rounds directory."""
+    rounds = sb.runner_state / "jobs" / "stale" / "rounds"
+    sb.git("checkout", "-q", "--detach", sb.base)
+    ready_gates(sb.repo, T0 + 5000)
+    proc = keep(sb, "gates", "1", head=sb.base, rounds=rounds)
+    T.check("keep: a gates round kept with the base checked out", proc.returncode == 0, detail(proc))
+    sb.git("checkout", "-q", "master")
+    ready_gates(sb.repo, T0 + 5100)
+    proc = keep(sb, "gates", "2", rounds=rounds)
+    T.check("keep: a later gates round kept at the head", proc.returncode == 0, detail(proc))
+    write(sb.outputs / "review.md", REVIEW_2.replace("round 2", "round 1"))
+    proc = keep(sb, "review", "1", "--no-address", head=sb.base, rounds=rounds)
+    T.check("keep: a review round kept at an ancestor of HEAD", proc.returncode == 0, detail(proc))
+    check_round("keep: the review round records the ancestor it judged", sb, "review", 1,
+                {"review.md": (sb.outputs / "review.md").read_bytes()}, rounds, sb.base)
+    (sb.outputs / "review.md").unlink()
+    return rounds
 
 
 SHORT_ROUNDS = [
@@ -437,7 +857,8 @@ SHORT_ROUNDS = [
 def short_rounds(sb: Sandbox) -> Path:
     """Keep the SHORT_ROUNDS in their own job; return its rounds directory."""
     job = sb.tmp / "short"
-    (job / JOB / "outputs").mkdir(parents=True)
+    head = sb.job(job)
+    rounds = sb.runner_state / "jobs" / "short" / "rounds"
     for number, (name, gates, statuses, want) in enumerate(SHORT_ROUNDS, 1):
         start = T0 + 100 * number
         write(job / JOB / "inputs" / "gates.json", gates_input_text(gates), start)
@@ -445,9 +866,9 @@ def short_rounds(sb: Sandbox) -> Path:
         verdict = run_gates_verdict(sb, job)
         T.check(f"keep: run-gates.py --verdict exits {want} on {name}", verdict[0] == want, str(verdict))
         sb.short_verdicts.append(verdict)
-        proc = keep(sb, "gates", str(number), cwd=job)
+        proc = keep(sb, "gates", str(number), cwd=job, head=head, rounds=rounds)
         T.check(f"keep: {name} is kept as gates {number}", proc.returncode == 0, detail(proc))
-    return job / JOB / "rounds"
+    return rounds
 
 
 def agrees_with_run_gates(round_facts: dict, verdict: tuple) -> bool:
@@ -695,10 +1116,12 @@ def fetch_tests(sb: Sandbox, pages: dict) -> bool:
 
 # --- assemble -------------------------------------------------------------
 
-def assemble(sb: Sandbox, extra: Optional[list] = None, replace: Optional[dict] = None):
+def assemble(sb: Sandbox, extra: Optional[list] = None, replace: Optional[dict] = None,
+             cwd: Optional[Path] = None):
     args = {
         "--responses": str(RESPONSES), "--pr": str(PR), "--issue": str(ISSUE), "--head": "HEAD",
         "--base": "HEAD~1", "--approver": "zmij", "--approved-at": APPROVED_AT, "--approval-url": APPROVAL_URL,
+        "--rounds": str(sb.rounds),
     }
     args.update(replace or {})
     argv = ["assemble"]
@@ -706,9 +1129,9 @@ def assemble(sb: Sandbox, extra: Optional[list] = None, replace: Optional[dict] 
         if value is not None:
             argv += [key, value]
     argv += extra or []
-    facts = sb.repo / FACTS
+    facts = (cwd or sb.repo) / FACTS
     write(facts, '{"stale": true}\n')
-    proc = sb.run(COLLECT, argv)
+    proc = sb.run(COLLECT, argv, cwd=cwd)
     try:
         data = json.loads(facts.read_text(encoding="utf-8")) if facts.exists() else None
     except ValueError:
@@ -743,14 +1166,87 @@ def without_file(sb: Sandbox, name: str, round_dir: str, file: str) -> Path:
     return target
 
 
-def assemble_tests(sb: Sandbox, short: Path) -> None:
+def rewrite_to_pass(rounds: Path) -> None:
+    """Rewrite every gates round under `rounds` to a passing report, with matching sha256 values."""
+    for path in rounds.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    for round_dir in sorted(rounds.glob("gates-*")):
+        report = write(round_dir / "gates.ctrf.json", ctrf(GATE_ROUNDS[2]))
+        record = json.loads((round_dir / "round.json").read_text(encoding="utf-8"))
+        for entry in record["files"]:
+            if entry["name"] == "gates.ctrf.json":
+                entry["sha256"] = sha(report)
+        write(round_dir / "round.json", json.dumps(record, indent=2) + "\n")
+
+
+def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
+    """Rounds are read from runner state only, and a round from another commit is not current."""
+    proc, facts = assemble(sb, replace={"--rounds": str(stale)})
+    if written(proc, facts):
+        got = [(g["round"], g["commit"], g["current"], g["verdict"]) for g in facts["gate_rounds"]]
+        want = [(1, sb.base, False, "passed"), (2, sb.head, True, "passed")]
+        T.check("assemble: a gate round kept at the base is not current and keeps its verdict", got == want, str(got))
+        got = [(r["round"], r["commit"], r["current"], r["verdict"]) for r in facts["review_rounds"]]
+        T.check("assemble: a review round kept at the base is not current and keeps its verdict",
+                got == [(1, sb.base, False, "pass")], str(got))
+    else:
+        T.check("assemble: rounds kept at the base and the head", False, detail(proc))
+
+    writable = sb.repo / JOB / "rounds"
+    shutil.copytree(sb.rounds, writable)
+    rewrite_to_pass(writable)
+    outside = sb.tmp / "rounds-rewritten"
+    shutil.copytree(writable, outside)
+    proc, facts = assemble(sb, replace={"--rounds": str(outside)})
+    T.check("assemble: the rewritten copy, outside the repository, reads as passed",
+            written(proc, facts) and [g["verdict"] for g in facts["gate_rounds"]] == ["passed"] * 3, detail(proc))
+    proc, facts = assemble(sb)
+    T.check("assemble: a rewritten copy under .mintswarm/job/rounds/ leaves the facts unchanged",
+            written(proc, facts) and {k: v for k, v in facts.items() if k != "fetched_at"}
+            == {k: v for k, v in baseline.items() if k != "fetched_at"}, detail(proc))
+    proc, facts = assemble(sb, replace={"--rounds": str(writable)})
+    T.check("assemble: the rewritten copy under .mintswarm/job/rounds/ given as --rounds exits 2",
+            proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr, detail(proc))
+    name = "assemble: a case variant of the copy under .mintswarm/job/rounds/ given as --rounds exits 2"
+    variant = case_variant(writable)
+    if variant is None:
+        skip(name, "the file system is case-sensitive")
+    else:
+        proc, facts = assemble(sb, replace={"--rounds": str(variant)})
+        T.check(name, proc.returncode == 2 and facts is None and "inside the worktree" in proc.stderr, detail(proc))
+
+    link = sb.runner_state / "assemble-link"
+    link.symlink_to(sb.rounds)
+    for name, value, fragment in (("without --rounds", None, "missing --rounds"),
+                                  ("with a relative --rounds", "rounds", "must be an absolute path"),
+                                  ("with a symlinked --rounds", str(link), "is a symbolic link")):
+        proc, facts = assemble(sb, replace={"--rounds": value})
+        T.check(f"assemble: {name} exits 2 with no facts file",
+                proc.returncode == 2 and facts is None and fragment in proc.stderr, detail(proc))
+
+    nested = nested_worktree(sb)
+    in_main = sb.repo / "state" / "rounds"
+    shutil.copytree(sb.rounds, in_main)
+    responses = str(sb.repo / RESPONSES)
+    proc, facts = assemble(sb, replace={"--responses": responses, "--rounds": str(in_main)}, cwd=nested)
+    T.check("assemble: from a nested worktree, --rounds inside the main checkout exits 2 with no facts file",
+            proc.returncode == 2 and facts is None and "inside the main checkout" in proc.stderr, detail(proc))
+    proc, facts = assemble(sb, replace={"--responses": responses}, cwd=nested)
+    T.check("assemble: from a nested worktree, rounds in runner state are read",
+            written(proc, facts) and facts["gate_rounds"] == baseline["gate_rounds"], detail(proc))
+    for path in in_main.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    shutil.rmtree(sb.repo / "state")
+
+
+def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     proc, facts = assemble(sb)
     if not T.check("assemble: exits 0 and writes facts.json", proc.returncode == 0 and isinstance(facts, dict),
                    detail(proc)):
         return
     T.check("assemble: keys in order", list(facts) == FACTS_KEYS, str(list(facts)))
     T.check("assemble: tool, version, pr and issue",
-            (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 1, PR, ISSUE))
+            (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 2, PR, ISSUE))
     T.check("assemble: head and base are the full hashes", (facts["head"], facts["base"]) == (sb.head, sb.base),
             f"{facts['head']} {facts['base']}")
     request = json.loads((sb.repo / RESPONSES / "request.json").read_text(encoding="utf-8"))
@@ -763,7 +1259,7 @@ def assemble_tests(sb: Sandbox, short: Path) -> None:
             str([g.get("round") for g in gates]))
     for g, (verdict, failed, reason) in zip(gates, EXPECTED_GATES):
         T.check(f"assemble: gate round {g['round']} verdict, failed tests and reason",
-                list(g) == ["round", "verdict", "failed_tests", "reason", "files"]
+                list(g) == GATE_KEYS and (g["commit"], g["current"]) == (sb.head, True)
                 and (g["verdict"], g["failed_tests"], g["reason"]) == (verdict, failed, reason)
                 and g["files"] == round_files(sb, "gates", g["round"]), json.dumps(g))
     T.check("assemble: every gate round says what run-gates.py --verdict said",
@@ -778,13 +1274,14 @@ def assemble_tests(sb: Sandbox, short: Path) -> None:
     T.check("assemble: two review rounds in round order", [r["round"] for r in reviews] == [1, 2])
     for r, (number, verdict, counts) in zip(reviews, expected_reviews):
         T.check(f"assemble: review round {number} verdict and counts by severity",
-                list(r) == ["round", "verdict", "findings", "files"]
+                list(r) == REVIEW_KEYS and (r["commit"], r["current"]) == (sb.head, True)
                 and (r["round"], r["verdict"], r["findings"]) == (number, verdict, counts)
                 and list(r["findings"]) == ["blocker", "major", "minor", "nit"]
                 and r["files"] == round_files(sb, "review", number), json.dumps(r))
     T.check("assemble: steers (human, marked mintswarm-dev[bot], review, inline, ghost; not the rest)",
             facts["steers"] == EXPECTED_STEERS, json.dumps(facts["steers"], indent=1))
-    proc, short_facts = assemble(sb, ["--rounds", str(short)])
+    baseline = facts
+    proc, short_facts = assemble(sb, replace={"--rounds": str(short)})
     gates = short_facts.get("gate_rounds", []) if written(proc, short_facts) else []
     T.check("assemble: a report short of the input's gates is failed, as run-gates.py --verdict has it",
             bool(gates) and (gates[0]["verdict"], gates[0]["reason"])
@@ -868,16 +1365,22 @@ def assemble_tests(sb: Sandbox, short: Path) -> None:
     request["fetched_at"] = "yesterday"
     write(stale / "request.json", json.dumps(request) + "\n")
     no_input = without_file(sb, "rounds-no-input", "gates-2", "gates.input.json")
+    version_1 = copy_rounds(sb, "rounds-version-1")
+    record = json.loads((version_1 / "gates-1" / "round.json").read_text(encoding="utf-8"))
+    record["version"] = 1
+    del record["head"]
+    write(version_1 / "gates-1" / "round.json", json.dumps(record, indent=2) + "\n")
     cases = [
         ("a head that is not the one fetched", {"--head": "HEAD~1"}, []),
         ("a request.json without a usable fetched_at", {"--responses": str(stale)}, []),
-        ("a gates round without its input", {}, ["--rounds", str(no_input)]),
+        ("a gates round without its input", {"--rounds": str(no_input)}, []),
         ("an --approver that is not a login", {"--approver": "zmij[bot]x"}, []),
         ("a PR whose head is not the head", {"--responses": str(moved)}, []),
-        ("a tampered kept file", {}, ["--rounds", str(tampered)]),
-        ("a gap in round numbers", {}, ["--rounds", str(gap)]),
-        ("an unreadable review verdict", {}, ["--rounds", str(verdict)]),
-        ("a file not listed in round.json", {}, ["--rounds", str(stray)]),
+        ("a tampered kept file", {"--rounds": str(tampered)}, []),
+        ("a gap in round numbers", {"--rounds": str(gap)}, []),
+        ("a version 1 round.json", {"--rounds": str(version_1)}, []),
+        ("an unreadable review verdict", {"--rounds": str(verdict)}, []),
+        ("a file not listed in round.json", {"--rounds": str(stray)}, []),
         ("a bad --approved-at", {"--approved-at": "2026-11-22 12:00:00"}, []),
         ("an --approved-at that is not a date", {"--approved-at": "2026-02-30T12:00:00Z"}, []),
         ("a bad --approver", {"--approver": "zmij;rm"}, []),
@@ -895,6 +1398,7 @@ def assemble_tests(sb: Sandbox, short: Path) -> None:
     proc, facts = assemble(sb, ["--decision", str(sb.tmp / "floor.json")])
     T.check("assemble: a decision that is not decision.py's exits 2 with no facts file",
             proc.returncode == 2 and facts is None, detail(proc))
+    runner_state_tests(sb, baseline, stale_rounds)
 
 
 # --- static ---------------------------------------------------------------
@@ -917,6 +1421,18 @@ def static_tests() -> None:
     doc = " ".join((ast.get_docstring(ast.parse(COLLECT.read_text(encoding="utf-8"))) or "").split())
     T.check("static: collect-facts.py's docstring states the steer gap",
             "Steers given only in the session chat" in doc and MARKER in doc)
+    sources = []
+    for path in (KEEP, COLLECT):
+        text = path.read_text(encoding="utf-8")
+        found = [ast.get_source_segment(text, node) for node in ast.parse(text).body
+                 if isinstance(node, ast.FunctionDef) and node.name == "check_rounds_location"]
+        sources.append(found[0] if len(found) == 1 else None)
+    T.check("static: keep-round.py and collect-facts.py share check_rounds_location word for word",
+            sources[0] is not None and sources[0] == sources[1])
+    for path in (KEEP, COLLECT):
+        doc = " ".join((ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or "").split())
+        T.check(f"static: {path.name}'s docstring says rounds outside the worktree are a convention",
+                "not an OS barrier" in doc and "runner state" in doc)
 
 
 def main() -> int:
@@ -928,15 +1444,19 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="msw-facts-selftest.") as tmp:
         sb = Sandbox(Path(tmp).resolve())
         keep_tests(sb)
+        location_tests(sb)
+        head_tests(sb)
+        stale_rounds = stale_tests(sb)
         short = short_rounds(sb)
         pages = build_responses(sb.head)
         if fetch_tests(sb, pages):
-            assemble_tests(sb, short)
+            assemble_tests(sb, short, stale_rounds)
         else:
             print("facts-selftest: the fetch sandbox is not safe; assemble not run", file=sys.stderr)
             T.failed += 1
-        for path in [*sb.rounds.rglob("*"), *short.rglob("*")]:
-            path.chmod(0o755 if path.is_dir() else 0o644)
+        for path in sb.runner_state.rglob("*"):
+            if not path.is_symlink():
+                path.chmod(0o755 if path.is_dir() else 0o644)
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
 
