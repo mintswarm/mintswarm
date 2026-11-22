@@ -74,7 +74,14 @@ agents:
     gates: { model: sonnet, effort: low }
 
 pipeline:
-  approve_plan: true                 # plan approval for every implementation issue while the flow proves itself
+  # Read from the base ref, never the worktree, by the session and plan-approval/floor.py.
+  plan_approval:
+    mode: always                     # always | shadow | judged | never; every plan goes to the maintainer while the flow proves itself
+                                     # shadow: floor and assess run and are recorded, but every plan still goes to a human
+    require_human:                   # any declared match sends the plan to a human
+      components: [agents, tooling]
+      paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md"]
+    limits: { files: 10, lines: 300, new_files: 3, new_dependencies: 0 }
   review:
     max_rounds: 3
     reviewers: [zmij]                # default reviewers of a PR; see components above
