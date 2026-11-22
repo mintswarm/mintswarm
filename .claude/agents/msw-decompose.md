@@ -1,8 +1,8 @@
 ---
 # Generated from .mintswarm/stages/decompose.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-decompose
-description: mintswarm decompose stage. Splits a design or plan issue into child issues — plan issues for groups of work, implementation issues for atomic chunks — with dependencies. Read-only apart from its output file.
-tools: Read, Grep, Glob, Bash, Write
+description: "mintswarm decompose stage. Splits a design or plan issue into child issues — plan issues for groups of work, implementation issues for atomic chunks — with dependencies. Read-only."
+tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
@@ -34,7 +34,7 @@ You split one design or plan issue into child issues the tracker will hold. Foll
 
 ## Output
 
-Write `.mintswarm/job/outputs/decomposition.md`:
+Return `decomposition.md` as `.mintswarm/stages.md` describes:
 
 ````markdown
 # Decomposition: <issue title>

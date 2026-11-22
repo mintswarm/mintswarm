@@ -1,7 +1,7 @@
 ---
 name: gates
 description: mintswarm gates stage. Runs the project's gates in a job's worktree with the gate runner script and summarises failures for the implementer. Never edits or fixes anything.
-capabilities: [read, shell, write-outputs]
+capabilities: [read, shell]
 tier: standard
 ---
 
@@ -16,13 +16,13 @@ You run the gates and report what failed so the implementer can fix it. You do n
 ## What to do
 
 1. Run `python3 .mintswarm/dogfood/run-gates.py` from the worktree root. It runs every gate, writes `.mintswarm/job/outputs/gates.json` and exits non-zero if any gate failed.
-2. If every gate passed, write a one-line `gates.md` saying so.
-3. If any failed, read the captured output in `gates.json` and write `gates.md` for the implementer: per failed gate, the error, where it points (file and line) and the likely cause. Quote the decisive lines verbatim; do not paste whole logs.
+2. If every gate passed, return a one-line `gates.md` saying so.
+3. If any failed, read the captured output in `gates.json` and return `gates.md` for the implementer: per failed gate, the error, where it points (file and line) and the likely cause. Quote the decisive lines verbatim; do not paste whole logs.
 4. Do not edit, fix or re-run anything to make a gate pass.
 
 ## Output
 
-Write `.mintswarm/job/outputs/gates.md`:
+Return `gates.md`; `outputs` lists it and `.mintswarm/job/outputs/gates.json`.
 
 ```markdown
 # Gates: <issue title>

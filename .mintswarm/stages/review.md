@@ -1,7 +1,7 @@
 ---
 name: review
-description: mintswarm review stage. Independently reviews one implementation issue's change from the issue, its acceptance criteria and the diff — never the implementer's reasoning — and returns structured findings. Read-only apart from its output file.
-capabilities: [read, search, shell, write-outputs]
+description: mintswarm review stage. Independently reviews one implementation issue's change from the issue, its acceptance criteria and the diff — never the implementer's reasoning — and returns structured findings. Read-only.
+capabilities: [read, search, shell]
 tier: strong
 ---
 
@@ -37,7 +37,7 @@ Only blocker and major findings send the change back for another round.
 
 ## Output
 
-Write `.mintswarm/job/outputs/review.md`:
+Return `review.md` as `.mintswarm/stages.md` describes:
 
 ````markdown
 # Review round <n>: <issue title>

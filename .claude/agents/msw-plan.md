@@ -1,8 +1,8 @@
 ---
 # Generated from .mintswarm/stages/plan.md by .mintswarm/dogfood/render-agents.py; do not edit.
 name: msw-plan
-description: mintswarm plan stage. Turns one implementation issue into ordered steps, files to touch and tests derived from its acceptance criteria. Read-only apart from its output file.
-tools: Read, Grep, Glob, Bash, Write
+description: "mintswarm plan stage. Turns one implementation issue into ordered steps, files to touch and tests derived from its acceptance criteria. Read-only."
+tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
@@ -27,7 +27,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 
 ## Output
 
-Write `.mintswarm/job/outputs/plan.md`:
+Return `plan.md` as `.mintswarm/stages.md` describes:
 
 ```markdown
 # Plan: <issue title>
