@@ -20,7 +20,10 @@
 # With --force-with-lease=SHA the push succeeds only if the branch on GitHub is at SHA
 # (a URL push has no remote-tracking ref for a bare lease to use).
 #
-# The token is $MSW_TOKEN, or minted with contents:write when unset. It reaches git
+# The token is $MSW_TOKEN, or minted when unset: with contents:write, plus
+# workflows:write when origin/master...BRANCH (from the merge base) adds, edits or
+# deletes anything under .github/workflows/, as GitHub refuses a whole push from an
+# App that touches a workflow file without that permission. It reaches git
 # only through the environment and an inline credential helper (common.sh,
 # msw_git_net); it is never in the URL, .git/config, a credential store or argv.
 # git runs with https as the only transport (file too for a file:// MSW_PUSH_URL), so
@@ -90,8 +93,19 @@ if [ -n "${MSW_PUSH_URL:-}" ]; then
   esac
 fi
 
+# From the top level, so the pathspec does not depend on the current directory.
+top="$(git rev-parse --show-toplevel)" && [ -n "$top" ] || msw_die "cannot find the top of the work tree"
+rc=0
+git -C "$top" diff --quiet --no-ext-diff --no-textconv \
+  "refs/remotes/origin/master...refs/heads/$branch" -- .github/workflows || rc=$?
+case "$rc" in
+  0) perms='{"contents":"write"}' ;;
+  1) perms='{"contents":"write","workflows":"write"}' ;;
+  *) msw_die "cannot diff origin/master...$branch" ;;
+esac
+
 tok=""
-tok="$(msw_token '{"contents":"write"}')" || exit 1
+tok="$(msw_token "$perms")" || exit 1
 MSW_TOKEN="$tok"
 export MSW_TOKEN
 tok=""

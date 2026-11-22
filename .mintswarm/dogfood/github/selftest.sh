@@ -536,13 +536,17 @@ key2_line="$(sed -n 2p "$keys/key2.pem")"
 # The manifests in the repository.
 check "both manifests are valid JSON" jq -e . "$here/manifests/mintswarm-dev.json" "$here/manifests/mintswarm-dev-steward.json"
 dev_description="mintswarm's own control plane while dogfooding: pushes branches and opens PRs, issues and artifacts in mintswarm/mintswarm."
-dev_manifest_as_before() {  # the values the App was created with (id 5874301)
+# Name, url, description and events are what App 5874301 was created with; workflows
+# was added later, in the App's settings.
+dev_manifest_as_before() {
   eq "$(jq -cS '{name, url, description, default_permissions, default_events}' "$here/manifests/mintswarm-dev.json")" \
      "$(jq -cnS --arg d "$dev_description" '{name: "mintswarm-dev", url: "https://github.com/mintswarm/mintswarm", description: $d,
-          default_permissions: {contents: "write", pull_requests: "write", issues: "write", checks: "read", statuses: "read", metadata: "read"},
+          default_permissions: {contents: "write", pull_requests: "write", issues: "write", workflows: "write",
+                                checks: "read", statuses: "read", metadata: "read"},
           default_events: []}')"
 }
-check "the mintswarm-dev manifest keeps the name, url, description, permissions and events it had" dev_manifest_as_before
+check "the mintswarm-dev manifest keeps its name, url, description and events, with contents, pull_requests, issues and workflows write and checks, statuses and metadata read" \
+  dev_manifest_as_before
 check "the steward's permissions are exactly contents and pull_requests write, checks, statuses and metadata read" \
   eq "$(jq -cS .default_permissions "$here/manifests/mintswarm-dev-steward.json")" \
      '{"checks":"read","contents":"write","metadata":"read","pull_requests":"write","statuses":"read"}'
@@ -1540,6 +1544,27 @@ check ".git/config is byte-identical after pushing" cmp -s .git/config "$sandbox
 check "the token is nowhere under .git, the remote or HOME" absent "$DUMMY" "$repo/.git" "$remote" "$HOME"
 check "the minted token is nowhere under .git, the remote or HOME" absent "$MINTED" "$repo/.git" "$remote" "$HOME"
 check "TMPDIR is empty after pushing" tmp_empty
+
+# The token gets workflows:write only when the range from the merge base touches .github/workflows/.
+git checkout -q --no-track -b mintswarm/6-workflow refs/remotes/origin/master
+mkdir -p .github/workflows
+printf 'name: ci\n' > .github/workflows/ci.yml
+git add .github/workflows/ci.yml
+git commit -q -m "add a workflow"
+check "push.sh pushes a branch that adds a workflow" env MSW_PUSH_URL="$url" "$P" mintswarm/6-workflow
+check "push.sh asks for workflows:write when the branch touches .github/workflows/" \
+  eq "$(push_perms)" '{"contents":"write","workflows":"write"}'
+git checkout -q --detach refs/remotes/origin/master
+mkdir -p .github/workflows
+printf 'name: other\n' > .github/workflows/other.yml
+git add .github/workflows/other.yml
+git commit -q -m "maintainer adds a workflow on master"
+git update-ref refs/remotes/origin/master HEAD
+check "push.sh pushes mintswarm/2-y with a workflow commit on origin/master only" \
+  env MSW_PUSH_URL="$url" "$P" mintswarm/2-y
+git update-ref refs/remotes/origin/master "$origin_master"
+git checkout -q mintswarm/1-x
+check "workflow commits on origin/master alone do not widen the token" eq "$(push_perms)" '{"contents":"write"}'
 
 git config url.git@github.com:.insteadOf https://github.com/
 refuses "push.sh refuses a url.*.insteadOf in the repository config" push_as_bot mintswarm/2-y
