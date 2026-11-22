@@ -204,7 +204,6 @@ HISTORIC = {
             "limit-files",
             "limit-lines",
             "gate-changes",
-            "tests-none",
         },
     ),
     "plan-12.md": (
@@ -214,7 +213,6 @@ HISTORIC = {
             "require-human-components",
             "limit-lines",
             "gate-changes",
-            "tests-none",
         },
     ),
     "plan-14.md": (
@@ -227,10 +225,9 @@ HISTORIC = {
             "limit-new-files",
             "external-steps",
             "gate-changes",
-            "tests-none",
         },
     ),
-    "plan-19.md": ("tooling", {"require-human-components", "external-steps", "tests-none"}),
+    "plan-19.md": ("tooling", {"require-human-components", "external-steps"}),
     "plan-20.md": ("docs", set()),
     "plan-10.md": ("docs", {"require-human-paths"}),
 }
@@ -713,7 +710,9 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         reason="agents-drift",
         component="agents",
     )
-    expect_hit(r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, component="web")
+    expect_hit(
+        r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, component="web", config="untested"
+    )
     expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
     expect_hit(
         r,
@@ -2289,6 +2288,7 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("judged", lambda c: approval(c).update(mode="judged"))
     variant("never", lambda c: approval(c).update(mode="never"))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
+    variant("untested", lambda c: c["gates"].update(tests="none"))
     commits["real"] = sb.commit_config(real_bytes, "real")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
