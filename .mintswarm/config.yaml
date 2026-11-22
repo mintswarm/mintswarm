@@ -10,8 +10,8 @@ tracker:
     plan:           { issue_type: Plan }
     implementation: { issue_type: Task }
   components:
-    source: field                    # field | labels
-    field: Component
+    source: labels                   # labels (per repository) | field (account-wide select or free text)
+    label: "component:{name}"        # implementation issues carry exactly one; design and plan issues may carry several
   ingest:
     trusted:
       labels: [mintswarm]            # maintainer-only; never applied by an issue template
