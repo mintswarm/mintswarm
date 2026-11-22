@@ -52,13 +52,13 @@ After the plan stage returns a plan, in this order:
   - the would-be decision, `judged_decision`, and the decision;
   - the maintainer decision, pending.
 
-  The plan then goes to the maintainer as before, with the approval package below. When the maintainer decides, record that decision beside the judgement, in the shadow-record comment and in the plan artifact: approved or rejected, whether it agrees with `judged_decision`, and any observation for the threshold review, such as a rule that should have hit or a path that should require a human.
-- **`auto`:** post the printed comment on the issue through `.mintswarm/dogfood/github/bot-gh.sh` (`-F body=@<file>`), unchanged. Implement then starts without the maintainer. The PR description of an auto-approved item says that the plan was auto-approved and why: the mode, the floor clean on all 16 rules, the risk and its reason, and links to the assessment and decision artifacts.
-- **`human`** (under `always`, `shadow`, or `judged` with a hit, a risk above `low`, an unusable layer, or assess run on a harness or model other than the configured one): the plan goes to the maintainer with the approval package.
+  The plan then goes to the maintainer as before, with the approval package below; once it is posted, the session assigns the issue with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`. When the maintainer decides, record that decision beside the judgement, in the shadow-record comment and in the plan artifact: approved or rejected, whether it agrees with `judged_decision`, and any observation for the threshold review, such as a rule that should have hit or a path that should require a human.
+- **`auto`:** post the printed comment on the issue through `.mintswarm/dogfood/github/bot-gh.sh` (`-F body=@<file>`), unchanged. Implement then starts without the maintainer, and nobody is assigned, because nobody is waited on. The PR description of an auto-approved item says that the plan was auto-approved and why: the mode, the floor clean on all 16 rules, the risk and its reason, and links to the assessment and decision artifacts.
+- **`human`** (under `always`, `shadow`, or `judged` with a hit, a risk above `low`, an unusable layer, or assess run on a harness or model other than the configured one): the plan goes to the maintainer with the approval package; once it is posted, the session assigns the issue with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`.
 
 ## The approval package
 
-For a `human` decision, the maintainer gets, in one message:
+For every plan that goes to the maintainer, the session posts the approval package as one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). It gives the full URLs GitHub returned (`html_url`) of the plan artifact, the `Plan assessment` artifact, the decision artifact and, in `shadow` mode, the shadow-record comment, and holds:
 
 - the plan artifact, with its approach and footprint in brief;
 - the floor verdict: hit rules with their reasons, or clean;
@@ -66,7 +66,7 @@ For a `human` decision, the maintainer gets, in one message:
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
 
-The maintainer approves, asks for changes or rejects; nothing starts implement until they approve.
+The maintainer approves, asks for changes or rejects; nothing starts implement until they approve. Whichever they decide, the session then releases the issue with `.mintswarm/dogfood/github/assign-approvers.py release <issue> plan`. A revised plan is assigned again when it is published, and so is a plan that a veto returns to awaiting plan approval.
 
 ## Veto
 
