@@ -531,7 +531,8 @@ def check_single_rules(r: Runner, limits: dict) -> None:
                reason="component tooling", component="tooling")
     expect_hit(r, "web/index.html", base(files=["web/index.html"]), "component-scope")
     expect_clean(r, "Cargo.toml", base(files=["Cargo.toml"]), ["component-scope", "no-component"])
-    expect_hit(r, "LICENSE.md", base(files=["LICENSE.md"]), "no-component")
+    expect_clean(r, "LICENSE.md", base(files=["LICENSE.md"]), ["component-scope", "no-component"])
+    expect_hit(r, "Makefile", base(files=["Makefile"]), "no-component")
 
     def docs_files(n: int) -> list:
         return [f"docs/limit-{i}.md" for i in range(n)]

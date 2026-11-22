@@ -47,7 +47,7 @@ components:
     paths: ["web/**"]
   agents:
     description: "stage agent definitions, stage conventions, prompt templates and the dogfooding glue"
-    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/dogfood/**", "defaults/prompts/**"]
+    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/dogfood/**", "defaults/prompts/**", "defaults/packs/**", ".claude/skills/**"]
   distribution:
     description: "container image, compose files, service units and installers"
     paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
@@ -56,7 +56,7 @@ components:
     paths: ["xtask/**", ".github/**", "tests/**"]
   docs:
     description: "architecture documents, guides and the repository's top-level documents"
-    paths: ["docs/**", "README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]
+    paths: ["docs/**", "README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", "LICENSE.md"]
 
 shared:                              # any component may touch these
   - Cargo.toml
@@ -65,6 +65,11 @@ shared:                              # any component may touch these
   - deny.toml
   - .gitignore
   - .mintswarm/config.yaml
+  - .editorconfig
+  - rustfmt.toml
+  - clippy.toml
+  - pyproject.toml
+  - .shellcheckrc
 
 # Chooses the model at run time; the tier in .mintswarm/stages/<stage>.md is the stage default that .claude/agents/ is rendered with.
 agents:
