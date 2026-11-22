@@ -71,6 +71,7 @@ TITLES = {
     "decomposition": "# Decomposition: <issue title>",
     "gates": "# Gates: <issue title>",
     "handoff": "# Handoff: <issue title>",
+    "landing": "# Landing: <issue title>",
     "address": "# Address round <n>: <issue title>",
     "plan": "# Plan: <issue title>",
     "review": "# Review round <n>: <issue title>",
@@ -82,6 +83,7 @@ SKELETONS = {
     "decompose": ["decomposition"],
     "gates": ["gates"],
     "implement": ["handoff", "address"],
+    "landing": ["landing"],
     "plan": ["plan"],
     "review": ["review"],
 }
