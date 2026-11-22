@@ -25,7 +25,7 @@ tier: strong
 The frontmatter is a subset of YAML:
 
 - The file starts with a `---` line; the frontmatter ends at the next `---` line.
-- Each line is `key: value`, split at the first `: `. The value is taken literally: no quoting, no multi-line values. The renderer writes `description` as a double-quoted YAML scalar, escaping `\` and `"`, so any text is safe there; it rejects the characters YAML does not allow (control characters other than tab, and U+FFFE, U+FFFF).
+- Each line is `key: value`, split at the first `: `. The value is taken literally: no quoting, no multi-line values. The renderer writes `description` as a double-quoted YAML scalar, escaping `\` and `"`, so any text is safe there; it rejects the characters YAML does not allow (control characters other than tab, and U+FFFE, U+FFFF) and line and paragraph separators (U+2028, U+2029).
 - Only `capabilities` is a list: comma-separated in `[ ]`, and it must not be empty. In every other key, `[ ]` is literal text.
 - Blank lines and lines starting with `#` are ignored.
 - The keys are `name`, `description`, `capabilities` and `tier`, all required; no others are allowed. `name` equals the file name without `.md`.

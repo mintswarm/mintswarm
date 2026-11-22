@@ -73,14 +73,16 @@ def rel(path: Path) -> str:
 def parse(path: Path) -> dict:
     where = rel(path)
     text = read_text(path)
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\r\n") != "---":
+    # Split on LF only: str.splitlines() also breaks at U+2028, U+0085 and
+    # the like, which must be reported as characters, not as line ends.
+    pieces = text.split("\n")
+    if pieces[0].removesuffix("\r") != "---":
         raise SourceError(f"{where}: must start with a '---' line")
     fields = {}
-    for index, line in enumerate(lines[1:], start=1):
-        stripped = line.rstrip("\r\n")
+    for index, piece in enumerate(pieces[1:], start=1):
+        stripped = piece.removesuffix("\r")
         if stripped == "---":
-            body = "".join(lines[index + 1:])
+            body = "\n".join(pieces[index + 1:])
             break
         if not stripped.strip() or stripped.lstrip().startswith("#"):
             continue
@@ -103,10 +105,11 @@ def parse(path: Path) -> dict:
         raise SourceError(f"{where}: missing keys: {', '.join(missing)}")
     if fields["name"] != path.stem:
         raise SourceError(f"{where}: name {fields['name']!r} does not match the file name")
-    # YAML allows neither control characters (tab apart) nor U+FFFE, U+FFFF.
+    # YAML allows neither control characters (tab apart) nor U+FFFE, U+FFFF;
+    # line and paragraph separators (U+2028, U+2029) would break the line.
     control = [
         c for c in fields["description"]
-        if c != "\t" and (unicodedata.category(c) == "Cc" or c in "\ufffe\uffff")
+        if c != "\t" and (unicodedata.category(c) == "Cc" or c in "\ufffe\uffff\u2028\u2029")
     ]
     if control:
         raise SourceError(
