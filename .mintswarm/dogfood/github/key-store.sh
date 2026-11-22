@@ -4,7 +4,8 @@
 #
 #   key-store.sh backend [SERVICE ACCOUNT]    print the backend put would use
 #   key-store.sh put SERVICE ACCOUNT [LABEL]  store the value read from stdin
-#   key-store.sh get SERVICE ACCOUNT          print the value, byte for byte
+#   key-store.sh get SERVICE ACCOUNT          print the value, byte for byte, to a
+#                                             pipe or file; refused to a terminal
 #   key-store.sh delete SERVICE ACCOUNT       remove it
 #
 # The backend is $MSW_KEY_STORE when set; the command fails if it is unknown or
@@ -25,7 +26,10 @@
 #   keychain        a generic password -s SERVICE -a ACCOUNT -l LABEL in the login
 #                   Keychain, base64 on the stdin of "security -i"
 #   secret-service  an item with attributes service=SERVICE account=ACCOUNT,
-#                   written on the stdin of "secret-tool store"
+#                   written on the stdin of "secret-tool store". Every secret-tool
+#                   call is stopped after $MSW_KEY_STORE_TIMEOUT seconds (default
+#                   10): on a locked collection it waits for an unlock prompt,
+#                   which an agent session never answers.
 #   pass            the entry mintswarm/SERVICE/ACCOUNT, written on the stdin of
 #                   "pass insert -m -f"
 #   systemd-creds   the credential SERVICE@ACCOUNT, encrypted from stdin into
@@ -34,13 +38,17 @@
 #                   get reads $CREDENTIALS_DIRECTORY/SERVICE@ACCOUNT first
 #   file            ~/.config/mintswarm/keys/SERVICE@ACCOUNT, unencrypted, 0600 in
 #                   a 0700 directory; refused when either is a symlink, is not the
-#                   user's, or has any group or other permission. Every use warns.
+#                   user's, or has any group or other permission, when ~/.config
+#                   or ~/.config/mintswarm is a symlink (a dotfiles link), and
+#                   when the directory is inside a git work tree. Every use warns.
 #
 # SERVICE and ACCOUNT match [A-Za-z0-9][A-Za-z0-9._-]*; LABEL matches
 # [A-Za-z0-9 ._-]+ and defaults to "mintswarm SERVICE ACCOUNT".
 #
 # The value is never in argv or a temporary file: it moves only through pipes,
-# shell variables and the printf builtin. An empty value is refused.
+# shell variables and the printf builtin. An empty value is refused. get refuses
+# to write to a terminal, so the key is not shown by accident; it does not stop a
+# pipe into cat, so never run get for the App's key in a recorded session.
 #
 # Exit status: 0 on success; 1 on failure (not found, unavailable, refused);
 # 2 on bad usage.
@@ -58,6 +66,11 @@ usage() {
   exit 2
 }
 bad() { printf 'key-store.sh: %s\n' "$*" >&2; exit 2; }
+
+timeout_secs="${MSW_KEY_STORE_TIMEOUT:-10}"
+case "$timeout_secs" in
+  ''|*[!0-9]*|0) bad "MSW_KEY_STORE_TIMEOUT must be a whole number of seconds above 0" ;;
+esac
 say() { printf 'key-store.sh: %s\n' "$*" >&2; }
 
 check_name() {  # check_name WHAT VALUE
@@ -150,9 +163,37 @@ keychain_put() {
 keychain_get() { security find-generic-password -s "$1" -a "$2" -w | openssl base64 -d -A; }
 keychain_delete() { security delete-generic-password -s "$1" -a "$2" >/dev/null; }
 
-secret_service_put() { printf '%s' "$value" | secret-tool store "--label=$3" service "$1" account "$2"; }
-secret_service_get() { secret-tool lookup service "$1" account "$2"; }
-secret_service_delete() { secret-tool clear service "$1" account "$2"; }
+bounded() {  # bounded COMMAND...: COMMAND, stopped after $timeout_secs seconds; 124 when stopped
+  # A watchdog, not timeout(1), so the same code runs on macOS. COMMAND keeps this
+  # stdin (0<&0: an asynchronous command would otherwise get /dev/null) and
+  # stdout; the watchdog holds neither, and takes its sleep with it when stopped.
+  local pid watchdog rc=0
+  "$@" 0<&0 &
+  pid=$!
+  (
+    trap 'kill "$s" 2>/dev/null; exit 0' TERM
+    sleep "$timeout_secs" &
+    s=$!
+    wait "$s" && kill "$pid" 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  if [ "$rc" -eq 143 ]; then return 124; fi
+  return "$rc"
+}
+secret_tool() {  # secret_tool ARGS...: secret-tool, bounded, with a clear message when it does not answer
+  local rc=0
+  bounded secret-tool "$@" || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    say "secret-tool did not answer within $timeout_secs seconds: the keyring is probably locked; unlock it first (see README.md, Key store)"
+  fi
+  return "$rc"
+}
+secret_service_put() { printf '%s' "$value" | secret_tool store "--label=$3" service "$1" account "$2"; }
+secret_service_get() { secret_tool lookup service "$1" account "$2"; }
+secret_service_delete() { secret_tool clear service "$1" account "$2"; }
 
 pass_put() { printf '%s' "$value" | pass insert -m -f "mintswarm/$1/$2" >/dev/null; }
 pass_get() { pass show "mintswarm/$1/$2"; }
@@ -196,9 +237,26 @@ file_check() {  # file_check WHAT PATH: refuse a symlink, another owner or a wid
   if file_wide "$2"; then say "refusing the $1 $2: it has group or other permissions (chmod go= it)"; return 1; fi
 }
 file_warn() { say "warning: the file key store keeps the key unencrypted in $1"; }
+file_parents() {  # refuse a symlink between $HOME and the key directory, or a key directory in a git work tree
+  local p
+  for p in "$HOME/.config" "$MSW_CONFIG_DIR"; do
+    if [ -L "$p" ]; then
+      say "refusing $p: it is a symlink (a dotfiles link?); the file key store needs real directories below \$HOME"
+      return 1
+    fi
+  done
+  p="$MSW_KEY_FILE_DIR"
+  while [ ! -d "$p" ]; do p="$(dirname "$p")"; done
+  if have git && [ "$(cd "$p" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CEILING_DIRECTORIES \
+       git rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+    say "refusing $MSW_KEY_FILE_DIR: it is inside a git work tree, where the key could be committed"
+    return 1
+  fi
+}
 file_put() {
   local d="$MSW_KEY_FILE_DIR" f="$MSW_KEY_FILE_DIR/$1@$2"
   file_warn "$f"
+  file_parents || return 1
   if [ ! -e "$d" ] && [ ! -L "$d" ]; then mkdir -p "$d" || return 1; fi
   file_check directory "$d" || return 1
   if [ -e "$f" ] || [ -L "$f" ]; then file_check file "$f" || return 1; fi
@@ -207,6 +265,7 @@ file_put() {
 file_get() {
   local d="$MSW_KEY_FILE_DIR" f="$MSW_KEY_FILE_DIR/$1@$2"
   file_warn "$f"
+  file_parents || return 1
   if [ ! -e "$d" ] && [ ! -L "$d" ]; then say "no $d"; return 1; fi
   file_check directory "$d" || return 1
   if [ ! -e "$f" ] && [ ! -L "$f" ]; then say "no $f"; return 1; fi
@@ -258,6 +317,7 @@ case "${1:-}" in
   get)
     [ $# -eq 3 ] || usage
     check_name service "$2"; check_name account "$3"
+    [ ! -t 1 ] || msw_die "refusing to print $2/$3 to a terminal: pipe it into the command that needs it"
     select_backend "$2" "$3"
     value="$("$(backend_fn "$store" get)" "$2" "$3" && printf x)" \
       || msw_die "reading $2/$3 from the $store key store failed"

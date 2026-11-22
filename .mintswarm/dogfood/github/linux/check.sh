@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The Linux check, run as root inside the container that linux-check.sh starts.
 # It refuses to run anywhere else, in every mode: it moves the systemd host
-# credential key aside, kills gnome-keyring-daemon and runs commands as another
-# user.
+# credential key aside, kills the msw user's processes and runs commands as
+# another user. It needs the marker /etc/mintswarm-linux-check that only
+# linux/Dockerfile writes, besides /.dockerenv or /run/.containerenv; the user-*
+# modes also need to be msw with HOME=/home/msw, the others root.
 #
 #   check.sh                 run every phase (as root)
 #   check.sh PHASE [STEP]    one phase's steps, as the driver starts them:
@@ -13,7 +15,8 @@
 #   A  selftest.sh as the non-root user msw: GNU userland, bash 5, Debian's tools.
 #   B  secret-service as msw, against gnome-keyring in dbus-run-session: backend
 #      selection, a byte-exact round trip, rotate and mint-token.sh jwt; with no
-#      bus and with the collection locked, get fails and nothing falls back.
+#      bus, get fails; with the collection locked, get fails within 20 seconds
+#      and says to unlock it; nothing falls back to the file backend.
 #   C  pass as msw, with a throwaway gpg key: round trip, rotate and jwt.
 #   D  the file backend as msw: modes 600 and 700, the warning, refusing a
 #      symlink, a wide mode and (after root chowns it) a foreign owner; rotate and jwt.
@@ -126,16 +129,33 @@ user_a() {
 
 # --- B: secret-service, as msw inside dbus-run-session -------------------------
 
-kill_named() {  # kill_named COMM: kill this user's processes with that command name
-  local p
-  for p in /proc/[0-9]*; do
-    if [ -O "$p" ] && [ "$(cat "$p/comm" 2>/dev/null || true)" = "$1" ]; then
-      kill "${p#/proc/}" 2>/dev/null || true
-    fi
+kill_strays() {  # kill msw's processes outside this script's ancestry (the keyring daemon, any prompter);
+                 # dbus-daemon is left to dbus-run-session, which stops it when this script exits
+  local keep=" " p="$$" stat q
+  while [ "$p" -gt 1 ]; do
+    keep="$keep$p "
+    stat="$(cat "/proc/$p/stat" 2>/dev/null)" || break
+    stat="${stat##*) }"; stat="${stat#* }"; p="${stat%% *}"
+  done
+  for q in /proc/[0-9]*; do
+    q="${q#/proc/}"
+    case "$keep" in *" $q "*) continue ;; esac
+    [ "$(cat "/proc/$q/comm" 2>/dev/null || true)" != dbus-daemon ] || continue
+    if [ -O "/proc/$q" ]; then kill "$q" 2>/dev/null || true; fi
   done
 }
 
+locked_get() {  # with the collection locked: get fails within 20 seconds and says to unlock it
+  local start end
+  start="$(date +%s)"
+  fails_saying "the keyring is probably locked; unlock it first" timeout 60 "$K" get "$SERVICE" "$CLIENT_ID" || return 1
+  end="$(date +%s)"
+  [ $((end - start)) -lt 20 ] || { echo "took $((end - start)) seconds"; return 1; }
+}
+
 user_b() {
+  # Nothing this phase starts may outlive it: strace -f waits for every process it traces.
+  trap kill_strays EXIT
   unset MSW_KEY_STORE
   check "B: gnome-keyring starts and unlocks a throwaway login keyring" \
     sh -c 'printf "%s" msw-check-keyring | gnome-keyring-daemon --unlock --components=secrets'
@@ -147,14 +167,15 @@ user_b() {
     fails_saying "MSW_KEY_STORE=secret-service is not available" \
     env -u DBUS_SESSION_BUS_ADDRESS "$K" get "$SERVICE" "$CLIENT_ID"
   check "B: and nothing fell back to the file backend" no_key_dir
-  if secret-tool lock --collection=/org/freedesktop/secrets/collection/login >/dev/null 2>&1; then
-    refuses "B: with the collection locked, get fails within 20 seconds" \
-      timeout 20 "$K" get "$SERVICE" "$CLIENT_ID"
-    check "B: and nothing fell back to the file backend" no_key_dir
-  else
-    skip "B: secret-tool lock is not available here; the locked-collection check did not run"
-  fi
-  kill_named gnome-keyring-d
+  local rc=0
+  timeout 20 secret-tool lock --collection=/org/freedesktop/secrets/collection/login >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0)
+      check "B: with the collection locked, get fails within 20 seconds and says to unlock it" locked_get
+      check "B: and nothing fell back to the file backend" no_key_dir ;;
+    124) not_ok "B: secret-tool lock did not finish within 20 seconds" ;;
+    *) skip "B: secret-tool lock is not available here (status $rc); the locked-collection check did not run" ;;
+  esac
   phase_done B
 }
 
@@ -280,7 +301,6 @@ run_phase() {  # run_phase [-t] NAME SECONDS COMMAND...: run, show and count the
 }
 
 driver() {
-  [ "$(id -u)" = 0 ] || { printf '%s\n' "check.sh: run as root inside the container" >&2; exit 2; }
   export HOME=/root
   mkdir -p "$W" /root/tmp "$MSW_HOME/tmp" "$MSW_RUN"
   chmod 755 "$W"
@@ -336,8 +356,18 @@ driver() {
   [ "$failed" -eq 0 ]
 }
 
-[ -f /.dockerenv ] || [ -f /run/.containerenv ] \
-  || { printf '%s\n' "check.sh: refusing to run outside a container (see linux-check.sh)" >&2; exit 2; }
+refuse() { printf 'check.sh: %s\n' "$*" >&2; exit 2; }
+MARKER=/etc/mintswarm-linux-check
+{ [ -f /.dockerenv ] || [ -f /run/.containerenv ]; } \
+  && [ "$(cat "$MARKER" 2>/dev/null || true)" = mintswarm-linux-check ] \
+  || refuse "refusing to run outside the linux-check.sh container (no $MARKER; see linux-check.sh)"
+case "${1:-}" in
+  user-*)
+    [ "$(id -un)" = msw ] && [ "${HOME:-}" = "$MSW_HOME" ] \
+      || refuse "the ${1} steps run only as msw with HOME=$MSW_HOME" ;;
+  *)
+    [ "$(id -u)" = 0 ] || refuse "run as root inside the container" ;;
+esac
 
 case "${1:-}" in
   '') driver ;;

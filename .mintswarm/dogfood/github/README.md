@@ -9,7 +9,7 @@ The App's private key lives in a key store: the macOS login Keychain, Secret Ser
 | Script | What it does | Secrets it touches |
 | --- | --- | --- |
 | `common.sh` | Sourced by the others. Holds the repository, bot identity and config paths; `msw_token`; `msw_recorded_key_store`; and `msw_git_net`, which runs git with only the repository's config and an inline credential helper fed from `$MSW_TOKEN` that answers only for `https://github.com`. | the token, from the environment |
-| `key-store.sh backend\|put\|get\|delete` | Keeps a value in a key store, with the value on stdin and stdout only (see [Key store](#key-store)). `backend` prints the store `put` would use. | the key, on stdin or stdout, to and from the store |
+| `key-store.sh backend\|put\|get\|delete` | Keeps a value in a key store, with the value on stdin and stdout only (see [Key store](#key-store)). `backend` prints the store `put` would use. `get` refuses to write to a terminal; never run `get` for the App's key in the session, not even into `cat` or a pager: it prints the private key into the transcript. | the key, on stdin or stdout, to and from the store |
 | `mint-token.sh` | `jwt` prints an App JWT; `token [PERMS_JSON]` prints an installation token for `mintswarm/mintswarm`, optionally with narrower permissions. Reads the key only from the key store recorded in `dev-app.json`. Used by the other scripts; do not run `token` bare in the session. | the key (key store to `openssl` on a pipe), the JWT (to `curl` on stdin), the token (stdout) |
 | `push.sh BRANCH [--force-with-lease=SHA]` | Pushes a `mintswarm/*` branch to `https://github.com/mintswarm/mintswarm.git` as the bot, after checking every commit in `origin/master..BRANCH` is the bot's. | the token, minted with `contents: write` unless `MSW_TOKEN` is set |
 | `bot-gh.sh ARGS…` | Runs `gh` with a fresh installation token as `GH_TOKEN`, `GH_REPO=mintswarm/mintswarm` and the maintainer's tokens removed from the environment; does not run `gh` at all if minting fails. | the token, as `GH_TOKEN` |
@@ -20,7 +20,7 @@ The App's private key lives in a key store: the macOS login Keychain, Secret Ser
 | `selftest.sh` | Offline test of all of the above against stubs of `security`, `secret-tool`, `pass`, `systemd-creds`, `uname`, `curl` and `gh` in a temporary sandbox; the file backend is tested for real inside the sandbox. Reaches no real key store and not GitHub. | throwaway keys and dummy tokens only |
 | `linux-check.sh` | Runs `selftest.sh` and the real Linux backends in a throwaway Debian container (see [Linux check](#linux-check)). `linux/` holds its image and in-container script. | throwaway keys generated in the container only |
 
-The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `python3` and `yq`. `selftest.sh` also needs `shellcheck`. Each key store needs its own tool:
+The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `python3` and `yq`. `selftest.sh` also needs `shellcheck`, which it runs at severity `warning`: info and style notes differ between shellcheck versions (0.10 on Debian, 0.11 on Homebrew), so they do not fail it. Each key store needs its own tool:
 
 | Key store | Needs |
 | --- | --- |
@@ -50,11 +50,19 @@ The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and,
 - To choose one: `MSW_KEY_STORE=<name> store-credentials.sh rotate PEM_PATH` (or `convert`).
 - **Moving to another store:** run `rotate` with the new `MSW_KEY_STORE`; once a token mints with the new key, delete the old item, as `rotate` prints: `MSW_KEY_STORE=<old> key-store.sh delete mintswarm-dev-private-key <client id>`. `rotate` leaves the old item where it is.
 - **A systemd user service** can take the key without decrypting it itself: `LoadCredentialEncrypted=mintswarm-dev-private-key@<client id>:%h/.config/mintswarm/credstore/mintswarm-dev-private-key@<client id>.cred` in the unit puts it in `$CREDENTIALS_DIRECTORY`, which `key-store.sh` reads first.
-- **The file store is the weakest:** the key is plain text on disk, protected only by its mode. It is never picked automatically, every use prints a warning, and it refuses the file or directory when it is a symlink, is not yours, or has any group or other permission. `~/.config` is often in a dotfiles repository or synced; keep `~/.config/mintswarm/keys` out of both.
+- **The file store is the weakest:** the key is plain text on disk, protected only by its mode. It is never picked automatically and every use prints a warning. It refuses the key file or the `keys` directory when either is a symlink, is not yours, or has any group or other permission. It also refuses when `~/.config` or `~/.config/mintswarm` is a symlink, the usual layout of a dotfiles manager, and when the `keys` directory is inside a git work tree, such as a home directory kept in git. It cannot tell whether `~/.config` is synced, for example by a cloud drive; keep `~/.config/mintswarm/keys` out of any sync.
 - **`pass` commits** each change when the password store is a git repository; the entry is encrypted, but the commit is pushed wherever that store is pushed.
-- **Unlock first.** A locked keyring makes `secret-tool` prompt on the desktop or fail without one, and `pass` may start `pinentry`. In an agent session with no display either can fail or block, so unlock the keyring or the gpg key before the session starts. Choosing a store never runs the store's tool, so `key-store.sh backend` never prompts.
+- **Unlock first.** A locked keyring makes `secret-tool` wait for an unlock prompt: on the desktop a dialogue opens, and in an agent session with no display nobody answers it. `key-store.sh` therefore stops every `secret-tool` call after `MSW_KEY_STORE_TIMEOUT` seconds (default 10) and fails with "the keyring is probably locked; unlock it first", never falling back to another store. `pass` may start `pinentry`, which is not bounded the same way. Unlock the keyring or the gpg key before the session starts. Choosing a store never runs the store's tool, so `key-store.sh backend` never prompts.
 
-**What has been verified where.** The Keychain backend on macOS (#14, with `security -i`). Every backend against stubs in `selftest.sh`. The Linux backends against the real tools in the [Linux check](#linux-check), whose runs are recorded on #21: GNOME Keyring in a D-Bus session, `pass` with a throwaway gpg key, `systemd-creds` as root with the host key, and the file backend with GNU coreutils. Not verified yet, on a real Linux host:
+**What has been verified where.** The Keychain backend on macOS (#14, with `security -i`; and the maintainer's existing item and `dev-app.json` with `key-store.sh`, minting a token and pushing with `push.sh`). Every backend against stubs in `selftest.sh`, including a `secret-tool` that never answers. In the [Linux check](#linux-check), whose runs are recorded on PR #40, against the real tools:
+
+- GNOME Keyring in a D-Bus session: selection, a byte-exact round trip, `delete`, `rotate` then `mint-token.sh jwt`, and failing without the bus with no fallback.
+- `pass` with a throwaway gpg key.
+- `systemd-creds` as root with the host key, with the null key ruled out.
+- The file store with GNU coreutils, including a file owned by another user.
+- No key in any traced argv and no plaintext copy on disk.
+
+Not verified yet against a real keyring: that `get` fails promptly on a locked collection (checked against a stub; phase B covers it). Not verified yet, on a real Linux host:
 
 - Secret Service: GNOME Keyring unlocked at login through PAM; KeePassXC's Secret Service integration (access prompts, a locked database); the desktop prompt on a locked collection; an SSH session without the desktop's bus (expected: a clear error, no fallback).
 - `pass`: a real `gpg-agent` and `pinentry`, hardware keys, and the commit to a git-backed store.
@@ -93,7 +101,7 @@ Before the first `convert` or `rotate` on a machine, check once that the key sto
 ```
 key-store.sh backend                                   # the store that will be used
 printf 'abc\n' | key-store.sh put msw-selftest t
-key-store.sh get msw-selftest t                        # prints abc
+key-store.sh get msw-selftest t | cat                  # prints abc; get refuses a terminal
 key-store.sh delete msw-selftest t
 ```
 
@@ -122,7 +130,7 @@ Each Bash call in the session is a fresh shell, so the scripts mint a token per 
 - **Never put a token in a remote URL** (`https://x-access-token:…@github.com/…`): it ends up in `.git/config` and the transcript.
 - **Never run `gh` without `GH_TOKEN`**, that is, never plain `gh`: it falls back to the maintainer's stored login. Use `bot-gh.sh`.
 - **Never let `gh pr create` push the branch:** it may push through `origin`. Push with `push.sh`, open the PR with `bot-gh.sh api …/pulls`.
-- **Never print a token or the key:** no bare `mint-token.sh token`, no `set -x`, no `curl -v`, no `GIT_TRACE_REDACT=0`, no `GIT_CURL_VERBOSE`. The session transcript is kept on disk.
+- **Never print a token or the key:** no bare `mint-token.sh token`, no `key-store.sh get mintswarm-dev-private-key …` (it refuses a terminal, but not a pipe into `cat`, and the session's output is a pipe), no `set -x`, no `curl -v`, no `GIT_TRACE_REDACT=0`, no `GIT_CURL_VERBOSE`. The session transcript is kept on disk.
 - **Never store a token** in a git or `gh` credential store; `push.sh` uses an inline helper, which answers only for `https://github.com`, and `GIT_CONFIG_GLOBAL=/dev/null`, so `osxkeychain`, `libsecret` and `store` never see it. To check after a push: on macOS `security find-internet-password -s github.com -a x-access-token` finds nothing; on Linux with `git-credential-libsecret`, `secret-tool search protocol https server github.com user x-access-token` finds nothing; and `~/.git-credentials` has no `x-access-token` line.
 - **Do not set `url.*`, `credential.*`, `http.*` or `remote.<URL>.*` in the repository's git config;** `push.sh` refuses to push while they are set. A remote section named after a URL, such as `remote.https://github.com/mintswarm/mintswarm.git.pushurl`, applies to a push to that URL and would redirect it. Independently, `push.sh` lets git use only the https transport, so no redirect can reach ssh and the maintainer's key, its credential helper gives the token only to `github.com`, and it runs no hooks, so none sees the token. `GIT_CONFIG`, `GIT_SSL_NO_VERIFY`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH` are removed from git's environment.
 - **Do not count on `~/.curlrc`:** `mint-token.sh` and `store-credentials.sh` run `curl -q`, so a curlrc with `--trace` or `-v` cannot record the JWT, the token or the private key. `GIT_AUTHOR_*` or `GIT_COMMITTER_*` in the environment override the bot identity; `push.sh` refuses the resulting commits.
@@ -143,13 +151,13 @@ Each Bash call in the session is a fresh shell, so the scripts mint a token per 
 Builds a Debian image from `linux/Dockerfile` (`debian:trixie-slim` unless `MSW_LINUX_BASE` is set; the build needs the network) and prints the base image's digest, the commit and, from inside the container, the package versions. It then streams the tracked files under `.mintswarm/` into a container and runs `linux/check.sh` as root:
 
 - **A:** the whole `selftest.sh` as a non-root user.
-- **B:** `secret-service` against GNOME Keyring in a D-Bus session: selection, a byte-exact round trip, `rotate` then `mint-token.sh jwt`; without the bus and with the collection locked, `get` fails and nothing falls back to the file.
+- **B:** `secret-service` against GNOME Keyring in a D-Bus session: selection, a byte-exact round trip, `rotate` then `mint-token.sh jwt`; without the bus `get` fails; with the collection locked it fails within 20 seconds and says to unlock it; nothing falls back to the file.
 - **C:** `pass` with a throwaway gpg key: round trip, `rotate` then `jwt`.
 - **D:** the file store: modes, the warning, refusing a symlink, a wide mode and a file owned by another user; `rotate` then `jwt`.
 - **E:** `systemd-creds` as root with the host key, which is then moved aside to show that `get` fails, so the null key was not used.
 - **F:** no key line in any `execve` argv traced with `strace` during B to E, every `TMPDIR` empty, and no key line in any file under `/home`, `/root`, `/tmp`, `/run`, `/dev/shm` or `/var` except the file store's own.
 
-It prints one `ok`, `FAIL` or `skip` line per check and the totals, and exits with the container's status. The container runs with `--network none` and gets no volume, no variable, no socket and no SSH agent from the host, so the Keychain, `~/.config/mintswarm`, `~/.gnupg` and `~/.password-store` never reach it; every key it uses is generated inside it. `yq` in the image is a stand-in (`linux/yq`, on PyYAML) that accepts only `yq -o=json . FILE`, the form `request-review.py` uses. It is a recorded manual check, not a gate: run it after changing `key-store.sh` and post its output on the issue or PR. The items listed under "What has been verified where" still need a real Linux host.
+It prints one `ok`, `FAIL` or `skip` line per check and the totals, and exits with the container's status. `linux/check.sh` runs only in a container with the marker `/etc/mintswarm-linux-check`, which only `linux/Dockerfile` writes, and its per-user steps only as that image's `msw` user, so it never touches the keyring or files of a toolbox or distrobox that shares the host's home. The container runs with `--network none` and gets no volume, no variable, no socket and no SSH agent from the host, so the Keychain, `~/.config/mintswarm`, `~/.gnupg` and `~/.password-store` never reach it; every key it uses is generated inside it. `yq` in the image is a stand-in (`linux/yq`, on PyYAML) that accepts only `yq -o=json . FILE`, the form `request-review.py` uses. It is a recorded manual check, not a gate: run it after changing `key-store.sh` and post its output on the issue or PR. The items listed under "What has been verified where" still need a real Linux host.
 
 ## Not covered
 

@@ -12,5 +12,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY yq /usr/local/bin/yq
+# check.sh runs only where this marker is: never in another container, such as a
+# toolbox or distrobox that shares the host's HOME and session bus.
 RUN chmod 755 /usr/local/bin/yq \
- && useradd --create-home --uid 1000 --user-group --shell /bin/bash msw
+ && useradd --create-home --uid 1000 --user-group --shell /bin/bash msw \
+ && printf 'mintswarm-linux-check\n' > /etc/mintswarm-linux-check

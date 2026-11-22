@@ -43,7 +43,7 @@ unset MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_EN
       GIT_COMMITTER_DATE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG \
       GIT_ASKPASS SSH_ASKPASS GIT_SSL_NO_VERIFY GIT_SSL_CAINFO GIT_SSL_CAPATH \
       MSW_KEY_STORE DBUS_SESSION_BUS_ADDRESS PASSWORD_STORE_DIR GNUPGHOME CREDENTIALS_DIRECTORY \
-      MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION
+      MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION MSW_STUB_SECRET_TOOL_HANG MSW_KEY_STORE_TIMEOUT
 export HOME="$sandbox/home"
 export TMPDIR="$sandbox/tmp"
 export XDG_RUNTIME_DIR="$sandbox/run"
@@ -141,6 +141,13 @@ from stublib import STATE, record, record_stdin
 
 argv = sys.argv[1:]
 record("secret-tool", argv)
+if os.environ.get("MSW_STUB_SECRET_TOOL_HANG"):
+    # A locked collection: secret-tool waits for an unlock prompt nobody answers.
+    import time
+    with open(os.path.join(STATE, "secret-tool.pid"), "w") as f:
+        f.write("%d\n" % os.getpid())
+    time.sleep(60)
+    sys.exit(0)
 if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
     print("secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY", file=sys.stderr)
     sys.exit(1)
@@ -250,6 +257,30 @@ record("uname", sys.argv[1:])
 if sys.argv[1:] != ["-s"]:
     sys.exit(1)
 print(os.environ.get("MSW_STUB_UNAME", "Darwin"))
+EOF
+
+cat > "$sandbox/on-tty.py" <<'EOF'
+# on-tty.py COMMAND...: run COMMAND with stdout on a pseudo-terminal; print what
+# reached the terminal on stdout and exit with COMMAND's status.
+import os, subprocess, sys
+
+m, s = os.openpty()
+p = subprocess.Popen(sys.argv[1:], stdout=s, stderr=subprocess.PIPE)
+os.close(s)
+out = b""
+while True:
+    try:
+        chunk = os.read(m, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+err = p.stderr.read()
+rc = p.wait()
+sys.stdout.write(out.decode(errors="replace"))
+sys.stderr.write(err.decode(errors="replace"))
+sys.exit(rc)
 EOF
 
 cat > "$stubs/curl" <<'EOF'
@@ -372,7 +403,9 @@ R="$here/request-review.py"
 
 # --- static checks -----------------------------------------------------------
 
-check "shellcheck on every script" sh -c 'cd "$1" && shellcheck -x ./*.sh linux/*.sh' sh "$here"
+# At severity warning: info and style notes differ between shellcheck versions
+# (0.10 on Debian, 0.11 on Homebrew), so they do not fail the check.
+check "shellcheck on every script" sh -c 'cd "$1" && shellcheck -S warning -x ./*.sh linux/*.sh' sh "$here"
 check "request-review.py compiles" \
   python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
   "$R" "$sandbox/request-review.pyc"
@@ -614,6 +647,39 @@ check "secret-service: the key reaches secret-tool store on stdin" present "$key
 check "secret-service: the default label is used" argv_has secret-tool '"--label=mintswarm msw-selftest ss"'
 check "secret-service: rotate, then mint-token.sh jwt" ks_e2e secret-service
 check "secret-service: rotate passes the key label" argv_has secret-tool '"--label=mintswarm-dev GitHub App private key"'
+hangs_briefly() {  # hangs_briefly OP: with secret-tool hanging, OP fails within 5 seconds and the stub is gone
+  local start end pid
+  rm -f "$MSW_STUB_STATE/secret-tool.pid"
+  start="$(date +%s)"
+  if ks secret-service env MSW_STUB_SECRET_TOOL_HANG=1 MSW_KEY_STORE_TIMEOUT=1 \
+       sh -c 'printf "abc\n" | "$@"' sh "$K" "$1" msw-selftest hang > "$ks_root/hang.out" 2>&1; then
+    echo "$1 succeeded"; return 1
+  fi
+  end="$(date +%s)"
+  cat "$ks_root/hang.out"
+  [ $((end - start)) -lt 5 ] || { echo "took $((end - start)) seconds"; return 1; }
+  grep -qF "secret-tool did not answer within 1 seconds: the keyring is probably locked; unlock it first" "$ks_root/hang.out" \
+    || return 1
+  pid="$(cat "$MSW_STUB_STATE/secret-tool.pid")" || return 1
+  if kill -0 "$pid" 2>/dev/null; then echo "secret-tool ($pid) is still running"; return 1; fi
+}
+check "secret-service: with the keyring locked, get fails promptly and says to unlock it" hangs_briefly get
+check "secret-service: with the keyring locked, put fails promptly and says to unlock it" hangs_briefly put
+check "secret-service: a locked keyring falls back to nothing" test ! -e "$ks_root/home/.config/mintswarm/keys"
+check "an invalid MSW_KEY_STORE_TIMEOUT is bad usage" exits_2 ks secret-service env MSW_KEY_STORE_TIMEOUT=soon "$K" backend
+ks secret-service "$K" put msw-selftest tty < "$keys/key1.pem"
+tty_refused() {
+  if ks secret-service python3 "$sandbox/on-tty.py" "$K" get msw-selftest tty > "$ks_root/tty.out" 2> "$ks_root/tty.err"; then
+    echo "get to a terminal succeeded"; return 1
+  fi
+  cat "$ks_root/tty.err"
+  grep -qF "refusing to print msw-selftest/tty to a terminal" "$ks_root/tty.err" || return 1
+  if grep -qF -e "$key1_line" -e "PRIVATE KEY" "$ks_root/tty.out"; then echo "the key reached the terminal"; return 1; fi
+}
+check "get refuses to print the value to a terminal" tty_refused
+tty_on_pipe() { ks secret-service python3 "$sandbox/on-tty.py" sh -c '"$1" get msw-selftest tty | wc -c' sh "$K"; }
+check "get to a pipe works when the caller's stdout is a terminal (the test is not vacuous)" tty_on_pipe
+ks secret-service "$K" delete msw-selftest tty
 check "TMPDIR is empty after the secret-service checks" tmp_empty
 
 # pass
@@ -694,6 +760,29 @@ check "file: delete removes the key file" \
   sh -c '"$@" 2>/dev/null && test ! -e "$0"' "$fdir/msw-selftest@fl" \
   env HOME="$ks_root/home" MSW_STUB_UNAME=Linux MSW_KEY_STORE=file "$K" delete msw-selftest fl
 refuses "file: get after delete fails" ks file "$K" get msw-selftest fl
+mkdir -p "$ks_root/home-cfg/.config" "$ks_root/dotfiles/mintswarm"
+ln -s "$ks_root/dotfiles/mintswarm" "$ks_root/home-cfg/.config/mintswarm"
+check "file: put refuses a symlinked ~/.config/mintswarm" \
+  fails_saying "mintswarm: it is a symlink (a dotfiles link?)" \
+  ks file env HOME="$ks_root/home-cfg" "$K" put msw-selftest fl < "$keys/key1.pem"
+mkdir -p "$ks_root/home-cfg2" "$ks_root/dotfiles/config"
+ln -s "$ks_root/dotfiles/config" "$ks_root/home-cfg2/.config"
+check "file: put refuses a symlinked ~/.config" \
+  fails_saying ".config: it is a symlink (a dotfiles link?)" \
+  ks file env HOME="$ks_root/home-cfg2" "$K" put msw-selftest fl < "$keys/key1.pem"
+check "file: nothing was written into the dotfiles" eq "$(find "$ks_root/dotfiles" -type f | wc -l | tr -d ' ')" 0
+mkdir -p "$ks_root/home-git"
+git init -q "$ks_root/home-git"
+check "file: put refuses a key directory inside a git work tree" \
+  fails_saying "is inside a git work tree" \
+  ks file env HOME="$ks_root/home-git" "$K" put msw-selftest fl < "$keys/key1.pem"
+check "file: nothing was written into the work tree" test ! -e "$ks_root/home-git/.config/mintswarm/keys"
+mkdir -p "$ks_root/home-git/.config/mintswarm/keys"
+chmod 700 "$ks_root/home-git/.config/mintswarm/keys"
+cp "$keys/key1.pem" "$ks_root/home-git/.config/mintswarm/keys/msw-selftest@fl"
+chmod 600 "$ks_root/home-git/.config/mintswarm/keys/msw-selftest@fl"
+check "file: get refuses a key file inside a git work tree" \
+  fails_saying "is inside a git work tree" ks file env HOME="$ks_root/home-git" "$K" get msw-selftest fl
 check "file: rotate, then mint-token.sh jwt" ks_e2e file
 check "file: rotate left only the key file in the key directory" \
   eq "$(ls -A "$fdir" | LC_ALL=C sort | tr '\n' ' ')" "mintswarm-dev-private-key@$CLIENT_ID msw-selftest@ln "
