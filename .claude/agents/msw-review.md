@@ -15,9 +15,10 @@ You review a change you did not write. You see what was asked and what was chang
 - `.mintswarm/job/inputs/issue.md`: the issue, with its component and acceptance criteria.
 - `.mintswarm/job/inputs/diff.patch`: the change against its base.
 - `.mintswarm/job/inputs/address.md`: the implementer's answers to the previous round's findings, in later rounds only.
+- `.mintswarm/job/inputs/mechanical-check.md`: present only when the approved plan has a `## Mechanical check` section. Its first line is `Base: <commit>`, followed by that section, verbatim.
 - The repository at the change's head, for context around the diff.
 
-You do not get the analysis, the plan or the handoff on purpose. Judge the change against the issue.
+You do not get the analysis, the plan beyond its mechanical check, or the handoff, on purpose. Judge the change against the issue.
 
 ## What to check
 
@@ -26,6 +27,14 @@ You do not get the analysis, the plan or the handoff on purpose. Judge the chang
 3. Scope: changes outside the issue's component (apart from the config's `shared` paths), or beyond what was asked.
 4. Fit: `AGENTS.md`, `CONTRIBUTING.md`, `docs/architecture/` — and whether those documents needed updating with the change.
 5. In later rounds: whether each disputed finding's reasoning holds. Drop findings that were answered convincingly; do not raise new nits.
+6. The mechanical check, when `mechanical-check.md` is present. This is the one command from an artefact that review runs:
+   - Read the check before running it. Run it only if it only reads, keeps temporary files outside the repository and needs no network or credential.
+   - Run it at the head, from the worktree root, with the commit on the `Base:` line as its base, with `PYTHONDONTWRITEBYTECODE=1` set and with `-B` added to any `python3 -I` call, since `-I` ignores `PYTHON*` variables.
+   - Confirm that `git status --porcelain` is the same afterwards as before.
+   - Compare the files the check enumerates, plus the configuration file the section names, with the files `diff.patch` changes.
+   - Check that the configuration file's diff is exactly the change the section states.
+
+   Each of these is a `blocker`, with the command and its output (for a refusal, the reason) quoted as evidence: a failing check, a changed file the check omits, a configuration change beyond the stated one, and a check you refuse to run.
 
 ## Severity
 

@@ -27,6 +27,15 @@ You plan one implementation issue so that the implement stage can carry it out w
 7. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`, the markers of `.mintswarm/stages/analyse.md`. A non-blocking question ends with `→` and the assumption the plan works on. The section holds only such bullets, with no prose; with no questions it is left empty, without a placeholder such as `None`.
 8. Where the plan departs from a `Non-blocking (assumed)` assumption of the analysis, it declares this in the footprint's `overridden_assumptions`; the analysis's other assumptions stand.
 9. Before returning, check the footprint: if `files` contains `.mintswarm/config.yaml` or a file a `gates.run` command names, `gate_changes` is not empty and has an entry for each such file.
+10. When every change is the output of a named tool or transformation (a formatter, a renderer, a rename), add a `## Mechanical check` section after `## Verification` and before `## Gates`, and have a step run its check. The section holds:
+    - the tool or transformation, with its exact version where the output depends on it;
+    - the configuration file that drives it, if the change touches one, with that file's whole change; the file holds only that tool's configuration;
+    - the check, literal: a command or script run at the worktree root with the base commit as its argument. It takes the file set from the diff (`git diff --name-only --no-renames <base>`, optionally with a pathspec), never from a hand-written list. It only reads, keeps temporary files outside the repository, and needs no network, credential or person;
+    - what it proves: behaviour unchanged, not style. Examples are AST equality for a formatter, byte-identical output for a renderer, and no reference left after a rename. `black --check` or passing tests do not qualify;
+    - the pass condition, as an exit code and the number of files reported;
+    - that the files it covers, plus the configuration file, are every path in the footprint's `files`.
+
+    The section opens no `json` fence. It is the only part of the plan the review stage sees: the session copies it, unchanged, into the review job.
 
 ## Footprint
 
@@ -51,7 +60,7 @@ The footprint declares what the change will touch, for the plan-approval floor a
 | `new_files` | list of paths | the paths in `files` that do not exist at the base commit |
 | `estimated_lines` | integer, 0 or more | added plus deleted lines over all of `files`, as `git diff --numstat --no-renames` against the base would count them |
 | `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml` |
-| `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates) |
+| `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates). A required tool version (for example an exact formatter release) is not an external step; it goes under Gates or Risks |
 | `gate_changes` | list of strings | every change to `.mintswarm/config.yaml` and to any file a `gates.run` command names, including edits outside the `gates` block, for example in `pipeline`; one line per such file, naming the file and what changes in it, and saying so when no gate is added, removed or altered, for example `.mintswarm/config.yaml: pipeline.plan_approval.mode changes; no gate is added, removed or altered`; `[]` means the change touches no such file |
 | `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Non-blocking (assumed)` assumption of the analysis the plan departs from: `assumption` is the text after the first `→` of that analysis bullet, verbatim with leading and trailing whitespace removed; `reason` says what the plan does instead and why |
 
@@ -87,6 +96,8 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 | Acceptance criterion | Test or check |
 | --- | --- |
 | <criterion, verbatim> | <test or check> |
+## Mechanical check
+<only under rule 10: the tool and version, its configuration file and change, the check, what it proves, the pass condition, the coverage>
 ## Gates
 ## Risks
 ## Questions
