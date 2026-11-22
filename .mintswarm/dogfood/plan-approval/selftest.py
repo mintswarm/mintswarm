@@ -9,31 +9,63 @@ fixed identity, and runs `git init` on a throwaway repository with no
 remote. Base configs are commits there: `real`, the checkout's
 .mintswarm/config.yaml byte for byte, and variants of it, read with
 `yq -o=json`, changed here and committed as JSON text at the same path.
-floor.py and decision.py run as `sys.executable SCRIPT ...` with that
-repository as its working directory and plans and assessments written under
-`cases/`.
+The commit messages are the fixture history the first-of-kind rule reads:
+`nodocs`, the real config with no `(docs)` commit before it, then empty
+commits with seed subjects for `docs`, `agents`, `tooling`, `web`, `api`
+(with `!`), and a multi-scope, a revert and a differently cased subject,
+then the variants, and `feat(cli): ...` after the `base` tag. floor.py and
+decision.py run as `sys.executable SCRIPT ...` with that repository as its
+working directory, and plans, issue documents, analyses and assessments
+written under `cases/`. Unless a case says otherwise, floor.py gets a
+generated issue document for the case's component, whose criteria the
+plan's Verification table quotes and whose comments hold a decoy criteria
+section, and an analysis with no questions.
 
 Checks:
 
 - config: the checkout's config has no pipeline.approve_plan and has the
   expected pipeline.plan_approval;
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
-  order, the 13 rule identifiers in order across `rules` and
-  `not_evaluated`, results and reasons, `verdict` against the rules and the
-  exit code, `base.commit`, `mode` and the printed lines;
+  order, version 2, the 16 rule identifiers in order across `rules` and
+  `not_evaluated`, which is empty or the footprint rules after a `footprint`
+  hit, results and reasons, `verdict` against the rules and the exit code,
+  `plan`, `issue_document` and `analysis` against the files given,
+  `base.commit`, `mode` and the printed lines;
 - clean base: a footprint modelled on #20 is clean on every rule, and is
   accepted with `mode: always`, which the verdict records;
 - single-rule hits: each rule hit by a case derived from the clean base,
   and each limit clean at its value and a hit one over;
 - footprint unusable: missing, misplaced, malformed and badly shaped
-  footprints, and each bad path form, are `footprint` hits with the other
-  rules not evaluated;
+  footprints, and each bad path form, are `footprint` hits with the
+  footprint rules not evaluated and the document rules evaluated;
 - base ref: with a worktree config and a HEAD commit that drop a
   require_human path, `--base` at the earlier commit still gives the hit;
-- historic fixtures: fixtures/plan-{9,12,14,19,20}.md against the real
-  config give the expected 13 results and reasons;
-- unusable input: bad arguments, plans, refs and configs, and a missing
-  `yq`, exit 2 and leave no verdict file, even a stale one;
+- historic fixtures: fixtures/plan-{9,12,14,19,20,10}.md, with a
+  Verification table and Questions appended, against the real config give
+  the expected 16 results and reasons, plan-10.md a `require-human-paths`
+  hit naming AGENTS.md; at `nodocs`, plan-20.md and plan-10.md are also
+  `first-of-kind` hits;
+- blocking-questions: a blocking question in the analysis or the plan, at
+  column 0, indented, tab-indented or nested, or after a `# ` heading
+  inside Questions, with continuation lines named once, a variant marker,
+  prose, a missing or repeated Questions section and no --analysis are
+  hits; non-blocking entries only, and a Questions heading inside a fence,
+  are clean;
+- acceptance-criteria: a dropped, added, reworded or repeated criterion, a
+  criterion's indented later paragraph left out, no criteria, no criteria
+  section, two Verification sections, a table without its `---` row and no
+  --issue-document are hits naming the criterion or the cause; whitespace
+  differences, wrapped criteria, a later paragraph quoted, `\\|`, other
+  list markers and task boxes, reordered rows, the decoy in comments and
+  CRLF are clean;
+- first-of-kind: `cli` at `real`, `core` (multi-scope only), `runner`
+  (revert only) and `domain` (other case only) are hits, and so are an
+  issue kind other than implementation, another component, a repeated or
+  missing header line and no --issue-document; `cli` at `dropped`, `api`
+  (`feat(api)!:`) and `docs` are clean;
+- unusable input: bad arguments, plans, documents (missing, unreadable, not
+  UTF-8, given twice or with an empty value), refs and configs, and a
+  missing `yq`, exit 2 and leave no verdict file, even a stale one;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
   error and no traceback;
@@ -49,11 +81,15 @@ Checks:
   comment in `shadow` mode, empty otherwise;
 - decision under `judged`: clean and `low` is `auto`; a floor hit, `medium`,
   `high`, a missing or unparsable verdict, a verdict edited to break each
-  binding, a forged verdict that is consistent in itself but differs from
-  what floor.py gives for the plan, and a missing, non-UTF-8 or malformed
+  binding (the documents' sha256 too), a verdict made without the documents
+  or with another issue document or analysis, a forged verdict that is
+  consistent in itself but differs from what floor.py gives for the plan
+  and documents (a `first-of-kind` hit set clean), and a missing, non-UTF-8
+  or malformed
   assessment are `human`, with the failing layer unusable; a trailing space
   and CRLF still give `auto`; a harness or model other than the config's
-  sets `as_configured` false and gives `human`;
+  sets `as_configured` false and gives `human`; a `blocking-questions` hit
+  and a `footprint` hit give a usable floor layer equal to the verdict;
 - decision under `always`, `shadow` and `never`: `human`, `human` with
   `judged_decision` recorded, and `auto` whatever the layers say;
 - the comments: the auto-approval comment's heading, floor line, risk and
@@ -61,7 +97,8 @@ Checks:
   and in both, model and session text only inside code spans of at most
   200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a
-  missing `yq` and a record path that is a directory exit 2, print nothing
+  missing, unreadable or non-UTF-8 issue document or analysis, a missing
+  `yq` and a record path that is a directory exit 2, print nothing
   to stdout and leave no record, even a stale one;
 - standard library: every import of floor.py, decision.py and selftest.py is
   in the standard library.
@@ -107,10 +144,24 @@ RULES = [
     "gate-changes",
     "tests-none",
     "overridden-assumptions",
+    "blocking-questions",
+    "acceptance-criteria",
+    "first-of-kind",
 ]
+FOOTPRINT_RULES = RULES[1:13]
+DOCUMENT_RULES = RULES[13:]
 VERDICT_KEYS = [
-    "tool", "version", "plan", "component", "base", "config", "mode",
-    "verdict", "rules", "not_evaluated",
+    "tool", "version", "plan", "issue_document", "analysis", "component", "base",
+    "config", "mode", "verdict", "rules", "not_evaluated",
+]
+SEEDS = [
+    "docs(docs): seed", "feat(agents): seed", "chore(tooling): seed", "feat(web): seed", "feat(api)!: seed",
+    "feat(core,web): seed", 'Revert "feat(runner): seed"', "feat(Domain): seed",
+]
+CRITERIA = [
+    "The floor reads the issue document and the analysis.",
+    "A reason names the criterion it is about.",
+    "A cell may quote `a | b` with its bar escaped.",
 ]
 EXPECTED_APPROVAL = {
     "mode": "shadow",
@@ -142,7 +193,9 @@ HISTORIC = {
     }),
     "plan-19.md": ("tooling", {"require-human-components", "external-steps", "tests-none"}),
     "plan-20.md": ("docs", set()),
+    "plan-10.md": ("docs", {"require-human-paths"}),
 }
+DEFAULT = object()  # Runner.run: generate the document
 
 
 class SelfTest:
@@ -252,9 +305,17 @@ def footprint_block(footprint: dict) -> str:
     return json.dumps({"footprint": footprint}, indent=2)
 
 
+def plan_tail(rows: list = None, questions: str = "", extra: str = "") -> str:
+    """The plan's Verification table, one row per criterion (bars escaped), and its Questions."""
+    rows = [c.replace("|", "\\|") for c in CRITERIA] if rows is None else rows
+    table = "".join(f"| {row} | checked by selftest.py |\n" for row in rows)
+    return (f"\n## Verification\n\n| Acceptance criterion | Test or check |\n| --- | --- |\n{table}{extra}\n"
+            f"## Questions\n\n{questions}")
+
+
 def plan_text(block: str = None, footprint: dict = None, approach: str = "", between: str = "",
               section: str = "## Footprint\n\n", opener: str = "```json", closer: str = "```\n",
-              after: str = "") -> str:
+              after: str = "", tail: str = None) -> str:
     if block is None:
         block = footprint_block(footprint if footprint is not None else CLEAN_BASE)
     return (
@@ -262,7 +323,39 @@ def plan_text(block: str = None, footprint: dict = None, approach: str = "", bet
         f"## Approach\n\nA generated case.\n{approach}\n"
         "## Steps\n\n1. **Change** — files: as declared.\n\n"
         f"{between}{section}{opener}\n{block}\n{closer}{after}"
+        f"{plan_tail() if tail is None else tail}"
     )
+
+
+def criteria_list(criteria: list = None) -> str:
+    return "".join(f"{i}. {c}\n" for i, c in enumerate(CRITERIA if criteria is None else criteria, 1))
+
+
+def issue_document(component: str = "docs", kind: str = "implementation", criteria: str = None,
+                   header: str = None) -> str:
+    """An issue document as the session writes it, with a decoy criteria section in its comments."""
+    if header is None:
+        header = f"- **Issue:** #99\n- **Kind:** {kind}\n- **Component:** {component}\n- **Labels:** mintswarm\n"
+    return (
+        f"# Selftest issue\n\n{header}\n"
+        "## Problem\n\nA generated issue.\n\n"
+        f"## Acceptance criteria\n\n{criteria_list() if criteria is None else criteria}\n"
+        "## Comments\n\n### someone, 2026-01-01\n\nA comment with its own heading.\n\n"
+        "## Acceptance criteria\n\n1. A decoy criterion that only a comment states.\n"
+    )
+
+
+def analysis_document(questions: str = "", heading: str = "## Questions") -> str:
+    return (
+        "# Analysis: selftest case\n\nGenerated by selftest.py.\n\n"
+        "## What is asked\n\nA generated case.\n\n"
+        f"{heading}\n\n{questions}"
+    )
+
+
+def historic(fixture: str) -> bytes:
+    """A historic fixture with the Verification table and Questions the plan stage now adds."""
+    return (FIXTURES / fixture).read_bytes() + plan_tail().encode("utf-8")
 
 
 def base(**changes) -> dict:
@@ -287,8 +380,11 @@ def check_shape(name: str, proc, verdict, args: dict, commit: str, mode: str) ->
         problems.append(f"keys {list(verdict)}")
     rules = verdict.get("rules", [])
     skipped = verdict.get("not_evaluated", [])
-    if [r.get("rule") for r in rules] + list(skipped) != RULES:
-        problems.append("rule identifiers not the 13 in order")
+    names = [r.get("rule") for r in rules]
+    if skipped not in ([], FOOTPRINT_RULES) or names != [n for n in RULES if n not in skipped]:
+        problems.append(f"rule identifiers not the {len(RULES)} in order, with none or the footprint rules skipped")
+    elif skipped and rules[0].get("result") != "hit":
+        problems.append("footprint rules skipped without a footprint hit")
     for r in rules:
         if list(r) != ["rule", "result", "reasons"]:
             problems.append(f"rule keys {list(r)}")
@@ -303,11 +399,14 @@ def check_shape(name: str, proc, verdict, args: dict, commit: str, mode: str) ->
         problems.append(f"verdict {verdict.get('verdict')!r} against the rules")
     if proc.returncode != (1 if hit else 0):
         problems.append(f"exit {proc.returncode} with verdict {verdict.get('verdict')!r}")
-    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 1:
+    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 2:
         problems.append("tool or version")
-    plan_bytes = (args["cwd"] / args["plan"]).read_bytes()
-    if verdict.get("plan") != {"path": args["plan"], "sha256": hashlib.sha256(plan_bytes).hexdigest()}:
-        problems.append(f"plan {verdict.get('plan')}")
+    for key in ("plan", "issue_document", "analysis"):
+        path = args.get(key)
+        bound = None if path is None else {
+            "path": path, "sha256": hashlib.sha256((args["cwd"] / path).read_bytes()).hexdigest()}
+        if verdict.get(key) != bound:
+            problems.append(f"{key} {verdict.get(key)}, expected {bound}")
     if verdict.get("component") != args["component"]:
         problems.append("component")
     if verdict.get("base") != {"ref": args["base"], "commit": commit}:
@@ -335,14 +434,25 @@ class Runner:
         self.commits = commits
 
     def run(self, name: str, content, component: str = "docs", config: str = "real",
-            ref: str = None, commit: str = None, mode: str = None):
+            ref: str = None, commit: str = None, mode: str = None, issue=DEFAULT, analysis=DEFAULT):
+        """issue and analysis: DEFAULT (generated, clean), None (not given), or the content to give."""
         mode = mode or EXPECTED_APPROVAL["mode"]
         plan = self.sb.write_plan(name, content)
         ref = ref or self.commits[config]
         commit = commit or self.commits[config]
-        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", ref])
-        check_shape(name, proc, verdict, {"cwd": self.sb.repo, "plan": plan, "component": component, "base": ref},
-                    commit, mode)
+        args = ["--plan", plan, "--component", component, "--base", ref]
+        documents = {}
+        for key, flag, value, generated in (
+                ("issue_document", "--issue-document", issue, lambda: issue_document(component=component)),
+                ("analysis", "--analysis", analysis, analysis_document)):
+            if value is None:
+                documents[key] = None
+                continue
+            documents[key] = self.sb.write_plan(f"{name} {key}", generated() if value is DEFAULT else value)
+            args += [flag, documents[key]]
+        proc, verdict = self.sb.floor(args)
+        check_shape(name, proc, verdict, {"cwd": self.sb.repo, "plan": plan, "component": component, "base": ref,
+                                          **documents}, commit, mode)
         return proc, verdict
 
 
@@ -362,11 +472,12 @@ def reasons_of(verdict, rule: str) -> list:
 
 
 def expect_hit(r: Runner, name: str, footprint: dict, rule: str, only: bool = False,
-               reason: str = None, **kwargs):
-    proc, verdict = r.run(name, plan_text(footprint=footprint), **kwargs)
+               reason: str = None, reasons: list = None, tail: str = None, **kwargs):
+    """reason: a text some reason holds; reasons: the rule's exact reasons."""
+    proc, verdict = r.run(name, plan_text(footprint=footprint, tail=tail), **kwargs)
     results = results_of(verdict)
     ok = proc.returncode == 1 and results.get(rule) == "hit"
-    detail = f"exit {proc.returncode}, {rule} {results.get(rule)!r}"
+    detail = f"exit {proc.returncode}, {rule} {results.get(rule)!r}: {reasons_of(verdict, rule)}"
     if ok and only:
         others = [k for k, v in results.items() if v == "hit" and k != rule]
         ok = not others
@@ -374,15 +485,19 @@ def expect_hit(r: Runner, name: str, footprint: dict, rule: str, only: bool = Fa
     if ok and reason is not None:
         ok = any(reason in x for x in reasons_of(verdict, rule))
         detail = f"no reason naming {reason!r}: {reasons_of(verdict, rule)}"
+    if ok and reasons is not None:
+        ok = reasons_of(verdict, rule) == reasons
+        detail = f"reasons {reasons_of(verdict, rule)}, expected {reasons}"
     T.check(f"{name}: {rule} hit", ok, detail)
     return verdict
 
 
-def expect_clean(r: Runner, name: str, footprint: dict, rules: list, **kwargs):
-    proc, verdict = r.run(name, plan_text(footprint=footprint), **kwargs)
+def expect_clean(r: Runner, name: str, footprint: dict, rules: list, tail: str = None, **kwargs):
+    proc, verdict = r.run(name, plan_text(footprint=footprint, tail=tail), **kwargs)
     results = results_of(verdict)
     bad = [rule for rule in rules if results.get(rule) != "clean"]
-    T.check(f"{name}: {', '.join(rules)} clean", proc.returncode in (0, 1) and not bad, f"not clean: {bad}")
+    T.check(f"{name}: {', '.join(rules)} clean", proc.returncode in (0, 1) and not bad,
+            f"not clean: {bad}: {[reasons_of(verdict, rule) for rule in bad]}")
     return verdict
 
 
@@ -503,11 +618,16 @@ def unusable_footprints() -> list:
 
 
 def check_unusable_footprints(r: Runner) -> None:
+    # An unclosed fence runs to the end of the plan, so Verification and Questions are inside it.
+    fenced = {"no closing fence": {"blocking-questions", "acceptance-criteria"}}
     for name, text in unusable_footprints():
         proc, verdict = r.run(name, text)
-        ok = (proc.returncode == 1 and results_of(verdict) == {"footprint": "hit"}
-              and verdict.get("not_evaluated") == RULES[1:])
-        T.check(f"{name}: footprint hit, nothing else evaluated", ok,
+        hits = fenced.get(name, set())
+        expected = {"footprint": "hit", **{rule: "hit" if rule in hits else "clean" for rule in DOCUMENT_RULES}}
+        ok = (proc.returncode == 1 and results_of(verdict) == expected
+              and verdict.get("not_evaluated") == FOOTPRINT_RULES)
+        label = ", ".join(sorted(hits)) + " hit" if hits else "clean"
+        T.check(f"{name}: footprint hit, footprint rules not evaluated, document rules {label}", ok,
                 f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}")
 
 
@@ -529,24 +649,157 @@ def check_base_ref(r: Runner, sb: Sandbox) -> None:
 
 
 def check_historic(r: Runner) -> None:
-    for fixture, (component, hits) in HISTORIC.items():
-        content = (FIXTURES / fixture).read_bytes()
-        proc, verdict = r.run(f"fixture {fixture}", content, component=component)
+    fixture_reasons = {
+        "plan-9.md": ("require-human-components", "the issue's component agents"),
+        "plan-12.md": ("require-human-components", "the issue's component agents"),
+        "plan-14.md": ("require-human-paths", ".mintswarm/dogfood/github/**"),
+        "plan-19.md": ("external-steps", "Code Owner review"),
+        "plan-10.md": ("require-human-paths", "AGENTS.md"),
+    }
+    cases = [(fixture, component, hits, "real") for fixture, (component, hits) in HISTORIC.items()]
+    # At `nodocs` no commit is scoped (docs) yet, so a docs issue is the first of its kind.
+    cases += [("plan-20.md", "docs", {"first-of-kind"}, "nodocs"),
+              ("plan-10.md", "docs", {"require-human-paths", "first-of-kind"}, "nodocs")]
+    for fixture, component, hits, config in cases:
+        name = f"fixture {fixture}" + (f" at {config}" if config != "real" else "")
+        proc, verdict = r.run(name, historic(fixture), component=component, config=config)
         expected = {rule: ("hit" if rule in hits else "clean") for rule in RULES}
         got = results_of(verdict)
         diff = {k: got.get(k) for k in RULES if got.get(k) != expected[k]}
-        T.check(f"fixture {fixture}: the 13 expected results", got == expected and
+        T.check(f"{name}: the {len(RULES)} expected results", got == expected and
                 proc.returncode == (1 if hits else 0), f"exit {proc.returncode}, differs on {diff}")
-        fixture_reasons = {
-            "plan-9.md": ("require-human-components", "the issue's component agents"),
-            "plan-12.md": ("require-human-components", "the issue's component agents"),
-            "plan-14.md": ("require-human-paths", ".mintswarm/dogfood/github/**"),
-            "plan-19.md": ("external-steps", "Code Owner review"),
-        }
         if fixture in fixture_reasons:
             rule, text = fixture_reasons[fixture]
-            T.check(f"fixture {fixture}: {rule} names {text!r}",
+            T.check(f"{name}: {rule} names {text!r}",
                     any(text in x for x in reasons_of(verdict, rule)), str(reasons_of(verdict, rule)))
+        if "first-of-kind" in hits:
+            T.check(f"{name}: first-of-kind names the component",
+                    any("scoped (docs)" in x for x in reasons_of(verdict, "first-of-kind")),
+                    str(reasons_of(verdict, "first-of-kind")))
+
+
+def check_blocking_questions(r: Runner) -> None:
+    rule = "blocking-questions"
+    question = "Must the floor read   tracker\thistory?"
+    assumed = "- **Non-blocking (assumed):** Is the order free? → Yes.\n"
+    expect_hit(r, "blocking question in the analysis", base(), rule, only=True,
+               reasons=["analysis: blocking question: Must the floor read tracker history?"],
+               analysis=analysis_document(assumed + f"- **Blocking:** {question}\n"))
+    expect_hit(r, "blocking question in the plan", base(), rule, only=True,
+               reasons=["plan: blocking question: Which component owns it?"],
+               tail=plan_tail(questions=f"{assumed}- **Blocking:** Which component owns it?\n"))
+    expect_hit(r, "blocking question with continuation lines", base(), rule, only=True,
+               reasons=["analysis: blocking question: Which component owns it?"],
+               analysis=analysis_document("- **Blocking:** Which component owns it?\n  It could be agents.\n"
+                                          "  - or docs, as a sub-bullet\n\n" + assumed))
+    for label, entry in (("indented", " - **Blocking:** Which component owns it?\n"),
+                         ("tab-indented", "\t- **Blocking:** Which component owns it?\n"),
+                         ("nested", assumed + "  - **Blocking:** Which component owns it?\n")):
+        expect_hit(r, f"{label} blocking question", base(), rule, only=True,
+                   reasons=["analysis: blocking question: Which component owns it?"],
+                   analysis=analysis_document(entry))
+    expect_hit(r, "blocking question after a '# ' heading in Questions", base(), rule, only=True,
+               reasons=["analysis: line 13 of '## Questions' is a '# ' heading inside the section",
+                        "analysis: blocking question: Which component owns it?"],
+               analysis=analysis_document(assumed + "\n# Note\n\n- **Blocking:** Which component owns it?\n"))
+    expect_hit(r, "variant Blocking marker", base(), rule, only=True, reason="analysis: line 11 of '## Questions'",
+               analysis=analysis_document("- **Blocking**: Which component owns it?\n"))
+    expect_hit(r, "prose in Questions", base(), rule, only=True, reason="is neither",
+               analysis=analysis_document("None.\n"))
+    expect_hit(r, "blocking question past a long text", base(), rule,
+               reasons=["analysis: blocking question: " + "x" * 200],
+               analysis=analysis_document("- **Blocking:** " + "x" * 300 + "\n"))
+    expect_hit(r, "analysis without Questions", base(), rule, only=True,
+               reason="analysis: no '## Questions' section", analysis=analysis_document(heading="## Remarks"))
+    expect_hit(r, "analysis with two Questions sections", base(), rule, only=True,
+               reason="analysis: 2 '## Questions' sections",
+               analysis=analysis_document(assumed + "\n## Questions\n\n" + assumed))
+    expect_hit(r, "plan without Questions", base(), rule, only=True, reason="plan: no '## Questions' section",
+               tail=plan_tail().replace("## Questions", "## Notes"))
+    expect_hit(r, "no --analysis", base(), rule, only=True, reasons=["no analysis given (--analysis)"],
+               analysis=None)
+    expect_clean(r, "non-blocking questions only", base(), [rule], tail=plan_tail(questions=assumed),
+                 analysis=analysis_document(assumed + "  with a continuation\n" + assumed))
+    expect_clean(r, "Questions heading in a fence", base(), [rule],
+                 analysis=analysis_document(assumed + "\n## Next\n\n- **Blocking:** after the section\n",
+                                            heading="```\n## Questions\n- **Blocking:** in a fence\n```\n\n"
+                                                    "## Questions"))
+
+
+def check_acceptance_criteria(r: Runner) -> None:
+    rule = "acceptance-criteria"
+    escaped = [c.replace("|", "\\|") for c in CRITERIA]
+    expect_hit(r, "criterion dropped", base(), rule, only=True,
+               reasons=[f"the Verification table lacks the criterion: {CRITERIA[1]}"],
+               tail=plan_tail(rows=[escaped[0], escaped[2]]))
+    expect_hit(r, "criterion added", base(), rule, only=True,
+               reasons=["the Verification table has a row that is not a criterion of the issue: An extra row."],
+               tail=plan_tail(rows=escaped + ["An extra row."]))
+    reworded = "A reason names the criterion it concerns."
+    expect_hit(r, "criterion reworded", base(), rule, only=True,
+               reasons=[f"the Verification table lacks the criterion: {CRITERIA[1]}",
+                        f"the Verification table has a row that is not a criterion of the issue: {reworded}"],
+               tail=plan_tail(rows=[escaped[0], reworded, escaped[2]]))
+    expect_hit(r, "criterion repeated", base(), rule, only=True,
+               reason=f"not a criterion of the issue: {CRITERIA[0]}", tail=plan_tail(rows=escaped + escaped[:1]))
+    expect_hit(r, "issue without criteria", base(), rule, only=True, reason="holds no criteria",
+               issue=issue_document(criteria="The plan should be good.\n"))
+    expect_hit(r, "issue without the criteria section", base(), rule, reason="no '## Acceptance criteria' section",
+               issue=issue_document().replace("## Acceptance criteria", "## Done when"))
+    expect_hit(r, "two Verification sections", base(), rule, only=True, reason="2 '## Verification' sections",
+               tail=plan_tail().replace("\n## Questions", "\n## Verification\n\nAgain.\n\n## Questions"))
+    expect_hit(r, "Verification without a table", base(), rule, only=True, reason="does not start with a table",
+               tail=plan_tail().replace("| --- | --- |\n", ""))
+    expect_hit(r, "no --issue-document", base(), rule, reasons=["no issue document given (--issue-document)"],
+               issue=None)
+    spaced = ["  The floor reads  the issue\tdocument and the analysis.   ", escaped[1], escaped[2]]
+    expect_clean(r, "criteria differing in whitespace", base(), [rule], tail=plan_tail(rows=spaced))
+    wrapped = (f"1. {CRITERIA[0][:20]}\n   {CRITERIA[0][20:]}\n2. {CRITERIA[1]}\n"
+               f"3. {CRITERIA[2][:10]}\n{CRITERIA[2][10:]}\n\nProse after the list.\n")
+    expect_clean(r, "wrapped issue criteria", base(), [rule], issue=issue_document(criteria=wrapped))
+    paragraphs = (f"1. {CRITERIA[0]}\n\n   It reads them as UTF-8.\n\n2. {CRITERIA[1]}\n"
+                  f"3. {CRITERIA[2]}\n\nProse after the list.\n")
+    expect_hit(r, "criterion's later paragraph left out", base(), rule, only=True,
+               reason=f"lacks the criterion: {CRITERIA[0]} It reads them as UTF-8.",
+               issue=issue_document(criteria=paragraphs))
+    expect_clean(r, "criterion's later paragraph quoted", base(), [rule],
+                 issue=issue_document(criteria=paragraphs),
+                 tail=plan_tail(rows=[f"{CRITERIA[0]} It reads them as UTF-8.", *escaped[1:]]))
+    expect_clean(r, "escaped bar", base(), [rule], tail=plan_tail(rows=escaped))
+    markers = (f"Done when:\n\n- [ ] {CRITERIA[0]}\n* [x] {CRITERIA[1]}\n"
+               f"1) {CRITERIA[2]}\n")
+    expect_clean(r, "list markers and task boxes", base(), [rule], issue=issue_document(criteria=markers))
+    expect_clean(r, "rows reordered", base(), [rule], tail=plan_tail(rows=list(reversed(escaped))))
+    expect_clean(r, "decoy criteria in comments", base(), [rule], issue=issue_document())
+    expect_clean(r, "CRLF issue document", base(), [rule], issue=issue_document().replace("\n", "\r\n"))
+
+
+def check_first_of_kind(r: Runner) -> None:
+    rule = "first-of-kind"
+    for component, files in (("cli", ["crates/cli/src/main.rs"]), ("core", ["crates/core/src/lib.rs"]),
+                             ("runner", ["crates/runner/src/lib.rs"]), ("domain", ["crates/domain/src/lib.rs"])):
+        expect_hit(r, f"first {component} job", base(files=files), rule, component=component,
+                   reasons=["first of its kind: no commit reachable from the base commit has a subject "
+                            f"scoped ({component})"])
+    expect_clean(r, "cli job after a cli commit", base(files=["crates/cli/src/main.rs"]), [rule],
+                 component="cli", config="dropped")
+    expect_clean(r, "api job after a breaking api commit", base(files=["api/jobs.proto"]), [rule],
+                 component="api")
+    expect_clean(r, "docs job after a docs commit", base(), [rule])
+    expect_hit(r, "issue kind plan", base(), rule, only=True,
+               reasons=["the issue's kind is 'plan', not implementation"], issue=issue_document(kind="plan"))
+    expect_hit(r, "issue component differs", base(), rule,
+               reasons=["the issue's component is 'web', not --component docs"],
+               issue=issue_document(component="web"))
+    header = "- **Kind:** implementation\n- **Kind:** implementation\n- **Component:** docs\n"
+    expect_hit(r, "issue kind twice", base(), rule, only=True,
+               reasons=["the issue document's header has 2 '- **Kind:**' lines, expected 1"],
+               issue=issue_document(header=header))
+    expect_hit(r, "issue without a component line", base(), rule, only=True,
+               reasons=["the issue document's header has 0 '- **Component:**' lines, expected 1"],
+               issue=issue_document(header="- **Kind:** implementation\n"))
+    expect_hit(r, "no --issue-document for first-of-kind", base(), rule,
+               reasons=["no issue document given (--issue-document)"], issue=None)
 
 
 def check_unusable_input(sb: Sandbox, commits: dict) -> None:
@@ -568,6 +821,20 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
     for variant in ("no-plan-approval", "unknown-key", "mode-sometimes", "limit-negative", "limit-true",
                     "undefined-component", "missing-limit"):
         cases.append((f"config {variant}", ["--plan", good, "--component", "docs", "--base", commits[variant]]))
+    issue = sb.write_plan("unusable issue", issue_document())
+    analysis = sb.write_plan("unusable analysis", analysis_document())
+    plain = ["--plan", good, "--component", "docs", "--base", real]
+    for flag, path in (("--issue-document", issue), ("--analysis", analysis)):
+        what = flag[2:]
+        cases += [
+            (f"{what} missing", plain + [flag, "cases/missing.md"]),
+            (f"{what} unreadable", plain + [flag, "cases"]),
+            (f"{what} not UTF-8", plain + [flag, not_utf8]),
+            (f"{what} twice", plain + [flag, path, flag, path]),
+            (f"{what} empty value", plain + [flag, ""]),
+            (f"{what} without a value", plain + [flag]),
+            (f"{what} value an argument name", plain + [flag, "--plan"]),
+        ]
     for name, args in cases:
         proc, verdict = sb.floor(args)
         T.check(f"unusable {name}: exit 2, no verdict", proc.returncode == 2 and verdict is None
@@ -587,7 +854,9 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
     good = sb.write_plan("verdict errors good", plan_text())
     nofootprint = sb.write_plan("verdict errors no footprint",
                                 plan_text(section="", opener="Nothing here.", block="", closer="\n"))
-    args = ["--component", "docs", "--base", commits["real"]]
+    args = ["--component", "docs", "--base", commits["real"],
+            "--issue-document", sb.write_plan("verdict errors issue", issue_document()),
+            "--analysis", sb.write_plan("verdict errors analysis", analysis_document())]
     verdict = sb.repo / VERDICT
     outputs = verdict.parent
 
@@ -660,25 +929,53 @@ def outside_spans(text: str) -> str:
     return re.sub(r"`[^`\n]*`", "", text)
 
 
+# The plans Decider prepares: (plan text, issue document, analysis, floor.py's exit code).
+DECIDER_PLANS = {
+    "clean": (plan_text(), issue_document(), analysis_document(), 0),
+    "hit": (plan_text(footprint=base(files=["CLAUDE.md"])), issue_document(), analysis_document(), 1),
+    "blocking": (plan_text(), issue_document(),
+                 analysis_document("- **Blocking:** Which component owns it?\n"), 1),
+    "no footprint": (plan_text(section="", opener="Nothing here.", block="", closer="\n"), issue_document(),
+                     analysis_document(), 1),
+    "kind plan": (plan_text(), issue_document(kind="plan"), analysis_document(), 1),
+}
+
+
 class Decider:
-    """Runs decision.py in the sandbox after a real floor.py run at the same base commit."""
+    """Runs decision.py in the sandbox after a real floor.py run at the same base commit and documents."""
 
     def __init__(self, sb: Sandbox, commits: dict):
         self.sb = sb
         self.commits = commits
         self.prepared = {}
 
+    def floor_verdict(self, ctx: dict, issue: str = None, analysis: str = None, documents: bool = True) -> bytes:
+        """floor.py's verdict for ctx's plan, with ctx's documents, other ones, or none."""
+        args = ["--plan", ctx["plan"], "--component", ctx["component"], "--base", ctx["commit"]]
+        if documents:
+            args += ["--issue-document", issue or ctx["issue"], "--analysis", analysis or ctx["analysis"]]
+        proc = self.sb.exec(args)
+        if proc.returncode not in (0, 1):
+            raise RuntimeError(f"selftest bug: floor.py exit {proc.returncode}: {proc.stderr.strip()}")
+        return (self.sb.repo / VERDICT).read_bytes()
+
     def prepare(self, config: str, plan: str) -> dict:
         key = (config, plan)
         if key not in self.prepared:
-            footprint = CLEAN_BASE if plan == "clean" else base(files=["CLAUDE.md"])
-            rel = self.sb.write_plan(f"decision {config} {plan}", plan_text(footprint=footprint))
-            commit = self.commits[config]
-            proc = self.sb.exec(["--plan", rel, "--component", "docs", "--base", commit])
-            if proc.returncode != (0 if plan == "clean" else 1):
+            text, issue, analysis, code = DECIDER_PLANS[plan]
+            ctx = {
+                "plan": self.sb.write_plan(f"decision {config} {plan}", text),
+                "issue": self.sb.write_plan(f"decision {config} {plan} issue", issue),
+                "analysis": self.sb.write_plan(f"decision {config} {plan} analysis", analysis),
+                "commit": self.commits[config],
+                "component": "docs",
+            }
+            proc = self.sb.exec(["--plan", ctx["plan"], "--component", "docs", "--base", ctx["commit"],
+                                 "--issue-document", ctx["issue"], "--analysis", ctx["analysis"]])
+            if proc.returncode != code:
                 raise RuntimeError(f"selftest bug: floor.py exit {proc.returncode} for {key}: {proc.stderr.strip()}")
-            data = (self.sb.repo / VERDICT).read_bytes()
-            self.prepared[key] = {"plan": rel, "commit": commit, "component": "docs", "verdict": data}
+            ctx["verdict"] = (self.sb.repo / VERDICT).read_bytes()
+            self.prepared[key] = ctx
         return self.prepared[key]
 
     def run(self, name: str, config: str = "judged", plan: str = "clean", verdict="floor", assessment="low",
@@ -702,7 +999,8 @@ class Decider:
             content = assessment_text(assessment) if assessment in ("low", "medium", "high") else assessment
             rel = self.sb.write_plan(f"assessment {name}", content)
             level = assessment if assessment in ("low", "medium", "high") else None
-        args = ["--issue", "34", "--component", ctx["component"], "--plan", ctx["plan"], "--assessment", rel,
+        args = ["--issue", "34", "--component", ctx["component"], "--plan", ctx["plan"],
+                "--issue-document", ctx["issue"], "--analysis", ctx["analysis"], "--assessment", rel,
                 "--assessment-artifact", artifact, "--base", ctx["commit"], "--harness", harness, "--model", model]
         record_path = self.sb.repo / RECORD
         record_path.write_text('{"stale": true}\n', encoding="utf-8")
@@ -764,8 +1062,9 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
         if (fl["verdict"], fl["rules"], fl["not_evaluated"]) != (
                 verdict["verdict"], verdict["rules"], verdict["not_evaluated"]):
             problems.append("floor layer differs from the verdict")
-        if len(fl["rules"]) != len(RULES) or not all(list(r) == ["rule", "result", "reasons"] for r in fl["rules"]):
-            problems.append("floor layer rules are not the 13 rule objects")
+        if (len(fl["rules"]) + len(fl["not_evaluated"]) != len(RULES)
+                or not all(list(r) == ["rule", "result", "reasons"] for r in fl["rules"])):
+            problems.append(f"floor layer rules and not_evaluated are not the {len(RULES)} rules")
     elif (fl["verdict"], fl["rules"], fl["not_evaluated"]) != (None, [], []):
         problems.append("unusable floor layer holds content")
 
@@ -898,7 +1197,10 @@ def check_decision_judged(d: Decider) -> None:
         ("component", setter("component", value="web")),
         ("mode", setter("mode", value="never")),
         ("tool", setter("tool", value="another-floor")),
-        ("version 2", setter("version", value=2)),
+        ("version 1", setter("version", value=1)),
+        ("issue_document sha256", setter("issue_document", "sha256", value="0" * 64)),
+        ("analysis sha256", setter("analysis", "sha256", value="0" * 64)),
+        ("issue_document null", setter("issue_document", value=None)),
         ("version true", setter("version", value=True)),
         ("a missing rule", missing_rule),
         ("clean verdict with a hit rule", hit_in_clean),
@@ -961,6 +1263,85 @@ def check_decision_judged(d: Decider) -> None:
 
     expect_decision("judged verdict reason edited", d.run("judged verdict reason edited", plan="hit",
                                                           verdict=other_reason), "human", "human", "unusable")
+
+
+def floor_problems(record) -> list:
+    if not isinstance(record, dict):
+        return []
+    return record.get("layers", {}).get("floor", {}).get("problems")
+
+
+def check_decision_documents(d: Decider) -> None:
+    proc, record = d.run("judged blocking question", plan="blocking")
+    expect_decision("judged blocking question", (proc, record), "human", "human", "usable", "usable")
+    floor_ = record.get("layers", {}).get("floor", {}) if isinstance(record, dict) else {}
+    T.check("judged blocking question: the floor layer holds the blocking-questions hit",
+            [r["rule"] for r in floor_.get("rules", []) if r["result"] == "hit"] == ["blocking-questions"],
+            str(floor_.get("rules")))
+    proc, record = d.run("judged footprint hit", plan="no footprint")
+    expect_decision("judged footprint hit", (proc, record), "human", "human", "usable", "usable")
+    floor_ = record.get("layers", {}).get("floor", {}) if isinstance(record, dict) else {}
+    T.check("judged footprint hit: footprint rules not evaluated, document rules evaluated",
+            floor_.get("not_evaluated") == FOOTPRINT_RULES
+            and [r["rule"] for r in floor_.get("rules", [])] == ["footprint", *DOCUMENT_RULES],
+            str(floor_.get("not_evaluated")))
+    proc, record = d.run("shadow blocking question", config="real", plan="blocking")
+    expect_decision("shadow blocking question", (proc, record), "human", "human", "usable", "usable")
+    check_shadow_comment("shadow blocking question", proc, "hit on `blocking-questions` (`floor.py` exit 1)",
+                         f"`low`, `{REASON}`", "human")
+
+    clean = d.prepare("judged", "clean")
+    without = d.floor_verdict(clean, documents=False)
+    proc, record = d.run("judged verdict without documents", verdict=without)
+    expect_decision("judged verdict without documents", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged verdict without documents: both bindings named", floor_problems(record) == [
+        "the floor verdict's issue_document does not match --issue-document",
+        "the floor verdict's analysis does not match --analysis"], str(floor_problems(record)))
+    other = d.sb.write_plan("decision other analysis", analysis_document("- **Non-blocking (assumed):** Other?\n"))
+    proc, record = d.run("judged verdict with another analysis", verdict=d.floor_verdict(clean, analysis=other))
+    expect_decision("judged verdict with another analysis", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged verdict with another analysis: the analysis binding named",
+            floor_problems(record) == ["the floor verdict's analysis does not match --analysis"],
+            str(floor_problems(record)))
+    other = d.sb.write_plan("decision other issue", issue_document() + "\nAnother comment.\n")
+    proc, record = d.run("judged verdict with another issue", verdict=d.floor_verdict(clean, issue=other))
+    expect_decision("judged verdict with another issue", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged verdict with another issue: the issue_document binding named",
+            floor_problems(record) == ["the floor verdict's issue_document does not match --issue-document"],
+            str(floor_problems(record)))
+
+    def first_of_kind_clean(document):
+        for rule in document["rules"]:
+            if rule["rule"] == "first-of-kind":
+                rule.update(result="clean", reasons=[])
+        document["verdict"] = "clean"
+
+    expect_decision("judged kind plan", d.run("judged kind plan", plan="kind plan"),
+                    "human", "human", "usable", "usable")
+    proc, record = d.run("judged forged first-of-kind clean", plan="kind plan", verdict=first_of_kind_clean)
+    expect_decision("judged forged first-of-kind clean", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged forged first-of-kind clean: the recomputed rules differ", floor_problems(record)
+            == ["the floor verdict's rules differ from what floor.py gives for this plan and base"],
+            str(floor_problems(record)))
+
+    def footprint_skips_one_more(document):
+        document["rules"] = [r for r in document["rules"] if r["rule"] != "first-of-kind"]
+        document["not_evaluated"] = FOOTPRINT_RULES + ["first-of-kind"]
+
+    def footprint_rules_skipped_on_clean(document):
+        document["rules"] = [r for r in document["rules"] if r["rule"] not in FOOTPRINT_RULES]
+        document["not_evaluated"] = FOOTPRINT_RULES
+
+    for label, plan, edit, problem in (
+            ("a document rule skipped", "no footprint", footprint_skips_one_more,
+             "the floor verdict's rule identifiers are not floor.py's, in order, "
+             "with none or only the footprint rules not evaluated"),
+            ("footprint rules skipped without a hit", "clean", footprint_rules_skipped_on_clean,
+             "the floor verdict skips rules without a footprint hit")):
+        proc, record = d.run(f"judged verdict {label}", plan=plan, verdict=edit)
+        expect_decision(f"judged verdict {label}", (proc, record), "human", "human", "unusable", "usable")
+        T.check(f"judged verdict {label}: the identifier check names it", floor_problems(record) == [problem],
+                str(floor_problems(record)))
 
 
 def check_decision_modes(d: Decider) -> None:
@@ -1036,7 +1417,8 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
     not_utf8 = sb.write_plan("decision not utf-8", b"# Plan\n\n\xff\xfe\n")
 
     def args(**changes) -> list:
-        values = {"--issue": "34", "--component": "docs", "--plan": ctx["plan"], "--assessment": assessment,
+        values = {"--issue": "34", "--component": "docs", "--plan": ctx["plan"],
+                  "--issue-document": ctx["issue"], "--analysis": ctx["analysis"], "--assessment": assessment,
                   "--assessment-artifact": ARTIFACT, "--base": ctx["commit"], "--harness": "claude",
                   "--model": "sonnet"}
         values.update({f"--{k.replace('_', '-')}": v for k, v in changes.items()})
@@ -1065,6 +1447,14 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
         ("unknown component", args(component="nope")),
         ("config mode-sometimes", args(base=d.commits["mode-sometimes"])),
         ("config unknown-key", args(base=d.commits["unknown-key"])),
+        ("missing --issue-document", args(issue_document=None)),
+        ("missing --analysis", args(analysis=None)),
+        ("issue document missing", args(issue_document="cases/missing.md")),
+        ("issue document unreadable", args(issue_document="cases")),
+        ("issue document not UTF-8", args(issue_document=not_utf8)),
+        ("analysis missing", args(analysis="cases/missing.md")),
+        ("analysis unreadable", args(analysis="cases")),
+        ("analysis not UTF-8", args(analysis=not_utf8)),
     ]
     for name, argv in cases:
         record.write_text('{"stale": true}\n', encoding="utf-8")
@@ -1097,6 +1487,7 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
 def check_decision(sb: Sandbox, commits: dict) -> None:
     d = Decider(sb, commits)
     check_decision_judged(d)
+    check_decision_documents(d)
     check_decision_modes(d)
     check_decision_comment(d)
     check_decision_unusable(sb, d)
@@ -1148,6 +1539,9 @@ def build_commits(sb: Sandbox) -> tuple:
     real_bytes = CONFIG.read_bytes()
     real = yq_json(CONFIG)
     commits = {"noconfig": sb.commit_empty("no config")}
+    commits["nodocs"] = sb.commit_config(real_bytes, "chore(agents): config before any docs commit")
+    for subject in SEEDS:
+        sb.commit_empty(subject)
 
     def variant(name: str, change) -> None:
         config = copy.deepcopy(real)
@@ -1168,6 +1562,7 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     commits["real"] = sb.commit_config(real_bytes, "real")
     sb.git("tag", "base")
+    sb.commit_empty("feat(cli): seen after base")
     variant("dropped", lambda c: approval(c)["require_human"]["paths"].remove(".mintswarm/dogfood/github/**"))
     return commits, approval(real)["limits"]
 
@@ -1187,6 +1582,9 @@ def main() -> int:
         check_unusable_footprints(runner)
         check_base_ref(runner, sb)
         check_historic(runner)
+        check_blocking_questions(runner)
+        check_acceptance_criteria(runner)
+        check_first_of_kind(runner)
         check_unusable_input(sb, commits)
         check_verdict_errors(sb, commits)
         check_decision(sb, commits)

@@ -23,7 +23,7 @@ You analyse one issue so that the next stage (decompose or plan) can work from f
 3. Name the components the work touches. For an implementation issue that should be exactly one; say so if it is not.
 4. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
 5. List risks and unknowns.
-6. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption.
+6. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`; a non-blocking question ends with `→` and the assumption. The Questions section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
 
 ## Output
 
