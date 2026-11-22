@@ -82,6 +82,12 @@ pipeline:
       components: [agents, tooling]
       paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md"]
     limits: { files: 10, lines: 300, new_files: 3, new_dependencies: 0 }
+  # Read from the base ref, never the worktree, by landing/floor.py.
+  landing:
+    mode: always                     # always | shadow | judged | never; every finished change goes to the maintainer
+    require_human:                   # any changed path that matches sends the change to a human
+      paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md"]
+    footprint: { lines_factor: 1.5 } # the diff may count up to estimated_lines × lines_factor, rounded down
   review:
     max_rounds: 3
     reviewers: [zmij]                # default reviewers of a PR; see components above
