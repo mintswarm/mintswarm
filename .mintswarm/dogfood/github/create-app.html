@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Create the mintswarm-dev GitHub App</title>
+<form id="f" method="post"
+  action="https://github.com/organizations/mintswarm/settings/apps/new?state=REPLACE_WITH_RANDOM">
+  <input type="hidden" name="manifest" id="m">
+  <p>Redirecting to GitHub…</p>
+</form>
+<script>
+document.getElementById("m").value = JSON.stringify({
+  name: "mintswarm-dev",
+  url: "https://github.com/mintswarm/mintswarm",
+  description: "mintswarm's own control plane while dogfooding: pushes branches and opens PRs, issues and artifacts in mintswarm/mintswarm.",
+  redirect_url: "http://localhost:8765/",
+  public: false,
+  default_permissions: {
+    contents: "write",
+    pull_requests: "write",
+    issues: "write",
+    checks: "read",
+    statuses: "read",
+    metadata: "read"
+  },
+  default_events: []
+});
+document.getElementById("f").submit();
+</script>
