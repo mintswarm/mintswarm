@@ -24,6 +24,16 @@
 #   - msw_recorded_key_store prints the key store recorded as key_store in
 #     $MSW_APP_CONFIG; a file without it means keychain on macOS and is an
 #     error elsewhere. mint-token.sh reads the key only from that store.
+#   - msw_app_profile NAME is the per-App table: for each App that
+#     store-credentials.sh creates from a manifest, it sets
+#       MSW_PROFILE_CONFIG   the App's own config file
+#       MSW_PROFILE_SERVICE  the key's service name in every key store
+#       MSW_PROFILE_LABEL    the key's label
+#       MSW_PROFILE_CONFIRM  keychain-acl (every use of the key needs the
+#                            user's confirmation) or none
+#     for mintswarm-dev ($MSW_APP_CONFIG) and mintswarm-dev-steward
+#     ($MSW_STEWARD_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
+#     for any other name.
 #
 # bash 3.2 compatible.
 
@@ -41,6 +51,8 @@ MSW_BRANCH_PREFIX=mintswarm/
 MSW_KEYCHAIN_SERVICE=mintswarm-dev-private-key
 MSW_CONFIG_DIR="$HOME/.config/mintswarm"
 MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/dev-app.json}"
+MSW_STEWARD_KEYCHAIN_SERVICE=mintswarm-dev-steward-private-key
+MSW_STEWARD_CONFIG="${MSW_STEWARD_CONFIG:-$MSW_CONFIG_DIR/steward-app.json}"
 MSW_KEY_FILE_DIR="$MSW_CONFIG_DIR/keys"
 MSW_CREDSTORE_DIR="$MSW_CONFIG_DIR/credstore"
 MSW_KEY_STORES="keychain, secret-service, pass, systemd-creds, file"
@@ -82,6 +94,31 @@ msw_recorded_key_store() {
     store=keychain
   fi
   printf '%s\n' "$store"
+}
+
+MSW_PROFILE_CONFIG=""
+MSW_PROFILE_SERVICE=""
+MSW_PROFILE_LABEL=""
+MSW_PROFILE_CONFIRM=""
+msw_app_profile() {  # msw_app_profile NAME: set MSW_PROFILE_*; 1 for an unknown NAME
+  case "$1" in
+    mintswarm-dev)
+      MSW_PROFILE_CONFIG="$MSW_APP_CONFIG"
+      MSW_PROFILE_SERVICE="$MSW_KEYCHAIN_SERVICE"
+      MSW_PROFILE_LABEL='mintswarm-dev GitHub App private key'
+      MSW_PROFILE_CONFIRM=none ;;
+    mintswarm-dev-steward)
+      MSW_PROFILE_CONFIG="$MSW_STEWARD_CONFIG"
+      MSW_PROFILE_SERVICE="$MSW_STEWARD_KEYCHAIN_SERVICE"
+      MSW_PROFILE_LABEL='mintswarm-dev-steward GitHub App private key'
+      MSW_PROFILE_CONFIRM=keychain-acl ;;
+    *)
+      MSW_PROFILE_CONFIG=""
+      MSW_PROFILE_SERVICE=""
+      MSW_PROFILE_LABEL=""
+      MSW_PROFILE_CONFIRM=""
+      return 1 ;;
+  esac
 }
 
 msw_git_env() {

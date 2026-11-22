@@ -1,0 +1,16 @@
+{
+  "name": "mintswarm-dev",
+  "url": "https://github.com/mintswarm/mintswarm",
+  "description": "mintswarm's own control plane while dogfooding: pushes branches and opens PRs, issues and artifacts in mintswarm/mintswarm.",
+  "redirect_url": "http://127.0.0.1:8765/",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "statuses": "read",
+    "metadata": "read"
+  },
+  "default_events": []
+}
