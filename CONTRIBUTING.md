@@ -33,7 +33,7 @@ exp/3-claude-headless-interrupt
 
 ### Reserved prefix
 
-`mintswarm/*` belongs to the factory (see `docs/concept.md`, Implement stage). People never create, push to or rebase these branches. Once we dogfood, a ruleset restricts pushes to them to the mintswarm GitHub App.
+`mintswarm/*` belongs to the factory: see the Design issue [#3](https://github.com/mintswarm/mintswarm/issues/3) and its artifact "mintswarm design", and `.mintswarm/stages/implement.md`. Only mintswarm writes these branches: its runner creates and pushes them, and its implement stage commits on its own job's branch. People never create, push to or rebase them. The `mintswarm-factory-branches` ruleset enforces this: only the GitHub App that mintswarm pushes with — in this repository `mintswarm-dev` (see `.mintswarm/dogfood/github/`) — may create, update or delete them.
 
 ### Stacked changes
 
@@ -46,7 +46,7 @@ When one change depends on another unmerged one, base the second PR on the first
 ```
 feat(runner): reconnect and replay job events after stream loss
 fix(core): renew leases on heartbeat, not on claim
-docs(architecture): describe the repository layout
+docs(docs): describe the repository layout
 ```
 
 Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`; a change that is not part of any component (CI, repository tooling) uses `ci`, `build` or `docs` as its scope. A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.

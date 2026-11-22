@@ -22,7 +22,7 @@ mintswarm/
 │   ├── config.yaml         # tracker mapping, components, stage models, pipeline, gates
 │   ├── stages.md           # conventions every stage agent follows
 │   ├── stages/             # harness-neutral stage definitions: capabilities, model tier, instructions
-│   ├── dogfood/            # stand-ins for runner functions while the system does not run (gate runner, stage agent renderer)
+│   ├── dogfood/            # stand-ins for runner and control-plane functions while mintswarm does not run; each script, and github/README.md, says what it replaces
 │   ├── job/                # per-job inputs and outputs inside a worktree, never committed
 │   └── worktrees/          # job worktrees created by the session acting as runner, never committed
 │
