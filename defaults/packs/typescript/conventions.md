@@ -14,7 +14,7 @@ How TypeScript is written, checked and formatted in the package at `{{ package_r
 - `tsconfig.json` is strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`; never relax it per file.
 - No `any`. Take outside data as `unknown` and narrow it with type guards or a schema.
 - No non-null assertions (`x!`); narrow instead.
-- Prefer `readonly` properties and `ReadonlyArray` for data that is not mutated.
+- Prefer `readonly` properties and `readonly T[]` arrays (`ReadonlyMap`, `ReadonlySet` where relevant) for data that is not mutated.
 - Use unions of string literals, not `enum`.
 - Make a `switch` over a union exhaustive with a `default` that assigns the value to `never`.
 - `catch (error: unknown)`, and narrow before use; throw only `Error` objects.

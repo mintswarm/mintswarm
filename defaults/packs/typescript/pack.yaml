@@ -50,7 +50,7 @@ settings:
   - template: "settings/node-version"
     target: "{{ package_root }}/.node-version"
     kind: "toolchain"
-    alternatives: ["{{ package_root }}/.nvmrc", "{{ package_root }}/.tool-versions", "{{ package_root }}/mise.toml"]
+    alternatives: ["{{ package_root }}/.nvmrc"]
 gates:
   - name: "typescript-typecheck"
     command: "cd {{ package_root }} && ./node_modules/.bin/tsc --noEmit"
