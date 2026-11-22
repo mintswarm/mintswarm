@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline self-test of floor.py, the deterministic floor of plan approval.
+"""Offline self-test of floor.py and decision.py, the two scripts of plan approval.
 
     selftest.py
 
@@ -9,8 +9,9 @@ fixed identity, and runs `git init` on a throwaway repository with no
 remote. Base configs are commits there: `real`, the checkout's
 .mintswarm/config.yaml byte for byte, and variants of it, read with
 `yq -o=json`, changed here and committed as JSON text at the same path.
-floor.py runs as `sys.executable floor.py ...` with that repository as its
-working directory and plans written under `cases/`.
+floor.py and decision.py run as `sys.executable SCRIPT ...` with that
+repository as its working directory and plans and assessments written under
+`cases/`.
 
 Checks:
 
@@ -21,7 +22,7 @@ Checks:
   `not_evaluated`, results and reasons, `verdict` against the rules and the
   exit code, `base.commit`, `mode` and the printed lines;
 - clean base: a footprint modelled on #20 is clean on every rule, and is
-  accepted with `mode: shadow`, which the verdict records;
+  accepted with `mode: always`, which the verdict records;
 - single-rule hits: each rule hit by a case derived from the clean base,
   and each limit clean at its value and a hit one over;
 - footprint unusable: missing, misplaced, malformed and badly shaped
@@ -38,8 +39,32 @@ Checks:
   error and no traceback;
 - glob semantics: floor.py's glob_to_regex agrees with the one in
   .mintswarm/dogfood/github/request-review.py;
-- standard library: every import of floor.py and selftest.py is in the
-  standard library.
+- decision record shape, on every decision run that exits 0 or 1: the
+  record's keys and each layer's keys in order, the subject, the mode, the
+  floor layer's rules equal to the verdict's, the risk and reason equal to
+  the assessment's, harness and model equal to the arguments,
+  `as_configured` against the config, `judged_decision` and `decision`
+  recomputed from the layers, `as_configured` and the mode, the exit code,
+  and stdout: the auto-approval comment for `auto`, the shadow-record
+  comment in `shadow` mode, empty otherwise;
+- decision under `judged`: clean and `low` is `auto`; a floor hit, `medium`,
+  `high`, a missing or unparsable verdict, a verdict edited to break each
+  binding, a forged verdict that is consistent in itself but differs from
+  what floor.py gives for the plan, and a missing, non-UTF-8 or malformed
+  assessment are `human`, with the failing layer unusable; a trailing space
+  and CRLF still give `auto`; a harness or model other than the config's
+  sets `as_configured` false and gives `human`;
+- decision under `always`, `shadow` and `never`: `human`, `human` with
+  `judged_decision` recorded, and `auto` whatever the layers say;
+- the comments: the auto-approval comment's heading, floor line, risk and
+  reason and veto paragraph; the shadow-record comment's heading and rows;
+  and in both, model and session text only inside code spans of at most
+  200 characters;
+- decision unusable input: bad arguments, plans, refs and configs, a
+  missing `yq` and a record path that is a directory exit 2, print nothing
+  to stdout and leave no record, even a stale one;
+- standard library: every import of floor.py, decision.py and selftest.py is
+  in the standard library.
 
 Prints one `ok` or `FAIL` line per check and exits 0 only when all passed.
 """
@@ -50,6 +75,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,12 +84,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FLOOR = HERE / "floor.py"
+DECISION = HERE / "decision.py"
 FIXTURES = HERE / "fixtures"
 ROOT = HERE.parents[2]
 CONFIG = ROOT / ".mintswarm" / "config.yaml"
 REQUEST_REVIEW = ROOT / ".mintswarm" / "dogfood" / "github" / "request-review.py"
 CONFIG_PATH = ".mintswarm/config.yaml"
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
+RECORD = Path(".mintswarm/job/outputs/decision.json")
 
 RULES = [
     "footprint",
@@ -85,7 +113,7 @@ VERDICT_KEYS = [
     "verdict", "rules", "not_evaluated",
 ]
 EXPECTED_APPROVAL = {
-    "mode": "always",
+    "mode": "shadow",
     "require_human": {
         "components": ["agents", "tooling"],
         "paths": [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md"],
@@ -187,9 +215,9 @@ class Sandbox:
         (self.repo / rel).write_bytes(data)
         return rel
 
-    def exec(self, args: list, env: dict = None):
+    def exec(self, args: list, env: dict = None, script: Path = FLOOR):
         return subprocess.run(
-            [sys.executable, str(FLOOR), *args],
+            [sys.executable, str(script), *args],
             cwd=self.repo, env=env or self.env, capture_output=True, text=True,
         )
 
@@ -307,7 +335,8 @@ class Runner:
         self.commits = commits
 
     def run(self, name: str, content, component: str = "docs", config: str = "real",
-            ref: str = None, commit: str = None, mode: str = "always"):
+            ref: str = None, commit: str = None, mode: str = None):
+        mode = mode or EXPECTED_APPROVAL["mode"]
         plan = self.sb.write_plan(name, content)
         ref = ref or self.commits[config]
         commit = commit or self.commits[config]
@@ -372,10 +401,10 @@ def check_clean_base(r: Runner) -> None:
     T.check("clean base: exit 0, every rule clean",
             proc.returncode == 0 and set(results_of(verdict).values()) == {"clean"}
             and len(results_of(verdict)) == len(RULES), proc.stdout)
-    proc, verdict = r.run("shadow mode", plan_text(), config="shadow", mode="shadow")
-    T.check("shadow mode: accepted, rules evaluated, mode recorded",
+    proc, verdict = r.run("always mode", plan_text(), config="always", mode="always")
+    T.check("always mode: accepted, rules evaluated, mode recorded",
             proc.returncode == 0 and len(results_of(verdict)) == len(RULES)
-            and isinstance(verdict, dict) and verdict.get("mode") == "shadow",
+            and isinstance(verdict, dict) and verdict.get("mode") == "always",
             f"exit {proc.returncode}: {proc.stderr.strip()}")
 
 
@@ -599,6 +628,480 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
         outputs.chmod(0o755)
 
 
+# --- decision -------------------------------------------------------------
+
+RECORD_KEYS = [
+    "tool", "version", "approval", "subject", "mode", "layers", "judged_decision", "decision", "reasons",
+]
+FLOOR_LAYER_KEYS = ["status", "problems", "path", "sha256", "verdict", "rules", "not_evaluated"]
+JUDGEMENT_LAYER_KEYS = [
+    "status", "problems", "stage", "path", "sha256", "artifact", "harness", "model", "expected",
+    "as_configured", "risk", "reasons",
+]
+EXPECTED_JUDGE = {"harness": "claude", "model": "sonnet"}
+REASON = "the change stays within the docs component"
+ARTIFACT = "https://github.com/mintswarm/mintswarm/issues/34/artifacts/7"
+SPAN_LIMIT = 200
+
+
+def assessment_text(level: str = "low", reason: str = REASON, risk_line: str = None, summary: str = None,
+                    eol: str = "\n", title: str = "# Assessment: selftest case") -> str:
+    risk_line = f"Risk: {level}" if risk_line is None else risk_line
+    summary = f"{level} risk: {reason}" if summary is None else summary
+    lines = [title, "", summary, "", risk_line, "", "## Reversibility", "", "A revert undoes it.", ""]
+    return eol.join(lines)
+
+
+def code_spans(text: str) -> list:
+    return re.findall(r"`([^`\n]*)`", text)
+
+
+def outside_spans(text: str) -> str:
+    return re.sub(r"`[^`\n]*`", "", text)
+
+
+class Decider:
+    """Runs decision.py in the sandbox after a real floor.py run at the same base commit."""
+
+    def __init__(self, sb: Sandbox, commits: dict):
+        self.sb = sb
+        self.commits = commits
+        self.prepared = {}
+
+    def prepare(self, config: str, plan: str) -> dict:
+        key = (config, plan)
+        if key not in self.prepared:
+            footprint = CLEAN_BASE if plan == "clean" else base(files=["CLAUDE.md"])
+            rel = self.sb.write_plan(f"decision {config} {plan}", plan_text(footprint=footprint))
+            commit = self.commits[config]
+            proc = self.sb.exec(["--plan", rel, "--component", "docs", "--base", commit])
+            if proc.returncode != (0 if plan == "clean" else 1):
+                raise RuntimeError(f"selftest bug: floor.py exit {proc.returncode} for {key}: {proc.stderr.strip()}")
+            data = (self.sb.repo / VERDICT).read_bytes()
+            self.prepared[key] = {"plan": rel, "commit": commit, "component": "docs", "verdict": data}
+        return self.prepared[key]
+
+    def run(self, name: str, config: str = "judged", plan: str = "clean", verdict="floor", assessment="low",
+            harness: str = "claude", model: str = "sonnet", artifact: str = ARTIFACT):
+        """verdict: "floor" (the real one), None (missing), a function editing the JSON, or bytes."""
+        ctx = self.prepare(config, plan)
+        path = self.sb.repo / VERDICT
+        path.unlink(missing_ok=True)
+        if verdict == "floor":
+            path.write_bytes(ctx["verdict"])
+        elif callable(verdict):
+            document = json.loads(ctx["verdict"])
+            verdict(document)
+            path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        elif verdict is not None:
+            path.write_bytes(verdict)
+        if assessment is None:
+            rel = "cases/no-such-assessment.md"
+            level = None
+        else:
+            content = assessment_text(assessment) if assessment in ("low", "medium", "high") else assessment
+            rel = self.sb.write_plan(f"assessment {name}", content)
+            level = assessment if assessment in ("low", "medium", "high") else None
+        args = ["--issue", "34", "--component", ctx["component"], "--plan", ctx["plan"], "--assessment", rel,
+                "--assessment-artifact", artifact, "--base", ctx["commit"], "--harness", harness, "--model", model]
+        record_path = self.sb.repo / RECORD
+        record_path.write_text('{"stale": true}\n', encoding="utf-8")
+        proc = self.sb.exec(args, script=DECISION)
+        record = None
+        if record_path.exists():
+            try:
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+            except ValueError:
+                record = "unparsable"
+        expect = {"ctx": ctx, "config": config, "assessment": rel, "artifact": artifact, "harness": harness,
+                  "model": model, "level": level}
+        check_record(name, proc, record, expect, self.sb.repo)
+        return proc, record
+
+
+def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
+    if not isinstance(record, dict):
+        return T.check(f"{name}: record shape", False,
+                       f"no record (exit {proc.returncode}): {proc.stderr.strip()}")
+    problems = []
+    ctx = expect["ctx"]
+    mode = {"real": EXPECTED_APPROVAL["mode"]}.get(expect["config"], expect["config"])
+    if list(record) != RECORD_KEYS:
+        return T.check(f"{name}: record shape", False, f"keys {list(record)}")
+    if (record["tool"], record["version"], record["approval"]) != ("mintswarm-approval-decision", 1, "plan"):
+        problems.append("tool, version or approval")
+    plan_sha = hashlib.sha256((repo / ctx["plan"]).read_bytes()).hexdigest()
+    subject = {"issue": 34, "component": ctx["component"], "plan": {"path": ctx["plan"], "sha256": plan_sha},
+               "base": {"ref": ctx["commit"], "commit": ctx["commit"]}}
+    if record["subject"] != subject:
+        problems.append(f"subject {record['subject']}")
+    if record["mode"] != mode:
+        problems.append(f"mode {record['mode']!r}, expected {mode!r}")
+    layers = record["layers"]
+    if not isinstance(layers, dict) or list(layers) != ["floor", "judgement"]:
+        return T.check(f"{name}: record shape", False, f"layers {layers!r}")
+    fl, jd = layers["floor"], layers["judgement"]
+    if list(fl) != FLOOR_LAYER_KEYS:
+        return T.check(f"{name}: record shape", False, f"floor layer keys {list(fl)}")
+    if list(jd) != JUDGEMENT_LAYER_KEYS:
+        return T.check(f"{name}: record shape", False, f"judgement layer keys {list(jd)}")
+    for label, layer in (("floor", fl), ("judgement", jd)):
+        if layer["status"] not in ("usable", "unusable"):
+            problems.append(f"{label} status {layer['status']!r}")
+        if not isinstance(layer["problems"], list) or not all(isinstance(x, str) for x in layer["problems"]):
+            problems.append(f"{label} problems not strings")
+        elif (layer["status"] == "usable") == bool(layer["problems"]):
+            problems.append(f"{label} {layer['status']} with {len(layer['problems'])} problems")
+
+    verdict_path = repo / VERDICT
+    verdict_bytes = verdict_path.read_bytes() if verdict_path.exists() else None
+    if fl["path"] != str(VERDICT):
+        problems.append("floor path")
+    if fl["sha256"] != (hashlib.sha256(verdict_bytes).hexdigest() if verdict_bytes is not None else None):
+        problems.append("floor sha256")
+    if fl["status"] == "usable":
+        verdict = json.loads(verdict_bytes)
+        if (fl["verdict"], fl["rules"], fl["not_evaluated"]) != (
+                verdict["verdict"], verdict["rules"], verdict["not_evaluated"]):
+            problems.append("floor layer differs from the verdict")
+        if len(fl["rules"]) != len(RULES) or not all(list(r) == ["rule", "result", "reasons"] for r in fl["rules"]):
+            problems.append("floor layer rules are not the 13 rule objects")
+    elif (fl["verdict"], fl["rules"], fl["not_evaluated"]) != (None, [], []):
+        problems.append("unusable floor layer holds content")
+
+    assessment = repo / expect["assessment"]
+    assessment_sha = hashlib.sha256(assessment.read_bytes()).hexdigest() if assessment.exists() else None
+    as_configured = {"harness": expect["harness"], "model": expect["model"]} == EXPECTED_JUDGE
+    fixed = {"stage": "assess", "path": expect["assessment"], "sha256": assessment_sha,
+             "artifact": expect["artifact"], "harness": expect["harness"], "model": expect["model"],
+             "expected": EXPECTED_JUDGE, "as_configured": as_configured}
+    wrong = [k for k, v in fixed.items() if jd[k] != v]
+    if wrong:
+        problems.append(f"judgement {', '.join(wrong)}")
+    if jd["status"] == "usable":
+        if jd["risk"] not in ("low", "medium", "high") or len(jd["reasons"]) != 1:
+            problems.append(f"judgement risk {jd['risk']!r}, reasons {jd['reasons']!r}")
+        if expect["level"] is not None and (jd["risk"], jd["reasons"]) != (expect["level"], [REASON]):
+            problems.append(f"judgement risk {jd['risk']!r}, reasons {jd['reasons']!r}")
+    elif (jd["risk"], jd["reasons"]) != (None, []):
+        problems.append("unusable judgement layer holds content")
+
+    clean = fl["status"] == "usable" and fl["verdict"] == "clean"
+    low = jd["status"] == "usable" and jd["risk"] == "low"
+    judged = "auto" if clean and low and as_configured else "human"
+    decision = {"always": "human", "shadow": "human", "never": "auto", "judged": judged}.get(mode)
+    if record["judged_decision"] != judged:
+        problems.append(f"judged_decision {record['judged_decision']!r}, expected {judged!r}")
+    if record["decision"] != decision:
+        problems.append(f"decision {record['decision']!r}, expected {decision!r}")
+    if proc.returncode != (0 if record["decision"] == "auto" else 1):
+        problems.append(f"exit {proc.returncode} with decision {record['decision']!r}")
+    reasons = record["reasons"]
+    if (not isinstance(reasons, list) or not all(isinstance(x, str) for x in reasons)
+            or not reasons or not reasons[0].startswith(f"mode {mode}:")):
+        problems.append(f"reasons {reasons!r}")
+    if record["decision"] == "human" and mode == "shadow":
+        if not proc.stdout.startswith("### Shadow record: plan approval\n"):
+            problems.append("no shadow-record comment in shadow mode")
+    elif record["decision"] == "human" and proc.stdout != "":
+        problems.append("stdout not empty for human")
+    if record["decision"] == "auto" and "approved without a human" not in proc.stdout:
+        problems.append("no comment for auto")
+    if len(proc.stderr.strip().splitlines()) != 1:
+        problems.append(f"stderr {proc.stderr!r}")
+    return T.check(f"{name}: record shape", not problems, "; ".join(problems))
+
+
+def expect_decision(name: str, result, decision: str, judged: str = None, floor_status: str = None,
+                    judgement_status: str = None) -> dict:
+    proc, record = result
+    if not isinstance(record, dict) or not isinstance(record.get("layers"), dict):
+        T.check(f"{name}: decision {decision}", False, f"no record (exit {proc.returncode})")
+        return {}
+    got = {"decision": record["decision"]}
+    want = {"decision": decision}
+    if judged is not None:
+        got["judged"], want["judged"] = record["judged_decision"], judged
+    if floor_status is not None:
+        got["floor"], want["floor"] = record["layers"]["floor"]["status"], floor_status
+    if judgement_status is not None:
+        got["judgement"], want["judgement"] = record["layers"]["judgement"]["status"], judgement_status
+    T.check(f"{name}: decision {decision}" + "".join(f", {k} {v}" for k, v in want.items() if k != "decision"),
+            got == want and proc.returncode == (0 if decision == "auto" else 1), f"got {got}, exit {proc.returncode}")
+    return record
+
+
+def check_comment(name: str, proc, floor_line: str, risk_line: str) -> None:
+    out = proc.stdout
+    lines = out.splitlines()
+    ok = (bool(lines) and lines[0] == "### Plan approved without a human"
+          and f"- **Floor:** {floor_line}" in lines and f"- **Risk:** {risk_line}" in lines
+          and any(line.startswith("**To veto:**") and "awaiting plan approval" in line
+                  and "rejection at PR approval" in line for line in lines)
+          and "PR approval stays with a human in every mode." in lines)
+    T.check(f"{name}: comment has the heading, floor, risk and veto", ok, repr(out))
+
+
+def check_shadow_comment(name: str, proc, floor_start: str, risk_line: str, judged: str) -> None:
+    lines = proc.stdout.splitlines()
+    floor = next((line for line in lines if line.startswith("- **Floor:** ")), "")
+    ok = (bool(lines) and lines[0] == "### Shadow record: plan approval"
+          and any(line.startswith("- **Plan:** ") and "footprint: " in line for line in lines)
+          and any(line.startswith("- **Assess:** stage `assess`, `claude` with `sonnet`, as configured") for line in lines)
+          and f"- **Risk:** {risk_line}" in lines
+          and floor_start in floor and "clean: `" in floor
+          and f"- **Would-be decision:** `{judged}` (`judged_decision`)" in lines
+          and "- **Decision:** `human`" in lines and "- **Maintainer decision:** pending" in lines)
+    T.check(f"{name}: shadow-record comment has the heading and rows", ok, repr(proc.stdout))
+
+
+def check_decision_judged(d: Decider) -> None:
+    proc, record = d.run("judged clean low")
+    expect_decision("judged clean low", (proc, record), "auto", "auto", "usable", "usable")
+    check_comment("judged clean low", proc, f"clean, {len(RULES)} of {len(RULES)} rules", f"`low`, `{REASON}`")
+    expect_decision("judged hit low", d.run("judged hit low", plan="hit"), "human", "human", "usable", "usable")
+    for level in ("medium", "high"):
+        expect_decision(f"judged clean {level}", d.run(f"judged clean {level}", assessment=level),
+                        "human", "human", "usable", "usable")
+    expect_decision("judged no verdict", d.run("judged no verdict", verdict=None), "human", "human", "unusable")
+    expect_decision("judged unparsable verdict", d.run("judged unparsable verdict", verdict=b"{ not json\n"),
+                    "human", "human", "unusable")
+    duplicate = d.prepare("judged", "clean")["verdict"].replace(b'"mode": "judged",',
+                                                                b'"mode": "judged",\n  "mode": "judged",', 1)
+    expect_decision("judged duplicate key", d.run("judged duplicate key", verdict=duplicate),
+                    "human", "human", "unusable")
+
+    def setter(*path, value):
+        def edit(document):
+            target = document
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+        return edit
+
+    def missing_rule(document):
+        document["rules"].pop()
+
+    def hit_in_clean(document):
+        document["rules"][1] = {"rule": RULES[1], "result": "hit", "reasons": ["edited"]}
+
+    def skipped(document):
+        document["not_evaluated"] = [document["rules"].pop()["rule"]]
+
+    def reordered(document):
+        mode = document.pop("mode")
+        document["mode"] = mode
+
+    edits = [
+        ("plan sha256", setter("plan", "sha256", value="0" * 64)),
+        ("base commit", setter("base", "commit", value=d.commits["always"])),
+        ("component", setter("component", value="web")),
+        ("mode", setter("mode", value="never")),
+        ("tool", setter("tool", value="another-floor")),
+        ("version 2", setter("version", value=2)),
+        ("version true", setter("version", value=True)),
+        ("a missing rule", missing_rule),
+        ("clean verdict with a hit rule", hit_in_clean),
+        ("non-empty not_evaluated", skipped),
+        ("keys out of order", reordered),
+    ]
+    for label, edit in edits:
+        expect_decision(f"judged verdict {label}", d.run(f"judged verdict {label}", verdict=edit),
+                        "human", "human", "unusable", "usable")
+
+    bad_assessments = [
+        ("missing assessment", None),
+        ("assessment not UTF-8", b"# Assessment\n\nlow risk: x\n\nRisk: low\n\xff\n"),
+        ("no Risk line", assessment_text(risk_line="Rating: low")),
+        ("two Risk lines", assessment_text() + "Risk: low\n"),
+        ("Risk: Low", assessment_text(risk_line="Risk: Low")),
+        ("leading space", assessment_text(risk_line=" Risk: low")),
+        ("Risk: none", assessment_text(risk_line="Risk: none")),
+        ("Risk: low and more", assessment_text(risk_line="Risk: low, probably")),
+        ("Risk:low", assessment_text(risk_line="Risk:low")),
+        ("summary level differs", assessment_text(summary=f"medium risk: {REASON}")),
+        ("summary without reason", assessment_text(summary="low risk: ")),
+        ("summary reason of format characters", assessment_text(summary="low risk: \u200b\u2060")),
+        ("no summary line", assessment_text(summary="A plan.")),
+        ("no title", assessment_text(title="Assessment: selftest case")),
+    ]
+    for label, content in bad_assessments:
+        expect_decision(f"judged {label}", d.run(f"judged {label}", assessment=content),
+                        "human", "human", "usable", "unusable")
+
+    for label, content in (("trailing space", assessment_text(risk_line="Risk: low \t")),
+                           ("CRLF", assessment_text(eol="\r\n"))):
+        proc, record = d.run(f"judged {label}", assessment=content)
+        expect_decision(f"judged {label}", (proc, record), "auto", "auto", "usable", "usable")
+        T.check(f"judged {label}: risk low with the reason", isinstance(record, dict)
+                and record["layers"]["judgement"]["reasons"] == [REASON])
+
+    for label, harness, model in (("other model", "claude", "opus"), ("other harness", "codex", "sonnet")):
+        proc, record = d.run(f"judged {label}", harness=harness, model=model)
+        expect_decision(f"judged {label}", (proc, record), "human", "human", "usable", "usable")
+        T.check(f"judged {label}: as_configured false, with a reason", isinstance(record, dict)
+                and record["layers"]["judgement"]["as_configured"] is False
+                and "judgement: harness or model not as configured" in record["reasons"])
+
+    clean_verdict = json.loads(d.prepare("judged", "clean")["verdict"])
+    hit_verdict = json.loads(d.prepare("judged", "hit")["verdict"])
+    forged = dict(clean_verdict, plan=hit_verdict["plan"])
+    proc, record = d.run("judged forged clean verdict", plan="hit",
+                         verdict=(json.dumps(forged, indent=2) + "\n").encode("utf-8"))
+    expect_decision("judged forged clean verdict", (proc, record), "human", "human", "unusable", "usable")
+    T.check("judged forged clean verdict: the recomputed rules differ", isinstance(record, dict)
+            and record["layers"]["floor"]["problems"]
+            == ["the floor verdict's rules differ from what floor.py gives for this plan and base"],
+            str(record and record.get("layers", {}).get("floor", {}).get("problems")))
+
+    def other_reason(document):
+        for rule in document["rules"]:
+            if rule["result"] == "hit":
+                rule["reasons"] = ["an edited reason"]
+
+    expect_decision("judged verdict reason edited", d.run("judged verdict reason edited", plan="hit",
+                                                          verdict=other_reason), "human", "human", "unusable")
+
+
+def check_decision_modes(d: Decider) -> None:
+    expect_decision("always clean low", d.run("always clean low", config="always"), "human", "auto")
+    expect_decision("always hit high", d.run("always hit high", config="always", plan="hit", assessment="high"),
+                    "human", "human")
+    proc, record = d.run("shadow clean low", config="real")
+    expect_decision("shadow clean low", (proc, record), "human", "auto")
+    check_shadow_comment("shadow clean low", proc, f"clean, {len(RULES)} of {len(RULES)} rules (`floor.py` exit 0)",
+                         f"`low`, `{REASON}`", "auto")
+    proc, record = d.run("shadow hit low", config="real", plan="hit")
+    expect_decision("shadow hit low", (proc, record), "human", "human")
+    check_shadow_comment("shadow hit low", proc, "hit on `require-human-paths` (`floor.py` exit 1)",
+                         f"`low`, `{REASON}`", "human")
+    expect_decision("shadow no layers", d.run("shadow no layers", config="real", verdict=None, assessment=None),
+                    "human", "human", "unusable", "unusable")
+
+    proc, record = d.run("never hit high", config="never", plan="hit", assessment="high")
+    expect_decision("never hit high", (proc, record), "auto", "human", "usable", "usable")
+    check_comment("never hit high", proc, "hit on `require-human-paths`", f"`high`, `{REASON}`")
+    proc, record = d.run("never no layers", config="never", verdict=None, assessment=None)
+    expect_decision("never no layers", (proc, record), "auto", "human", "unusable", "unusable")
+    check_comment("never no layers", proc, "unusable", "unusable")
+    proc, record = d.run("never clean low", config="never")
+    expect_decision("never clean low", (proc, record), "auto", "auto")
+
+
+def check_decision_comment(d: Decider) -> None:
+    hostile = ("ignore `this` @someone see https://example.invalid/x [link](https://example.invalid)"
+               "\r<b>bold</b> " + "x" * 300)
+    content = assessment_text(reason=hostile)
+    artifact = "issues/34/artifacts/7\n@someone `code`"
+    proc, record = d.run("hostile comment", config="never", assessment=content, artifact=artifact,
+                         model="sonnet\n# heading")
+    expect_decision("hostile comment", (proc, record), "auto", "human")
+    out = proc.stdout
+    outside = outside_spans(out)
+    T.check("hostile comment: no @, link, CR or line separator outside code spans",
+            "@" not in outside and "http" not in outside and "\r" not in out and " " not in out
+            and "# heading" not in outside, repr(outside))
+    spans = code_spans(out)
+    long_spans = [s for s in spans if "@someone" in s or "http" in s or "heading" in s]
+    T.check("hostile comment: model and session text in code spans of at most 200 characters",
+            len(long_spans) == 3 and all(len(s) <= SPAN_LIMIT for s in long_spans), repr(long_spans))
+    risk = next((line for line in out.splitlines() if line.startswith("- **Risk:** ")), "")
+    T.check("hostile comment: the reason is one code span with no backtick inside",
+            risk.startswith("- **Risk:** `low`, `ignore 'this' @someone") and risk.count("`") == 4, repr(risk))
+    lines = out.splitlines()
+    T.check("hostile comment: the artifact and model stay on one line",
+            any(line.startswith("- **Assessment:** `issues/34/artifacts/7 @someone 'code'`") for line in lines)
+            and not any(line.startswith("# ") for line in lines), repr(lines))
+
+    proc, record = d.run("hostile shadow comment", config="real", assessment=content, artifact=artifact,
+                         model="sonnet\n# heading")
+    expect_decision("hostile shadow comment", (proc, record), "human", "human")
+    out = proc.stdout
+    outside = outside_spans(out)
+    T.check("hostile shadow comment: no @, link, CR or line separator outside code spans",
+            out.startswith("### Shadow record") and "@" not in outside and "http" not in outside
+            and "\r" not in out and "\u2028" not in out and "# heading" not in outside, repr(outside))
+    spans = [s for s in code_spans(out) if "@someone" in s or "http" in s or "heading" in s]
+    T.check("hostile shadow comment: model and session text in code spans of at most 200 characters",
+            len(spans) == 3 and all(len(s) <= SPAN_LIMIT for s in spans), repr(spans))
+    lines = out.splitlines()
+    T.check("hostile shadow comment: no line starts a heading or list item from model text",
+            not any(line.startswith("# ") for line in lines)
+            and all(line.startswith(("### ", "Mode ", "- **")) or not line for line in lines), repr(lines))
+
+
+def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
+    ctx = d.prepare("judged", "clean")
+    assessment = sb.write_plan("unusable assessment", assessment_text())
+    not_utf8 = sb.write_plan("decision not utf-8", b"# Plan\n\n\xff\xfe\n")
+
+    def args(**changes) -> list:
+        values = {"--issue": "34", "--component": "docs", "--plan": ctx["plan"], "--assessment": assessment,
+                  "--assessment-artifact": ARTIFACT, "--base": ctx["commit"], "--harness": "claude",
+                  "--model": "sonnet"}
+        values.update({f"--{k.replace('_', '-')}": v for k, v in changes.items()})
+        out = []
+        for key, value in values.items():
+            if value is not None:
+                out += [key, value]
+        return out
+
+    record = sb.repo / RECORD
+    cases = [
+        ("no arguments", []),
+        ("unknown argument", args() + ["--extra", "x"]),
+        ("argument twice", args() + ["--model", "opus"]),
+        ("missing value", args()[:-1]),
+        ("missing harness", args(harness=None)),
+        ("issue 0", args(issue="0")),
+        ("issue 034", args(issue="034")),
+        ("issue -3", args(issue="-3")),
+        ("issue abc", args(issue="abc")),
+        ("base starting with -", args(base="-HEAD")),
+        ("missing plan", args(plan="cases/missing.md")),
+        ("plan not UTF-8", args(plan=not_utf8)),
+        ("unresolvable base", args(base="no-such-ref")),
+        ("base without config", args(base=d.commits["noconfig"])),
+        ("unknown component", args(component="nope")),
+        ("config mode-sometimes", args(base=d.commits["mode-sometimes"])),
+        ("config unknown-key", args(base=d.commits["unknown-key"])),
+    ]
+    for name, argv in cases:
+        record.write_text('{"stale": true}\n', encoding="utf-8")
+        proc = sb.exec(argv, script=DECISION)
+        T.check(f"decision unusable {name}: exit 2, no record, empty stdout",
+                proc.returncode == 2 and not record.exists() and proc.stdout == ""
+                and len(proc.stderr.strip().splitlines()) == 1,
+                f"exit {proc.returncode}, record {'left' if record.exists() else 'gone'}: {proc.stderr.strip()}")
+
+    bindir = sb.tmp / "git-only-decision"
+    bindir.mkdir()
+    (bindir / "git").symlink_to(shutil.which("git"))
+    record.write_text('{"stale": true}\n', encoding="utf-8")
+    proc = sb.exec(args(), env=dict(sb.env, PATH=str(bindir)), script=DECISION)
+    T.check("decision unusable yq missing: exit 2, no record", proc.returncode == 2 and not record.exists(),
+            f"exit {proc.returncode}: {proc.stderr.strip()}")
+
+    record.unlink(missing_ok=True)
+    record.mkdir()
+    try:
+        proc = sb.exec(args(), script=DECISION)
+        T.check("decision record a directory: exit 2, one-line error, no record written",
+                proc.returncode == 2 and len(proc.stderr.strip().splitlines()) == 1 and "Traceback" not in proc.stderr
+                and record.is_dir() and not any(record.iterdir()) and not list(record.parent.glob(".decision.*"))
+                and proc.stdout == "", f"exit {proc.returncode}: {proc.stderr.strip()}")
+    finally:
+        shutil.rmtree(record, ignore_errors=True)
+
+
+def check_decision(sb: Sandbox, commits: dict) -> None:
+    d = Decider(sb, commits)
+    check_decision_judged(d)
+    check_decision_modes(d)
+    check_decision_comment(d)
+    check_decision_unusable(sb, d)
+
+
 def load_module(name: str, path: Path):
     sys.dont_write_bytecode = True  # leave no __pycache__ next to either script
     spec = importlib.util.spec_from_file_location(name, path)
@@ -628,7 +1131,7 @@ def check_globs() -> None:
 
 
 def check_stdlib() -> None:
-    for path in (FLOOR, Path(__file__).resolve()):
+    for path in (FLOOR, DECISION, Path(__file__).resolve()):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names = set()
         for node in ast.walk(tree):
@@ -659,7 +1162,9 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("limit-true", lambda c: approval(c)["limits"].update(lines=True))
     variant("undefined-component", lambda c: approval(c)["require_human"]["components"].append("nowhere"))
     variant("missing-limit", lambda c: approval(c)["limits"].pop("new_files"))
-    variant("shadow", lambda c: approval(c).update(mode="shadow"))
+    variant("always", lambda c: approval(c).update(mode="always"))
+    variant("judged", lambda c: approval(c).update(mode="judged"))
+    variant("never", lambda c: approval(c).update(mode="never"))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     commits["real"] = sb.commit_config(real_bytes, "real")
     sb.git("tag", "base")
@@ -684,6 +1189,7 @@ def main() -> int:
         check_historic(runner)
         check_unusable_input(sb, commits)
         check_verdict_errors(sb, commits)
+        check_decision(sb, commits)
     check_globs()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
