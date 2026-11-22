@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Check a finished change against its approved plan: the landing floor.
 
-    floor.py --plan PATH --component NAME --base REF --head REF
+    floor.py --plan PATH --component NAME --base REF --head REF --facts PATH
 
 Dogfooding stand-in for the deterministic rules that run on a finished
 change before any landing decision. It needs git alone, never GitHub. Every
 hit sends the change to a human; a clean verdict only means that no rule
 written here objects. Paths are relative to the working directory, which is
-the root of a checkout holding both commits: git runs there, the plan is
-read from there and the verdict is written there. All four arguments are
-required, each once, as `--name value`; anything else, a missing value or a
-REF starting with `-` is unusable input. The first action is to delete any
+the root of a checkout holding both commits: git runs there, the plan and
+the facts are read from there and the verdict is written there. All five
+arguments are required, each once, as `--name value`; anything else, a
+missing value or a REF starting with `-` is unusable input. The first action is to delete any
 stale .mintswarm/job/outputs/landing-floor.json; when that fails, the input
 is unusable.
 
@@ -25,7 +25,7 @@ landing decision's job, not this script's).
 
 Inputs:
 
-- PATH, the approved plan, read as UTF-8. Its footprint is parsed exactly
+- PATH after --plan, the approved plan, read as UTF-8. Its footprint is parsed exactly
   as the plan floor parses it (see plan-approval/floor.py).
 - NAME, the issue's component.
 - REF after --base, the base ref. The configuration is .mintswarm/config.yaml
@@ -44,6 +44,24 @@ Inputs:
   the branch controls) nor any config can hide a gitlink, and
   `--diff-algorithm=myers`, `--no-ext-diff`, `--no-textconv`,
   `--no-relative` and `--no-color`, which override any `diff.*` config.
+- PATH after --facts, the landing facts: the facts.json that
+  `collect-facts.py assemble` writes (see landing/collect-facts.py). A
+  symbolic link as its final component, or anything but a regular file,
+  is refused; symbolic links among the directories above it are followed. It is read after the merge base is found and
+  before the plan, and must be strict UTF-8 JSON (no duplicate keys, no
+  NaN or Infinity) holding an object with `tool`
+  `mintswarm-landing-facts`, `version` 1, and `head` and `base` full
+  hashes equal to the commits resolved from --head and --base. Only the
+  fields the rules read are checked, by type: `checks` a list of objects
+  with `name` and `source` strings and `conclusion` and `app` a string or
+  null; `gate_rounds` with `round` an integer (never a boolean),
+  `verdict` a string, `failed_tests` a list and `reason` a string or null
+  (a failed test that is not a string, such as a CTRF test without a
+  name, is an unnamed failed test); `review_rounds` with `round` an integer and `verdict` a
+  string; `steers` with `kind`, `author`, `time` and `url` strings. Round
+  numbers are positive and strictly increasing, so the last entry is the
+  latest round. A verdict or conclusion value the rules do not know is a
+  hit, not unusable input.
 
 Every git command, the plan floor's included, runs with a neutral
 configuration set in this process's environment:
@@ -119,32 +137,62 @@ footprint's `files` plus each new dependency's `manifest`.
                              file, symlink or gitlink standing in for that
                              directory), compared case-insensitively; fixed
                              here, whatever the config says
+  gates                      there is no gate round, or the last one's
+                             verdict is not `passed`, or it lists a failed
+                             test (each named, or called unnamed when its
+                             name is not a string)
+  checks                     a check on the head has a conclusion other
+                             than `success`, a null conclusion (not
+                             completed) included, each named with its
+                             source and app; or there are no checks while
+                             the base has a .github/workflows entry (found
+                             case-insensitively with `git ls-tree` of the
+                             base's root tree and of its .github tree).
+                             Zero checks is clean only while the base has
+                             no workflows; revisit both with the
+                             required-checks list, once CI exists
+  review                     there is no review round, or the last one's
+                             verdict is not `pass`
+  steers                     a steer is listed, each named with its kind,
+                             author, time and URL
 
 When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
-`size` are not evaluated; the other rules need only the diff and are.
+`size` are not evaluated; the other rules need only the diff or the facts
+and are.
+
+The facts rules trust what the facts file says. Kept rounds record no
+commit, so the last kept gate and review round are trusted to belong to
+the head. `fetched_at` and `approval` are not judged here. The facts file
+and the kept rounds it is built from sit in job paths a stage can write, so
+running the floor from trusted state is the landing decision's concern, not
+this script's.
 
 The verdict is .mintswarm/job/outputs/landing-floor.json, written to a
 temporary file and renamed onto it, with these keys in this order: `tool`
 (`mintswarm-landing-floor`), `version` (1), `plan` ({`path`, `sha256` of its
-bytes}), `component`, `base` and `head` ({`ref` as given, `commit`, the full
+bytes}), `facts` ({`path` as given, `sha256` of its bytes, `checks`: the
+checks it lists, each {`name`, `conclusion`, `source`, `app`}, in file
+order}), `component`, `base` and `head` ({`ref` as given, `commit`, the full
 hash}), `merge_base` (the full hash), `config` (`.mintswarm/config.yaml`),
 `mode` (pipeline.landing.mode as read), `verdict` (`hit` or `clean`),
 `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in the order
 above, `reasons` empty when clean) and `not_evaluated` (the identifiers
-skipped, in order). One line per evaluated rule is printed, then
-`floor: hit` or `floor: clean`.
+skipped, in order). One line per evaluated rule is printed, with its first
+reason, if any, after a colon; control characters and line or paragraph
+separators in that reason are printed as JSON escapes (`\\n`, `\\u2028`), so
+a reason cannot add a line. Then `floor: hit` or `floor: clean`.
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
 missing or broken plan-approval/floor.py, an unresolvable base or head, no
 merge base, a head the base already contains, no config at the base, an
-invalid config, an unreadable plan, a diff that does not parse, git or yq
-missing or failing, a stale verdict that cannot be deleted, or any
-unexpected error. Unusable input leaves no verdict
-file, unless a stale one could not be deleted. The interpreter itself exits
-1 when it crashes outside main(), for example at import time, so exit 0 or
-1 counts only together with a verdict file whose `plan.sha256`,
-`base.commit` and `head.commit` match the request; exit 2 never comes with
-a valid verdict. Standard library only, apart from running git and yq.
+invalid config, a missing, unreadable, malformed or mismatched facts
+file, an unreadable plan, a diff that does not parse, git or yq missing or
+failing, a stale verdict that cannot be deleted, or any unexpected error.
+Unusable input leaves no verdict file, unless a stale one could not be
+deleted. The interpreter itself exits 1 when it crashes outside main(), for
+example at import time, so exit 0 or 1 counts only together with a verdict
+file whose `plan.sha256`, `facts.sha256`, `base.commit` and `head.commit`
+match the request; exit 2 never comes with a valid verdict. Standard library only, apart from running git and yq.
 """
 
 import hashlib
@@ -153,9 +201,11 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from fractions import Fraction
 from pathlib import Path
 
@@ -173,13 +223,19 @@ RULES = (
     "require-human-paths",
     "require-human-components",
     "protected",
+    "gates",
+    "checks",
+    "review",
+    "steers",
 )
 DIFF_RULES = ("undeclared-files", "undeclared-new-files", "size")
 CODEOWNERS = ("codeowners", ".github/codeowners", "docs/codeowners")
 PROTECTED_DIRS = (".github/workflows",)
 PROTECTED_GLOBS = (".github/workflows/**",)
-ARGS = ("--plan", "--component", "--base", "--head")
-USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF"
+ARGS = ("--plan", "--component", "--base", "--head", "--facts")
+USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF --facts PATH"
+FACTS_TOOL = "mintswarm-landing-facts"  # collect-facts.py's TOOL and VERSION; floor-selftest.py checks both
+FACTS_VERSION = 1
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 DIFF_OPTIONS = (
     "--no-renames", "-z", "--ignore-submodules=none", "--diff-algorithm=myers",
@@ -271,6 +327,7 @@ def parse_args(argv: list) -> dict:
         "component": args["--component"],
         "base": args["--base"],
         "head": args["--head"],
+        "facts": args["--facts"],
     }
 
 
@@ -452,6 +509,152 @@ def read_diff(base: str, head: str) -> tuple:
     return entries, new, gitlinks
 
 
+# --- the facts file --------------------------------------------------------
+
+def brief(value) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def strict_json(data: bytes, where: str):
+    def no_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    def no_constant(name):
+        raise ValueError(f"{name} is not JSON")
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InputError(f"{where} is not UTF-8: {exc}") from exc
+    try:
+        return json.loads(text, object_pairs_hook=no_duplicates, parse_constant=no_constant)
+    except ValueError as exc:
+        raise InputError(f"{where} is not JSON: {exc}") from exc
+
+
+def read_bytes_nofollow(path: str, where: str) -> bytes:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise InputError(f"{where} is missing") from exc
+    except OSError as exc:
+        raise InputError(f"cannot read {where}: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise InputError(f"{where} is a symbolic link")
+    if not stat.S_ISREG(info.st_mode):
+        raise InputError(f"{where} is not a regular file")
+    chunks = []
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            while True:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise InputError(f"cannot read {where}: {exc}") from exc
+    return b"".join(chunks)
+
+
+def is_string(value) -> bool:
+    return isinstance(value, str)
+
+
+def is_string_or_null(value) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def is_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_list(value) -> bool:
+    return isinstance(value, list)
+
+
+FACTS_LISTS = (
+    ("checks", (("name", is_string, "a string"), ("conclusion", is_string_or_null, "a string or null"),
+                ("source", is_string, "a string"), ("app", is_string_or_null, "a string or null"))),
+    ("gate_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"),
+                     ("failed_tests", is_list, "a list"),
+                     ("reason", is_string_or_null, "a string or null"))),
+    ("review_rounds", (("round", is_integer, "an integer"), ("verdict", is_string, "a string"))),
+    ("steers", (("kind", is_string, "a string"), ("author", is_string, "a string"),
+                ("time", is_string, "a string"), ("url", is_string, "a string"))),
+)
+
+
+def read_facts(path: str, base: str, head: str) -> tuple:
+    """Return (the facts file's bytes, its parsed object), checked by type against the floor's commits."""
+    where = f"the facts file {path}"
+    data = read_bytes_nofollow(path, where)
+    facts = strict_json(data, where)
+    if not isinstance(facts, dict):
+        raise InputError(f"{where} is not a JSON object")
+    if facts.get("tool") != FACTS_TOOL:
+        raise InputError(f"{where}: tool must be {FACTS_TOOL!r}, not {brief(facts.get('tool'))}")
+    version = facts.get("version")
+    if not is_integer(version) or version != FACTS_VERSION:
+        raise InputError(f"{where}: version must be {FACTS_VERSION}, not {brief(version)}")
+    for key, commit in (("head", head), ("base", base)):
+        value = facts.get(key)
+        if not isinstance(value, str) or not HASH.fullmatch(value):
+            raise InputError(f"{where}: {key} must be a full commit hash, not {brief(value)}")
+        if value != commit:
+            raise InputError(f"{where} is for {key} {value}, not the floor's {key} {commit}")
+    for key, fields in FACTS_LISTS:
+        if key not in facts:
+            raise InputError(f"{where} has no {key}")
+        entries = facts[key]
+        if not isinstance(entries, list):
+            raise InputError(f"{where}: {key} must be a list, not {brief(entries)}")
+        for i, entry in enumerate(entries):
+            at = f"{key}[{i}]"
+            if not isinstance(entry, dict):
+                raise InputError(f"{where}: {at} must be an object, not {brief(entry)}")
+            for name, valid, what in fields:
+                if name not in entry:
+                    raise InputError(f"{where}: {at} has no {name}")
+                if not valid(entry[name]):
+                    raise InputError(f"{where}: {at}.{name} must be {what}, not {brief(entry[name])}")
+        if key.endswith("_rounds"):
+            numbers = [entry["round"] for entry in entries]
+            if any(n < 1 for n in numbers) or any(a >= b for a, b in zip(numbers, numbers[1:])):
+                raise InputError(f"{where}: {key} round numbers must be positive and strictly increasing, "
+                                 f"not {brief(numbers)}")
+    return data, facts
+
+
+def ls_tree(treeish: str) -> list:
+    """Return [(type, object, name)] for the entries of a tree, from `git ls-tree -z --full-tree`."""
+    entries = []
+    for record in split_z(P.run(["git", "ls-tree", "-z", "--full-tree", treeish]), "git ls-tree"):
+        header, tab, name = record.partition("\t")
+        parts = header.split(" ")
+        if not tab or name == "" or len(parts) != 3:
+            raise InputError(f"git ls-tree: unexpected record {record!r}")
+        entries.append((parts[1], parts[2], name))
+    return entries
+
+
+def has_workflows(base: str) -> bool:
+    """True when the base commit has a .github/workflows entry, names compared case-insensitively."""
+    for kind, obj, name in ls_tree(base):
+        if kind == "tree" and name.lower() == ".github":
+            if any(entry.lower() == "workflows" for _, _, entry in ls_tree(obj)):
+                return True
+    return False
+
+
 # --- rules ---------------------------------------------------------------
 
 def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict) -> list:
@@ -540,7 +743,65 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
     return results
 
 
+def facts_rules(facts: dict, base: str) -> list:
+    results = []
+
+    def rule(name: str, reasons: list) -> None:
+        results.append({"rule": name, "result": "hit" if reasons else "clean", "reasons": reasons})
+
+    reasons = []
+    if not facts["gate_rounds"]:
+        reasons.append("there is no gate round")
+    else:
+        last = facts["gate_rounds"][-1]
+        if last["verdict"] != "passed":
+            line = f"the last gate round, {last['round']}, has verdict {last['verdict']!r}, not 'passed'"
+            if last["reason"]:
+                line += f": {last['reason']}"
+            reasons.append(line)
+        for test in last["failed_tests"]:
+            if isinstance(test, str):
+                reasons.append(f"gate {test} failed in the last gate round, {last['round']}")
+            else:  # the collector names a CTRF test without a string name as it found it
+                reasons.append(f"an unnamed gate ({brief(test)}) failed in the last gate round, {last['round']}")
+    rule("gates", reasons)
+
+    reasons = []
+    for check in facts["checks"]:
+        if check["conclusion"] == "success":
+            continue
+        app = check["app"] if check["app"] is not None else "none"
+        label = f"check {check['name']} ({check['source']}, app {app})"
+        if check["conclusion"] is None:
+            reasons.append(f"{label} is not completed")
+        else:
+            reasons.append(f"{label} has conclusion {check['conclusion']!r}, not 'success'")
+    if not facts["checks"] and has_workflows(base):
+        reasons.append("no check is reported on the head, but the base has .github/workflows")
+    rule("checks", reasons)
+
+    reasons = []
+    if not facts["review_rounds"]:
+        reasons.append("there is no review round")
+    else:
+        last = facts["review_rounds"][-1]
+        if last["verdict"] != "pass":
+            reasons.append(f"the last review round, {last['round']}, has verdict {last['verdict']!r}, not 'pass'")
+    rule("review", reasons)
+
+    rule("steers", [
+        f"{steer['kind']} by {steer['author']} at {steer['time']} is a steer: {steer['url']}"
+        for steer in facts["steers"]
+    ])
+    return results
+
+
 # --- verdict -------------------------------------------------------------
+
+def printable(text: str) -> str:
+    """Escape control characters and line or paragraph separators, so a printed reason stays on its line."""
+    return "".join(json.dumps(c)[1:-1] if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c for c in text)
+
 
 def write_verdict(verdict: dict) -> None:
     VERDICT.parent.mkdir(parents=True, exist_ok=True)
@@ -570,6 +831,7 @@ def landing_floor(argv: list) -> int:
     landing = validate_landing(config, cfg["paths"])
     head = resolve_head(args["head"])
     merge = merge_base(base, head)
+    facts_data, facts = read_facts(args["facts"], base, head)
     data = P.read_plan(args["plan"])
     entries, new, gitlinks = read_diff(base, head)
 
@@ -581,12 +843,19 @@ def landing_floor(argv: list) -> int:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
         results += footprint_rules(footprint, entries, new, gitlinks, landing)
     results += policy_rules(entries, args["component"], cfg, landing)
+    results += facts_rules(facts, base)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
     verdict = {
         "tool": TOOL,
         "version": VERSION,
         "plan": {"path": args["plan"], "sha256": hashlib.sha256(data).hexdigest()},
+        "facts": {
+            "path": args["facts"],
+            "sha256": hashlib.sha256(facts_data).hexdigest(),
+            "checks": [{"name": c["name"], "conclusion": c["conclusion"], "source": c["source"], "app": c["app"]}
+                       for c in facts["checks"]],
+        },
         "component": args["component"],
         "base": {"ref": args["base"], "commit": base},
         "head": {"ref": args["head"], "commit": head},
@@ -601,7 +870,7 @@ def landing_floor(argv: list) -> int:
     for r in results:
         line = f"{r['result']:7} {r['rule']}"
         if r["reasons"]:
-            line += f": {r['reasons'][0]}"
+            line += f": {printable(r['reasons'][0])}"
         print(line)
     print(f"floor: {verdict['verdict']}")
     return 1 if hit else 0

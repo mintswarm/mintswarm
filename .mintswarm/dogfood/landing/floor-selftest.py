@@ -13,16 +13,19 @@ system. Base configs are `real`, the checkout's .mintswarm/config.yaml byte
 for byte, and variants of it, read with `yq -o=json`, changed here and
 committed as JSON text at the same path. floor.py runs as
 `sys.executable -I floor.py ...` with that repository as its working
-directory and plans written under `cases/`.
+directory and plans and facts files written under `cases/`. Every run gets
+a facts file for its own base and head: clean (no checks, a passed gate
+round, a review `pass`, no steers) unless the case changes it.
 
 Checks:
 
 - config: the checkout's pipeline.landing has the expected values, and
   plan-approval/floor.py accepts the real config (exit 0 or 1, a verdict);
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
-  order, the 7 rule identifiers in order across `rules` and
+  order, the 11 rule identifiers in order across `rules` and
   `not_evaluated`, results and reasons, `verdict` against the rules and the
-  exit code, the plan's sha256, the full `base`, `head` and `merge_base`
+  exit code, the plan's sha256, `facts` (path, the sha256 of the facts
+  file and the checks it lists), the full `base`, `head` and `merge_base`
   commits, `mode` and the printed lines;
 - clean cases, a dependency manifest declared only through
   new_dependencies, a path with a space and a non-ASCII character, and
@@ -31,7 +34,18 @@ Checks:
   the require_human rules with case variants;
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
-  evaluates the other three;
+  evaluates the other seven;
+- facts rules, each clean and hit: `gates` (failed then passed is clean; no
+  round, a last round failed, passed with a failed test, an unknown
+  verdict, failed tests without a string name), `checks` (zero checks and
+  successes are clean and listed; a failure, a run not completed, a
+  pending status, a neutral run, a name holding a newline, U+2028 and
+  U+0085 that stays escaped on its printed line; on a base
+  with .github/workflows, in either case, zero checks hits and a success
+  is clean), `review` (changes required then pass is clean; no round, pass
+  then changes required), `steers` (none is clean; one and two steers,
+  named by author and URL), and all four at once, also with an unusable
+  footprint;
 - submodules: a gitlink hidden by a worktree `.gitmodules` `ignore = all` is
   still a changed and added path, and every gitlink is unmeasurable for
   `size`; with hostile system, global, environment and repository config,
@@ -47,9 +61,21 @@ Checks:
   require_human;
 - base ref: with a head commit and a worktree config that raise
   lines_factor, the base's limit still gives the `size` hit;
-- unusable input: bad arguments, refs, history, configs and plans, a
-  missing `yq` and a missing plan-approval/floor.py exit 2 and leave no
-  verdict file, even a stale one;
+- unusable input: bad arguments (a missing or repeated --facts included),
+  refs, history, configs and plans, a facts file that is missing, a
+  directory, a symlink, not UTF-8, not JSON, has a duplicate key or NaN, is
+  not an object, has the wrong tool or version, a short head, the head or
+  base of another commit, mistyped or missing fields, or rounds out of
+  order, a missing `yq` and a missing plan-approval/floor.py exit 2 with a
+  one-line message naming the cause and leave no verdict file, even a
+  stale one; every case but those without it passes --facts for its own
+  base and head, so it fails for its own reason;
+- facts contract: collect-facts.py's TOOL and VERSION are the ones
+  floor.py reads, and facts written by the real `collect-facts.py
+  assemble`, from saved responses and kept rounds made here, are read by
+  the floor: clean ones are clean, and a CTRF test without a name, a
+  failed check run and a human comment after the approval give `gates`
+  (an unnamed gate), `checks` and `steers` hits;
 - the plan floor's own verdict is left alone, and a copy of both scripts
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
@@ -75,10 +101,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FLOOR = HERE / "floor.py"
+COLLECT_FACTS = HERE / "collect-facts.py"
 PLAN_FLOOR = HERE.parent / "plan-approval" / "floor.py"
 FIXTURES = HERE.parent / "plan-approval" / "fixtures"
 ROOT = HERE.parents[2]
@@ -100,10 +128,15 @@ RULES = [
     "require-human-paths",
     "require-human-components",
     "protected",
+    "gates",
+    "checks",
+    "review",
+    "steers",
 ]
 DIFF_RULES = ["undeclared-files", "undeclared-new-files", "size"]
+FACTS_RULES = ["gates", "checks", "review", "steers"]
 VERDICT_KEYS = [
-    "tool", "version", "plan", "component", "base", "head", "merge_base", "config", "mode",
+    "tool", "version", "plan", "facts", "component", "base", "head", "merge_base", "config", "mode",
     "verdict", "rules", "not_evaluated",
 ]
 EXPECTED_LANDING = {
@@ -236,6 +269,22 @@ class Sandbox:
         (self.repo / rel).write_bytes(data)
         return rel
 
+    def write_facts(self, name: str, content) -> str:
+        """Write a facts file (a dict as the collector would, or raw bytes) under cases/."""
+        self.counter += 1
+        slug = re.sub(r"[^A-Za-z0-9.-]+", "-", name)[:40]
+        rel = f"cases/{self.counter:03d}-{slug}.facts.json"
+        data = content if isinstance(content, bytes) else facts_bytes(content)
+        (self.repo / rel).write_bytes(data)
+        return rel
+
+    def commit_of(self, ref: str):
+        """The full commit `ref` resolves to, or None."""
+        proc = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+                              cwd=self.repo, env=self.git_env, capture_output=True, text=True)
+        commit = proc.stdout.strip()
+        return commit if proc.returncode == 0 and HASH.fullmatch(commit) else None
+
     def exec(self, args: list, env: dict = None, script: Path = FLOOR):
         return subprocess.run(
             [sys.executable, "-I", str(script), *args],
@@ -304,7 +353,65 @@ def appended(path: str, n: int, tag: str = "more") -> dict:
     return {path: BASE_TREE[path] + text(n, tag)}
 
 
+# --- facts ----------------------------------------------------------------
+
+def gate_round(n: int, verdict: str = "passed", failed: list = (), reason: str = None) -> dict:
+    return {"round": n, "verdict": verdict, "failed_tests": list(failed), "reason": reason, "files": []}
+
+
+def review_round(n: int, verdict: str = "pass") -> dict:
+    return {"round": n, "verdict": verdict, "findings": {"blocker": 0, "major": 0, "minor": 0, "nit": 0},
+            "files": []}
+
+
+def check_entry(name: str, conclusion, source: str = "check-run", app="github-actions") -> dict:
+    return {"name": name, "conclusion": conclusion, "source": source, "app": app}
+
+
+def steer(author: str, url: str, kind: str = "pr-comment", time: str = "2026-01-02T00:00:00Z") -> dict:
+    return {"kind": kind, "author": author, "time": time, "edited_at": None, "url": url, "via": "account"}
+
+
+def clean_facts(base: str, head: str) -> dict:
+    """A clean facts file in collect-facts.py's key order: no checks, a passed gate round, a review pass."""
+    return {
+        "tool": "mintswarm-landing-facts",
+        "version": 1,
+        "pr": 1,
+        "issue": 1,
+        "head": head,
+        "base": base,
+        "fetched_at": "2026-01-01T00:00:00Z",
+        "checks": [],
+        "gate_rounds": [gate_round(1)],
+        "review_rounds": [review_round(1)],
+        "steers": [],
+        "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
+    }
+
+
+def facts_bytes(facts) -> bytes:
+    return (json.dumps(facts, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def facts_for(base: str, head: str, facts=None):
+    """Clean facts with `facts` applied: None, top-level overrides, a callable over the clean facts, or bytes."""
+    if isinstance(facts, bytes):
+        return facts
+    content = clean_facts(base, head)
+    if callable(facts):
+        content = facts(content)
+    elif facts is not None:
+        content.update(facts)
+    return content
+
+
 # --- verdict checks -------------------------------------------------------
+
+def printable(text: str) -> str:
+    """A reason as floor.py prints it: control characters and line or paragraph separators as JSON escapes."""
+    return "".join(json.dumps(c)[1:-1] if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c for c in text)
+
 
 def in_order(names: list, order: list) -> bool:
     return [n for n in order if n in names] == list(names)
@@ -320,7 +427,7 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
     skipped = list(verdict.get("not_evaluated", []))
     evaluated = [r.get("rule") for r in rules]
     if not in_order(evaluated, RULES) or not in_order(skipped, RULES) or sorted(evaluated + skipped) != sorted(RULES):
-        problems.append(f"rule identifiers {evaluated} + {skipped} are not the 7 in order")
+        problems.append(f"rule identifiers {evaluated} + {skipped} are not the {len(RULES)} in order")
     if skipped not in ([], DIFF_RULES):
         problems.append(f"not_evaluated {skipped}")
     for r in rules:
@@ -342,6 +449,15 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
     plan_bytes = (sb.repo / args["plan"]).read_bytes()
     if verdict.get("plan") != {"path": args["plan"], "sha256": hashlib.sha256(plan_bytes).hexdigest()}:
         problems.append(f"plan {verdict.get('plan')}")
+    facts_data = (sb.repo / args["facts"]).read_bytes()
+    try:
+        listed = json.loads(facts_data)["checks"]
+        expected_facts = {"path": args["facts"], "sha256": hashlib.sha256(facts_data).hexdigest(),
+                          "checks": [{k: c[k] for k in ("name", "conclusion", "source", "app")} for c in listed]}
+    except (ValueError, KeyError, TypeError) as exc:
+        expected_facts = f"a facts file the floor should have refused: {exc}"
+    if verdict.get("facts") != expected_facts:
+        problems.append(f"facts {verdict.get('facts')}, expected {expected_facts}")
     if verdict.get("component") != args["component"]:
         problems.append("component")
     base = sb.git("rev-parse", f"{args['base']}^{{commit}}")
@@ -361,7 +477,7 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
     for r in rules:
         line = f"{r.get('result')!s:7} {r.get('rule')}"
         if r.get("reasons"):
-            line += f": {r['reasons'][0]}"
+            line += f": {printable(r['reasons'][0])}"
         expected.append(line)
     expected.append(f"floor: {verdict.get('verdict')}")
     if lines != expected:
@@ -395,13 +511,14 @@ class Runner:
         self.modes = modes
 
     def run(self, name: str, content, changes: dict = None, component: str = "docs", config: str = "real",
-            base: str = None, head: str = None, mode: str = None, env: dict = None):
+            base: str = None, head: str = None, mode: str = None, env: dict = None, facts=None):
         plan = self.sb.write_plan(name, content)
         base = base or self.commits[config]
         head = head or self.sb.child(self.sb.git("rev-parse", f"{base}^{{commit}}"), changes or {})
-        args = {"plan": plan, "component": component, "base": base, "head": head}
-        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", base, "--head", head],
-                                      env=env)
+        facts_path = self.sb.write_facts(name, facts_for(self.sb.commit_of(base), self.sb.commit_of(head), facts))
+        args = {"plan": plan, "component": component, "base": base, "head": head, "facts": facts_path}
+        proc, verdict = self.sb.floor(["--plan", plan, "--component", component, "--base", base, "--head", head,
+                                       "--facts", facts_path], env=env)
         check_shape(name, proc, verdict, self.sb, args, mode or self.modes[config])
         return proc, verdict
 
@@ -539,12 +656,13 @@ def check_footprint_hit(r: Runner) -> None:
                           {**appended("CONTRIBUTING.md", 1), "CLAUDE.md": text(1)})
     ok = (proc.returncode == 1 and isinstance(verdict, dict)
           and [x["rule"] for x in verdict["rules"]] == ["footprint", "require-human-paths",
-                                                        "require-human-components", "protected"]
+                                                        "require-human-components", "protected", *FACTS_RULES]
           and verdict["not_evaluated"] == DIFF_RULES
           and results_of(verdict) == {"footprint": "hit", "require-human-paths": "hit",
-                                      "require-human-components": "clean", "protected": "clean"}
+                                      "require-human-components": "clean", "protected": "clean",
+                                      **{rule: "clean" for rule in FACTS_RULES}}
           and "no '## Footprint' section" in reasons_of(verdict, "footprint"))
-    T.check("no footprint: diff rules not evaluated, the other three are", ok,
+    T.check("no footprint: diff rules not evaluated, the other seven are", ok,
             f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}")
 
 
@@ -770,40 +888,108 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
     real = commits["real"]
     head = sb.child(real, appended("docs/guide.md", 1))
     orphan = sb.commit({**BASE_TREE, CONFIG_PATH: CONFIG.read_bytes(), "orphan.md": text(1)}, (), "orphan")
+    good_facts = sb.write_facts("good", clean_facts(real, head))
+    matching = {}
 
-    def args(plan=good, component="docs", base=real, head_=head) -> list:
-        return ["--plan", plan, "--component", component, "--base", base, "--head", head_]
+    def facts_matching(base: str, head_: str) -> str:
+        """A clean facts file for the case's base and head where both resolve, else the good one."""
+        b, h = sb.commit_of(base), sb.commit_of(head_)
+        if b is None or h is None:
+            return good_facts
+        if (b, h) not in matching:
+            matching[(b, h)] = sb.write_facts("matching", clean_facts(b, h))
+        return matching[(b, h)]
 
+    def args(plan=good, component="docs", base=real, head_=head, facts=None) -> list:
+        facts = facts if facts is not None else facts_matching(base, head_)
+        return ["--plan", plan, "--component", component, "--base", base, "--head", head_, "--facts", facts]
+
+    def without(argv: list, name: str) -> list:
+        i = argv.index(name)
+        return argv[:i] + argv[i + 2:]
+
+    def edited(change) -> str:
+        content = clean_facts(real, head)
+        change(content)
+        return sb.write_facts("edited", content)
+
+    link = sb.repo / "cases" / "link.facts.json"
+    link.symlink_to(Path(good_facts).name)
+    nan = facts_bytes(clean_facts(real, head)).replace(b'"pr": 1', b'"pr": NaN')
+    other = commits["shadow"]
     cases = [
-        ("no arguments", []),
-        ("unknown argument", args() + ["--extra", "x"]),
-        ("argument twice", args() + ["--plan", good]),
-        ("missing value", args()[:-1]),
-        ("missing --head", args()[:-2]),
-        ("base starting with -", args(base="-HEAD")),
-        ("head starting with -", args(head_="-HEAD")),
-        ("missing plan", args(plan="cases/missing.md")),
-        ("plan not UTF-8", args(plan=not_utf8)),
-        ("unresolvable base", args(base="no-such-ref")),
-        ("unresolvable head", args(head_="no-such-ref")),
-        ("head is a blob", args(head_=sb.git("hash-object", "-w", "--stdin", data=b"blob\n"))),
-        ("no merge base", args(head_=orphan)),
-        ("head equal to base", args(head_=real)),
-        ("head already in the base's history", args(base=head, head_=real)),
-        ("base without config", args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)}))),
-        ("unknown component", args(component="nope")),
+        ("no arguments", [], "missing --plan"),
+        ("unknown argument", args() + ["--extra", "x"], "unknown argument '--extra'"),
+        ("argument twice", args() + ["--plan", good], "--plan given twice"),
+        ("missing value", args()[:-1], "--facts needs a value"),
+        ("missing --head", without(args(), "--head"), "missing --head"),
+        ("missing --facts", without(args(), "--facts"), "missing --facts"),
+        ("--facts given twice", args() + ["--facts", good_facts], "--facts given twice"),
+        ("base starting with -", args(base="-HEAD"), "--base must not start with '-'"),
+        ("head starting with -", args(head_="-HEAD"), "--head must not start with '-'"),
+        ("missing plan", args(plan="cases/missing.md"), "cases/missing.md"),
+        ("plan not UTF-8", args(plan=not_utf8), not_utf8),
+        ("unresolvable base", args(base="no-such-ref"), "base ref 'no-such-ref' does not resolve"),
+        ("unresolvable head", args(head_="no-such-ref"), "head ref 'no-such-ref' does not resolve"),
+        ("head is a blob", args(head_=sb.git("hash-object", "-w", "--stdin", data=b"blob\n")), "does not resolve"),
+        ("no merge base", args(head_=orphan), "have no merge base"),
+        ("head equal to base", args(head_=real), "there is no change to judge"),
+        ("head already in the base's history", args(base=head, head_=real), "there is no change to judge"),
+        ("base without config", args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)})),
+         f"no {CONFIG_PATH}"),
+        ("unknown component", args(component="nope"), "nope"),
+        ("facts missing", args(facts="cases/missing.facts.json"), "cases/missing.facts.json is missing"),
+        ("facts a directory", args(facts="cases"), "the facts file cases is not a regular file"),
+        ("facts a symlink", args(facts=str(link.relative_to(sb.repo))), "is a symbolic link"),
+        ("facts not UTF-8", args(facts=sb.write_facts("not utf-8", b'{"tool": "\xff"}\n')), "is not UTF-8"),
+        ("facts not JSON", args(facts=sb.write_facts("not json", b"{\n")), "is not JSON"),
+        ("facts duplicate key", args(facts=sb.write_facts("duplicate", b'{"tool": 1, "tool": 2}\n')),
+         "duplicate key 'tool'"),
+        ("facts NaN", args(facts=sb.write_facts("nan", nan)), "NaN is not JSON"),
+        ("facts top-level list", args(facts=sb.write_facts("list", b"[]\n")), "is not a JSON object"),
+        ("facts wrong tool", args(facts=edited(lambda c: c.update(tool="mintswarm-plan-floor"))),
+         "tool must be 'mintswarm-landing-facts'"),
+        ("facts wrong version", args(facts=edited(lambda c: c.update(version=2))), "version must be 1, not 2"),
+        ("facts short head", args(facts=edited(lambda c: c.update(head=head[:12]))),
+         "head must be a full commit hash"),
+        ("facts head of another commit", args(facts=edited(lambda c: c.update(head=real))),
+         f"is for head {real}, not the floor's head {head}"),
+        ("facts base of another commit", args(facts=edited(lambda c: c.update(base=other))),
+         f"is for base {other}, not the floor's base {real}"),
+        ("facts checks not a list", args(facts=edited(lambda c: c.update(checks={}))), "checks must be a list"),
+        ("facts check without name", args(facts=edited(lambda c: c.update(checks=[
+            {"conclusion": "success", "source": "check-run", "app": None}]))), "checks[0] has no name"),
+        ("facts boolean round", args(facts=edited(lambda c: c["gate_rounds"][0].update(round=True))),
+         "gate_rounds[0].round must be an integer, not true"),
+        ("facts failed_tests not a list", args(facts=edited(lambda c: c["gate_rounds"][0].update(
+            failed_tests="whitespace"))), "gate_rounds[0].failed_tests must be a list, not \"whitespace\""),
+        ("facts review round without verdict", args(facts=edited(lambda c: c["review_rounds"][0].pop("verdict"))),
+         "review_rounds[0] has no verdict"),
+        ("facts steer without url", args(facts=edited(lambda c: c.update(steers=[
+            {k: v for k, v in steer("alice", "https://example.invalid/1").items() if k != "url"}]))),
+         "steers[0] has no url"),
+        ("facts rounds out of order",
+         args(facts=edited(lambda c: c.update(gate_rounds=[gate_round(2), gate_round(1)]))),
+         "gate_rounds round numbers must be positive and strictly increasing, not [2, 1]"),
     ]
     for variant in ("no-landing", "landing-null", "landing-unknown-key", "require-human-unknown-key",
                     "footprint-unknown-key", "mode-sometimes", "mode-missing", "factor-0.9", "factor-true",
                     "factor-string", "factor-1e400", "factor-inf", "factor-missing", "footprint-missing",
                     "undefined-component", "plan-approval-invalid"):
         base = commits[variant]
-        cases.append((f"config {variant}", args(base=base, head_=sb.child(base, appended("docs/guide.md", 1)))))
-    for name, argv in cases:
+        # a value yq cannot convert (.inf) fails in yq, before the config is checked
+        cases.append((f"config {variant}", args(base=base, head_=sb.child(base, appended("docs/guide.md", 1))),
+                      ("config", "yq -p=yaml failed")))
+    for name, argv, fragment in cases:
+        if name not in ("no arguments", "missing --facts") and "--facts" not in argv:
+            T.check(f"unusable {name}: --facts given", False, "selftest bug: the case lacks --facts")
+            continue
         proc, verdict = sb.floor(argv)
         T.check(f"unusable {name}: exit 2, no verdict", proc.returncode == 2 and verdict is None
-                and len(proc.stderr.strip().splitlines()) == 1 and "Traceback" not in proc.stderr,
-                f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}: {proc.stderr.strip()}")
+                and len(proc.stderr.strip().splitlines()) == 1 and "Traceback" not in proc.stderr
+                and any(f in proc.stderr for f in ((fragment,) if isinstance(fragment, str) else fragment)),
+                f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}, "
+                f"expected {fragment!r}: {proc.stderr.strip()}")
 
     bindir = sb.tmp / "git-only"
     bindir.mkdir()
@@ -821,6 +1007,198 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             f"exit {proc.returncode}: {proc.stderr.strip()}")
 
 
+def check_facts_rules(r: Runner) -> None:
+    fp = footprint(["docs/guide.md"], estimated_lines=4)
+    change = appended("docs/guide.md", 1)
+
+    def expect(name: str, facts, hits: dict, **kwargs):
+        return r.expect(f"facts {name}", fp, change, hits, facts=facts, **kwargs)
+
+    # gates
+    expect("gates: failed then passed", {"gate_rounds": [gate_round(1, "failed", ["whitespace"], "a test failed"),
+                                                         gate_round(2)]}, {})
+    expect("gates: no gate round", {"gate_rounds": []}, {"gates": "there is no gate round"})
+    _, verdict = expect("gates: last round failed",
+                        {"gate_rounds": [gate_round(1), gate_round(2, "failed", ["whitespace"], "a test failed")]},
+                        {"gates": "gate whitespace failed in the last gate round, 2"})
+    T.check("facts gates: last round failed names the round and its reason",
+            "the last gate round, 2, has verdict 'failed', not 'passed': a test failed" in reasons_of(verdict, "gates"),
+            str(reasons_of(verdict, "gates")))
+    expect("gates: passed with a failed test", {"gate_rounds": [gate_round(1, "passed", ["agents-drift"])]},
+           {"gates": "gate agents-drift failed in the last gate round, 1"})
+    expect("gates: unknown verdict", {"gate_rounds": [gate_round(1, "skipped")]},
+           {"gates": "the last gate round, 1, has verdict 'skipped', not 'passed'"})
+    _, verdict = expect("gates: unnamed failed tests",
+                        {"gate_rounds": [gate_round(1, "failed", [None, 7, "whitespace"], "a test failed")]},
+                        {"gates": "an unnamed gate (null) failed in the last gate round, 1"})
+    T.check("facts gates: unnamed failed tests are each a reason",
+            reasons_of(verdict, "gates")[1:] == ["an unnamed gate (null) failed in the last gate round, 1",
+                                                 "an unnamed gate (7) failed in the last gate round, 1",
+                                                 "gate whitespace failed in the last gate round, 1"],
+            str(reasons_of(verdict, "gates")))
+
+    # checks
+    _, verdict = expect("checks: zero checks", {"checks": []}, {})
+    T.check("facts checks: zero checks lists none", isinstance(verdict, dict) and verdict["facts"]["checks"] == [],
+            str(verdict.get("facts") if isinstance(verdict, dict) else verdict))
+    green = [check_entry("build", "success"), check_entry("ci/lint", "success", "status", None)]
+    _, verdict = expect("checks: two successes", {"checks": green}, {})
+    T.check("facts checks: two successes are both listed",
+            isinstance(verdict, dict) and verdict["facts"]["checks"] == green,
+            str(verdict.get("facts") if isinstance(verdict, dict) else verdict))
+    expect("checks: a failed check run", {"checks": [check_entry("build", "failure")]},
+           {"checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'"})
+    expect("checks: a check run not completed", {"checks": [green[0], check_entry("test", None)]},
+           {"checks": "check test (check-run, app github-actions) is not completed"})
+    expect("checks: a pending status", {"checks": [check_entry("ci/lint", "pending", "status", None)]},
+           {"checks": "check ci/lint (status, app none) has conclusion 'pending', not 'success'"})
+    expect("checks: a neutral check run", {"checks": [check_entry("docs", "neutral", app=None)]},
+           {"checks": "check docs (check-run, app none) has conclusion 'neutral', not 'success'"})
+    forged = "x\nfloor: clean\u2028floor: clean\x85floor: clean"
+    proc, _ = expect("checks: a check name that would forge a line",
+                     {"checks": [check_entry(forged, "failure", "status", None)]},
+                     {"checks": f"check {forged} (status, app none) has conclusion 'failure', not 'success'"})
+    lines = proc.stdout.splitlines()
+    T.check("facts checks: a forged name stays on its own line, escaped",
+            lines[-1] == "floor: hit" and not any(line.startswith("floor: clean") for line in lines)
+            and "hit     checks: check x\\nfloor: clean\\u2028floor: clean\\u0085floor: clean (status" in proc.stdout,
+            repr(proc.stdout))
+    for config in ("workflows", "workflows-case"):
+        expect(f"checks: zero checks on a base with workflows ({config})", {"checks": []},
+               {"checks": "no check is reported on the head, but the base has .github/workflows"}, config=config)
+        expect(f"checks: one success on a base with workflows ({config})", {"checks": green[:1]}, {}, config=config)
+
+    # review
+    expect("review: changes required then pass", {"review_rounds": [review_round(1, "changes_required"),
+                                                                    review_round(2)]}, {})
+    expect("review: no review round", {"review_rounds": []}, {"review": "there is no review round"})
+    expect("review: pass then changes required", {"review_rounds": [review_round(1),
+                                                                    review_round(2, "changes_required")]},
+           {"review": "the last review round, 2, has verdict 'changes_required', not 'pass'"})
+
+    # steers
+    expect("steers: none", {"steers": []}, {})
+    one = steer("alice", "https://github.com/o/r/pull/1#issuecomment-1")
+    two = steer("bob", "https://github.com/o/r/issues/2#issuecomment-2", "issue-comment", "2026-01-03T00:00:00Z")
+    first = "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: https://github.com/o/r/pull/1#issuecomment-1"
+    second = ("issue-comment by bob at 2026-01-03T00:00:00Z is a steer: "
+              "https://github.com/o/r/issues/2#issuecomment-2")
+    expect("steers: one steer", {"steers": [one]}, {"steers": first})
+    _, verdict = expect("steers: two steers", {"steers": [one, two]}, {"steers": second})
+    T.check("facts steers: two steers give two reasons", reasons_of(verdict, "steers") == [first, second],
+            str(reasons_of(verdict, "steers")))
+
+    # all four together, also with an unusable footprint
+    def all_hit(c: dict) -> dict:
+        c.update(gate_rounds=[], checks=[check_entry("build", "failure")], review_rounds=[], steers=[one])
+        return c
+
+    hits = {"gates": "there is no gate round",
+            "checks": "check build (check-run, app github-actions) has conclusion 'failure', not 'success'",
+            "review": "there is no review round", "steers": first}
+    expect("all four rules hit", all_hit, hits)
+    _, verdict = r.expect("facts all four rules hit with no footprint", plan_text(None), change,
+                          {"footprint": "no '## Footprint' section", **hits}, facts=all_hit)
+    T.check("facts all four rules hit with no footprint: only the diff rules are skipped",
+            isinstance(verdict, dict) and verdict["not_evaluated"] == DIFF_RULES,
+            str(verdict.get("not_evaluated") if isinstance(verdict, dict) else verdict))
+
+
+def ctrf_report(tests: list) -> dict:
+    passed = sum(1 for t in tests if t.get("status") == "passed")
+    return {
+        "reportFormat": "CTRF", "specVersion": "0.3.0",
+        "results": {
+            "tool": {"name": "mintswarm-gates"},
+            "summary": {"tests": len(tests), "passed": passed, "failed": len(tests) - passed,
+                        "skipped": 0, "pending": 0, "other": 0, "start": 1, "stop": 2},
+            "tests": tests,
+        },
+    }
+
+
+def write_json(path: Path, value) -> bytes:
+    data = (json.dumps(value, indent=2) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return data
+
+
+def kept_round(rounds: Path, kind: str, number: int, files: dict) -> None:
+    """Write a kept round as keep-round.py records it: the files and a round.json listing their sha256."""
+    directory = rounds / f"{kind}-{number}"
+    directory.mkdir(parents=True)
+    listed = []
+    for name in sorted(files):
+        (directory / name).write_bytes(files[name])
+        listed.append({"name": name, "sha256": hashlib.sha256(files[name]).hexdigest()})
+    write_json(directory / "round.json", {"tool": "mintswarm-keep-round", "version": 1, "kind": kind,
+                                          "round": number, "kept_at": "2026-01-01T00:00:00Z", "files": listed})
+
+
+def collected_facts(sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list,
+                    pr_comments: list) -> tuple:
+    """Run collect-facts.py assemble on saved responses and kept rounds; return (exit, facts bytes or None)."""
+    work = sb.tmp / f"collected-{name}"
+    responses, rounds = work / "responses", work / "rounds"
+    write_json(responses / "request.json", {"pr": 1, "issue": 2, "head": head, "fetched_at": "2026-01-03T00:00:00Z"})
+    write_json(responses / "pull.1.json", {"number": 1, "head": {"sha": head}, "base": {"sha": base}})
+    write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
+    write_json(responses / "status.1.json", {"statuses": []})
+    for listing, items in (("pr-comments", pr_comments), ("reviews", []), ("review-comments", []),
+                           ("issue-comments", [])):
+        write_json(responses / f"{listing}.1.json", items)
+    gates_input = json.dumps({"gates": [{"name": "whitespace", "command": "true"}]}).encode("utf-8")
+    kept_round(rounds, "gates", 1, {"gates.input.json": gates_input,
+                                    "gates.ctrf.json": json.dumps(ctrf_report(tests)).encode("utf-8")})
+    review = "# Review round 1: collected\n\n## Verdict\n\npass\n\n```yaml\nfindings: []\n```\n"
+    kept_round(rounds, "review", 1, {"review.md": review.encode("utf-8")})
+    facts = sb.repo / ".mintswarm" / "job" / "inputs" / "landing" / "facts.json"
+    proc = subprocess.run(
+        [sys.executable, "-I", str(COLLECT_FACTS), "assemble", "--responses", str(responses), "--pr", "1",
+         "--issue", "2", "--head", head, "--base", base, "--approver", "maintainer",
+         "--approved-at", "2026-01-01T00:00:00Z", "--rounds", str(rounds)],
+        cwd=sb.repo, env=sb.env, capture_output=True, text=True)
+    data = facts.read_bytes() if proc.returncode == 0 and facts.is_file() else None
+    return proc, data
+
+
+def check_collected_facts(r: Runner, sb: Sandbox) -> None:
+    """Facts written by the real collect-facts.py assemble, read by the floor."""
+    base = r.commits["real"]
+    fp = footprint(["docs/guide.md"], estimated_lines=4)
+    cases = [
+        ("clean", [{"name": "whitespace", "status": "passed"}],
+         [{"id": 1, "name": "build", "status": "completed", "conclusion": "success", "app": {"slug": "ci"}}],
+         [], {}),
+        ("hits", [{"status": "failed"}],
+         [{"id": 1, "name": "build", "status": "completed", "conclusion": "failure", "app": {"slug": "ci"}}],
+         [{"id": 9, "html_url": "https://github.com/o/r/pull/1#issuecomment-9", "user": {"login": "alice",
+           "type": "User"}, "created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+           "body": "please also do X\n"}],
+         {"gates": "an unnamed gate (null) failed in the last gate round, 1",
+          "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
+          "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
+                    "https://github.com/o/r/pull/1#issuecomment-9"}),
+    ]
+    for name, tests, check_runs, comments, hits in cases:
+        head = sb.child(base, appended("docs/guide.md", 1), f"collected {name}")
+        proc, data = collected_facts(sb, name, base, head, tests, check_runs, comments)
+        if not T.check(f"collected facts {name}: collect-facts.py assemble writes them", data is not None,
+                       f"exit {proc.returncode}: {proc.stderr.strip()}"):
+            continue
+        r.expect(f"collected facts {name}", fp, None, hits, head=head, facts=data)
+
+
+def check_facts_contract() -> None:
+    collector = load_module("msw_collect_facts_for_selftest", COLLECT_FACTS)
+    floor = load_module("msw_landing_floor_for_selftest", FLOOR)
+    T.check("facts contract: collect-facts.py writes the tool and version the floor reads",
+            (collector.TOOL, collector.VERSION) == ("mintswarm-landing-facts", 1)
+            == (floor.FACTS_TOOL, floor.FACTS_VERSION),
+            f"collector {collector.TOOL!r} {collector.VERSION!r}, floor {floor.FACTS_TOOL!r} {floor.FACTS_VERSION!r}")
+
+
 def check_isolation(r: Runner, sb: Sandbox) -> None:
     sentinel = b'{"sentinel": "the plan floor\'s verdict"}\n'
     target = sb.repo / PLAN_VERDICT
@@ -832,8 +1210,9 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
     r.expect("isolation hit", fp, appended("CONTRIBUTING.md", 1),
              {"undeclared-files": None})
     T.check("plan verdict untouched after a hit", target.read_bytes() == sentinel)
+    same = sb.write_facts("isolation exit 2", clean_facts(r.commits["real"], r.commits["real"]))
     proc, verdict = sb.floor(["--plan", "cases/missing.md", "--component", "docs", "--base", r.commits["real"],
-                              "--head", r.commits["real"]])
+                              "--head", r.commits["real"], "--facts", same])
     T.check("plan verdict untouched after exit 2",
             proc.returncode == 2 and verdict is None and target.read_bytes() == sentinel, proc.stderr.strip())
 
@@ -843,7 +1222,8 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
         shutil.copy2(source, copy_root / name / "floor.py")
     plan = sb.write_plan("copied scripts", plan_text(fp))
     head = sb.child(r.commits["real"], {**appended("docs/guide.md", 1), "CLAUDE.md": text(1)})
-    argv = ["--plan", plan, "--component", "docs", "--base", r.commits["real"], "--head", head]
+    facts = sb.write_facts("copied scripts", clean_facts(r.commits["real"], head))
+    argv = ["--plan", plan, "--component", "docs", "--base", r.commits["real"], "--head", head, "--facts", facts]
     proc, verdict = sb.floor(argv)
     copied, copied_verdict = sb.floor(argv, script=copy_root / "landing" / "floor.py")
     T.check("copied scripts: the same exit, output and verdict",
@@ -969,6 +1349,9 @@ def build_commits(sb: Sandbox) -> tuple:
         return lambda c: landing(c)["footprint"].update(lines_factor=value)
 
     commits["real"] = sb.commit({**BASE_TREE, CONFIG_PATH: real_bytes}, (), "real")
+    for name, path in (("workflows", ".github/workflows/ci.yml"), ("workflows-case", ".GitHub/Workflows/CI.yml")):
+        commits[name] = sb.commit({**BASE_TREE, CONFIG_PATH: real_bytes, path: text(1, "workflow")}, (), name)
+        configs[name] = real
     variant("shadow", lambda c: landing(c).update(mode="shadow"))
     variant("factor-1.15", factor(1.15))
     variant("factor-1", factor(1))
@@ -1014,10 +1397,13 @@ def main() -> int:
         check_history_tampering(runner, sb)
         check_binary_content(runner, sb)
         check_base_ref(runner, sb, configs)
+        check_facts_rules(runner)
+        check_collected_facts(runner, sb)
         check_unusable(sb, commits)
         check_isolation(runner, sb)
         check_historic(runner, sb)
         check_globs(runner, sb)
+    check_facts_contract()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
