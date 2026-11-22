@@ -49,7 +49,7 @@ fix(core): renew leases on heartbeat, not on claim
 docs(docs): describe the repository layout
 ```
 
-Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, documents use `docs`. A change that also touches the `shared` paths listed in that file takes the scope of the component it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
+Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, `docs/` and the top-level documents use `docs`. A change that also touches the `shared` paths listed in that file takes the scope of the component it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
 
 Inside a work branch commits can be as small as you like; the PR title is what lands on `master`.
 
@@ -59,7 +59,7 @@ Inside a work branch commits can be as small as you like; the PR title is what l
 - **Squash merge only.** The PR title becomes the commit subject, so it must be a valid Conventional Commit; the `pr-title` check will verify it once CI is added. The changelog is generated from these subjects.
 - One logical change per PR. A refactor that a feature needs goes in its own PR first.
 - Link the issue (`Closes #12`). Describe what changed, why, and how it was verified.
-- Required before merge: one approving review, including a Code Owner's, and all conversations resolved. Once CI is added, all checks green and the branch up to date with `master` as well.
+- Required before merge: one approving review from a Code Owner (`.github/CODEOWNERS`), and all conversations resolved. Once CI is added, all checks green and the branch up to date with `master` as well.
 - A change to a contract (anything under `api/`, `crates/core/migrations/`, or the job MCP tool list) states its compatibility impact in the description.
 - The repository describes the current state. A change that alters how the system works updates `docs/architecture/` in the same PR; the reasoning goes in the PR description or the issue, never in a file of its own.
 
