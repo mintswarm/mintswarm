@@ -4,9 +4,11 @@
 #   shell-lint.sh
 #
 # Changes to the top of the git work tree, lists the tracked *.sh files with
-# git ls-files and runs shellcheck -S warning -x -P SCRIPTDIR over them, so a
-# "# shellcheck source=" directive resolves against the script's own directory
-# wherever this is run from. New scripts are covered once they are tracked.
+# git ls-files and runs shellcheck --norc -S warning -x -P SCRIPTDIR over them.
+# -P SCRIPTDIR makes a "# shellcheck source=" directive resolve against the
+# script's own directory wherever this is run from; --norc keeps any
+# .shellcheckrc from changing what the gate checks, so only directives in the
+# linted scripts themselves can. New scripts are covered once they are tracked.
 #
 # Exits with shellcheck's status, 0 when no script is tracked, and 2 when git
 # fails or shellcheck is not on PATH. Needs git and shellcheck.
@@ -34,5 +36,5 @@ if [ "${#files[@]}" -eq 0 ]; then
 fi
 
 status=0
-shellcheck -S warning -x -P SCRIPTDIR -- "${files[@]}" || status=$?
+shellcheck --norc -S warning -x -P SCRIPTDIR -- "${files[@]}" || status=$?
 exit "$status"

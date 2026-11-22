@@ -713,6 +713,16 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     expect_hit(
         r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, component="web", config="untested"
     )
+    expect_clean(r, "tests none, docs only", base(), ["tests-none"], config="untested")
+    expect_hit(
+        r,
+        "tests none, docs and web",
+        base(files=["CONTRIBUTING.md", "web/index.html"]),
+        "tests-none",
+        reasons=["gates.tests is none and web/index.html is outside component docs"],
+        component="web",
+        config="untested",
+    )
     expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
     expect_hit(
         r,
