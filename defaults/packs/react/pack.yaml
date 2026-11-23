@@ -1,0 +1,18 @@
+id: "react"
+version: 1
+name: "React"
+description: "React function components and hooks on top of the TypeScript pack, linted by eslint-plugin-react and eslint-plugin-react-hooks."
+base: "typescript"
+detect:
+  files: ["**/*.tsx", "**/*.jsx"]
+  shebangs: []
+parameters:
+  - name: "package_root"
+    type: "string"
+    default: "."
+    description: "Which directory, relative to the repository root, holds the TypeScript package that uses React? It is the TypeScript pack's package_root."
+    pattern: '\.|[A-Za-z0-9_][A-Za-z0-9._+-]*(/[A-Za-z0-9_][A-Za-z0-9._+-]*)*'
+settings:
+  - template: "settings/eslint.extra.config.mjs"
+    target: "{{ package_root }}/eslint.extra.config.mjs"
+    kind: "linter"

@@ -127,6 +127,12 @@ gates:
       command: "bash .mintswarm/dogfood/github/selftest.sh"
     - name: readiness-selftest
       command: "python3 .mintswarm/dogfood/readiness/selftest.py"
+    - name: rust-format
+      command: "cargo fmt --all --check"
+    - name: rust-lint
+      command: "cargo clippy --workspace --all-targets -- -D warnings"
+    - name: rust-test
+      command: "cargo test --workspace"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
   report:                            # read by the runner (report-gates.py), never by agents
