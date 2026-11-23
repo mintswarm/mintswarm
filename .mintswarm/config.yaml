@@ -29,7 +29,7 @@ components:
     paths: ["api/**", "crates/proto/**"]
   domain:
     description: "shared model and configuration types used by control plane and runner"
-    paths: ["crates/domain/**", "crates/config/**"]
+    paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
     paths: ["crates/core/**", "crates/server/**"]
