@@ -8,8 +8,12 @@
 # so the install runs no repository code: no .pnpmfile.cjs, no lifecycle
 # script of any package.json and no dependency build script. The readiness
 # check keeps `pnpm install` unreadable, so the gates install through this
-# tracked script, which the floors protect. It writes only web/node_modules
-# and pnpm's own store, never next to sources.
+# tracked script, which the floors protect. It writes only node_modules
+# under web/ (the workspace root's and each workspace package's, all
+# git-ignored) and pnpm's own store, never next to sources.
+#
+# The readiness check's gate-tools signal checks that pnpm is on PATH for
+# the gates that run this script.
 #
 # Exits with pnpm's status, and 2 when git fails or pnpm is not on PATH.
 # Needs git and pnpm.

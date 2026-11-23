@@ -95,9 +95,12 @@ Globs match as in the plan floor; tracked paths are every ls-tree entry.
   gates               gate-tools *          a gate command cannot be read,
                                             or bash, or the command word of a
                                             gate's simple command that is not
-                                            a path or a shell builtin, is not
-                                            found on PATH (only the name is
-                                            printed)
+                                            a path or a shell builtin, or a
+                                            tool a script the gates run is
+                                            known to need (pnpm for
+                                            .mintswarm/dogfood/web-install.sh),
+                                            is not found on PATH (only the
+                                            name is printed)
   gates               tests-gated *         a test file is not a word of any
                                             gate command (shlex words, a
                                             leading ./ dropped, each also
@@ -210,9 +213,12 @@ A readable simple command fails gate-scripts-named when:
 - its command word holds `/` and is not a tracked regular file, unless it
   is not a tracked blob either and, resolved, is `[DIR/]node_modules/.bin/
   NAME`, where no segment of DIR is empty, `.`, `..` or `node_modules`,
-  NAME is one segment other than `.` and `..`, and a tracked regular
+  NAME is one segment other than `.` and `..`, a tracked regular
   `pnpm-lock.yaml` or `package-lock.json` sits in DIR or a directory
-  above it. Such a binary is dependency code pinned by integrity in a
+  above it, DIR is the root or a tracked directory, and no path above the
+  binary (DIR/node_modules or DIR/node_modules/.bin included) is a tracked
+  blob, such as a symbolic link that would lead the binary to tracked code
+  at another path. Such a binary is dependency code pinned by integrity in a
   tracked lockfile, which the dependency review judges, as cargo's
   dependencies are; a workspace package's own bin linked there is tracked
   code the floors do not protect, a known limit.
@@ -362,6 +368,8 @@ ALLOWED_BUILTINS = frozenset(": true false echo test pwd exit shift wait".split(
 RESERVED = frozenset("if then else elif fi do done while until".split())
 CD = "cd"
 LOCKFILES = ("pnpm-lock.yaml", "package-lock.json")
+# Tools a tracked script run by a gate needs that no gate names as a command word, so gate-tools checks them too.
+SCRIPT_TOOLS = {".mintswarm/dogfood/web-install.sh": ("pnpm",)}
 # Every bash builtin and keyword; outside ALLOWED_BUILTINS, and apart from the prefixes, source and `.`, unreadable.
 BUILTINS = frozenset(
     """
@@ -893,7 +901,21 @@ def locked_binary(path: str, regular: set) -> bool:
     )
 
 
-def script_problem(words: list, regular: set, blobs: set, cwd: str = "") -> str:
+def locked_binary_problem(path: str, blobs: set, directories: set) -> str:
+    """Why a locked binary path does not run from the tracked tree its path names, or empty: an ancestor of it is a
+    tracked symbolic link, or its DIR is not a tracked directory."""
+    segments = path.split("/")
+    for depth in range(1, len(segments)):
+        prefix = "/".join(segments[:depth])
+        if prefix in blobs:
+            return f"{path}, which is under the tracked symbolic link {prefix}"
+    directory = "/".join(segments[:-3])
+    if directory not in directories:
+        return f"{path}, whose directory {directory} is not a tracked directory"
+    return ""
+
+
+def script_problem(words: list, regular: set, blobs: set, cwd: str = "", directories: set = frozenset({""})) -> str:
     """Why a readable simple command, run in the directory cwd, runs code that no tracked regular file it names
     holds, or empty."""
     if not words:
@@ -915,7 +937,8 @@ def script_problem(words: list, regular: set, blobs: set, cwd: str = "") -> str:
     if "/" in first:
         path = resolved(first, cwd)
         if path not in blobs and locked_binary(path, regular):
-            return ""
+            problem = locked_binary_problem(path, blobs, directories)
+            return f"it runs {problem}" if problem else ""
         problem = tracked_problem(first, regular, blobs, cwd)
         return f"it runs {problem}" if problem else ""
     return ""
@@ -1212,7 +1235,7 @@ def gate_scripts_named(ref: Ref) -> tuple:
             reasons.append(f"gate {label}: {exc}, so the floors cannot see what it runs")
             continue
         for cwd, words in simple:
-            problem = script_problem(words, ref.regular_files, ref.blobs, cwd)
+            problem = script_problem(words, ref.regular_files, ref.blobs, cwd, ref.directories)
             if problem:
                 reasons.append(f"gate {label}: {problem}, so the floors cannot protect what it runs")
     return outcome(reasons)
@@ -1229,10 +1252,12 @@ def gate_tools(ref: Ref) -> tuple:
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so its tools are unknown")
             continue
-        for _, words in simple:
+        for cwd, words in simple:
             if not words:
                 continue
             first = words[0]
+            if first in INTERPRETERS:
+                tools += [tool for tool in SCRIPT_TOOLS.get(resolved(words[1], cwd), ()) if tool not in tools]
             if "/" in first or first in ALLOWED_BUILTINS or first in ("source", ".", CD) or first in tools:
                 continue
             tools.append(first)

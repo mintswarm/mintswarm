@@ -49,6 +49,10 @@ Checks:
   agents-drift passes as not applicable, the allowed builtins and source,
   the repository's own two gate commands, and a ref
   whose renderer differs from the checker's, which is noted) exit 0;
+- script tools: the repository's four TypeScript gates, run with PATH
+  holding only git, yq, bash, python3 and a stub pnpm, exit 0; without
+  the stub pnpm they exit 1 failing only gate-tools, naming pnpm, which
+  web-install.sh needs though no gate names it;
 - no config: exit 1, every config signal fails naming its absence and the
   others pass;
 - unusable input: no --ref, --ref twice, an unknown argument, --ref -x, a
@@ -968,6 +972,51 @@ GAP_CASES = [
         {"gate-scripts-named": "it runs web/node_modules/.bin/tsc, which is a tracked symbolic link"},
         (),
     ),
+    (
+        "node_modules as a tracked symbolic link",
+        m_all(
+            m_web_gate("cd ./web && ./node_modules/.bin/tsc", "web/pnpm-lock.yaml", "web/evil/.bin/tsc"),
+            m_file("web/node_modules", (SYMLINK, b"evil")),
+        ),
+        {"gate-scripts-named"},
+        {
+            "gate-scripts-named": "it runs web/node_modules/.bin/tsc, which is under the tracked symbolic link "
+            "web/node_modules"
+        },
+        (),
+    ),
+    (
+        "node_modules/.bin under a tracked symbolic link",
+        m_all(
+            m_web_gate("cd ./web && ./node_modules/.bin/tsc", "web/pnpm-lock.yaml", "web/evil/tsc"),
+            m_file("web/node_modules/.bin", (SYMLINK, b"../evil")),
+        ),
+        {"gate-scripts-named"},
+        {
+            "gate-scripts-named": "it runs web/node_modules/.bin/tsc, which is under the tracked symbolic link "
+            "web/node_modules/.bin"
+        },
+        (),
+    ),
+    (
+        "node_modules/.bin under a symbolically linked directory",
+        m_all(
+            m_web_gate("cd ./web && sub/node_modules/.bin/tsc", "web/pnpm-lock.yaml", "web/evil/node_modules/.bin/tsc"),
+            m_file("web/sub", (SYMLINK, b"evil")),
+        ),
+        {"gate-scripts-named"},
+        {
+            "gate-scripts-named": "it runs web/sub/node_modules/.bin/tsc, which is under the tracked symbolic link "
+            "web/sub"
+        },
+        (),
+    ),
+    script_gap(
+        "node_modules/.bin under an untracked directory",
+        "cd ./web && nothere/node_modules/.bin/tsc",
+        "it runs web/nothere/node_modules/.bin/tsc, whose directory web/nothere is not a tracked directory",
+        "web/pnpm-lock.yaml",
+    ),
     cd_gap("cd with an option", "cd -P ./web && true", "it runs cd with 2 arguments, but the check reads cd"),
     cd_gap("cd with no argument", "cd && true", "it runs cd with 0 arguments, but the check reads cd"),
     cd_gap("cd with a redirection", "cd >/dev/null ./web && true", "it runs cd with a redirection"),
@@ -1616,7 +1665,6 @@ READY_CASES = [
         m_web_gate("cd ./web/apps/ui && ./node_modules/.bin/vitest run", "web/package-lock.json", "web/apps/ui/a.ts"),
         {},
     ),
-    ("the repository's TypeScript gates", m_typescript_gates, {}),
     ("a test named after cd", m_web_gate("cd ./web && python3 tests/test_x.py", "web/tests/test_x.py"), {}),
     ("a ref without render-agents.py", m_no_renderer, {"agents-drift": "not applicable: the ref has no"}),
     (
@@ -1695,6 +1743,41 @@ def check_ready_variants(sb: Sandbox) -> None:
             if not line.startswith(f"pass    {FEATURE[signal_name]} {signal_name}: ") or fragment not in line:
                 problems.append(f"line {line!r} lacks {fragment!r}")
         T.check(f"ready: {name}: exit 0", not problems, "; ".join(problems))
+
+
+def check_script_tools(sb: Sandbox) -> None:
+    """The repository's TypeScript gates are ready with pnpm on PATH and fail gate-tools without it, though no gate
+    names pnpm: web-install.sh, which they run, needs it."""
+    commit = sb.fixture(m_typescript_gates)
+    for with_pnpm in (True, False):
+        bin_dir = sb.tmp / ("bin-with-pnpm" if with_pnpm else "bin-without-pnpm")
+        bin_dir.mkdir()
+        for tool in ("git", "yq", "bash"):
+            os.symlink(shutil.which(tool), bin_dir / tool)
+        os.symlink(shutil.which("python3") or sys.executable, bin_dir / "python3")
+        if with_pnpm:
+            (bin_dir / "pnpm").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (bin_dir / "pnpm").chmod(0o755)
+        proc, data = sb.run(["--ref", commit], env=dict(sb.env, PATH=str(bin_dir)))
+        problems = shape_problems(sb, proc, data, commit, commit)
+        found = failing(data)
+        if with_pnpm:
+            if proc.returncode != 0 or found:
+                problems.append(f"exit {proc.returncode}, failing {sorted(found)}")
+            T.check(
+                "ready: the repository's TypeScript gates with pnpm on PATH: exit 0", not problems, "; ".join(problems)
+            )
+            continue
+        if set(found) != {"gate-tools"}:
+            problems.append(f"failing {sorted(found)}, expected ['gate-tools']")
+        fragment = "pnpm is not on PATH, so the gates that call it cannot run here"
+        if fragment not in line_of(proc, "gate-tools"):
+            problems.append(f"line {line_of(proc, 'gate-tools')!r} lacks {fragment!r}")
+        T.check(
+            "gaps: the repository's TypeScript gates without pnpm on PATH: exit 1, fails gate-tools",
+            not problems,
+            "; ".join(problems),
+        )
 
 
 def check_no_config(sb: Sandbox) -> str:
@@ -2030,6 +2113,7 @@ def main() -> int:
         ready, *first = check_ready(sb)
         check_gaps(sb)
         check_ready_variants(sb)
+        check_script_tools(sb)
         no_config = check_no_config(sb)
         check_unusable(sb, ready)
         check_worktree(sb, ready, first)
