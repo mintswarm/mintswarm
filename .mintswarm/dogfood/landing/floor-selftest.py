@@ -33,7 +33,10 @@ Checks:
 - clean cases, a dependency manifest declared only through
   new_dependencies, a path with a space and a non-ASCII character, and
   `mode: shadow`;
-- single-rule hits: each diff rule, `size` at and one over its limit, and
+- single-rule hits: each diff rule, `size` at and one over its limit, an
+  eight-key footprint whose fixture lines bring the total near its limit
+  clean and its production lines one over floor(production_lines ×
+  lines_factor) a hit, and
   the require_human rules with case variants;
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
@@ -443,6 +446,16 @@ def footprint(files: list, new_files: list = (), estimated_lines: int = 50, new_
     }
 
 
+def with_production(fp: dict, production_lines: int) -> dict:
+    """The eight-key footprint: fp with production_lines right after estimated_lines."""
+    result = {}
+    for key, value in fp.items():
+        result[key] = value
+        if key == "estimated_lines":
+            result["production_lines"] = production_lines
+    return result
+
+
 def plan_text(fp: dict = None) -> str:
     section = ""
     if fp is not None:
@@ -795,6 +808,21 @@ def check_single_rules(r: Runner) -> None:
         footprint(["docs/guide.md"], estimated_lines=7),
         appended("docs/guide.md", 11),
         {"size": "the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"},
+    )
+    # eight keys, factor 1.5: all lines up to floor(30 × 1.5) = 45, production lines up to floor(4 × 1.5) = 6
+    fixture = "docs/fixtures/big.md"
+    split = with_production(footprint(["docs/guide.md", fixture], [fixture], estimated_lines=30), 4)
+    r.expect(
+        "fixture lines near the total limit, production lines within theirs",
+        split,
+        {**appended("docs/guide.md", 6), fixture: text(38)},
+        {},
+    )
+    r.expect(
+        "production lines one over floor(4 × 1.5)",
+        split,
+        {**appended("docs/guide.md", 7), fixture: text(30)},
+        {"size": "the diff counts 7 production lines, over the limit of 6 (production_lines 4 × lines_factor 1.5)"},
     )
     # factor 1.15, estimated_lines 100: exactly 115, where binary floats give 114
     r.expect(

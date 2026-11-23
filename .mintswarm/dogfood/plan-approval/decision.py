@@ -21,7 +21,8 @@ Inputs:
   `pipeline.plan_approval.mode` and `pipeline.plan_approval.min_confidence`
   (an integer from 90 to 100, 90 when absent) of .mintswarm/config.yaml at
   the commit it resolves to, read and validated by floor.py's own code (loaded from the
-  file next to this one), so the worktree's config is never opened. NAME
+  file next to this one, its `prepare`, which also reads the packages present
+  at the base as the floor does), so the worktree's config is never opened. NAME
   given to --component must be a defined component.
 - PATH given to --plan, the plan, and the PATHs given to --issue-document
   and --analysis, the issue document and the analysis the floor read, all
@@ -763,8 +764,7 @@ def run(argv: list) -> int:
     try:
         with floor.job_object_store({"base": args["base"]}) as (store, commits):
             commit = commits["base"]
-            config = floor.load_config(commit, git_dir=store)
-            cfg = floor.validate_config(config, args["component"])
+            config, cfg = floor.prepare(commit, args["component"], git_dir=store)
             plan = floor.read_plan(args["plan"])
             issue = floor.read_document(args["issue_document"], "issue document")
             analysis = floor.read_document(args["analysis"], "analysis")
