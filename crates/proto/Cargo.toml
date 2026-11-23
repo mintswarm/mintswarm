@@ -1,0 +1,23 @@
+[package]
+name = "mintswarm-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+fakes = []
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+protox = { workspace = true }
+tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true

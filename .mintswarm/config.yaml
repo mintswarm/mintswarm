@@ -155,6 +155,10 @@ gates:
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
       command: "cargo test --workspace"
+    - name: proto-lint
+      command: "buf lint api/proto"
+    - name: proto-breaking
+      command: "if git cat-file -e origin/master:api/proto/buf.yaml 2>/dev/null; then buf breaking api/proto --against '.git#ref=origin/master,subdir=api/proto'; else echo 'proto-breaking: origin/master has no api/proto yet; nothing to compare'; fi"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
