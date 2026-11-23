@@ -29,13 +29,19 @@ lines, the maintainer's quoted words and the time following them:
     Approved head: SHA
 
 A steer is counted as .mintswarm/dogfood/landing/collect-facts.py counts one:
-any comment by an account that is not a bot (user.type is not Bot and the
-login does not end in [bot]), and any comment by mintswarm-dev[bot] with a
-line that, trimmed of whitespace, is exactly the steer marker. The latest
-steer on the PR (by created_at, then id) decides: it must be the approval
-steer naming SHA, so any later steer, relayed or the maintainer's own,
-withdraws an approval. The approval itself is strict: the three lines count
-only at the top of a comment by mintswarm-dev[bot].
+any comment or submitted review by an account that is not a bot (user.type
+is not Bot and the login does not end in [bot]), and any comment or review
+by mintswarm-dev[bot] with a line that, trimmed of whitespace, is exactly the
+steer marker. The latest approval steer naming SHA (by created_at, then id)
+is the approval, and any other steer withdraws it: a comment created after
+it (by created_at, then id), a comment whose updated_at is after its
+created_at (an earlier comment may have been edited into a steer), or a
+review whose submitted_at is not before its created_at (reviews in state
+PENDING or without submitted_at are skipped; reviews have no updated_at, so
+an edited review body is not seen). So any later steer, relayed or the
+maintainer's own, a "Request changes" or comment review included, withdraws
+an approval. The approval itself is strict: the three lines count only at the
+top of a comment by mintswarm-dev[bot].
 
 Checks, all made with the steward's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
@@ -56,12 +62,13 @@ printed on stderr, and nothing is merged unless all of them hold:
 - commits/SHA/status: every status success, and no more than the 100 one page
   holds.
 - GraphQL pullRequest.reviewThreads, paged: no unresolved thread.
-- issues/PR/comments, every page: an approval steer naming SHA.
+- issues/PR/comments and pulls/PR/reviews, every page: an approval steer
+  naming SHA, with no steer that withdraws it.
 
 When all hold and --dry-run is not given, it reads pulls/PR, the review
-threads and the comments again, and refuses if any of the fields checked above
-(or the title) changed, a thread is unresolved or the latest steer is no
-longer the approval, since GitHub does not re-check a ruleset
+threads, the comments and the reviews again, and refuses if any of the fields
+checked above (or the title) changed, a thread is unresolved or a steer now
+withdraws the approval, since GitHub does not re-check a ruleset
 bypass actor's merge for them; then it calls
 PUT repos/{owner}/{repo}/pulls/PR/merge with {"merge_method": "squash",
 "sha": SHA, "commit_title": "TITLE (#PR)"}, so GitHub refuses the merge if the
@@ -364,19 +371,34 @@ def steer_order(comment: dict):
 
 
 def check_steer(steward: Steward, pr: int, sha: str) -> list:
-    comments = []
+    comments, reviews = [], []
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
         comments.extend(page or [])
+    for page in steward.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"):
+        reviews.extend(page or [])
     steers = [comment for comment in comments if isinstance(comment, dict) and is_steer(comment)]
-    latest = max(steers, key=steer_order) if steers else None
-    if latest is not None and is_approval(latest, sha):
-        return []
-    if any(is_approval(steer, sha) for steer in steers):
-        return [
-            f"a later steer by {author(latest) or 'a deleted user'} withdraws the approval of {sha}: "
-            "post the approval steer again"
-        ]
-    return [f"no approval steer by {BOT_LOGIN} names the head {sha}"]
+    approvals = [steer for steer in steers if is_approval(steer, sha)]
+    if not approvals:
+        return [f"no approval steer by {BOT_LOGIN} names the head {sha}"]
+    approval = max(approvals, key=steer_order)
+    approved_at = str(approval.get("created_at") or "")
+    withdraw = f"withdraws the approval of {sha}: post the approval steer again"
+    reasons = []
+    for steer in steers:
+        if is_approval(steer, sha):
+            continue
+        who = author(steer) or "a deleted user"
+        if steer_order(steer) > steer_order(approval):
+            reasons.append(f"a later steer by {who} {withdraw}")
+        elif str(steer.get("updated_at") or "") > approved_at:
+            reasons.append(f"a steer by {who} edited after the approval {withdraw}")
+    for review in reviews:
+        if not isinstance(review, dict) or review.get("state") == "PENDING" or not review.get("submitted_at"):
+            continue
+        if is_steer(review) and str(review.get("submitted_at")) >= approved_at:
+            who = author(review) or "a deleted user"
+            reasons.append(f"a later review by {who} ({review.get('state')}) {withdraw}")
+    return reasons
 
 
 def snapshot(data: dict) -> dict:

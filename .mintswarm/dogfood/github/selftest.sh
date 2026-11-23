@@ -375,7 +375,9 @@ cat > "$stubs/gh" <<'EOF'
 # comment_failures is above 0, counting it down; a GET of the comments serves
 # one list of comment_reads per read, the last repeating, when it is set,
 # counted in comments-reads.json; a PR's reviews,
-# served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
+# served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]} or
+# {"<n>": {"reads": [[...], ...]}}, one list per read, the last repeating,
+# counted in reviews-reads.json.
 # For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
 # last read repeating, counted in pulls-reads.json; check runs, check suites
 # and statuses per commit in commits.json, {"<sha>": {"check_runs": [...],
@@ -404,7 +406,15 @@ if any(argv[i] == "--input" and argv[i + 1] == "-" for i in range(len(argv) - 1)
 if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/reviews", a) for a in argv):
     store = os.path.join(STATE, "reviews.json")
     n = re.search(r"/pulls/(\d+)/", next(a for a in argv if a.startswith("repos/"))).group(1)
-    print(json.dumps((json.load(open(store)) if os.path.exists(store) else {}).get(n, [])))
+    reviews = (json.load(open(store)) if os.path.exists(store) else {}).get(n, [])
+    if isinstance(reviews, dict):
+        reads_path = os.path.join(STATE, "reviews-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(n, 0)
+        reads[n] = seen + 1
+        json.dump(reads, open(reads_path, "w"))
+        reviews = reviews["reads"][min(seen, len(reviews["reads"]) - 1)]
+    print(json.dumps([reviews] if "--slurp" in argv else reviews))
 elif argv[:2] == ["api", "graphql"]:
     store = os.path.join(STATE, "threads.json")
     n = (opt(argv, "-F") or "number=0").split("=", 1)[1]
@@ -2248,7 +2258,7 @@ check "land.py compiles" \
   "$L" "$sandbox/land.pyc"
 sha_of() { printf '%040x' "$1"; }
 OTHER_SHA="$(sha_of 4095)"
-for f in pulls commits threads issues merges; do
+for f in pulls commits threads issues merges reviews; do
   [ -f "$MSW_STUB_STATE/$f.json" ] || printf '{}\n' > "$MSW_STUB_STATE/$f.json"
 done
 stub_update() {  # stub_update FILE JQ ARGS...: rewrite FILE.json in the gh stub's state with JQ
@@ -2435,6 +2445,34 @@ fixture 131 . . '[true, true, true]' '[{id: 503, created_at: "2026-11-23T13:00:0
 check "refused: the latest steer by created_at wins, whatever the comment order" \
   refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 131
 
+fixture 141
+stub_update reviews '.["141"] = [{id: 9001, user: {login: "zmij", type: "User"}, state: "CHANGES_REQUESTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Not like this."}]'
+check "refused: a later review by a person requesting changes withdraws the approval" \
+  refused_land "a later review by zmij (CHANGES_REQUESTED) withdraws the approval" 141
+fixture 142
+stub_update reviews '.["142"] = [{id: 9002, user: {login: "zmij", type: "User"}, state: "COMMENTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Hold on."}]'
+check "refused: a later comment-only review by a person withdraws the approval" \
+  refused_land "a later review by zmij (COMMENTED) withdraws the approval" 142
+fixture 143
+stub_update reviews '.["143"] = [
+  {id: 9003, user: {login: "zmij", type: "User"}, state: "APPROVED", submitted_at: "2026-11-23T11:00:00Z", body: ""},
+  {id: 9004, user: {login: "zmij", type: "User"}, state: "PENDING", body: "draft"},
+  {id: 9005, user: {login: "mintswarm-dev[bot]", type: "Bot"}, state: "COMMENTED", submitted_at: "2026-11-23T12:05:00Z",
+    body: "Review round summary."},
+  {id: 9006, user: {login: "copilot[bot]", type: "Bot"}, state: "COMMENTED", submitted_at: "2026-11-23T12:06:00Z",
+    body: "<!-- mintswarm: steer -->"}]'
+check "an earlier review, a pending review and later bot reviews that are not steers pass (--dry-run)" \
+  land 143 --sha "$(sha_of 143)" --dry-run
+fixture 144 . . '[true, true, true]' '[{id: 498, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T12:05:00Z",
+  user: {login: "zmij", type: "User"}, body: "wait"}] + .'
+check "refused: an earlier comment edited after the approval withdraws it" \
+  refused_land "a steer by zmij edited after the approval withdraws the approval" 144
+fixture 145 . . '[true, true, true]' '[{id: 497, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T11:30:00Z",
+  user: {login: "zmij", type: "User"}, body: "looks good"}] + .'
+check "an earlier comment edited before the approval passes (--dry-run)" land 145 --sha "$(sha_of 145)" --dry-run
+
 # Right before the merge, pulls/N and the threads are read again.
 fixture 132 '[.[0], (.[0] | .labels += [{name: "hold"}])]'
 check "refused: the hold label added during the checks" refused_land "the PR carries the hold label" 132
@@ -2451,6 +2489,12 @@ stub_update issues '.["139"].comment_reads = [.["139"].comments, (.["139"].comme
 check "refused: a steer posted during the checks withdraws the approval" \
   refused_land "a later steer by zmij withdraws the approval" 139
 check "after reading the comments twice" eq "$(jq -r '.["139"]' "$MSW_STUB_STATE/comments-reads.json")" 2
+fixture 146
+stub_update reviews '.["146"] = {reads: [[], [{id: 9007, user: {login: "zmij", type: "User"}, state: "CHANGES_REQUESTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Stop."}]]}'
+check "refused: a review submitted during the checks withdraws the approval" \
+  refused_land "a later review by zmij (CHANGES_REQUESTED) withdraws the approval" 146
+check "after reading the reviews twice" eq "$(jq -r '.["146"]' "$MSW_STUB_STATE/reviews-reads.json")" 2
 fixture 116 '.[0].mergeable = false | .[0].mergeable_state = "unknown"'
 check "refused: GitHub reports the PR not mergeable" refused_land "GitHub reports the PR not mergeable" 116
 
