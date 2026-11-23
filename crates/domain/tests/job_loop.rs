@@ -35,7 +35,7 @@ fn setup(row: &Row) -> (Job, Facts) {
         Guard::AnalysisNoSplit => {}
         Guard::KindDesign => job.kind = JobKind::Design,
         Guard::KindPlan => job.kind = JobKind::Plan,
-        Guard::KindImplementation => {}
+        Guard::Replannable => {}
         Guard::ArtefactApproved => facts.approval_matches = true,
         Guard::PlanApproved => {
             facts.approval_matches = true;
@@ -522,4 +522,18 @@ fn merged_at_another_head_escalates() {
     );
     let job = step(&job, Event::Continue, &facts);
     assert_eq!(job.state, JobState::Releasing);
+}
+
+#[test]
+fn replan_refused_once_merged_at_another_head() {
+    let facts = Facts::new(MAX_ROUNDS);
+    let job = step(&job_in(JobState::Merging), Event::Merged, &facts);
+    assert_eq!(job.state, JobState::Escalated);
+    assert_eq!(
+        transition(&job, Event::Replan, &facts).err(),
+        Some(TransitionError::GuardRefused {
+            state: JobState::Escalated,
+            event: Event::Replan
+        })
+    );
 }

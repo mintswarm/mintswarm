@@ -22,8 +22,9 @@ named_enum! {
         KindDesign => "kind_design",
         /// Kind `plan`.
         KindPlan => "kind_plan",
-        /// Kind `implementation`; only implementation jobs plan.
-        KindImplementation => "kind_implementation",
+        /// Kind `implementation`, and the open escalation did not come after the merge; only
+        /// implementation jobs plan, and a merged change cannot be planned again.
+        Replannable => "replannable",
         /// The approval refers to the current artefact's sha256.
         ArtefactApproved => "artefact_approved",
         /// The approval refers to the current plan's sha256, and the base has not moved or the
@@ -87,6 +88,9 @@ impl Guard {
         let below_cap = c.review_round < c.review_cap(facts.review_max_rounds);
         let auto = facts.decision_auto && !c.plan_approval_forced;
         let by_review_cap = c.escalation.map(|e| e.cause == EscalationCause::ReviewCap);
+        let merged_already = c
+            .escalation
+            .is_some_and(|e| e.cause == EscalationCause::MergedHeadMismatch);
         match self {
             Self::Always => true,
             Self::Dispatchable => facts.dispatchable && !job.paused,
@@ -94,7 +98,7 @@ impl Guard {
             Self::AnalysisNoSplit => implementation && !facts.split_proposed,
             Self::KindDesign => job.kind == JobKind::Design,
             Self::KindPlan => job.kind == JobKind::Plan,
-            Self::KindImplementation => implementation,
+            Self::Replannable => implementation && !merged_already,
             Self::ArtefactApproved => facts.approval_matches,
             Self::PlanApproved => facts.approval_matches && facts.base_current,
             Self::DecisionAuto => auto,
@@ -1165,14 +1169,9 @@ fn build() -> Vec<Row> {
         &[A::ResetAttempts],
     ]
     .concat();
-    // Only implementation jobs plan, so `replan` is refused for the other kinds.
-    row(
-        esc,
-        E::Replan,
-        G::KindImplementation,
-        Fixed(S::Planning),
-        &replan,
-    );
+    // Only implementation jobs plan, so `replan` is refused for the other kinds. It is refused
+    // too once the PR has merged at another head: the merge cannot be undone.
+    row(esc, E::Replan, G::Replannable, Fixed(S::Planning), &replan);
     row(
         esc,
         E::Cancel,
