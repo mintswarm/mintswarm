@@ -809,6 +809,27 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
     expect_hit(
         r,
+        "a script after cd",
+        base(files=["web/x.sh"]),
+        "gate-changes",
+        reason="web/x.sh is named by gate web-script",
+        component="web",
+        config="cd-gates",
+    )
+    expect_hit(
+        r,
+        "a script after two cds",
+        base(files=["web/apps/y.sh"]),
+        "gate-changes",
+        reason="web/apps/y.sh is named by gate nested-script",
+        component="web",
+        config="cd-gates",
+    )
+    expect_clean(
+        r, "a script beside the cd", base(files=["web/y.sh"]), ["gate-changes"], component="web", config="cd-gates"
+    )
+    expect_hit(
+        r,
         "overridden assumption",
         base(overridden_assumptions=[{"assumption": "A1", "reason": "the analysis was wrong"}]),
         "overridden-assumptions",
@@ -2949,6 +2970,15 @@ def build_commits(sb: Sandbox) -> tuple:
         variant(name, lambda c, value=value: approval(c).update(min_confidence=value))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
+    variant(
+        "cd-gates",
+        lambda c: c["gates"]["run"].extend(
+            [
+                {"name": "web-script", "command": "cd ./web && bash x.sh"},
+                {"name": "nested-script", "command": "cd ./web && cd ./apps && bash y.sh"},
+            ]
+        ),
+    )
     commits["real"] = sb.commit_config(real_bytes, "real")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")

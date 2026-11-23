@@ -95,13 +95,18 @@ Globs match as in the plan floor; tracked paths are every ls-tree entry.
   gates               gate-tools *          a gate command cannot be read,
                                             or bash, or the command word of a
                                             gate's simple command that is not
-                                            a path or a shell builtin, is not
-                                            found on PATH (only the name is
-                                            printed)
+                                            a path or a shell builtin, or a
+                                            tool a script the gates run is
+                                            known to need (pnpm for
+                                            .mintswarm/dogfood/web-install.sh),
+                                            is not found on PATH (only the
+                                            name is printed)
   gates               tests-gated *         a test file is not a word of any
                                             gate command (shlex words, a
-                                            leading ./ dropped, as the plan
-                                            floor's gate words)
+                                            leading ./ dropped, each also
+                                            joined to the cd directories
+                                            before it, as the plan floor's
+                                            gate words)
   gate-reports        report-formats *      report-gates.py's resolve rejects
                                             gates.report
   plan-approval       plan-approval-config * the plan floor's validate_config
@@ -167,10 +172,23 @@ grammar:
   `true`, `false`, `echo`, `test`, `pwd`, `exit`, `shift` and `wait`, which
   evaluate nothing whatever their arguments; `source` and `.` are read as
   interpreters, below. `[` is outside the characters, so a test is written
-  with `test`. Every other builtin or keyword (set, printf, export,
-  declare, typeset, local, readonly, read, unset, let, eval, trap, builtin,
-  cd, compgen, complete, bind, for, case, function, coproc and the rest) is
-  unreadable.
+  with `test`. cd is read as below. Every other builtin or keyword (set,
+  printf, export, declare, typeset, local, readonly, read, unset, let,
+  eval, trap, builtin, compgen, complete, bind, for, case, function, coproc
+  and the rest) is unreadable.
+- cd is readable only as `cd DIR` in a command whose simple commands are
+  joined by `&&` alone, each `&&` a word of its own, with no newline, no
+  reserved word and no redirection in the cd itself: a failed cd then
+  stops the command, and shlex (the floors' gate words) splits the text
+  into the same words as the reader. DIR is `.` or starts with `./`, so
+  bash never looks it up in CDPATH, and has no empty or `..` segment.
+  Taken from the directory the cds before it lead to, with `.` segments
+  dropped, DIR must be the root or a directory that holds a tracked blob,
+  so it is tracked and no symbolic link is on its path. Every later
+  interpreter script and command word holding `/` (unless it starts with
+  `/`) is resolved against that directory, and the reasons name the
+  resolved path. The floors' gate words join each word to the cd
+  directories before it, so they protect exactly the path read here.
 - An interpreter the reader knows (bash, sh, zsh, dash, python, python3,
   node, perl, ruby, source, `.`) is readable only as `INTERPRETER SCRIPT
   [ARGUMENTS...]`: the word right after it is its script. An interpreter
@@ -192,7 +210,30 @@ A readable simple command fails gate-scripts-named when:
   tclsh, wish, Rscript, osascript, expect, pwsh, ts-node or tsx;
 - it runs an interpreter the reader knows whose script is not a tracked
   regular file;
-- its command word holds `/` and is not a tracked regular file.
+- its command word holds `/` and is not a tracked regular file, unless it
+  is not a tracked blob either and, resolved, is `[DIR/]node_modules/.bin/
+  NAME`, where no segment of DIR is empty, `.`, `..` or `node_modules`,
+  NAME is one segment other than `.` and `..`, a tracked regular
+  `pnpm-lock.yaml` or `package-lock.json` sits in DIR or a directory
+  above it, DIR is the root or a tracked directory, and no path above the
+  binary (DIR/node_modules or DIR/node_modules/.bin included) is a tracked
+  blob, such as a symbolic link that would lead the binary to tracked code
+  at another path. Such a binary is dependency code pinned by integrity in a
+  tracked lockfile, which the dependency review judges, as cargo's
+  dependencies are; a workspace package's own bin linked there is tracked
+  code the floors do not protect, a known limit. Two more known limits of
+  this relaxation: the paths above the binary are compared with tracked
+  blobs case-sensitively, so on a case-insensitive checkout a tracked
+  symbolic link at a case variant of DIR/node_modules or its .bin (such as
+  web/Node_modules) is not seen; and files tracked inside DIR/node_modules
+  (added with `git add -f`, say) are not rejected, although whether pnpm
+  replaces them before the binary runs depends on its up-to-date check.
+
+`pnpm install` stays unreadable as a task runner: it runs a .pnpmfile.cjs,
+lifecycle scripts of package.json files the floors do not protect and
+dependency build scripts, and reading it would mean modelling pnpm's
+options. A gate installs through a tracked script instead, which the floors
+then protect.
 
 A tracked symbolic link is never a tracked regular file, since it can point
 outside the repository. Any other command word is taken as a tool that runs
@@ -331,6 +372,10 @@ OPERATORS = re.compile(r"(&&|\|\||;|\|)")
 REDIRECTIONS = (">/dev/null", "2>/dev/null", "2>&1", ">&2")
 ALLOWED_BUILTINS = frozenset(": true false echo test pwd exit shift wait".split())
 RESERVED = frozenset("if then else elif fi do done while until".split())
+CD = "cd"
+LOCKFILES = ("pnpm-lock.yaml", "package-lock.json")
+# Tools a tracked script run by a gate needs that no gate names as a command word, so gate-tools checks them too.
+SCRIPT_TOOLS = {".mintswarm/dogfood/web-install.sh": ("pnpm",)}
 # Every bash builtin and keyword; outside ALLOWED_BUILTINS, and apart from the prefixes, source and `.`, unreadable.
 BUILTINS = frozenset(
     """
@@ -549,6 +594,7 @@ class Ref:
         self.paths = [path for path, _, _, _ in entries]
         self.blobs = {path for path, _, kind, _ in entries if kind == "blob"}
         self.regular_files = {path for path, mode, kind, _ in entries if kind == "blob" and mode in REGULAR}
+        self.directories = {""} | {path[:i] for path in self.blobs for i, c in enumerate(path) if c == "/"}
         self.config = config
         self.tests = [path for path in self.paths if path in self.blobs and is_test(path)]
         self._cache = {}
@@ -655,14 +701,23 @@ def runnable_gates(config: dict) -> list:
 
 
 def gate_words(config: dict) -> list:
-    """The shlex words of every gate command, a leading ./ dropped, as the plan floor's gate words."""
+    """The plan floor's gate words: shlex words of every gate command, a leading ./ dropped, each also joined
+    to the directory of every earlier `cd ARG` in the same command (leading ./, `.` and empty segments dropped)."""
     commands, _ = gate_commands(config)
     words = []
     for _, command in commands:
         try:
-            words.extend(strip_dot(word) for word in shlex.split(command))
+            split = shlex.split(command)
         except ValueError:
             continue
+        directory = []
+        for index, word in enumerate(split):
+            stripped = strip_dot(word)
+            words.append(stripped)
+            if directory:
+                words.append("/".join([*directory, stripped]))
+            if index > 0 and split[index - 1] == CD:
+                directory += [segment for segment in stripped.split("/") if segment not in ("", ".")]
     return words
 
 
@@ -750,28 +805,132 @@ def command_word(words: list) -> list:
             raise CommandError(f"{first} is given no script, which the check does not read")
         if rest[1].startswith(("-", "+")):
             raise CommandError(f"{first} is given {rest[1]} before its script, an option the check does not read")
-    elif first in BUILTINS and first not in ALLOWED_BUILTINS:
+    elif first in BUILTINS and first not in ALLOWED_BUILTINS and first != CD:
         raise CommandError(f"it runs {first}, a builtin the check does not read")
     return rest
 
 
-def tracked_problem(word: str, regular: set, blobs: set) -> str:
-    """Why word is not a tracked regular file, or empty."""
-    path = strip_dot(word)
+def cd_chain(command: str) -> list:
+    """The arguments of each cd in a command that runs cd; raises CommandError unless it is a pure && chain."""
+    if "\n" in command:
+        raise CommandError("it runs cd in a command not joined by && alone, which the check does not read")
+    simple, current = [], []
+    for chunk in command.split(" "):
+        if chunk == "":
+            continue
+        if chunk == "&&":
+            simple.append(current)
+            current = []
+            continue
+        if any(OPERATORS.fullmatch(piece) for piece in OPERATORS.split(chunk)):
+            raise CommandError("it runs cd in a command not joined by && alone, which the check does not read")
+        current.append(chunk)
+    simple.append(current)
+    arguments = []
+    for chunks in simple:
+        words = [chunk for chunk in chunks if chunk not in REDIRECTIONS]
+        if words and words[0] in RESERVED:
+            raise CommandError(f"it runs cd in a command with {words[0]}, which the check does not read")
+        if words and words[0] == CD:
+            if len(words) != len(chunks):
+                raise CommandError("it runs cd with a redirection, which the check does not read")
+            if len(words) != 2:
+                raise CommandError(
+                    f"it runs cd with {len(words) - 1} arguments, but the check reads cd with exactly one"
+                )
+            arguments.append(words[1])
+    return arguments
+
+
+def cd_directory(argument: str, cwd: str, directories: set) -> str:
+    """The root-relative directory `cd argument` leads to from cwd; raises CommandError unless it is tracked."""
+    if argument != "." and not argument.startswith("./"):
+        raise CommandError(f"it runs cd {argument}, which does not start with ./, so CDPATH can change where it goes")
+    segments = argument.split("/")[1:]
+    if any(segment in ("", "..") for segment in segments):
+        raise CommandError(f"it runs cd {argument}, which has an empty or .. segment, which the check does not read")
+    target = join(cwd, "/".join(segment for segment in segments if segment != "."))
+    if target not in directories:
+        where = f" (as {target})" if cwd else ""
+        raise CommandError(f"it runs cd {argument}{where}, which is not a tracked directory")
+    return target
+
+
+def read_gate(command: str, directories: set) -> list:
+    """[(working directory, words from the command word on)] for each simple command of a gate command, the
+    directory root-relative and empty for the root; raises CommandError outside the grammar."""
+    raw = simple_commands(command)
+    simple = [command_word(words) for words in raw]
+    if not any(words and words[0] == CD for words in simple):
+        return [("", words) for words in simple]
+    arguments = iter(cd_chain(command))
+    cwd, read = "", []
+    for words in simple:
+        if words and words[0] == CD:
+            cwd = cd_directory(next(arguments), cwd, directories)
+        read.append((cwd, words))
+    return read
+
+
+def join(directory: str, path: str) -> str:
+    return f"{directory}/{path}" if directory and path else directory or path
+
+
+def resolved(word: str, cwd: str) -> str:
+    """The root-relative path a word names from the working directory cwd, a leading ./ dropped."""
+    return word if word.startswith("/") else join(cwd, strip_dot(word))
+
+
+def tracked_problem(word: str, regular: set, blobs: set, cwd: str = "") -> str:
+    """Why word, from the working directory cwd, is not a tracked regular file, or empty."""
+    path = resolved(word, cwd)
+    name = path if cwd else word
     if path in regular:
         return ""
     if path in blobs:
-        return f"{word}, which is a tracked symbolic link, not a regular file"
-    return f"{word}, which is not a tracked file"
+        return f"{name}, which is a tracked symbolic link, not a regular file"
+    return f"{name}, which is not a tracked file"
 
 
-def script_problem(words: list, regular: set, blobs: set) -> str:
-    """Why a readable simple command runs code that no tracked regular file it names holds, or empty."""
+def locked_binary(path: str, regular: set) -> bool:
+    """Whether path is [DIR/]node_modules/.bin/NAME under a tracked lockfile in DIR or a directory above it."""
+    segments = path.split("/")
+    if len(segments) < 3 or segments[-3:-1] != ["node_modules", ".bin"] or segments[-1] in ("", ".", ".."):
+        return False
+    directory = segments[:-3]
+    if any(segment in ("", ".", "..", "node_modules") for segment in directory):
+        return False
+    return any(
+        join("/".join(directory[:depth]), lockfile) in regular
+        for depth in range(len(directory), -1, -1)
+        for lockfile in LOCKFILES
+    )
+
+
+def locked_binary_problem(path: str, blobs: set, directories: set) -> str:
+    """Why a locked binary path does not run from the tracked tree its path names, or empty: an ancestor of it is a
+    tracked symbolic link, or its DIR is not a tracked directory."""
+    segments = path.split("/")
+    for depth in range(1, len(segments)):
+        prefix = "/".join(segments[:depth])
+        if prefix in blobs:
+            return f"{path}, which is under the tracked symbolic link {prefix}"
+    directory = "/".join(segments[:-3])
+    if directory not in directories:
+        return f"{path}, whose directory {directory} is not a tracked directory"
+    return ""
+
+
+def script_problem(words: list, regular: set, blobs: set, cwd: str = "", directories: set = frozenset({""})) -> str:
+    """Why a readable simple command, run in the directory cwd, runs code that no tracked regular file it names
+    holds, or empty."""
     if not words:
         return ""
     first = words[0]
+    if first == CD:
+        return ""
     if first in INTERPRETERS:
-        problem = tracked_problem(words[1], regular, blobs)
+        problem = tracked_problem(words[1], regular, blobs, cwd)
         return f"{first} runs {problem}" if problem else ""
     if first in ALLOWED_BUILTINS:
         return ""
@@ -782,7 +941,11 @@ def script_problem(words: list, regular: set, blobs: set) -> str:
     if first in UNMODELLED or VERSIONED.fullmatch(first):
         return f"it runs {first}, an interpreter the check does not read"
     if "/" in first:
-        problem = tracked_problem(first, regular, blobs)
+        path = resolved(first, cwd)
+        if path not in blobs and locked_binary(path, regular):
+            problem = locked_binary_problem(path, blobs, directories)
+            return f"it runs {problem}" if problem else ""
+        problem = tracked_problem(first, regular, blobs, cwd)
         return f"it runs {problem}" if problem else ""
     return ""
 
@@ -1073,12 +1236,12 @@ def gate_scripts_named(ref: Ref) -> tuple:
     reasons = []
     for label, command in commands:
         try:
-            simple = [command_word(words) for words in simple_commands(command)]
+            simple = read_gate(command, ref.directories)
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so the floors cannot see what it runs")
             continue
-        for words in simple:
-            problem = script_problem(words, ref.regular_files, ref.blobs)
+        for cwd, words in simple:
+            problem = script_problem(words, ref.regular_files, ref.blobs, cwd, ref.directories)
             if problem:
                 reasons.append(f"gate {label}: {problem}, so the floors cannot protect what it runs")
     return outcome(reasons)
@@ -1091,15 +1254,19 @@ def gate_tools(ref: Ref) -> tuple:
     reasons, tools = [], ["bash"]
     for label, command in commands:
         try:
-            simple = [command_word(words) for words in simple_commands(command)]
+            simple = read_gate(command, ref.directories)
         except CommandError as exc:
             reasons.append(f"gate {label}: {exc}, so its tools are unknown")
             continue
-        for words in simple:
+        for cwd, words in simple:
             if not words:
                 continue
             first = words[0]
-            if "/" in first or first in ALLOWED_BUILTINS or first in ("source", ".") or first in tools:
+            if first in INTERPRETERS:
+                tools += [tool for tool in SCRIPT_TOOLS.get(resolved(words[1], cwd), ()) if tool not in tools]
+            if "/" in first:
+                tools += [tool for tool in SCRIPT_TOOLS.get(resolved(first, cwd), ()) if tool not in tools]
+            if "/" in first or first in ALLOWED_BUILTINS or first in ("source", ".", CD) or first in tools:
                 continue
             tools.append(first)
     for tool in tools:
