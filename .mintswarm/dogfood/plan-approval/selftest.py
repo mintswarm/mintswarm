@@ -96,7 +96,8 @@ Checks:
   99 is `human` and 100 `auto`;
 - malformed envelopes, each `human` with the judgement unusable: a missing
   or non-UTF-8 assessment, no envelope, two envelopes, an unclosed or a
-  four-backtick fence, not JSON, a list, a duplicate key, NaN, a missing,
+  four-backtick fence, not JSON, a lone surrogate escape in the reason or a
+  doubt, a list, a duplicate key, NaN, a missing,
   extra or reordered key, a confidence that is a boolean, float or string or
   is -1 or 101, an unknown band, a range (`80-94`) or a display name
   (`Likely safe`) as the band, a confidence outside its band's range,
@@ -1947,6 +1948,11 @@ def malformed_assessments() -> list:
         ("unclosed fence", assessment_text(close=None)),
         ("a four-backtick fence", assessment_text(fence="````json", close="````")),
         ("envelope not JSON", assessment_text("{ not json")),
+        ("a lone surrogate in the reason", assessment_text(raw.replace(json.dumps(REASON), '"x \\ud800 y"'))),
+        (
+            "a lone surrogate in a doubt",
+            assessment_text(json.dumps(envelope("likely-safe", 92), indent=2).replace("twice", "\\udc00")),
+        ),
         ("envelope a list", assessment_text("[" + raw + "]")),
         ("duplicate key", assessment_text(raw.replace('"band": "safe",', '"band": "safe",\n  "band": "safe",'))),
         ("NaN confidence", assessment_text(raw.replace('"confidence": 95', '"confidence": NaN'))),

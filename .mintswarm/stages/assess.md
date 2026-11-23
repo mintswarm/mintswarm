@@ -85,12 +85,14 @@ The conditions of `likely-safe` and `safe`:
 
 When none of the bands' conditions is met exactly, take `needs-review`.
 
+In judging the hard triggers and the conditions above:
+
 - These are not steps outside the repository: work in a scratch directory (`$TMPDIR`, `mktemp -d`) that only verifies the change, the download cache a package manager fills while doing so, and a required tool version, wherever the plan records it. Installing or configuring anything outside the scratch directory, or pushing or publishing from it, still is.
 - Default data that other repositories adopt later through a change of their own, such as a guideline pack's gates, settings or conventions, or a template, is judged as data in this repository. Being adoptable does not make it reach the gates or spread outside the issue's component; the adopting change is assessed on its own. It does count as reaching the gates, a floor or every stage's instructions when this repository's own `gates.run`, floors or stage instructions use it.
 
 The value inside a band starts at the band's lowest value. Raise it only for reasons you state in the section they concern, and never past the band's highest value. When in doubt between two bands, state the doubt in the section it concerns and take the band its concrete consequence supports: what the doubted mistake would change, how far it would reach, and whether a revert undoes it.
 
-A doubt is something that, if wrong, would make approving without a person the wrong call. Each doubt names the `statement` you doubt, its `consequence` if wrong, and the `resolution` that would settle it. State at most 10.
+A doubt is something that, if wrong, would make approving without a person the wrong call. Each doubt names the `statement` you doubt, its `consequence` if wrong, and the `resolution` that would settle it. Every doubt you state in any section is also an entry in `doubts`, and `safe` means you state no doubt anywhere in the assessment. State at most 10.
 
 ## Output
 

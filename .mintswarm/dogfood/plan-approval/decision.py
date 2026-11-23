@@ -61,8 +61,10 @@ lines split at LF only and trailing CR, space and tab removed from each
   whitespace, control and format characters are removed;
 - exactly one line is the fence opener ```json, closed by the next line of
   exactly three backticks; between them is the envelope, strict JSON (no
-  duplicate keys, NaN or Infinity), one object with exactly the keys
-  `confidence`, `band`, `hard_triggers`, `reason` and `doubts`, in order;
+  duplicate keys, NaN or Infinity) with no string holding a lone surrogate
+  (an escape such as \\ud800, which UTF-8 cannot encode), one object with
+  exactly the keys `confidence`, `band`, `hard_triggers`, `reason` and
+  `doubts`, in order;
 - `confidence` is an integer (not a boolean) from 0 to 100, equal to the
   summary line's, and inside the range of `band`, one of the BANDS
   identifiers: `blocked` (0), `uncertain` (1-49), `needs-review` (50-79),
@@ -469,6 +471,10 @@ def envelope_problems(text: str) -> tuple:
         envelope = floor.strict_json("\n".join(lines[start : closes[0]]))
     except (ValueError, RecursionError):
         return ["the assessment's envelope is not strict JSON"], None
+    try:
+        json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:  # a \uD800-style escape decodes to a lone surrogate
+        return ["the assessment's envelope holds a string with a lone surrogate"], None
     problems = envelope_fields(envelope)
     if problems:
         return problems, None
