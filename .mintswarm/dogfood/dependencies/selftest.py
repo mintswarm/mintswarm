@@ -11,9 +11,13 @@ lockfiles are written inline, configs and pnpm lockfiles as JSON text.
 new-packages.py runs as `sys.executable -I -B new-packages.py ...` with that
 repository as its working directory.
 
-Cases: the option absent and `off`; `agent` with only a docs change; a
+Cases: the option absent and `off`, each with a stale packages.json that
+must be removed; `agent` with only a docs change; a
 Cargo change (a new registry crate, an upgrade, a git crate, a look-alike
-registry, a new transitive crate, a new workspace member); a pnpm change (an
+registry, a new transitive crate, a new workspace member); Cargo.lock tables
+in every form Cargo reads (whitespace or a comment in the header, quoted
+keys, inline tables, a table after [metadata], CRLF) and shapes that become
+a problem, never silence; a pnpm change (an
 upgraded scoped package, a tarball package, a peer-suffixed key); a
 Cargo.toml without a lockfile change; an unreadable pnpm-lock.yaml; a changed
 .npmrc; an unknown option value and bad arguments; the checkout's own
@@ -199,10 +203,13 @@ class Sandbox:
         tree = self.raw("write-tree", env=env).decode("ascii").strip()
         return self.git("commit-tree", tree, "-m", f"fixture {self.counter}")
 
-    def run(self, args: list) -> tuple:
-        """Run the script; return (proc, packages.json as a dict or None)."""
+    def run(self, args: list, stale: bool = False) -> tuple:
+        """Run the script; return (proc, packages.json as a dict or None). stale puts an old packages.json first."""
         self.counter += 1
         out = self.tmp / f"out-{self.counter}"
+        if stale:
+            out.mkdir()
+            (out / "packages.json").write_text('{"stale": true}\n', encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-I", "-B", str(SCRIPT), *args, "--out", str(out)],
             cwd=self.repo,
@@ -212,9 +219,9 @@ class Sandbox:
         target = out / "packages.json"
         return proc, (json.loads(target.read_text(encoding="utf-8")) if target.exists() else None)
 
-    def diff(self, base_files: dict, head_files: dict) -> tuple:
+    def diff(self, base_files: dict, head_files: dict, stale: bool = False) -> tuple:
         base, head = self.commit(base_files), self.commit(head_files)
-        proc, result = self.run(["--base", base, "--head", head])
+        proc, result = self.run(["--base", base, "--head", head], stale=stale)
         return proc, result, base, head
 
 
@@ -228,20 +235,22 @@ def text(proc) -> str:
 def option_off(box: Sandbox):
     for label, value in (("absent", None), ("off", "off")):
         proc, result, _, _ = box.diff(
-            {CONFIG: config(value), "Cargo.lock": CARGO_BASE}, {CONFIG: config(value), "Cargo.lock": CARGO_HEAD}
+            {CONFIG: config(value), "Cargo.lock": CARGO_BASE},
+            {CONFIG: config(value), "Cargo.lock": CARGO_HEAD},
+            stale=True,
         )
         T.check(f"option {label}: exit 0", proc.returncode == 0, proc.stderr.decode(errors="replace"))
         T.check(f"option {label}: prints off", text(proc) == "dependency review: off", text(proc))
-        T.check(f"option {label}: no output file", result is None)
+        T.check(f"option {label}: no output file, the stale one removed", result is None)
 
 
 def docs_only(box: Sandbox):
     proc, result, _, _ = box.diff(
-        {CONFIG: config("agent"), "README.md": b"a\n"}, {CONFIG: config("agent"), "README.md": b"b\n"}
+        {CONFIG: config("agent"), "README.md": b"a\n"}, {CONFIG: config("agent"), "README.md": b"b\n"}, stale=True
     )
     T.check("docs change: exit 0", proc.returncode == 0)
     T.check("docs change: prints no dependency change", text(proc) == "no dependency change", text(proc))
-    T.check("docs change: no output file", result is None)
+    T.check("docs change: no output file, the stale one removed", result is None)
 
 
 def cargo_change(box: Sandbox):
@@ -256,6 +265,61 @@ def cargo_change(box: Sandbox):
     T.check("cargo: changed", result["changed"] == ["Cargo.lock"], str(result["changed"]))
     T.check("cargo: packages", result["packages"] == CARGO_EXPECTED, json.dumps(result["packages"], indent=1))
     T.check("cargo: no problems", result["problems"] == [], str(result["problems"]))
+
+
+HIDDEN = "git+https://evil.example/h.git#1"
+CARGO_VARIANTS = {
+    "spaced header": cargo_lock(cargo_package("serde", "1.0.0", CRATES))
+    + b'\n[[ package ]]\nname = "hidden"\nversion = "0.1.0"\nsource = "'
+    + HIDDEN.encode()
+    + b'"\n',
+    "header comment": cargo_lock(cargo_package("serde", "1.0.0", CRATES))
+    + b'\n[[package]] # c\nname = "hidden"\nversion = "0.1.0"\nsource = "'
+    + HIDDEN.encode()
+    + b'"\n',
+    "quoted keys": cargo_lock(cargo_package("serde", "1.0.0", CRATES))
+    + b'\n[["package"]]\n"name" = "hidden"\n\'version\' = "0.1.0"\nsource = "'
+    + HIDDEN.encode()
+    + b'"\n',
+    "inline tables": b'version = 4\npackage = [{ name = "serde", version = "1.0.0", source = "'
+    + CRATES.encode()
+    + b'" }, { name = "hidden", version = "0.1.0", source = "'
+    + HIDDEN.encode()
+    + b'" }]\n',
+    "after metadata": cargo_lock(cargo_package("serde", "1.0.0", CRATES))
+    + b'\n[metadata]\nk = "v"\n\n[[package]]\nname = "hidden"\nversion = "0.1.0"\nsource = "'
+    + HIDDEN.encode()
+    + b'"\n',
+    "CRLF": (
+        cargo_lock(cargo_package("serde", "1.0.0", CRATES))
+        + b'\n[[package]]\nname = "hidden"\nversion = "0.1.0"\nsource = "'
+        + HIDDEN.encode()
+        + b'"\n'
+    ).replace(b"\n", b"\r\n"),
+}
+CARGO_BROKEN = {
+    "a subtable yq refuses": CARGO_BASE + b"\n[package.extra]\nk = 1\n",
+    "a numeric version": CARGO_BASE + b'\n[[package]]\nname = "hidden"\nversion = 1\n',
+    "a dotted name": CARGO_BASE + b'\n[[package]]\nname.x = 1\nversion = "1"\n',
+    "a package that is not an array": b'version = 4\n[package]\nname = "hidden"\nversion = "1"\n',
+}
+
+
+def cargo_variants(box: Sandbox):
+    hidden = package("cargo", "Cargo.lock", "hidden", "0.1.0", HIDDEN, False, False)
+    for label, head in CARGO_VARIANTS.items():
+        proc, result, _, _ = box.diff(
+            {CONFIG: config("agent"), "Cargo.lock": CARGO_BASE}, {CONFIG: config("agent"), "Cargo.lock": head}
+        )
+        packages = result["packages"] if result else None
+        T.check(f"cargo {label}: the table is listed", packages == [hidden], f"{text(proc)} {packages}")
+        T.check(f"cargo {label}: no problems", result is not None and result["problems"] == [])
+    for label, head in CARGO_BROKEN.items():
+        proc, result, _, _ = box.diff(
+            {CONFIG: config("agent"), "Cargo.lock": CARGO_BASE}, {CONFIG: config("agent"), "Cargo.lock": head}
+        )
+        problems = [p["path"] for p in result["problems"]] if result else None
+        T.check(f"cargo {label}: a problem, not silence", problems == ["Cargo.lock"], f"{text(proc)} {problems}")
 
 
 def pnpm_change(box: Sandbox):
@@ -317,11 +381,13 @@ def npmrc_change(box: Sandbox):
 
 def bad_input(box: Sandbox):
     proc, result, _, _ = box.diff(
-        {CONFIG: config("maybe"), "Cargo.lock": CARGO_BASE}, {CONFIG: config("maybe"), "Cargo.lock": CARGO_HEAD}
+        {CONFIG: config("maybe"), "Cargo.lock": CARGO_BASE},
+        {CONFIG: config("maybe"), "Cargo.lock": CARGO_HEAD},
+        stale=True,
     )
     T.check("unknown value: exit 2", proc.returncode == 2, text(proc))
     T.check("unknown value: names the key", b"pipeline.dependencies.review" in proc.stderr)
-    T.check("unknown value: no output file", result is None)
+    T.check("unknown value: no output file, the stale one removed", result is None)
     head = box.commit({CONFIG: config("agent")})
     for label, args in (
         ("no --base", ["--head", head]),
@@ -375,6 +441,7 @@ def main() -> int:
             option_off,
             docs_only,
             cargo_change,
+            cargo_variants,
             pnpm_change,
             manifest_without_lockfile,
             unreadable_lockfile,

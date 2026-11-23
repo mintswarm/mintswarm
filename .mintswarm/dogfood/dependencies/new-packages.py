@@ -15,9 +15,9 @@ package.json, pnpm-lock.yaml, pnpm-workspace.yaml or .npmrc, and paths
 ending in .cargo/config.toml or .cargo/config. With none, it prints
 `no dependency change` and writes nothing.
 
-Otherwise it reads each changed Cargo.lock (a line parser of its
-`[[package]]` tables) and pnpm-lock.yaml (through `yq -o=json`) at the base
-and the head; a file absent at a side counts as empty. A package is
+Otherwise it reads each changed Cargo.lock (through `yq -p=toml -o=json`,
+checking the shape of every `package` table) and pnpm-lock.yaml (through
+`yq -p=yaml -o=json`) at the base and the head; a file absent at a side counts as empty. A package is
 reported when its (name, version, source) is in the head lockfile and not
 in the base; `previous` holds the base versions of that name. Workspace
 members and path packages (a Cargo.lock entry without `source`) are part of
@@ -25,7 +25,8 @@ the diff itself and are not reported. Problems are a lockfile that cannot be
 read and a changed Cargo.toml or package.json with no changed lockfile of
 its ecosystem.
 
-It writes `<dir>/packages.json` with the keys `base`, `head`, `changed`,
+It first removes any `<dir>/packages.json` left by an earlier run, so the
+off, no-change and error paths leave none. It writes `<dir>/packages.json` with the keys `base`, `head`, `changed`,
 `packages` and `problems`, sorted, so the output is deterministic.
 
 Standard library only, apart from running git and yq. Never contacts the
@@ -81,8 +82,8 @@ def resolve(ref: str) -> str:
     return commit
 
 
-def yaml_to_json(data: bytes):
-    proc = run(["yq", "-p=yaml", "-o=json", "."], data)
+def to_json(data: bytes, fmt: str = "yaml"):
+    proc = run(["yq", f"-p={fmt}", "-o=json", "."], data)
     if proc.returncode != 0:
         raise LockError(f"yq: {last_line(proc)}")
     try:
@@ -96,7 +97,7 @@ def review_mode(base: str) -> str:
     if proc.returncode != 0:
         raise InputError(f"no {CONFIG} at {base}")
     try:
-        config = yaml_to_json(proc.stdout)
+        config = to_json(proc.stdout)
     except LockError as exc:
         raise InputError(f"{CONFIG} at {base} cannot be read: {exc}") from exc
     if not isinstance(config, dict):
@@ -152,81 +153,39 @@ def read_blob(rev: str, path: str) -> bytes:
 
 # --- Cargo.lock -------------------------------------------------------------
 
-TOML_STRING = r'"(?:[^"\\]|\\.)*"'
-KEY_LINE = re.compile(r"([A-Za-z0-9_-]+)\s*=\s*(.*)")
-STRING_ITEM = re.compile(r"\s*(" + TOML_STRING + r")\s*,?\s*")
-
-
-def toml_string(text: str, where: str) -> str:
-    try:
-        value = json.loads(text)
-    except ValueError as exc:
-        raise LockError(f"{where}: bad string {text}") from exc
-    if not isinstance(value, str):
-        raise LockError(f"{where}: bad string {text}")
-    return value
-
-
-def string_items(text: str, where: str) -> list:
-    """The strings of a run of `"a", "b",` items; LockError on anything else."""
-    items, pos = [], 0
-    while pos < len(text):
-        match = STRING_ITEM.match(text, pos)
-        if not match or match.end() == pos:
-            raise LockError(f"{where}: cannot read {text.strip()!r}")
-        items.append(toml_string(match.group(1), where))
-        pos = match.end()
-    return items
-
 
 def parse_cargo_lock(data: bytes) -> list:
-    """The [[package]] tables as dicts with name, version, source (or None) and dependencies."""
+    """The `package` tables, read by `yq -p=toml`, as dicts with name, version, source (or None) and dependencies.
+
+    Any shape other than a list of tables with string name and version, an optional string source and an
+    optional list of string dependencies is a LockError, so no table is dropped silently.
+    """
     try:
-        text = data.decode("utf-8")
+        data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise LockError("not UTF-8") from exc
-    packages, current, array = [], None, None
-    for number, raw in enumerate(text.splitlines(), 1):
-        where = f"line {number}"
-        line = raw.strip()
-        if array is not None:
-            if line.endswith("]"):
-                array.extend(string_items(line[:-1], where))
-                array = None
-            elif line and not line.startswith("#"):
-                array.extend(string_items(line, where))
-            continue
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            if line == "[[package]]":
-                current = {"name": None, "version": None, "source": None, "dependencies": []}
-                packages.append(current)
-            else:
-                current = None
-            continue
-        if current is None:
-            continue
-        match = KEY_LINE.fullmatch(line)
-        if not match:
-            raise LockError(f"{where}: cannot read {line!r}")
-        key, value = match.group(1), match.group(2).strip()
-        if value.startswith("["):
-            items = []
-            if value.endswith("]"):
-                items.extend(string_items(value[1:-1], where))
-            else:
-                items.extend(string_items(value[1:], where))
-                array = items
-            if key == "dependencies":
-                current["dependencies"] = items
-        elif key in ("name", "version", "source"):
-            current[key] = toml_string(value, where)
-    if array is not None:
-        raise LockError("unterminated array")
-    for package in packages:
-        if not package["name"] or not package["version"]:
-            raise LockError("a [[package]] table without name or version")
+    if not data.strip():
+        return []
+    lock = to_json(data, "toml")
+    if not isinstance(lock, dict):
+        raise LockError("not a table")
+    tables = lock.get("package", [])
+    if not isinstance(tables, list):
+        raise LockError("package is not an array of tables")
+    packages = []
+    for number, table in enumerate(tables, 1):
+        where = f"package {number}"
+        if not isinstance(table, dict):
+            raise LockError(f"{where} is not a table")
+        name, version = table.get("name"), table.get("version")
+        source, dependencies = table.get("source"), table.get("dependencies", [])
+        if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+            raise LockError(f"{where} has no string name and version")
+        if source is not None and not isinstance(source, str):
+            raise LockError(f"{where} ({name}) has a source that is not a string")
+        if not isinstance(dependencies, list) or not all(isinstance(d, str) for d in dependencies):
+            raise LockError(f"{where} ({name}) has dependencies that are not a list of strings")
+        packages.append({"name": name, "version": version, "source": source, "dependencies": dependencies})
     return packages
 
 
@@ -307,7 +266,7 @@ def importer_pairs(lock: dict) -> set:
 def npm_entries(data: bytes) -> list:
     if not data.strip():
         return []
-    lock = yaml_to_json(data)
+    lock = to_json(data)
     if not isinstance(lock, dict):
         raise LockError("not a mapping")
     packages = lock.get("packages") or {}
@@ -385,6 +344,12 @@ def main(argv: list) -> int:
     parser.add_argument("--out", required=True)
     try:
         args = parser.parse_args(argv)
+        target = Path(args.out) / "packages.json"
+        try:
+            if target.is_symlink() or target.exists():
+                target.unlink()
+        except OSError as exc:
+            raise InputError(f"cannot remove the stale {target}: {exc}") from exc
         base, head = resolve(args.base), resolve(args.head)
         if review_mode(base) == "off":
             print("dependency review: off")
@@ -399,7 +364,7 @@ def main(argv: list) -> int:
         return 2
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "packages.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         f"{len(result['packages'])} new or upgraded packages, {len(result['problems'])} problems: {out}/packages.json"
     )
