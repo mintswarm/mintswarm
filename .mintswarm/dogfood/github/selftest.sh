@@ -375,13 +375,16 @@ cat > "$stubs/gh" <<'EOF'
 # it down; a PR's reviews,
 # served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
 # For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
-# last read repeating, counted in pulls-reads.json; a check run and status per
-# commit in commits.json, {"<sha>": {"check_runs": [...], "statuses": [...],
-# "status_total": n}}, check runs two to a page; review threads for "api
-# graphql" in threads.json, {"<n>": [isResolved, ...]}, two to a page with the
-# index as cursor; and PUT pulls/<n>/merge, recorded in merges.json and
-# answered 405 while merges.json has "merge_refused": true, after which
-# pulls/<n> answers merged, by mintswarm-dev-steward[bot].
+# last read repeating, counted in pulls-reads.json; check runs, check suites
+# and statuses per commit in commits.json, {"<sha>": {"check_runs": [...],
+# "check_suites": [...], "statuses": [...], "status_total": n}}, check runs and
+# suites two to a page; review threads for "api graphql" in threads.json,
+# {"<n>": [isResolved, ...]} or {"<n>": {"reads": [[isResolved, ...], ...]}},
+# one list per read of the first page, the last repeating, counted in
+# threads-reads.json, two to a page with the index as cursor; and PUT
+# pulls/<n>/merge, recorded in merges.json and answered 405 while merges.json
+# has "merge_refused": true, after which pulls/<n> answers merged, by
+# mintswarm-dev-steward[bot].
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
@@ -406,6 +409,14 @@ elif argv[:2] == ["api", "graphql"]:
     after = [a.split("=", 1)[1] for i, a in enumerate(argv) if argv[i - 1] == "-f" and a.startswith("after=")]
     start = int(after[0]) if after else 0
     threads = (json.load(open(store)) if os.path.exists(store) else {}).get(n)
+    if isinstance(threads, dict):
+        reads_path = os.path.join(STATE, "threads-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(n, 0) - (0 if start == 0 else 1)
+        if start == 0:
+            reads[n] = seen + 1
+            json.dump(reads, open(reads_path, "w"))
+        threads = threads["reads"][min(seen, len(threads["reads"]) - 1)]
     if threads is None:
         print(json.dumps({"data": {"repository": {"pullRequest": None}}}))
         sys.exit(0)
@@ -440,8 +451,8 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+", a)
         pr.update({"state": "closed", "merged": True, "merge_commit_sha": "f" * 40,
                    "merged_by": {"login": "mintswarm-dev-steward[bot]"}})
     print(json.dumps(pr))
-elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-f]+/(check-runs|status)(\?.*)?", a) for a in argv):
-    sha, kind = re.search(r"/commits/([0-9a-f]+)/(check-runs|status)", next(a for a in argv if a.startswith("repos/"))).groups()
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-f]+/(check-runs|check-suites|status)(\?.*)?", a) for a in argv):
+    sha, kind = re.search(r"/commits/([0-9a-f]+)/(check-runs|check-suites|status)", next(a for a in argv if a.startswith("repos/"))).groups()
     store = os.path.join(STATE, "commits.json")
     commit = (json.load(open(store)) if os.path.exists(store) else {}).get(sha, {})
     if kind == "status":
@@ -449,9 +460,10 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-
         print(json.dumps({"state": "success", "total_count": commit.get("status_total", len(statuses)),
                           "statuses": statuses}))
     else:
-        runs = commit.get("check_runs", [])
-        pages = [{"total_count": len(runs), "check_runs": runs[i:i + 2]} for i in range(0, len(runs), 2)]
-        pages = pages or [{"total_count": 0, "check_runs": []}]
+        key = kind.replace("-", "_")
+        items = commit.get(key, [])
+        pages = [{"total_count": len(items), key: items[i:i + 2]} for i in range(0, len(items), 2)]
+        pages = pages or [{"total_count": 0, key: []}]
         print(json.dumps(pages if "--slurp" in argv else pages[0]))
 elif argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
@@ -2240,15 +2252,17 @@ fixture() {  # fixture N [PULL_JQ [COMMIT_JQ [THREADS_JSON [COMMENTS_JQ]]]]: PR 
       draft: false, base: {ref: \"master\"}, labels: [{name: \"mintswarm\"}],
       head: {ref: \"mintswarm/\(\$n)-land\", sha: \$sha, repo: {full_name: \"mintswarm/mintswarm\"}},
       mergeable: true, mergeable_state: \"blocked\", merged: false}] | ${2:-.})" --arg n "$n" --arg sha "$sha"
-  stub_update commits ".[\$sha] = ({check_runs: [
-      {name: \"gates-matrix\", status: \"completed\", conclusion: \"success\"},
-      {name: \"gates (ubuntu)\", status: \"completed\", conclusion: \"success\"},
-      {name: \"gates (macos)\", status: \"completed\", conclusion: \"success\"}],
+  stub_update commits ".[\$sha] = ({check_runs: ([\"gates-matrix\", \"gates (ubuntu)\", \"gates (macos)\"]
+        | map({name: ., status: \"completed\", conclusion: \"success\", app: {slug: \"github-actions\"}, check_suite: {id: 7}})),
+      check_suites: [
+        {id: 7, app: {slug: \"github-actions\"}, status: \"completed\", conclusion: \"success\", latest_check_runs_count: 3},
+        {id: 8, app: {slug: \"some-app\"}, status: \"queued\", conclusion: null, latest_check_runs_count: 0},
+        {id: 9, app: {slug: \"github-actions\"}, status: \"completed\", conclusion: \"skipped\", latest_check_runs_count: 0}],
       statuses: [{context: \"ci/legacy\", state: \"success\"}]} | ${3:-.})" --arg sha "$sha"
   stub_update threads '.[$n] = $t' --arg n "$n" --argjson t "${4:-[true, true, true]}"
   stub_update issues ".[\$n] = {assignees: [], events: [], unassignable: [], type: null,
-      comments: ([{user: {login: \"mintswarm-dev[bot]\"}, html_url: \"https://github.com/x\",
-        body: \"<!-- mintswarm: steer -->\nThe maintainer approved this PR in the session:\n\n> I approve PR #\(\$n)\n\nTime: 2026-11-23T12:00:00Z\nApproved head: \(\$sha)\n\"}] | ${5:-.})}" \
+      comments: ([{id: 500, created_at: \"2026-11-23T12:00:00Z\", user: {login: \"mintswarm-dev[bot]\"}, html_url: \"https://github.com/x\",
+        body: \"<!-- mintswarm: steer -->\n<!-- mintswarm: steer approval -->\nApproved head: \(\$sha)\nTime: 2026-11-23T12:00:00Z\n\nThe maintainer approved this PR in the session:\n\n> I approve PR #\(\$n)\n\"}] | ${5:-.})}" \
     --arg n "$n" --arg sha "$sha"
 }
 land() { env MSW_LAND_RETRY_DELAY=0 "$L" "$@"; }
@@ -2280,6 +2294,11 @@ check "with one PUT to pulls/90/merge" eq "$(merge_calls 90)" 1
 check "whose body is squash at the approved sha, titled with the PR title and number" \
   eq "$(jq -cS '.calls[-1] | [.method, .body]' "$MSW_STUB_STATE/merges.json")" \
      "$(jq -cnS --arg sha "$(sha_of 90)" '["PUT", {merge_method: "squash", sha: $sha, commit_title: "feat(agents): land 90 (#90)"}]')"
+check "it read pulls/90 three times (settled, again right before the PUT, after it)" \
+  eq "$(jq -r '.["90"]' "$MSW_STUB_STATE/pulls-reads.json")" 3
+check "it asked for the commit's check suites" \
+  sh -c 'jq -e "select(.cmd == \"gh\") | .argv | select(index(\"--paginate\") and index(\"--slurp\")) | .[-1] | select(test(\"commits/$2/check-suites\"))" "$1" >/dev/null' \
+  sh "$argv_log" "$(sha_of 90)"
 check "exactly one access token was minted" eq "$(( $(mints) - land_mints_before ))" 1
 land_argv() { tail -n "+$((land_argv_start + 1))" "$argv_log"; }
 check "it asked for contents and pull_requests write, checks, statuses and metadata read" \
@@ -2321,7 +2340,28 @@ check "refused: a pending status" refused_land "the status ci/legacy is pending,
 fixture 114 . '.status_total = 101'
 check "refused: more statuses than one page holds" refused_land "more than one page of 100" 114
 fixture 97 . '.check_runs |= map(select(.name != "gates-matrix"))'
-check "refused: no gates-matrix check run" refused_land "no gates-matrix check run" 97
+check "refused: no gates-matrix check run" refused_land "no gates-matrix check run by github-actions" 97
+fixture 117 . '.check_runs |= map(select(.name == "gates-matrix")) | .check_suites[0] |= (.status = "in_progress" | .conclusion = null | .latest_check_runs_count = 1)'
+check "refused: only gates-matrix has run, the gate runs not created yet" \
+  refused_land "the check suite 7 of github-actions is in_progress, not completed" 117
+check "which also says the gates have not run" present "has no gate check run yet: the gates have not run" "$sandbox/land.out"
+fixture 118 . '.check_runs |= map(select(.name == "gates-matrix")) | .check_suites[0].latest_check_runs_count = 1'
+check "refused: gates-matrix alone, even in a completed suite" refused_land "has no gate check run yet: the gates have not run" 118
+fixture 119 . '.check_suites[0] |= (.status = "completed" | .conclusion = "failure")'
+check "refused: a check suite that concluded failure" refused_land "the check suite 7 of github-actions concluded failure, not success" 119
+fixture 120 . '.check_suites |= map(select(.id != 7))'
+check "refused: the gates-matrix run's check suite is missing" refused_land "the check suite 7 of gates-matrix is not among the check suites" 120
+fixture 121 . '.check_suites += [{id: 10, app: {slug: "other-ci"}, status: "in_progress", conclusion: null, latest_check_runs_count: 1}]'
+check "refused: another App's check suite still running" refused_land "the check suite 10 of other-ci is in_progress, not completed" 121
+fixture 122 . '.check_runs[0].app.slug = "impostor"'
+check "refused: a gates-matrix run created by another App" refused_land "no gates-matrix check run by github-actions" 122
+fixture 123 . '.check_runs[1].app.slug = "impostor"'
+check "refused: a gate run in the gates suite created by another App" \
+  refused_land "the check run gates (ubuntu) in check suite 7 is by 'impostor', not github-actions" 123
+fixture 124 . '.check_runs[2].conclusion = "skipped"'
+check "refused: a skipped check run (only success passes)" refused_land "the check run gates (macos) concluded skipped, not success" 124
+fixture 125 . '.check_runs[2].conclusion = "neutral"'
+check "refused: a neutral check run" refused_land "the check run gates (macos) concluded neutral, not success" 125
 fixture 98 . . '[true, true, false]'
 check "refused: an unresolved review thread, on the second page" refused_land "1 review thread(s) unresolved" 98
 fixture 99 '.[0].mergeable_state = "dirty"'
@@ -2349,6 +2389,35 @@ fixture 109 . . '[true, true, true]' '.[0].user.login = "zmij"'
 check "refused: a steer by another author" refused_land "no approval steer by mintswarm-dev[bot] names the head" 109
 fixture 115 . . '[true, true, true]' '.[0].body |= sub("<!-- mintswarm: steer -->"; "<!-- mintswarm: steer --> approved")'
 check "refused: a steer without the exact marker line" refused_land "no approval steer by mintswarm-dev[bot] names the head" 115
+fixture 126 . . '[true, true, true]' '.[0].body |= sub("<!-- mintswarm: steer approval -->\n"; "")'
+check "refused: a steer without the approval marker line" refused_land "no approval steer by mintswarm-dev[bot] names the head" 126
+fixture 127 . . '[true, true, true]' '.[0].body |= "Round 2 summary, relaying the stage:\n\n" + . + "\nEnd of the stage output.\n"'
+check "refused: the approval lines embedded in a longer bot comment" refused_land "no approval steer by mintswarm-dev[bot] names the head" 127
+fixture 128 . . '[true, true, true]' '.[0].body |= sub("Approved head: "; "Time: 2026-11-23T12:00:00Z\nApproved head: ")'
+check "refused: the approved-head line not third" refused_land "no approval steer by mintswarm-dev[bot] names the head" 128
+fixture 129 . . '[true, true, true]' '. + [{id: 501, created_at: "2026-11-23T12:05:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked to wait for the rebase first.\n"}]'
+check "refused: a later steer withdraws the approval" refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 129
+fixture 130 . . '[true, true, true]' '[{id: 499, created_at: "2026-11-23T11:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked for a rebase.\n"}] + . + [{id: 502, created_at: "2026-11-23T12:10:00Z",
+  user: {login: "mintswarm-dev[bot]"}, body: "Round summary.\n\n<!-- mintswarm: steer -->\n"}]'
+check "an approval after an earlier steer, followed by a bot comment that is not a steer, passes (--dry-run)" \
+  land 130 --sha "$(sha_of 130)" --dry-run
+fixture 131 . . '[true, true, true]' '[{id: 503, created_at: "2026-11-23T13:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked to wait.\n"}] + .'
+check "refused: the latest steer by created_at wins, whatever the comment order" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 131
+
+# Right before the merge, pulls/N and the threads are read again.
+fixture 132 '[.[0], (.[0] | .labels += [{name: "hold"}])]'
+check "refused: the hold label added during the checks" refused_land "the PR carries the hold label" 132
+check "which says the labels changed" present "the PR's labels changed during the checks" "$sandbox/land.out"
+fixture 133 . . '{"reads": [[true, true, true], [true, true, false]]}'
+check "refused: a review thread opened during the checks" refused_land "1 review thread(s) unresolved" 133
+fixture 134 '[.[0], (.[0] | .mergeable_state = "dirty")]'
+check "refused: a conflict that appeared during the checks" refused_land "the PR conflicts with master" 134
+fixture 135 '[.[0], (.[0] | .title = "feat(agents): something else")]'
+check "refused: the title changed during the checks" refused_land "the PR's title changed during the checks" 135
 fixture 116 '.[0].mergeable = false | .[0].mergeable_state = "unknown"'
 check "refused: GitHub reports the PR not mergeable" refused_land "GitHub reports the PR not mergeable" 116
 

@@ -15,20 +15,23 @@ anything: it works on a remote runner.
 
 Token: one installation token is minted with mint-token.sh token (with
 MSW_APP_CONFIG set to the steward's config) and the permissions contents and
-pull_requests write, checks, statuses and metadata read. It must start with
+pull_requests write, checks (check runs and suites), statuses and metadata
+read. It must start with
 ghs_. It is held in a variable and passed to every bot-gh.sh call as MSW_TOKEN
 in the child's environment only; it is never printed and never in any argv.
 
 The approval steer is a comment on the PR by mintswarm-dev[bot], posted by the
-session before this script runs, with a line exactly
+session right before this script runs, that opens with exactly these three
+lines, the maintainer's quoted words and the time following them:
 
     <!-- mintswarm: steer -->
-
-and a line exactly
-
+    <!-- mintswarm: steer approval -->
     Approved head: SHA
 
-besides the maintainer's quoted words and the time.
+A steer is any comment by mintswarm-dev[bot] whose first line is the steer
+marker. The latest steer on the PR (by created_at, then id) decides: it must be
+the approval steer naming SHA, so a later steer withdraws an approval. The
+lines anywhere but at the top of a comment count for nothing.
 
 Checks, all made with the steward's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
@@ -38,14 +41,23 @@ printed on stderr, and nothing is merged unless all of them hold:
   true and mergeable_state not dirty. While mergeable is null on an open PR,
   pulls/PR is read again up to 5 times, $MSW_LAND_RETRY_DELAY seconds apart
   (default 3); after that it refuses.
-- commits/SHA/check-runs?filter=latest, every page: at least one run named
-  gates-matrix, and every run completed with conclusion success.
+- commits/SHA/check-runs?filter=latest and commits/SHA/check-suites, every
+  page: at least one run named gates-matrix created by the github-actions App;
+  the check suite of each such run is among the commit's suites and holds at
+  least one other run (a gate) by github-actions, since the gates workflow
+  creates the gate runs only once gates-matrix has completed; every suite with
+  check runs is completed with conclusion success; every run is completed with
+  conclusion success. Only success passes: skipped, neutral and every other
+  conclusion refuse.
 - commits/SHA/status: every status success, and no more than the 100 one page
   holds.
 - GraphQL pullRequest.reviewThreads, paged: no unresolved thread.
 - issues/PR/comments, every page: an approval steer naming SHA.
 
-When all hold and --dry-run is not given, it calls
+When all hold and --dry-run is not given, it reads pulls/PR and the review
+threads again, and refuses if any of the fields checked above (or the title)
+changed or a thread is unresolved, since GitHub does not re-check a ruleset
+bypass actor's merge for them; then it calls
 PUT repos/{owner}/{repo}/pulls/PR/merge with {"merge_method": "squash",
 "sha": SHA, "commit_title": "TITLE (#PR)"}, so GitHub refuses the merge if the
 head moved after the checks, then reads pulls/PR again and prints
@@ -79,7 +91,9 @@ STEWARD_SERVICE = "mintswarm-dev-steward-private-key"
 BOT_LOGIN = "mintswarm-dev[bot]"
 HOLD_LABEL = "hold"
 REQUIRED_CHECK = "gates-matrix"
+ACTIONS_APP = "github-actions"
 STEER_MARKER = "<!-- mintswarm: steer -->"
+APPROVAL_MARKER = "<!-- mintswarm: steer approval -->"
 PERMISSIONS = {
     "contents": "write",
     "pull_requests": "write",
@@ -225,13 +239,47 @@ def check_pull(data: dict, sha: str) -> list:
     return reasons
 
 
+def app_slug(item: dict):
+    return (item.get("app") or {}).get("slug")
+
+
+def suite_id(run: dict):
+    return (run.get("check_suite") or {}).get("id")
+
+
 def check_runs(steward: Steward, sha: str) -> list:
     reasons = []
     runs = []
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?filter=latest&per_page=100"):
-        runs.extend((page or {}).get("check_runs") or [])
-    if not any(run.get("name") == REQUIRED_CHECK for run in runs):
-        reasons.append(f"no {REQUIRED_CHECK} check run on {sha}")
+        runs.extend(run for run in (page or {}).get("check_runs") or [] if isinstance(run, dict))
+    suites = []
+    for page in steward.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-suites?per_page=100"):
+        suites.extend(suite for suite in (page or {}).get("check_suites") or [] if isinstance(suite, dict))
+    suites_by_id = {suite.get("id"): suite for suite in suites}
+
+    matrices = [run for run in runs if run.get("name") == REQUIRED_CHECK and app_slug(run) == ACTIONS_APP]
+    if not matrices:
+        reasons.append(f"no {REQUIRED_CHECK} check run by {ACTIONS_APP} on {sha}")
+    for matrix in matrices:
+        sid = suite_id(matrix)
+        if sid is None or sid not in suites_by_id:
+            reasons.append(f"the check suite {sid} of {REQUIRED_CHECK} is not among the check suites of {sha}")
+        gates = [run for run in runs if run is not matrix and suite_id(run) == sid]
+        if not gates:
+            reasons.append(f"the gates workflow (check suite {sid}) has no gate check run yet: the gates have not run")
+        for gate in gates:
+            if app_slug(gate) != ACTIONS_APP:
+                reasons.append(
+                    f"the check run {gate.get('name')} in check suite {sid} is by {app_slug(gate)!r}, not {ACTIONS_APP}"
+                )
+    for suite in suites:
+        if not suite.get("latest_check_runs_count"):
+            continue
+        label = f"the check suite {suite.get('id')} of {app_slug(suite)}"
+        if suite.get("status") != "completed":
+            reasons.append(f"{label} is {suite.get('status')}, not completed")
+        elif suite.get("conclusion") != "success":
+            reasons.append(f"{label} concluded {suite.get('conclusion')}, not success")
     for run in runs:
         name = run.get("name")
         if run.get("status") != "completed":
@@ -277,20 +325,61 @@ def check_threads(steward: Steward, pr: int) -> list:
     return [f"{unresolved} review thread(s) unresolved"] if unresolved else []
 
 
+def body_lines(comment: dict) -> list:
+    return [line.rstrip("\r") for line in str(comment.get("body") or "").split("\n")]
+
+
+def is_steer(comment: dict) -> bool:
+    return (comment.get("user") or {}).get("login") == BOT_LOGIN and body_lines(comment)[0] == STEER_MARKER
+
+
 def is_approval(comment: dict, sha: str) -> bool:
-    if (comment.get("user") or {}).get("login") != BOT_LOGIN:
-        return False
-    lines = [line.rstrip("\r") for line in str(comment.get("body") or "").split("\n")]
-    return STEER_MARKER in lines and f"Approved head: {sha}" in lines
+    return is_steer(comment) and body_lines(comment)[1:3] == [APPROVAL_MARKER, f"Approved head: {sha}"]
+
+
+def steer_order(comment: dict):
+    cid = comment.get("id")
+    return (str(comment.get("created_at") or ""), cid if isinstance(cid, int) else 0)
 
 
 def check_steer(steward: Steward, pr: int, sha: str) -> list:
     comments = []
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
         comments.extend(page or [])
-    if any(is_approval(comment, sha) for comment in comments if isinstance(comment, dict)):
+    steers = [comment for comment in comments if isinstance(comment, dict) and is_steer(comment)]
+    if steers and is_approval(max(steers, key=steer_order), sha):
         return []
+    if any(is_approval(steer, sha) for steer in steers):
+        return [f"a later steer by {BOT_LOGIN} withdraws the approval of {sha}: post the approval steer again"]
     return [f"no approval steer by {BOT_LOGIN} names the head {sha}"]
+
+
+def snapshot(data: dict) -> dict:
+    head = data.get("head") or {}
+    return {
+        "state": data.get("state"),
+        "draft": data.get("draft"),
+        "title": data.get("title"),
+        "base": (data.get("base") or {}).get("ref"),
+        "head_ref": head.get("ref"),
+        "head_sha": head.get("sha"),
+        "head_repo": (head.get("repo") or {}).get("full_name"),
+        "labels": sorted(str(label.get("name")) for label in data.get("labels") or [] if isinstance(label, dict)),
+        "mergeable": data.get("mergeable"),
+        "mergeable_state": data.get("mergeable_state"),
+    }
+
+
+def recheck(steward: Steward, pr: int, sha: str, before: dict) -> list:
+    """Read the PR and its threads again right before the merge: a bypass actor's merge is not re-checked."""
+    after = pull(steward, pr)
+    reasons = check_pull(after, sha)
+    old, new = snapshot(before), snapshot(after)
+    for field in old:
+        if old[field] != new[field]:
+            reasons.append(f"the PR's {field} changed during the checks, from {old[field]!r} to {new[field]!r}")
+    reasons += check_threads(steward, pr)
+    return reasons
 
 
 def merge(steward: Steward, pr: int, sha: str, title: str) -> dict:
@@ -303,6 +392,13 @@ def merge(steward: Steward, pr: int, sha: str, title: str) -> dict:
     if data.get("merged") is not True:
         raise RuntimeError(f"the merge call answered, but #{pr} is not merged")
     return data
+
+
+def refuse(pr: int, reasons: list) -> int:
+    for reason in reasons:
+        print(f"land.py: refused: {reason}", file=sys.stderr)
+    print(f"land.py: #{pr} was not merged", file=sys.stderr)
+    return 1
 
 
 def main(argv: list) -> int:
@@ -333,13 +429,13 @@ def main(argv: list) -> int:
         reasons += check_threads(steward, args.pr)
         reasons += check_steer(steward, args.pr, args.sha)
         if reasons:
-            for reason in reasons:
-                print(f"land.py: refused: {reason}", file=sys.stderr)
-            print(f"land.py: #{args.pr} was not merged", file=sys.stderr)
-            return 1
+            return refuse(args.pr, reasons)
         if args.dry_run:
             print(f"#{args.pr} at {args.sha} passes every check; nothing merged (--dry-run)")
             return 0
+        reasons = recheck(steward, args.pr, args.sha, data)
+        if reasons:
+            return refuse(args.pr, reasons)
         merged = merge(steward, args.pr, args.sha, str(data.get("title") or ""))
         print(f"merged #{args.pr} at {args.sha}")
         print(f"merge_commit_sha: {merged.get('merge_commit_sha')}")
