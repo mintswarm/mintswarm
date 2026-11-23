@@ -12,6 +12,7 @@ How React is written and checked in the TypeScript package at `{{ package_root }
 ## Components
 
 - Function components only; no class components.
+- Components are named in `PascalCase`, as JSX and the rules of hooks require; the TypeScript pack's naming rules still cover other functions and file names.
 - Each component's props are a named `<Component>Props` type.
 - Children come through props, typed in that props type.
 - Never define a component inside another component; it remounts on every render.
