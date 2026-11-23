@@ -27,6 +27,16 @@ Inputs:
   and --analysis, the issue document and the analysis the floor read, all
   read as UTF-8; an unreadable one is unusable input.
 - The history of the base commit, read by floor.py's own code.
+
+The base commit, the config at it and the history are read as floor.py
+reads them: through floor.py's job_object_store, from a fresh bare store in
+the system temp directory, filled by a by-hash protocol v2 fetch over
+`file://` that re-hashes every object, its closure then walked in the
+store, under floor.py's neutral git
+environment, and deleted afterwards. The trust boundary that remains is
+floor.py's: ref names are resolved in the job repository, the store is
+out of the stages' reach by convention only, and a forged object in the
+history makes every run exit 2.
 - The floor verdict, .mintswarm/job/outputs/floor.json, from floor.py.
 - PATH given to --assessment, the assess stage's assessment.md, and REF
   given to --assessment-artifact, where it was published.
@@ -128,7 +138,8 @@ characters and set in a code span; layer problems are this script's fixed
 strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
-record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, no config at it, an invalid
+record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, a partial
+clone, a failed fetch into the object store (a forged or missing object, a shallow history), no config at it, an invalid
 config, an unknown component, an unreadable plan, issue document or
 analysis, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it
@@ -359,10 +370,15 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     return problems
 
 
-def floor_rules(plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str) -> tuple:
-    """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None)."""
+def floor_rules(
+    plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str, git_dir=None
+) -> tuple:
+    """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None).
+
+    The history is read from git_dir, the object store, when given."""
+    subjects = floor.history(commit, git_dir=git_dir)
     return floor.conclude(
-        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, floor.history(commit)
+        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, subjects
     )
 
 
@@ -739,13 +755,14 @@ def run(argv: list) -> int:
         raise InputError(f"cannot delete the stale record {RECORD}: {exc}") from exc
     args = parse_args(argv)
     try:
-        commit = floor.resolve_base(args["base"])
-        config = floor.load_config(commit)
-        cfg = floor.validate_config(config, args["component"])
-        plan = floor.read_plan(args["plan"])
-        issue = floor.read_document(args["issue_document"], "issue document")
-        analysis = floor.read_document(args["analysis"], "analysis")
-        rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit)
+        with floor.job_object_store({"base": args["base"]}) as (store, commits):
+            commit = commits["base"]
+            config = floor.load_config(commit, git_dir=store)
+            cfg = floor.validate_config(config, args["component"])
+            plan = floor.read_plan(args["plan"])
+            issue = floor.read_document(args["issue_document"], "issue document")
+            analysis = floor.read_document(args["analysis"], "analysis")
+            rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit, store)
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
     mode = cfg["mode"]

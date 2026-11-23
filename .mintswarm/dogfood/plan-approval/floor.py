@@ -29,8 +29,44 @@ Inputs:
   `yq -p=yaml -o=json`. The worktree's config is never opened, so a change
   to it in the branch under review cannot loosen the floor. The history is
   the subject of every commit reachable from that commit, read with
-  `git -c log.showSignature=false log -z --format=%s`, with replace objects
-  and grafts off.
+  `git -c log.showSignature=false log -z --format=%s`.
+
+The base commit, the config at it and the history are read from an object
+store made for this run, never from the job repository's own objects:
+
+- every git command runs with a neutral environment: no system or global
+  config, no config, external-diff or diff options passed through the
+  environment, none of the variables that point git at another repository
+  or object directory (GIT_DIR, GIT_OBJECT_DIRECTORY,
+  GIT_ALTERNATE_OBJECT_DIRECTORIES and the rest), replace objects, grafts
+  and the commit-graph off (GIT_NO_REPLACE_OBJECTS, GIT_GRAFT_FILE at the
+  null device, core.commitGraph=false), git's grafts deprecation hint off
+  (advice.graftFileDeprecated=false) and no lazy fetch;
+- a repository whose config makes it a partial clone is refused;
+- REF is resolved in the job repository with
+  `git rev-parse --verify REF^{object}`, without peeling, to the full id
+  of an object the job repository holds;
+- a fresh bare repository is made with `tempfile.mkdtemp` (prefix
+  `msw-floor-objects-`) in the system temp directory, outside every
+  worktree, and filled by a protocol v2 `git fetch` of that id over
+  `file://` from the job repository's git directory, its upload-pack run
+  with replace objects, grafts and the commit-graph off. The receiving side
+  hashes every object it is sent, so a forged object fails the fetch. Its
+  connectivity check does not cover a history the job repository's own
+  .git/shallow cuts short, so the store is refused if it is shallow, and
+  then every object reachable from the fetched id is walked in it
+  (`git rev-list --objects`): an object missing from the store fails the
+  fetch too, with git's whole error output;
+- the id is peeled to its commit in that store, and every later read runs
+  as `git --git-dir=<store>`; the store is deleted when the run ends,
+  whatever its outcome.
+
+The trust boundary that remains: ref names and any revision syntax in REF
+are resolved in the job repository, whose refs the stages can write; the
+store sits in the system temp directory under the same account, so the
+stages cannot write it by convention only (and a killed run leaves it
+behind); and a stage that forges any object in the history makes every
+run exit 2, which counts as a human decision.
 - The PATH given to --issue-document, the issue document (the job's
   .mintswarm/job/inputs/issue.md), and the PATH given to --analysis, the
   analysis, both read as UTF-8. Only the issue document's lines before its
@@ -145,7 +181,9 @@ identifiers skipped, in order). One line per evaluated rule is printed, then
 `floor: hit` or `floor: clean`.
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
-unresolvable base ref, no config at it, an invalid config, an unreadable
+unresolvable base ref, a partial clone, a failed fetch into the object
+store (a forged or missing object, a shallow history), no config at the
+base, an invalid config, an unreadable
 or non-UTF-8 plan, issue document or analysis, git or yq missing or
 failing (reading the history too), a stale verdict that cannot be deleted,
 or any unexpected error. Unusable input leaves no verdict file, unless a
@@ -156,15 +194,18 @@ document bindings match the request; exit 2 never comes with a valid verdict. St
 only, apart from running git and yq.
 """
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
@@ -217,6 +258,44 @@ ITEM = re.compile(r"(?:[0-9]+[.)]|[-*+])(?:[ \t]+|$)(.*)", re.DOTALL)
 CHECKBOX = re.compile(r"\[[ x]\](?:[ \t]+|$)(.*)", re.DOTALL)
 SEPARATOR_CELL = re.compile(r"[ \t]*:?-{3,}:?[ \t]*")
 CELL_BAR = re.compile(r"(?<!\\)\|")
+HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+STORE_PREFIX = "msw-floor-objects-"
+# Dropped by neutral_git_env(): config and diff settings passed through the environment, and the
+# repository-local variables (readiness/check.py's GIT_LOCAL_ENV), so no variable points git elsewhere.
+DROPPED_ENV = (
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+)
+DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+FALSE_WORDS = ("false", "no", "off", "0")
+FETCH_OPTIONS = (
+    "fetch",
+    "--quiet",
+    "--no-tags",
+    "--no-write-commit-graph",
+    "--no-auto-gc",
+    "--no-auto-maintenance",
+)
+# What serves the fetch, run by git through the shell: the transport drops repository-local variables, so
+# these are set again for it, as shell assignments, which need no `env` on PATH.
+UPLOAD_PACK = (
+    f"GIT_GRAFT_FILE={os.devnull} GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 "
+    "git -c core.commitGraph=false -c advice.graftFileDeprecated=false upload-pack"
+)
 
 
 class InputError(Exception):
@@ -331,27 +410,171 @@ def run(argv: list, data: bytes = None) -> bytes:
         raise InputError(f"cannot run {argv[0]}: {exc}") from exc
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
-        raise InputError(f"{' '.join(argv[:2])} failed: {detail[-1] if detail else f'exit {proc.returncode}'}")
+        raise InputError(f"{command_name(argv)} failed: {detail[-1] if detail else f'exit {proc.returncode}'}")
     return proc.stdout
 
 
-def resolve_base(ref: str) -> str:
+def command_name(argv: list) -> str:
+    """The program and its first word after git's --git-dir and -c options, such as `git fetch`."""
+    i = 1
+    while i < len(argv) and argv[0] == "git" and (argv[i].startswith("--git-dir=") or argv[i] == "-c"):
+        i += 1 if argv[i].startswith("--git-dir=") else 2
+    return " ".join(argv[:1] + argv[i : i + 1])
+
+
+def git_argv(git_dir, *args: str) -> list:
+    """`git --git-dir=<git_dir> args...`, or `git args...` in the working directory when git_dir is None."""
+    return ["git", f"--git-dir={git_dir}", *args] if git_dir is not None else ["git", *args]
+
+
+# --- the object store ----------------------------------------------------
+
+
+def neutral_git_env() -> None:
+    """Keep system, global and environment config, the repository location, replace objects, grafts, the
+    commit-graph and lazy fetches away from every git command this process runs."""
+    for name in list(os.environ):
+        if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
+            del os.environ[name]
+    os.environ.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_GRAFT_FILE": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_NO_LAZY_FETCH": "1",  # git 2.45 and later; older git ignores it
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.commitGraph",
+            "GIT_CONFIG_VALUE_0": "false",
+            # GIT_GRAFT_FILE names an existing file, so git would print its grafts deprecation hint first
+            "GIT_CONFIG_KEY_1": "advice.graftFileDeprecated",
+            "GIT_CONFIG_VALUE_1": "false",
+        }
+    )
+
+
+def check_no_promisor() -> None:
+    """Refuse a partial clone: a missing object would be fetched lazily, running whatever command its config
+    names. git 2.44 makes a remote a promisor through extensions.partialClone, a true remote.<name>.promisor or
+    any remote.<name>.partialCloneFilter; `git config --list` gives those names in lower case."""
+    found = []
+    for entry in run(["git", "config", "-z", "--list"]).decode("utf-8", errors="replace").split("\0"):
+        key, newline, value = entry.partition("\n")
+        if key == "extensions.partialclone":
+            found.append(f"extensions.partialClone {value}")
+        elif (
+            key.startswith("remote.")
+            and key.endswith(".promisor")
+            and (not newline or value.lower() not in FALSE_WORDS)
+        ):
+            found.append(f"{key} {value or 'true'}")
+        elif key.startswith("remote.") and key.endswith(".partialclonefilter"):
+            found.append(f"{key} {value}")
+    if found:
+        raise InputError(f"the repository is a partial clone ({', '.join(found)}): its objects are not read")
+
+
+def resolve_id(label: str, ref: str) -> str:
+    """The full id of the object ref names in the job repository, which must hold it; not peeled."""
     try:
         proc = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+            ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{object}}"], capture_output=True
+        )
+    except OSError as exc:
+        raise InputError(f"cannot run git: {exc}") from exc
+    oid = proc.stdout.decode("ascii", errors="replace").strip()
+    if proc.returncode != 0 or not HASH.fullmatch(oid):
+        raise InputError(f"{label} ref {ref!r} does not resolve to a commit")
+    return oid
+
+
+def fetch(argv: list) -> None:
+    """Run one step of filling the object store; a failure is the fetch's, with all of git's error output."""
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise InputError(f"cannot run {argv[0]}: {exc}") from exc
+    if proc.returncode != 0:
+        lines = proc.stderr.decode("utf-8", errors="replace").splitlines()
+        detail = "; ".join(line.strip() for line in lines if line.strip())  # all of it, on one line
+        raise InputError(
+            "the fetch from the job repository into a fresh object store failed "
+            f"({command_name(argv)}, exit {proc.returncode})" + (f": {detail}" if detail else "")
+        )
+
+
+@contextlib.contextmanager
+def object_store(refs: dict):
+    """Yield (store, {label: commit}) for refs ({label: ref}): a fresh bare store in the system temp directory,
+    filled by a by-hash fetch from the job repository that re-hashes every object, its closure from every
+    fetched id then walked, and removed afterwards.
+
+    Ref names are resolved in the job repository without peeling; the store peels each id to its commit.
+    Run under neutral_git_env(); job_object_store() sees to that."""
+    ids = {label: resolve_id(label, ref) for label, ref in refs.items()}
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]).decode("utf-8")
+    common = common.rstrip("\n")
+    if not common.startswith("/"):
+        raise InputError(f"the job repository's git directory {common!r} is not an absolute path")
+    store = tempfile.mkdtemp(prefix=STORE_PREFIX)
+    try:
+        run(["git", "init", "--bare", "--quiet", "--template=", store])
+        wanted = sorted(set(ids.values()))
+        fetch(
+            git_argv(
+                store,
+                "-c",
+                "protocol.version=2",
+                *FETCH_OPTIONS,
+                f"--upload-pack={UPLOAD_PACK}",
+                "file://" + urllib.parse.quote(common),
+                *wanted,
+            )
+        )
+        shallow = run(git_argv(store, "rev-parse", "--is-shallow-repository")).decode("ascii").strip()
+        if shallow != "false":
+            raise InputError("the fetch from the job repository gave a shallow history")
+        # A .git/shallow in the job repository cuts what upload-pack sends without marking the store shallow,
+        # so the store's closure from every fetched id is walked: a missing object fails the fetch.
+        fetch(git_argv(store, "rev-list", "--objects", *wanted, "--"))
+        commits = {}
+        for label, oid in ids.items():
+            try:
+                commits[label] = resolve_base(oid, git_dir=store)
+            except InputError as exc:
+                raise InputError(f"{label} ref {refs[label]!r} does not resolve to a commit") from exc
+        yield store, commits
+    finally:
+        shutil.rmtree(store, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def job_object_store(refs: dict):
+    """object_store(refs) under the neutral git environment, a partial clone refused before any fetch."""
+    neutral_git_env()
+    check_no_promisor()
+    with object_store(refs) as result:
+        yield result
+
+
+def resolve_base(ref: str, git_dir=None) -> str:
+    try:
+        proc = subprocess.run(
+            git_argv(git_dir, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"),
             capture_output=True,
         )
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     commit = proc.stdout.decode("ascii", errors="replace").strip()
-    if proc.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+    if proc.returncode != 0 or not HASH.fullmatch(commit):
         raise InputError(f"base ref {ref!r} does not resolve to a commit")
     return commit
 
 
-def load_config(commit: str) -> dict:
+def load_config(commit: str, git_dir=None) -> dict:
     try:
-        proc = subprocess.run(["git", "show", f"{commit}:{CONFIG}"], capture_output=True)
+        proc = subprocess.run(git_argv(git_dir, "show", f"{commit}:{CONFIG}"), capture_output=True)
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     if proc.returncode != 0:
@@ -887,14 +1110,11 @@ def first_of_kind_reasons(issue: str, component: str, subjects: list) -> list:
     return reasons
 
 
-def history(commit: str) -> list:
-    """The subjects of every commit reachable from commit, replace objects and grafts off."""
-    env = {k: v for k, v in os.environ.items() if k != "GIT_REPLACE_REF_BASE"}
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    env["GIT_GRAFT_FILE"] = os.devnull
-    argv = ["git", "-c", "log.showSignature=false", "log", "-z", "--format=%s", commit, "--"]
+def history(commit: str, git_dir=None) -> list:
+    """The subjects of every commit reachable from commit, in git_dir (the object store) when given."""
+    argv = git_argv(git_dir, "-c", "log.showSignature=false", "log", "-z", "--format=%s", commit, "--")
     try:
-        proc = subprocess.run(argv, capture_output=True, env=env)
+        proc = subprocess.run(argv, capture_output=True)
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     if proc.returncode != 0:
@@ -973,14 +1193,15 @@ def write_verdict(verdict: dict) -> None:
 def floor(argv: list) -> int:
     remove_stale_verdict()
     args = parse_args(argv)
-    commit = resolve_base(args["base"])
-    cfg = validate_config(load_config(commit), args["component"])
-    data = read_plan(args["plan"])
-    documents = {}
-    for key, what in (("issue_document", "issue document"), ("analysis", "analysis")):
-        path = args[key]
-        documents[key] = None if path is None else (path, read_document(path, what))
-    subjects = history(commit)
+    with job_object_store({"base": args["base"]}) as (store, commits):
+        commit = commits["base"]
+        cfg = validate_config(load_config(commit, git_dir=store), args["component"])
+        data = read_plan(args["plan"])
+        documents = {}
+        for key, what in (("issue_document", "issue document"), ("analysis", "analysis")):
+            path = args[key]
+            documents[key] = None if path is None else (path, read_document(path, what))
+        subjects = history(commit, git_dir=store)
 
     texts = {key: None if doc is None else doc[1].decode("utf-8") for key, doc in documents.items()}
     results, skipped, _ = conclude(
