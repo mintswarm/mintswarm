@@ -16,8 +16,9 @@ commits with seed subjects for `docs`, `agents`, `tooling`, `web`, `api`
 then the variants, and `feat(cli): ...` after the `base` tag. floor.py and
 decision.py run as `sys.executable SCRIPT ...` with that repository as its
 working directory, and plans, issue documents, analyses and assessments
-written under `cases/`. Unless a case says otherwise, floor.py gets a
-generated issue document for the case's component, whose criteria the
+written under `cases/`; their TMPDIR is an empty directory of the sandbox,
+where the floors make their object stores. Unless a case says otherwise,
+floor.py gets a generated issue document for the case's component, whose criteria the
 plan's Verification table quotes and whose comments hold a decoy criteria
 section, and an analysis with no questions.
 
@@ -129,6 +130,23 @@ Checks:
   missing, unreadable or non-UTF-8 issue document or analysis, a missing
   `yq` and a record path that is a directory exit 2, print nothing
   to stdout and leave no record, even a stale one;
+- object store, with every run's TMPDIR an empty sandbox directory: a git
+  on PATH that logs its arguments shows the store made there and the base,
+  the config and the history read through `--git-dir` at it; a replace ref
+  on the base (a looser config), info/grafts, GIT_GRAFT_FILE,
+  `git replace --graft`, GIT_REPLACE_REF_BASE and a commit-graph patched in
+  its CDAT chunk to give the base no parents (cutting off its only `(cli)`
+  commit) each fool a plain git command and leave floor.py's verdict the
+  untampered one, and so do GIT_DIR and GIT_OBJECT_DIRECTORY at a decoy
+  repository; a loose config blob of the base overwritten with another
+  blob, which a plain `git show` then shows, makes floor.py and decision.py
+  exit 2 with one line naming the fetch and no verdict or record, even a
+  stale one; a .git/shallow forged in the job repository below the base's
+  `(cli)` commit makes floor.py exit 2 with one line naming the fetch and no
+  verdict; a copy of the repository at a path holding `%41`, next to a
+  decoy repository at the path git would decode that to, gives the
+  untampered verdict; a repository with extensions.partialClone exits 2; and no
+  `msw-floor-objects-*` store is left after clean and exit 2 runs;
 - standard library: every import of floor.py, decision.py and selftest.py is
   in the standard library.
 
@@ -142,10 +160,12 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -318,6 +338,9 @@ class Sandbox:
                 "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
             }
         )
+        self.store_tmp = tmp / "tmpdir"  # TMPDIR of every run: the floors' object stores go here
+        self.store_tmp.mkdir()
+        env["TMPDIR"] = str(self.store_tmp)
         self.env = env
         self.repo.mkdir()
         self.cases.mkdir()
@@ -784,6 +807,27 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         config="untested",
     )
     expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
+    expect_hit(
+        r,
+        "a script after cd",
+        base(files=["web/x.sh"]),
+        "gate-changes",
+        reason="web/x.sh is named by gate web-script",
+        component="web",
+        config="cd-gates",
+    )
+    expect_hit(
+        r,
+        "a script after two cds",
+        base(files=["web/apps/y.sh"]),
+        "gate-changes",
+        reason="web/apps/y.sh is named by gate nested-script",
+        component="web",
+        config="cd-gates",
+    )
+    expect_clean(
+        r, "a script beside the cd", base(files=["web/y.sh"]), ["gate-changes"], component="web", config="cd-gates"
+    )
     expect_hit(
         r,
         "overridden assumption",
@@ -2479,6 +2523,323 @@ def check_decision(sb: Sandbox, commits: dict) -> None:
     check_decision_unusable(sb, d)
 
 
+# --- object store ---------------------------------------------------------
+
+STORE_PREFIX = "msw-floor-objects-"
+GRAPH_PARENT_NONE = (0x70000000).to_bytes(4, "big")
+
+
+def cut_parents_in_graph(git_dir: Path, commit: str) -> None:
+    """Patch the commit-graph's CDAT entry for commit so that it reads as having no parents."""
+    path = git_dir / "objects" / "info" / "commit-graph"
+    data = bytearray(path.read_bytes())
+    if data[:4] != b"CGPH":
+        raise RuntimeError("selftest bug: not a commit-graph file")
+    hash_len = 20 if data[5] == 1 else 32
+    chunks = {}
+    for i in range(data[6] + 1):
+        at = 8 + 12 * i
+        chunks[bytes(data[at : at + 4])] = int.from_bytes(data[at + 4 : at + 12], "big")
+    count = int.from_bytes(data[chunks[b"OIDF"] + 255 * 4 : chunks[b"OIDF"] + 256 * 4], "big")
+    oid = bytes.fromhex(commit)
+    oids = chunks[b"OIDL"]
+    index = next((i for i in range(count) if data[oids + i * hash_len : oids + (i + 1) * hash_len] == oid), None)
+    if index is None:
+        raise RuntimeError(f"selftest bug: {commit} is not in the commit-graph")
+    entry = chunks[b"CDAT"] + index * (hash_len + 16) + hash_len
+    data[entry : entry + 8] = GRAPH_PARENT_NONE * 2
+    path.chmod(0o644)
+    path.write_bytes(bytes(data))
+
+
+def loose_path(git_dir: Path, oid: str) -> Path:
+    return git_dir / "objects" / oid[:2] / oid[2:]
+
+
+def forge_loose(git_dir: Path, oid: str, content: bytes) -> bytes:
+    """Overwrite the loose object oid with a blob holding content; return the original bytes."""
+    path = loose_path(git_dir, oid)
+    original = path.read_bytes()
+    path.chmod(0o644)
+    path.write_bytes(zlib.compress(b"blob %d\0" % len(content) + content))
+    return original
+
+
+def stores_left(sb: Sandbox) -> list:
+    return sorted(p.name for p in sb.store_tmp.iterdir() if p.name.startswith(STORE_PREFIX))
+
+
+def check_object_store(sb: Sandbox, commits: dict) -> None:
+    """The floors read a fresh, re-hashed object store: tampering with the job repository changes nothing."""
+    git_dir = sb.repo / ".git"
+    plain_env = sb.env  # no replace or graft settings: plain git sees the tampering
+
+    def plain(*args: str, env: dict = None):
+        return subprocess.run(["git", *args], cwd=sb.repo, env=env or plain_env, capture_output=True)
+
+    def write(name: str, content: str) -> str:
+        return sb.write_plan(f"store {name}", content)
+
+    # A: the config at the base, read at `real`; a looser config is at `dropped`
+    config_args = [
+        "--plan",
+        write("config plan", plan_text(footprint=base(files=[".mintswarm/dogfood/github/push.sh"]))),
+        "--component",
+        "agents",
+        "--base",
+        commits["real"],
+        "--issue-document",
+        write("config issue", issue_document(component="agents")),
+        "--analysis",
+        write("config analysis", analysis_document()),
+    ]
+    # B: the history, read at `dropped`, whose parent is the only `(cli)` commit
+    history_args = [
+        "--plan",
+        write("history plan", plan_text(footprint=base(files=["crates/cli/src/main.rs"]))),
+        "--component",
+        "cli",
+        "--base",
+        commits["dropped"],
+        "--issue-document",
+        write("history issue", issue_document(component="cli")),
+        "--analysis",
+        write("history analysis", analysis_document()),
+    ]
+    expected = {}
+    for key, args in (("config", config_args), ("history", history_args)):
+        proc, verdict = sb.floor(args)
+        expected[key] = (proc.returncode, verdict)
+    T.check(
+        "object store: the untampered config case is a require-human-paths hit",
+        results_of(expected["config"][1]).get("require-human-paths") == "hit",
+        str(expected["config"]),
+    )
+    T.check(
+        "object store: the untampered history case is first-of-kind clean",
+        results_of(expected["history"][1]).get("first-of-kind") == "clean",
+        str(expected["history"]),
+    )
+    T.check("object store: no store is left after clean runs", not stores_left(sb), str(stores_left(sb)))
+
+    # every read goes through --git-dir at a store in TMPDIR: a git on PATH that logs its arguments
+    bindir = sb.tmp / "git-logging"
+    bindir.mkdir()
+    log = sb.tmp / "git-arguments.log"
+    wrapper = bindir / "git"
+    wrapper.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(log))}\nexec {shlex.quote(shutil.which("git"))} "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    path = os.pathsep.join([str(bindir), sb.env.get("PATH", "")])
+    proc, verdict = sb.floor(config_args, env=dict(sb.env, PATH=path))
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    in_store = [c for c in calls if c.startswith(f"--git-dir={sb.store_tmp}/{STORE_PREFIX}")]
+    elsewhere = [c for c in calls if c not in in_store]
+    T.check(
+        "object store: the store is made in TMPDIR, and the base, config and history are read through it",
+        (proc.returncode, verdict) == expected["config"]
+        and all(any(f" {word} " in c for c in in_store) for word in ("fetch", "rev-parse", "show", "log"))
+        and all(c.split(" ")[0] in ("config", "rev-parse", "init") for c in elsewhere)
+        and all("--git-common-dir" in c or "^{object}" in c for c in elsewhere if c.startswith("rev-parse")),
+        f"exit {proc.returncode}; calls {calls}",
+    )
+
+    dropped = commits["dropped"]
+    looser = plain("show", f"{dropped}:{CONFIG_PATH}").stdout
+    graft_file = sb.tmp / "store-grafts"
+    graft_file.write_text(f"{dropped}\n", encoding="ascii")
+    grafts = git_dir / "info" / "grafts"
+    orphan = sb.git("commit-tree", f"{dropped}^{{tree}}", "-m", "dropped without parents")
+
+    def fooled_config(env: dict) -> bool:
+        return plain("show", f"{commits['real']}:{CONFIG_PATH}", env=env).stdout == looser
+
+    def fooled_history(env: dict) -> bool:
+        proc = plain("log", "--format=%s", dropped, env=env)
+        return proc.returncode == 0 and "feat(cli)" not in proc.stdout.decode()
+
+    def replace_base():
+        sb.git("update-ref", f"refs/replace/{commits['real']}", dropped)
+        return lambda: sb.git("update-ref", "-d", f"refs/replace/{commits['real']}")
+
+    def info_grafts():
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(f"{dropped}\n", encoding="ascii")
+        return grafts.unlink
+
+    def replace_graft():
+        sb.git("replace", "--graft", dropped)
+        return lambda: sb.git("update-ref", "-d", f"refs/replace/{dropped}")
+
+    def ref_base():
+        sb.git("update-ref", f"refs/elsewhere/{dropped}", orphan)
+        return lambda: sb.git("update-ref", "-d", f"refs/elsewhere/{dropped}")
+
+    def commit_graph():
+        sb.git("update-ref", "refs/selftest/graph", dropped)
+        sb.git("commit-graph", "write", "--reachable", "--no-progress")
+        cut_parents_in_graph(git_dir, dropped)
+
+        def undo():
+            sb.git("update-ref", "-d", "refs/selftest/graph")
+            (git_dir / "objects" / "info" / "commit-graph").unlink()
+
+        return undo
+
+    cases = [
+        ("a replace ref on the base", "config", replace_base, {}, fooled_config),
+        ("info/grafts", "history", info_grafts, {}, fooled_history),
+        ("GIT_GRAFT_FILE", "history", lambda: (lambda: None), {"GIT_GRAFT_FILE": str(graft_file)}, fooled_history),
+        ("git replace --graft", "history", replace_graft, {}, fooled_history),
+        ("GIT_REPLACE_REF_BASE", "history", ref_base, {"GIT_REPLACE_REF_BASE": "refs/elsewhere/"}, fooled_history),
+        ("a patched commit-graph", "history", commit_graph, {}, fooled_history),
+    ]
+    for name, key, tamper, extra, fooled in cases:
+        undo = tamper()
+        env = dict(sb.env, **extra)
+        try:
+            T.check(f"object store, {name}: plain git is fooled", fooled(dict(plain_env, **extra)))
+            proc, verdict = sb.floor(config_args if key == "config" else history_args, env=env)
+            T.check(
+                f"object store, {name}: the verdict is the untampered one",
+                (proc.returncode, verdict) == expected[key],
+                f"exit {proc.returncode}: {proc.stderr.strip()} {proc.stdout.strip()}",
+            )
+        finally:
+            undo()
+
+    decoy = sb.tmp / "decoy"
+    subprocess.run(["git", "init", "-q", str(decoy)], env=plain_env, check=True, capture_output=True)
+    decoy_env = {"GIT_DIR": str(decoy / ".git"), "GIT_OBJECT_DIRECTORY": str(decoy / ".git" / "objects")}
+    seen = plain("rev-parse", "--verify", "--quiet", f"{commits['real']}^{{commit}}", env=dict(plain_env, **decoy_env))
+    T.check("object store, GIT_DIR at a decoy: plain git does not see the base", seen.returncode != 0)
+    proc, verdict = sb.floor(config_args, env=dict(sb.env, **decoy_env))
+    T.check(
+        "object store, GIT_DIR and GIT_OBJECT_DIRECTORY at a decoy: the verdict is the untampered one",
+        (proc.returncode, verdict) == expected["config"],
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
+
+    # a forged config blob, reachable from a base of its own
+    marked = yq_json(CONFIG)
+    marked["selftest_forge_target"] = True
+    target = sb.commit_config(as_json(marked), "forge target")
+    blob = sb.git("rev-parse", f"{target}:{CONFIG_PATH}")
+    forged_args = list(config_args)
+    forged_args[forged_args.index(commits["real"])] = target
+    proc, _ = sb.floor(forged_args)
+    T.check("object store, forged object: the target base is usable before the forgery", proc.returncode in (0, 1))
+    original = forge_loose(git_dir, blob, looser)
+    try:
+        T.check(
+            "object store, forged object: plain git shows the forged content",
+            plain("show", f"{target}:{CONFIG_PATH}").stdout == looser,
+        )
+        proc, verdict = sb.floor(forged_args)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged object: floor.py exits 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+        T.check("object store: no store is left after an exit 2 run", not stores_left(sb), str(stores_left(sb)))
+        record = sb.repo / RECORD
+        record.write_text('{"stale": true}\n', encoding="utf-8")
+        assessment = sb.write_plan("store assessment", assessment_text())
+        decision_args = [
+            "--issue",
+            "87",
+            "--component",
+            "agents",
+            "--plan",
+            forged_args[1],
+            "--issue-document",
+            forged_args[7],
+            "--analysis",
+            forged_args[9],
+            "--assessment",
+            assessment,
+            "--assessment-artifact",
+            ARTIFACT,
+            "--base",
+            target,
+            "--harness",
+            "claude",
+            "--model",
+            "sonnet",
+        ]
+        proc = sb.exec(decision_args, script=DECISION)
+        T.check(
+            "object store, forged object: decision.py exits 2 naming the fetch, no record",
+            proc.returncode == 2 and not record.exists() and "fetch" in proc.stderr and proc.stdout == "",
+            f"exit {proc.returncode}, record {'left' if record.exists() else 'gone'}: {proc.stderr.strip()}",
+        )
+    finally:
+        path = loose_path(git_dir, blob)
+        path.write_bytes(original)
+        path.chmod(0o444)
+    T.check("object store, forged object: restored", plain("cat-file", "blob", blob).stdout == as_json(marked))
+
+    # a .git/shallow cutting the history below the `(cli)` commit: upload-pack sends the cut history, and the
+    # store is not marked shallow
+    cli_commit = sb.git("rev-parse", f"{dropped}^")
+    shallow = git_dir / "shallow"
+    shallow.write_text(f"{cli_commit}\n", encoding="ascii")
+    try:
+        T.check(
+            "object store, forged .git/shallow: plain git sees a shallow repository",
+            plain("rev-parse", "--is-shallow-repository").stdout.decode().strip() == "true",
+        )
+        proc, verdict = sb.floor(history_args)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged .git/shallow: floor.py exits 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "the fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+        T.check(
+            "object store, forged .git/shallow: the fetch error carries no git hint",
+            "hint:" not in proc.stderr,
+            proc.stderr.strip(),
+        )
+    finally:
+        shallow.unlink()
+    T.check("object store: no store is left after a shallow run", not stores_left(sb), str(stores_left(sb)))
+
+    # a job repository whose path holds a percent sign: the file:// URL is percent-encoded, so a decoy at the
+    # path git would decode it to is never read
+    percent = sb.tmp / "pct%41x"
+    shutil.copytree(sb.repo, percent, symlinks=True)
+    subprocess.run(["git", "init", "-q", str(sb.tmp / "pctAx")], env=plain_env, check=True, capture_output=True)
+    stale = percent / VERDICT
+    stale.write_text('{"stale": true}\n', encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(FLOOR), *config_args], cwd=percent, env=sb.env, capture_output=True, text=True
+    )
+    verdict = json.loads(stale.read_text(encoding="utf-8")) if stale.exists() else None
+    T.check(
+        "object store, a '%' in the repository path: the verdict is the untampered one",
+        (proc.returncode, verdict) == expected["config"],
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
+    shutil.rmtree(percent)
+    shutil.rmtree(sb.tmp / "pctAx")
+
+    sb.git("config", "extensions.partialClone", "origin")
+    try:
+        proc, verdict = sb.floor(config_args)
+        T.check(
+            "object store, partial clone: exit 2, no verdict",
+            proc.returncode == 2 and verdict is None and "partial clone" in proc.stderr,
+            f"exit {proc.returncode}: {proc.stderr.strip()}",
+        )
+    finally:
+        sb.git("config", "--unset", "extensions.partialClone")
+    T.check("object store: no store is left after every run", not stores_left(sb), str(stores_left(sb)))
+
+
 def load_module(name: str, path: Path):
     sys.dont_write_bytecode = True  # leave no __pycache__ next to either script
     spec = importlib.util.spec_from_file_location(name, path)
@@ -2609,6 +2970,15 @@ def build_commits(sb: Sandbox) -> tuple:
         variant(name, lambda c, value=value: approval(c).update(min_confidence=value))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
+    variant(
+        "cd-gates",
+        lambda c: c["gates"]["run"].extend(
+            [
+                {"name": "web-script", "command": "cd ./web && bash x.sh"},
+                {"name": "nested-script", "command": "cd ./web && cd ./apps && bash y.sh"},
+            ]
+        ),
+    )
     commits["real"] = sb.commit_config(real_bytes, "real")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
@@ -2637,6 +3007,7 @@ def main() -> int:
         check_unusable_input(sb, commits)
         check_verdict_errors(sb, commits)
         check_decision(sb, commits)
+        check_object_store(sb, commits)
     check_globs()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")

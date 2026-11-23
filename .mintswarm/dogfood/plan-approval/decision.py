@@ -27,6 +27,16 @@ Inputs:
   and --analysis, the issue document and the analysis the floor read, all
   read as UTF-8; an unreadable one is unusable input.
 - The history of the base commit, read by floor.py's own code.
+
+The base commit, the config at it and the history are read as floor.py
+reads them: through floor.py's job_object_store, from a fresh bare store in
+the system temp directory, filled by a by-hash protocol v2 fetch over
+`file://` that re-hashes every object, its closure then walked in the
+store, under floor.py's neutral git
+environment, and deleted afterwards. The trust boundary that remains is
+floor.py's: ref names are resolved in the job repository, the store is
+out of the stages' reach by convention only, and a forged object in the
+history makes every run exit 2.
 - The floor verdict, .mintswarm/job/outputs/floor.json, from floor.py.
 - PATH given to --assessment, the assess stage's assessment.md, and REF
   given to --assessment-artifact, where it was published.
@@ -53,7 +63,9 @@ clean only when all of floor.py's rules ran and are clean.
 
 The judgement layer is usable only if the assessment is UTF-8 and, with
 lines split at LF only and trailing CR, space and tab removed from each
-(envelope_problems, which landing/collect-facts.py loads by path):
+(envelope_problems, which landing/collect-facts.py loads by path; landing/
+judgement.py loads it too, with its own hard triggers and naming the
+landing document in the problems):
 
 - no line starts with `Risk:`;
 - the first non-blank line is a `# ` title, and the next non-blank line is
@@ -128,7 +140,8 @@ characters and set in a code span; layer problems are this script's fixed
 strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
-record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, no config at it, an invalid
+record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, a partial
+clone, a failed fetch into the object store (a forged or missing object, a shallow history), no config at it, an invalid
 config, an unknown component, an unreadable plan, issue document or
 analysis, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it
@@ -359,10 +372,15 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     return problems
 
 
-def floor_rules(plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str) -> tuple:
-    """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None)."""
+def floor_rules(
+    plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str, git_dir=None
+) -> tuple:
+    """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None).
+
+    The history is read from git_dir, the object store, when given."""
+    subjects = floor.history(commit, git_dir=git_dir)
     return floor.conclude(
-        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, floor.history(commit)
+        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, subjects
     )
 
 
@@ -410,76 +428,80 @@ def is_text(value) -> bool:
     return isinstance(value, str) and bool(inert(value))
 
 
-def envelope_fields(envelope) -> list:
-    """Problems with the envelope's parsed content, as fixed strings."""
+def envelope_fields(envelope, triggers=HARD_TRIGGERS, noun="assessment") -> list:
+    """Problems with the envelope's parsed content, as fixed strings naming the document by `noun`."""
     if not isinstance(envelope, dict) or list(envelope) != ENVELOPE_KEYS:
-        return ["the assessment's envelope is not an object with exactly " + ", ".join(ENVELOPE_KEYS) + ", in order"]
+        return [f"the {noun}'s envelope is not an object with exactly " + ", ".join(ENVELOPE_KEYS) + ", in order"]
     confidence = envelope["confidence"]
     band = envelope["band"]
     if type(confidence) is not int or not 0 <= confidence <= 100:
-        return ["the assessment's confidence is not an integer from 0 to 100"]
+        return [f"the {noun}'s confidence is not an integer from 0 to 100"]
     if not isinstance(band, str) or band not in BANDS:
-        return ["the assessment's band is not one of " + ", ".join(BANDS)]
+        return [f"the {noun}'s band is not one of " + ", ".join(BANDS)]
     _, low, high = BANDS[band]
     if not low <= confidence <= high:
-        return ["the assessment's confidence is outside its band's range"]
-    triggers = envelope["hard_triggers"]
-    if not isinstance(triggers, list) or not all(isinstance(t, str) and t in HARD_TRIGGERS for t in triggers):
-        return ["the assessment's hard_triggers is not a list of known hard trigger identifiers"]
-    if len(set(triggers)) != len(triggers):
-        return ["the assessment's hard_triggers repeats a trigger"]
-    if bool(triggers) != (band == "blocked"):
-        return ["the assessment's hard_triggers must be non-empty exactly when the band is blocked"]
+        return [f"the {noun}'s confidence is outside its band's range"]
+    hard = envelope["hard_triggers"]
+    if not isinstance(hard, list) or not all(isinstance(t, str) and t in triggers for t in hard):
+        return [f"the {noun}'s hard_triggers is not a list of known hard trigger identifiers"]
+    if len(set(hard)) != len(hard):
+        return [f"the {noun}'s hard_triggers repeats a trigger"]
+    if bool(hard) != (band == "blocked"):
+        return [f"the {noun}'s hard_triggers must be non-empty exactly when the band is blocked"]
     if not is_text(envelope["reason"]):
-        return ["the assessment's envelope gives no reason"]
+        return [f"the {noun}'s envelope gives no reason"]
     doubts = envelope["doubts"]
     if not isinstance(doubts, list) or len(doubts) > MAX_DOUBTS:
-        return [f"the assessment's doubts is not a list of at most {MAX_DOUBTS}"]
+        return [f"the {noun}'s doubts is not a list of at most {MAX_DOUBTS}"]
     for doubt in doubts:
         if not isinstance(doubt, dict) or list(doubt) != DOUBT_KEYS or not all(is_text(doubt[k]) for k in DOUBT_KEYS):
             return ["a doubt is not an object with exactly non-empty " + ", ".join(DOUBT_KEYS) + ", in order"]
     if band == "likely-safe" and not doubts:
-        return ["the assessment's band is likely-safe without a doubt"]
+        return [f"the {noun}'s band is likely-safe without a doubt"]
     if band == "safe" and doubts:
-        return ["the assessment's band is safe with a doubt"]
+        return [f"the {noun}'s band is safe with a doubt"]
     return []
 
 
-def envelope_problems(text: str) -> tuple:
-    """(problems, fields) for an assessment's text; fields is the envelope's object, or None when unusable."""
+def envelope_problems(text: str, triggers=HARD_TRIGGERS, noun="assessment") -> tuple:
+    """(problems, fields) for a document's text; fields is the envelope's object, or None when unusable.
+
+    `triggers` are the hard trigger identifiers the envelope may name and `noun` names the document in
+    the problems; the defaults are the assess stage's.
+    """
     lines = [line.rstrip("\r \t") for line in text.split("\n")]
     if any(line.startswith("Risk:") for line in lines):
-        return ["the assessment has a line starting with 'Risk:'"], None
+        return [f"the {noun} has a line starting with 'Risk:'"], None
     content = [line for line in lines if line.strip()]
     if not content or not content[0].startswith("# "):
-        return ["the assessment does not start with a '# ' title"], None
+        return [f"the {noun} does not start with a '# ' title"], None
     summary = SUMMARY.fullmatch(content[1]) if len(content) > 1 else None
     if summary is None:
-        return ["the line after the assessment's title is not '<confidence> confidence: <reason>'"], None
+        return [f"the line after the {noun}'s title is not '<confidence> confidence: <reason>'"], None
     if not inert(summary.group(2)):
-        return ["the assessment's summary gives no reason"], None
+        return [f"the {noun}'s summary gives no reason"], None
     opens = [i for i, line in enumerate(lines) if line == FENCE_OPEN]
     if not opens:
-        return ["the assessment has no envelope"], None
+        return [f"the {noun} has no envelope"], None
     if len(opens) > 1:
-        return ["the assessment has more than one envelope"], None
+        return [f"the {noun} has more than one envelope"], None
     start = opens[0] + 1
     closes = [i for i in range(start, len(lines)) if lines[i] == FENCE_CLOSE]
     if not closes:
-        return ["the assessment's envelope is not closed"], None
+        return [f"the {noun}'s envelope is not closed"], None
     try:
         envelope = floor.strict_json("\n".join(lines[start : closes[0]]))
     except (ValueError, RecursionError):
-        return ["the assessment's envelope is not strict JSON"], None
+        return [f"the {noun}'s envelope is not strict JSON"], None
     try:
         json.dumps(envelope, ensure_ascii=False).encode("utf-8")
     except UnicodeEncodeError:  # a \uD800-style escape decodes to a lone surrogate
-        return ["the assessment's envelope holds a string with a lone surrogate"], None
-    problems = envelope_fields(envelope)
+        return [f"the {noun}'s envelope holds a string with a lone surrogate"], None
+    problems = envelope_fields(envelope, triggers, noun)
     if problems:
         return problems, None
     if int(summary.group(1)) != envelope["confidence"]:
-        return ["the assessment's summary confidence differs from its envelope"], None
+        return [f"the {noun}'s summary confidence differs from its envelope"], None
     return [], envelope
 
 
@@ -739,13 +761,14 @@ def run(argv: list) -> int:
         raise InputError(f"cannot delete the stale record {RECORD}: {exc}") from exc
     args = parse_args(argv)
     try:
-        commit = floor.resolve_base(args["base"])
-        config = floor.load_config(commit)
-        cfg = floor.validate_config(config, args["component"])
-        plan = floor.read_plan(args["plan"])
-        issue = floor.read_document(args["issue_document"], "issue document")
-        analysis = floor.read_document(args["analysis"], "analysis")
-        rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit)
+        with floor.job_object_store({"base": args["base"]}) as (store, commits):
+            commit = commits["base"]
+            config = floor.load_config(commit, git_dir=store)
+            cfg = floor.validate_config(config, args["component"])
+            plan = floor.read_plan(args["plan"])
+            issue = floor.read_document(args["issue_document"], "issue document")
+            analysis = floor.read_document(args["analysis"], "analysis")
+            rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit, store)
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
     mode = cfg["mode"]

@@ -1,5 +1,5 @@
 id: "typescript"
-version: 2
+version: 3
 name: "TypeScript"
 description: "TypeScript in one package, type-checked by tsc, linted by ESLint with typescript-eslint and formatted by Prettier."
 detect:
@@ -53,11 +53,11 @@ settings:
     alternatives: ["{{ package_root }}/.nvmrc"]
 gates:
   - name: "typescript-typecheck"
-    command: "cd {{ package_root }} && ./node_modules/.bin/tsc --noEmit"
+    command: "cd ./{{ package_root }} && ./node_modules/.bin/tsc --noEmit"
     kind: "typecheck"
   - name: "typescript-lint"
-    command: "cd {{ package_root }} && ./node_modules/.bin/eslint ."
+    command: "cd ./{{ package_root }} && ./node_modules/.bin/eslint ."
     kind: "lint"
   - name: "typescript-format"
-    command: "cd {{ package_root }} && ./node_modules/.bin/prettier --check ."
+    command: "cd ./{{ package_root }} && ./node_modules/.bin/prettier --check ."
     kind: "format"

@@ -41,6 +41,6 @@ How TypeScript is written, checked and formatted in the package at `{{ package_r
 
 Run these from the repository root before pushing; all three pass:
 
-- `cd {{ package_root }} && ./node_modules/.bin/tsc --noEmit`
-- `cd {{ package_root }} && ./node_modules/.bin/eslint .`
-- `cd {{ package_root }} && ./node_modules/.bin/prettier --check .`
+- `cd ./{{ package_root }} && ./node_modules/.bin/tsc --noEmit`
+- `cd ./{{ package_root }} && ./node_modules/.bin/eslint .`
+- `cd ./{{ package_root }} && ./node_modules/.bin/prettier --check .`

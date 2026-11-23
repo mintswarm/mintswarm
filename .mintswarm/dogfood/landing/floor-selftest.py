@@ -13,7 +13,8 @@ system. Base configs are `real`, the checkout's .mintswarm/config.yaml byte
 for byte, and variants of it, read with `yq -o=json`, changed here and
 committed as JSON text at the same path. floor.py runs as
 `sys.executable -I floor.py ...` with that repository as its working
-directory and plans and facts files written under `cases/`. Every run gets
+directory, plans and facts files written under `cases/` and TMPDIR an
+empty directory of the sandbox, where the floor makes its object stores. Every run gets
 a facts file for its own base and head: clean (no checks, a passed gate
 round, a review `pass`, both judging the head, no steers, no pending
 review request) unless the case
@@ -57,8 +58,11 @@ Checks:
   `size`; with hostile system, global, environment and repository config,
   the verdict does not change;
 - history tampering: a replace ref on the head or the base, info/grafts,
-  GIT_GRAFT_FILE, `git replace --graft` and GIT_REPLACE_REF_BASE leave the
-  hits in place, and a head the base already contains is unusable;
+  GIT_GRAFT_FILE, `git replace --graft`, GIT_REPLACE_REF_BASE and a
+  commit-graph patched in its CDAT chunk to cut the link between the
+  head's parent and the base (so a plain `git merge-base` finds none) leave
+  the hits in place, and a head
+  the base already contains is unusable;
 - binary content: a blob with a NUL that an untracked .gitattributes,
   info/attributes, the XDG attributes file or core.attributesFile forces to
   text is still unmeasurable, on either side;
@@ -94,6 +98,16 @@ Checks:
   their recorded verdicts;
 - glob semantics: require-human-paths reasons agree with
   plan-approval/floor.py's matching;
+- object store, with every run's TMPDIR an empty sandbox directory: GIT_DIR
+  and GIT_OBJECT_DIRECTORY at a decoy repository, where a plain git cannot
+  see the base, leave the hits in place; a loose blob only the head adds,
+  overwritten with another blob that a plain `git cat-file` then shows,
+  makes the floor exit 2 with one line naming the fetch and no verdict, even
+  a stale one; a .git/shallow forged in the job repository at the head's
+  parent, cutting off the commit between it and the base, makes the floor
+  exit 2 with one
+  line naming the fetch and no verdict; and no `msw-floor-objects-*` store
+  is left after clean, hit and exit 2 runs;
 - standard library: every import of floor.py and floor-selftest.py is in the
   standard library.
 
@@ -113,6 +127,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -279,9 +294,21 @@ class Sandbox:
                 "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
             }
         )
-        self.env = env  # floor.py runs with this; it must neutralise replace objects and grafts itself
+        self.store_tmp = tmp / "tmpdir"  # TMPDIR of every run: the floor's object stores go here
+        self.store_tmp.mkdir()
+        env["TMPDIR"] = str(self.store_tmp)
+        self.env = (
+            env  # floor.py runs with this; it must neutralise replace objects, grafts and the commit-graph itself
+        )
         # the self-test's own git calls always see the true objects and history
-        self.git_env = dict(env, GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull)
+        self.git_env = dict(
+            env,
+            GIT_NO_REPLACE_OBJECTS="1",
+            GIT_GRAFT_FILE=os.devnull,
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="core.commitGraph",
+            GIT_CONFIG_VALUE_0="false",
+        )
         self.repo.mkdir()
         self.cases.mkdir()
         self.git("init", "-q", "-b", "master")
@@ -716,6 +743,14 @@ def check_clean(r: Runner) -> None:
         {},
         config="shadow",
     )
+    for config in ("min-confidence-90", "min-confidence-100"):
+        r.expect(
+            f"pipeline.landing.min_confidence {config.rsplit('-', 1)[1]}",
+            footprint(["docs/guide.md"], estimated_lines=4),
+            appended("docs/guide.md", 2),
+            {},
+            config=config,
+        )
 
 
 def check_single_rules(r: Runner) -> None:
@@ -1052,6 +1087,25 @@ def check_history_tampering(r: Runner, sb: Sandbox) -> None:
         finally:
             undo()
 
+    # git parses the commits it is given from their objects, and their ancestors from the commit-graph, so the
+    # graph cuts the link between the head's parent and the base
+    middle = sb.child(base, appended("docs/guide.md", 1), "middle")
+    far_head = sb.child(middle, {".github/workflows/x.yml": text(1)}, "far head")
+    sb.git("update-ref", "refs/selftest/graph", far_head)
+    sb.raw("commit-graph", "write", "--reachable", "--no-progress", env=sb.env)
+    cut_parents_in_graph(sb.repo / ".git", middle)
+    try:
+        proc = subprocess.run(["git", "merge-base", base, far_head], cwd=sb.repo, env=sb.env, capture_output=True)
+        T.check(
+            "a commit-graph cutting the head's history: a plain git merge-base finds none",
+            proc.returncode != 0,
+            proc.stdout.decode(),
+        )
+        r.expect("a commit-graph cutting the head's history: still hit", fp, None, hits, head=far_head)
+    finally:
+        sb.git("update-ref", "-d", "refs/selftest/graph")
+        (sb.repo / ".git" / "objects" / "info" / "commit-graph").unlink()
+
     # a replaced base would read a looser config at the base
     loose_base = sb.commit({**BASE_TREE, CONFIG_PATH: CONFIG.read_bytes()}, (), "base to be replaced")
     loose_head = sb.child(loose_base, {"CLAUDE.md": text(1)})
@@ -1067,6 +1121,122 @@ def check_history_tampering(r: Runner, sb: Sandbox) -> None:
         )
     finally:
         sb.git("update-ref", "-d", f"refs/replace/{loose_base}")
+
+
+STORE_PREFIX = "msw-floor-objects-"
+GRAPH_PARENT_NONE = (0x70000000).to_bytes(4, "big")
+
+
+def cut_parents_in_graph(git_dir: Path, commit: str) -> None:
+    """Patch the commit-graph's CDAT entry for commit so that it reads as having no parents."""
+    path = git_dir / "objects" / "info" / "commit-graph"
+    data = bytearray(path.read_bytes())
+    if data[:4] != b"CGPH":
+        raise RuntimeError("selftest bug: not a commit-graph file")
+    hash_len = 20 if data[5] == 1 else 32
+    chunks = {}
+    for i in range(data[6] + 1):
+        at = 8 + 12 * i
+        chunks[bytes(data[at : at + 4])] = int.from_bytes(data[at + 4 : at + 12], "big")
+    count = int.from_bytes(data[chunks[b"OIDF"] + 255 * 4 : chunks[b"OIDF"] + 256 * 4], "big")
+    oid = bytes.fromhex(commit)
+    oids = chunks[b"OIDL"]
+    index = next((i for i in range(count) if data[oids + i * hash_len : oids + (i + 1) * hash_len] == oid), None)
+    if index is None:
+        raise RuntimeError(f"selftest bug: {commit} is not in the commit-graph")
+    entry = chunks[b"CDAT"] + index * (hash_len + 16) + hash_len
+    data[entry : entry + 8] = GRAPH_PARENT_NONE * 2
+    path.chmod(0o644)
+    path.write_bytes(bytes(data))
+
+
+def stores_left(sb: Sandbox) -> list:
+    return sorted(p.name for p in sb.store_tmp.iterdir() if p.name.startswith(STORE_PREFIX))
+
+
+def check_object_store(r: Runner, sb: Sandbox) -> None:
+    """The landing floor reads a fresh, re-hashed object store, never the job repository's objects."""
+    base = r.commits["real"]
+    fp = footprint(["docs/guide.md", "docs/added.md"], ["docs/added.md"], estimated_lines=10)
+    r.expect("object store: clean run", fp, {**appended("docs/guide.md", 1), "docs/added.md": text(2, "added")}, {})
+    T.check("object store: no store is left after a clean run", not stores_left(sb), str(stores_left(sb)))
+
+    decoy = sb.tmp / "decoy"
+    sb.raw("init", "-q", str(decoy), cwd=sb.tmp)
+    decoy_env = dict(sb.env, GIT_DIR=str(decoy / ".git"), GIT_OBJECT_DIRECTORY=str(decoy / ".git" / "objects"))
+    seen = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+        cwd=sb.repo,
+        env=decoy_env,
+        capture_output=True,
+    )
+    T.check("object store, GIT_DIR at a decoy: plain git does not see the base", seen.returncode != 0)
+    r.expect(
+        "object store, GIT_DIR and GIT_OBJECT_DIRECTORY at a decoy",
+        footprint(["docs/guide.md"], estimated_lines=10),
+        {**appended("docs/guide.md", 1), ".github/workflows/x.yml": text(1)},
+        {
+            "undeclared-files": None,
+            "undeclared-new-files": None,
+            "require-human-paths": None,
+            "protected": None,
+        },
+        env=decoy_env,
+    )
+    T.check("object store: no store is left after a hit run", not stores_left(sb), str(stores_left(sb)))
+
+    # a blob only the head adds, overwritten with another blob
+    content = text(3, "only in the head")
+    head = sb.child(base, {"docs/forged.md": content})
+    blob = sb.git("rev-parse", f"{head}:docs/forged.md")
+    other = text(1, "forged")
+    path = sb.repo / ".git" / "objects" / blob[:2] / blob[2:]
+    original = path.read_bytes()
+    plan = sb.write_plan("forged object", plan_text(footprint(["docs/forged.md"], ["docs/forged.md"], 10)))
+    facts = sb.write_facts("forged object", facts_for(base, head))
+    argv = ["--plan", plan, "--component", "docs", "--base", base, "--head", head, "--facts", facts]
+    path.chmod(0o644)
+    path.write_bytes(zlib.compress(b"blob %d\0" % len(other) + other))
+    try:
+        T.check("object store, forged object: plain git shows the forgery", sb.raw("cat-file", "blob", blob) == other)
+        proc, verdict = sb.floor(argv)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged object: exit 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+    finally:
+        path.write_bytes(original)
+        path.chmod(0o444)
+    T.check("object store, forged object: restored", sb.raw("cat-file", "blob", blob) == content)
+    T.check("object store: no store is left after an exit 2 run", not stores_left(sb), str(stores_left(sb)))
+
+    # a .git/shallow at the head's parent, cutting off the commit between it and the base: upload-pack sends
+    # the cut history, and the store is not marked shallow
+    between = sb.child(base, appended("docs/guide.md", 1), "shallow between")
+    middle = sb.child(between, appended("docs/guide.md", 2), "shallow middle")
+    far_head = sb.child(middle, {"docs/added.md": text(2, "added")}, "shallow head")
+    plan = sb.write_plan("forged shallow", plan_text(fp))
+    facts = sb.write_facts("forged shallow", facts_for(base, far_head))
+    argv = ["--plan", plan, "--component", "docs", "--base", base, "--head", far_head, "--facts", facts]
+    shallow = sb.repo / ".git" / "shallow"
+    shallow.write_text(f"{middle}\n", encoding="ascii")
+    try:
+        T.check(
+            "object store, forged .git/shallow: plain git sees a shallow repository",
+            sb.raw("rev-parse", "--is-shallow-repository").decode().strip() == "true",
+        )
+        proc, verdict = sb.floor(argv)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged .git/shallow: exit 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "the fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+    finally:
+        shallow.unlink()
+    T.check("object store: no store is left after a shallow run", not stores_left(sb), str(stores_left(sb)))
 
 
 def check_binary_content(r: Runner, sb: Sandbox) -> None:
@@ -1366,6 +1536,11 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         "footprint-missing",
         "undefined-component",
         "plan-approval-invalid",
+        "min-confidence-89",
+        "min-confidence-101",
+        "min-confidence-true",
+        "min-confidence-string",
+        "min-confidence-float",
     ):
         base = commits[variant]
         # a value yq cannot convert (.inf) fails in yq, before the config is checked
@@ -1373,7 +1548,11 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             (
                 f"config {variant}",
                 args(base=base, head_=sb.child(base, appended("docs/guide.md", 1))),
-                ("config", "yq -p=yaml failed"),
+                (
+                    ("pipeline.landing.min_confidence must be an integer from 90 to 100, not",)
+                    if variant.startswith("min-confidence-")
+                    else ("config", "yq -p=yaml failed")
+                ),
             )
         )
     for name, argv, fragment in cases:
@@ -1824,6 +2003,39 @@ def check_facts_contract() -> None:
     )
 
 
+def check_min_confidence() -> None:
+    """validate_landing, called directly: the default and a given value."""
+    floor = load_module("msw_landing_floor_for_selftest", FLOOR)
+    floor.P = floor.load_plan_floor()
+    config = yq_json(CONFIG)
+    components = config["components"]
+    got = floor.validate_landing(copy.deepcopy(config), components)["min_confidence"]
+    T.check(
+        "min_confidence: absent gives the default 95",
+        "min_confidence" not in config["pipeline"]["landing"] and got == floor.DEFAULT_MIN_CONFIDENCE == 95,
+        f"got {got!r}, DEFAULT_MIN_CONFIDENCE {floor.DEFAULT_MIN_CONFIDENCE!r}",
+    )
+    T.check("min_confidence: the lowest allowed is 90", floor.MIN_CONFIDENCE == 90, repr(floor.MIN_CONFIDENCE))
+    for value in (90, 97, 100):
+        given = copy.deepcopy(config)
+        given["pipeline"]["landing"]["min_confidence"] = value
+        got = floor.validate_landing(given, components)["min_confidence"]
+        T.check(f"min_confidence: {value} is returned as given", got == value and type(got) is int, repr(got))
+    for value in (89, 101, True, "95", 95.0, None):
+        given = copy.deepcopy(config)
+        given["pipeline"]["landing"]["min_confidence"] = value
+        try:
+            floor.validate_landing(given, components)
+            message = None
+        except floor.InputError as exc:
+            message = str(exc)
+        T.check(
+            f"min_confidence: {value!r} is refused",
+            message == f"config: pipeline.landing.min_confidence must be an integer from 90 to 100, not {value!r}",
+            repr(message),
+        )
+
+
 def check_isolation(r: Runner, sb: Sandbox) -> None:
     sentinel = b'{"sentinel": "the plan floor\'s verdict"}\n'
     target = sb.repo / PLAN_VERDICT
@@ -2059,6 +2271,16 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("footprint-missing", lambda c: landing(c).pop("footprint"))
     variant("undefined-component", lambda c: landing(c).update(require_human={"components": ["nowhere"]}))
     variant("plan-approval-invalid", lambda c: c["pipeline"]["plan_approval"].update(mode="sometimes"))
+    for name, value in (
+        ("90", 90),
+        ("100", 100),
+        ("89", 89),
+        ("101", 101),
+        ("true", True),
+        ("string", "95"),
+        ("float", 95.5),  # yq reads 95.0 as 95, so the end-to-end float is not integral; check_min_confidence has 95.0
+    ):
+        variant(f"min-confidence-{name}", lambda c, value=value: landing(c).update(min_confidence=value))
     modes = {name: (config.get("pipeline", {}).get("landing") or {}).get("mode") for name, config in configs.items()}
     return commits, configs, modes
 
@@ -2088,7 +2310,9 @@ def main() -> int:
         check_isolation(runner, sb)
         check_historic(runner, sb)
         check_globs(runner, sb)
+        check_object_store(runner, sb)
     check_facts_contract()
+    check_min_confidence()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
