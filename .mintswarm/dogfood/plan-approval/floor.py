@@ -40,7 +40,8 @@ store made for this run, never from the job repository's own objects:
   or object directory (GIT_DIR, GIT_OBJECT_DIRECTORY,
   GIT_ALTERNATE_OBJECT_DIRECTORIES and the rest), replace objects, grafts
   and the commit-graph off (GIT_NO_REPLACE_OBJECTS, GIT_GRAFT_FILE at the
-  null device, core.commitGraph=false) and no lazy fetch;
+  null device, core.commitGraph=false), git's grafts deprecation hint off
+  (advice.graftFileDeprecated=false) and no lazy fetch;
 - a repository whose config makes it a partial clone is refused;
 - REF is resolved in the job repository with
   `git rev-parse --verify REF^{object}`, without peeling, to the full id
@@ -293,7 +294,7 @@ FETCH_OPTIONS = (
 # these are set again for it, as shell assignments, which need no `env` on PATH.
 UPLOAD_PACK = (
     f"GIT_GRAFT_FILE={os.devnull} GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 "
-    "git -c core.commitGraph=false upload-pack"
+    "git -c core.commitGraph=false -c advice.graftFileDeprecated=false upload-pack"
 )
 
 
@@ -443,9 +444,12 @@ def neutral_git_env() -> None:
             "GIT_ATTR_NOSYSTEM": "1",
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_NO_LAZY_FETCH": "1",  # git 2.45 and later; older git ignores it
-            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_COUNT": "2",
             "GIT_CONFIG_KEY_0": "core.commitGraph",
             "GIT_CONFIG_VALUE_0": "false",
+            # GIT_GRAFT_FILE names an existing file, so git would print its grafts deprecation hint first
+            "GIT_CONFIG_KEY_1": "advice.graftFileDeprecated",
+            "GIT_CONFIG_VALUE_1": "false",
         }
     )
 

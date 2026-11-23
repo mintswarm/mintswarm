@@ -2778,6 +2778,11 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
             proc.returncode == 2 and verdict is None and len(lines) == 1 and "the fetch" in lines[0],
             f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
         )
+        T.check(
+            "object store, forged .git/shallow: the fetch error carries no git hint",
+            "hint:" not in proc.stderr,
+            proc.stderr.strip(),
+        )
     finally:
         shallow.unlink()
     T.check("object store: no store is left after a shallow run", not stores_left(sb), str(stores_left(sb)))
