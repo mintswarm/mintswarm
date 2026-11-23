@@ -50,7 +50,8 @@ Checks:
   holding the path but not as its prefix, and `claude.md` declared while
   CLAUDE.md changed still hit; a bot approver, an approver that is no
   login (empty, `[Bot]` in another case, a trailing space), a human login
-  with no decision record, a decision `auto`, `Human` or `always`, a
+  with no decision record, a `human` decision record of another tool or
+  whose approval is not `plan`, a decision `auto`, `Human` or `always`, a
   `human` decision for another plan, a decision record that is not an
   object, a decision that is not an object, no approval and an approval
   that is a string each exit 1 with the not-approved reason; an unusable
@@ -575,12 +576,19 @@ def human_approval(plan_bytes: bytes = None, decision: str = None, plan_sha: str
         sha = plan_sha or hashlib.sha256(plan_bytes).hexdigest()
         record = {
             "tool": "mintswarm-approval-decision",
-            "version": 1,
+            "version": 2,
+            "approval": "plan",
             "subject": {"issue": 1, "component": "docs", "plan": {"path": "plan.md", "sha256": sha}},
             "decision": decision,
         }
         approval["decision"] = {"path": "decision.json", "sha256": "0" * 64, "record": record}
     return approval
+
+
+def with_record(given: dict, **changes) -> dict:
+    """A copy of the approval `given` whose decision record has `changes` applied."""
+    decision = given["decision"]
+    return {**given, "decision": {**decision, "record": {**decision["record"], **changes}}}
 
 
 def not_approved(cause: str) -> str:
@@ -1571,6 +1579,16 @@ def check_coverage(r: Runner, commits: dict) -> None:
             "a human login with no decision record",
             {"approval": human_approval()},
             "no decision record ties the approval to this plan",
+        ),
+        (
+            "a human decision record of another tool",
+            {"approval": with_record(recorded, tool="mintswarm-landing-decision")},
+            "the decision record's tool is \"mintswarm-landing-decision\", not 'mintswarm-approval-decision'",
+        ),
+        (
+            "a human decision record whose approval is not plan",
+            {"approval": with_record(recorded, approval="landing")},
+            "the decision record's approval is \"landing\", not 'plan'",
         ),
         ("a decision auto", {"approval": human_approval(claude_plan, "auto")}, "the plan's decision was auto"),
         (

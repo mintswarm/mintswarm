@@ -213,12 +213,15 @@ plan did not cover. A changed path is covered when all of these hold:
   whose `approver` is a login by collect-facts.py's pattern
   (`[A-Za-z0-9-]+`, optionally followed by `[bot]`) not ending in `[bot]`,
   and whose `decision` holds a decision record (collect-facts.py adds it
-  only when given --decision) whose `record.decision` is `human` and whose
-  `record.subject.plan.sha256` is the sha256 of the --plan bytes, so the
-  approval is tied to the plan given here. A missing or malformed
-  `approval`, an approver that is no such login, a missing or malformed
-  decision record, a decision `auto` or any other value, or a record for
-  another plan is no human approval: a hit, never unusable input;
+  only when given --decision) whose `record.tool` is
+  `mintswarm-approval-decision`, whose `record.approval` is `plan`, whose
+  `record.decision` is `human` and whose `record.subject.plan.sha256` is
+  the sha256 of the --plan bytes, so the approval is tied to the plan given
+  here. A missing or malformed `approval`, an approver that is no such
+  login, a missing or malformed decision record, a record of another tool
+  or whose approval is not `plan`, a decision `auto` or any other value, or
+  a record for another plan is no human approval: a hit, never unusable
+  input;
 - the footprint is usable and declares the exact path (compared exactly,
   as `undeclared-files` compares it), in `files` or as a new dependency's
   `manifest`;
@@ -359,6 +362,7 @@ BLOB_MODES = ("100644", "100755", "120000")
 DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")  # collect-facts.py's approver pattern
 BOT_SUFFIX = "[bot]"  # an approver login ending in this is no human
+DECISION_TOOL = "mintswarm-approval-decision"  # collect-facts.py's DECISION_TOOL, the plan-approval decision.py
 
 P = None  # the plan floor's module, once loaded
 
@@ -910,6 +914,10 @@ def plan_approval(facts: dict, plan_sha: str):
     record = decision.get("record") if isinstance(decision, dict) else None
     if not isinstance(record, dict):
         return "the decision record is malformed"
+    if record.get("tool") != DECISION_TOOL:
+        return f"the decision record's tool is {brief(record.get('tool'))}, not {DECISION_TOOL!r}"
+    if record.get("approval") != "plan":
+        return f"the decision record's approval is {brief(record.get('approval'))}, not 'plan'"
     value = record.get("decision")
     if value == "auto":
         return "the plan's decision was auto"
