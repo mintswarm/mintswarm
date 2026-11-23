@@ -20,16 +20,19 @@ error, mismatch, unsafe archive or oversized response makes the package
 `failed`. Otherwise it is `fetched`.
 
 Archives are gunzipped with a bounded stream and read member by member in
-memory: an absolute member, a `..`, `.` or empty component, a backslash, a
-link, anything but a file or a directory, an oversized member, too many
-members or a member outside the single top directory fails the archive as a
-whole. Nothing is extracted to disk by tarfile and nothing from the package
+memory: data after the gzip stream or after the tar end, an absolute
+member, a `..`, `.` or empty component, a backslash, a link, anything but a
+regular file or a directory, two paths equal when case and Unicode
+normalisation are ignored, too many members or a member outside the single
+top directory fails the archive as a whole, and so does a selection-relevant
+name that matches a member only when case is ignored. Nothing is extracted to disk by tarfile and nothing from the package
 is executed; the crate's Cargo.toml is parsed by `yq -p=toml` on stdin, the
 only subprocess.
 
 For a fetched package it writes `<dir>/<ecosystem>/<name>@<version>/`
 holding `metadata.json` (`registry`: the trimmed registry metadata;
-`build_time`: `none`, the list of build or install code found, or
+`found`: the build or install code found; `build_time`: `none`, that list,
+`partial` when the copied code references files that were not copied, or
 `undetermined`; `files`: what was copied) and `files/1.txt`, `files/2.txt`,
 … (the manifest and the build or install code, mode 0644). `<dir>/prefetch.json`
 lists every package with its `status`, `reason` and `dir`.
@@ -44,12 +47,14 @@ import base64
 import hashlib
 import io
 import json
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -70,6 +75,7 @@ TOTAL_CAP = 128 * MIB
 MEMBER_CAP = 32 * MIB
 MEMBER_COUNT = 20000
 COPY_CAP = 1 * MIB
+COPY_TOTAL = 16 * MIB
 HISTORY = 20
 TEXT_CAP = 500
 SCRIPT_CAP = 1000
@@ -79,6 +85,7 @@ VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 INSTALL_SCRIPTS = ("preinstall", "install", "postinstall")
 CRATE_FIELDS = ("created_at", "updated_at", "downloads", "recent_downloads", "repository", "homepage")
 VERSION_FIELDS = ("created_at", "yanked", "license", "downloads", "rust_version")
+MEMBER_TYPES = (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)
 
 
 class InputError(Exception):
@@ -87,6 +94,10 @@ class InputError(Exception):
 
 class FetchError(Exception):
     """A request that failed, was refused or returned too much."""
+
+
+class OverCap(FetchError):
+    """A response over its cap."""
 
 
 class PackageError(Exception):
@@ -147,7 +158,7 @@ def fetch(url: str, cap: int) -> bytes:
     except Exception as exc:
         raise FetchError(f"{url}: {type(exc).__name__}: {exc}") from exc
     if size > cap:
-        raise FetchError(f"{url}: response over {cap} bytes")
+        raise OverCap(f"{url}: response over {cap} bytes")
     return b"".join(chunks)
 
 
@@ -155,7 +166,7 @@ def fetch_json(url: str, cap: int):
     data = fetch(url, cap)
     try:
         return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise FetchError(f"{url}: not JSON") from exc
 
 
@@ -183,6 +194,7 @@ def newest(items: list, key: str) -> list:
 
 
 def gunzip(data: bytes) -> bytes:
+    """data, one gzip member and nothing after it, decompressed to at most TOTAL_CAP bytes."""
     stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
     out, pending = bytearray(), data
     try:
@@ -198,7 +210,14 @@ def gunzip(data: bytes) -> bytes:
         raise PackageError("failed", f"archive is not gzip: {exc}") from exc
     if not stream.eof:
         raise PackageError("failed", "archive gzip stream is truncated")
+    if stream.unused_data:
+        raise PackageError("failed", "archive has data after its gzip stream")
     return bytes(out)
+
+
+def fold(path: str) -> str:
+    """path as a case-insensitive, normalisation-insensitive file system sees it."""
+    return unicodedata.normalize("NFC", path).casefold()
 
 
 def unsafe(member: tarfile.TarInfo) -> str:
@@ -212,51 +231,80 @@ def unsafe(member: tarfile.TarInfo) -> str:
         return "a '..', '.' or empty component"
     if member.issym() or member.islnk():
         return "a link"
-    if not (member.isfile() or member.isdir()):
-        return "neither a file nor a directory"
-    if member.size > MEMBER_CAP:
-        return f"over {MEMBER_CAP} bytes"
+    if member.type not in MEMBER_TYPES:
+        return "not a regular file or a directory"
     return ""
 
 
-def read_archive(data: bytes, top: str = None) -> tuple:
-    """(files, read) of a .tar.gz: files maps paths under the single top directory to members; read(path) the bytes.
+class Archive:
+    """The files of a .tar.gz under its single top directory, read in memory; PackageError when unsafe.
 
     top is the required top directory, or None for whatever single one the archive has.
     """
-    raw = gunzip(data)
-    try:
-        tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
-        files, count = {}, 0
-        while True:
-            member = tar.next()
-            if member is None:
-                break
-            count += 1
-            if count > MEMBER_COUNT:
-                raise PackageError("failed", f"archive has over {MEMBER_COUNT} members")
-            why = unsafe(member)
-            if why:
-                raise PackageError("failed", f"unsafe archive member {member.name!r}: {why}")
-            first, _, rest = member.name.partition("/")
-            if top is None:
-                top = first
-            if first != top or (not rest and not member.isdir()):
-                raise PackageError("failed", f"archive member {member.name!r} is outside {top + '/'!r}")
-            if member.isfile():
-                if rest in files:
-                    raise PackageError("failed", f"archive member {member.name!r} appears twice")
-                files[rest] = member
-        if raw[tar.offset :].strip(b"\0"):
-            raise PackageError("failed", "archive has data after its end")
-    except (tarfile.TarError, EOFError, ValueError) as exc:
-        raise PackageError("failed", f"archive cannot be read: {exc}") from exc
 
-    def read(path: str) -> bytes:
-        handle = tar.extractfile(files[path])
+    def __init__(self, data: bytes, top: str = None):
+        raw = gunzip(data)
+        self.files, self.folded = {}, {}
+        try:
+            self.tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+            count = 0
+            while True:
+                member = self.tar.next()
+                if member is None:
+                    break
+                count += 1
+                if count > MEMBER_COUNT:
+                    raise PackageError("failed", f"archive has over {MEMBER_COUNT} members")
+                why = unsafe(member)
+                if why:
+                    raise PackageError("failed", f"unsafe archive member {member.name!r}: {why}")
+                first, _, rest = member.name.partition("/")
+                if top is None:
+                    top = first
+                if first != top or (not rest and not member.isdir()):
+                    raise PackageError("failed", f"archive member {member.name!r} is outside {top + '/'!r}")
+                if not rest:
+                    continue
+                if fold(rest) in self.folded and (self.folded[fold(rest)] != rest or not member.isdir()):
+                    raise PackageError(
+                        "failed", f"archive member {member.name!r} collides with {self.folded[fold(rest)]!r}"
+                    )
+                self.folded[fold(rest)] = rest
+                if member.isfile():
+                    self.files[rest] = member
+            if raw[self.tar.offset :].strip(b"\0"):
+                raise PackageError("failed", "archive has data after its end")
+        except (tarfile.TarError, EOFError, ValueError) as exc:
+            raise PackageError("failed", f"archive cannot be read: {exc}") from exc
+
+    def has(self, path: str) -> bool:
+        """Whether path is a file; PackageError when it matches a member only under case or Unicode folding."""
+        if path in self.files:
+            return True
+        other = self.folded.get(fold(path)) if path else None
+        if other is not None and other != path:
+            raise PackageError("failed", f"archive member {other!r} matches {path!r} only when case is ignored")
+        return False
+
+    def rust_under(self, directory: str) -> list:
+        """The .rs files under directory ("" for all); PackageError for one whose directory matches only folded."""
+        prefix = directory + "/" if directory else ""
+        found = []
+        for path in self.files:
+            if not path.endswith(".rs"):
+                continue
+            if path.startswith(prefix):
+                found.append(path)
+            elif fold(path).startswith(fold(prefix)):
+                raise PackageError("failed", f"archive member {path!r} matches {prefix!r} only when case is ignored")
+        return sorted(found)
+
+    def read(self, path: str) -> bytes:
+        member = self.files[path]
+        if member.size > MEMBER_CAP:
+            raise PackageError("failed", f"{path} is over {MEMBER_CAP} bytes")
+        handle = self.tar.extractfile(member)
         return handle.read() if handle is not None else b""
-
-    return files, read
 
 
 def run_yq(data: bytes):
@@ -269,7 +317,7 @@ def run_yq(data: bytes):
         return None
     try:
         return json.loads(proc.stdout.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
 
 
@@ -284,46 +332,76 @@ def tidy(path) -> str:
     return path
 
 
-def crate_selection(files: dict, read) -> tuple:
-    """(paths to copy, build_time) for a crate."""
-    if "Cargo.toml" not in files:
+def is_proc_macro(lib) -> tuple:
+    """(proc-macro, undetermined) for a [lib] table: `proc-macro`/`proc_macro` true or `crate-type` with proc-macro."""
+    if lib is None:
+        return False, False
+    if not isinstance(lib, dict):
+        return False, True
+    flag, undetermined = False, False
+    for key in ("proc-macro", "proc_macro"):
+        value = lib.get(key)
+        if value is True:
+            flag = True
+        elif value is not None and value is not False:
+            undetermined = True
+    for key in ("crate-type", "crate_type"):
+        value = lib.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list) and all(isinstance(kind, str) for kind in value):
+            flag = flag or "proc-macro" in value
+        else:
+            undetermined = True
+    return flag, undetermined
+
+
+def crate_selection(archive: Archive) -> tuple:
+    """(paths to copy, found, undetermined, crate root files) for a crate."""
+    if not archive.has("Cargo.toml"):
         raise PackageError("failed", "the archive has no Cargo.toml")
     selected, found, undetermined = ["Cargo.toml"], [], False
-    manifest = run_yq(read("Cargo.toml")) if files["Cargo.toml"].size <= COPY_CAP else None
+    manifest = run_yq(archive.read("Cargo.toml")) if archive.files["Cargo.toml"].size <= COPY_CAP else None
     if not isinstance(manifest, dict):
         manifest, undetermined = {}, True
-    package, lib = mapping(manifest.get("package")), mapping(manifest.get("lib"))
+    package = mapping(manifest.get("package"))
     build = package.get("build", True)
     if build is False:
         script = ""
     elif build is True:
-        script = "build.rs" if "build.rs" in files else ""
+        script = "build.rs" if archive.has("build.rs") else ""
     else:
         script = tidy(build)
-        if script not in files:
+        if not script or not archive.has(script):
             script, undetermined = "", True
+    roots = set()
     if script:
+        roots.add(script)
         found.append("build.rs" if script == "build.rs" else f"build={script}")
         selected.append(script)
-        selected += sorted(p for p in files if p.startswith("build/") and p.endswith(".rs"))
-    if lib.get("proc-macro", lib.get("proc_macro")) is True:
+        selected += archive.rust_under("build")
+    proc_macro, unknown = is_proc_macro(manifest.get("lib"))
+    undetermined = undetermined or unknown
+    if proc_macro:
         found.append("proc-macro")
-        root = tidy(lib.get("path", "src/lib.rs"))
-        if root in files:
-            selected.append(root)
+        root = tidy(mapping(manifest.get("lib")).get("path", "src/lib.rs"))
+        if root and archive.has(root):
+            roots.add(root)
+            selected += [root] + archive.rust_under(root.rpartition("/")[0])
         else:
             undetermined = True
-    return selected, "undetermined" if undetermined else (found or "none")
+    return list(dict.fromkeys(selected)), found, undetermined, roots
 
 
-def npm_selection(files: dict, read) -> tuple:
-    """(paths to copy, build_time) for an npm package."""
-    if "package.json" not in files:
+def npm_selection(archive: Archive) -> tuple:
+    """(paths to copy, found, undetermined, crate root files) for an npm package; the roots are always empty."""
+    if not archive.has("package.json"):
         raise PackageError("failed", "the archive has no package.json")
     selected, found, undetermined = ["package.json"], [], False
     try:
-        manifest = json.loads(read("package.json").decode("utf-8")) if files["package.json"].size <= COPY_CAP else None
-    except (UnicodeDecodeError, ValueError):
+        data = archive.read("package.json") if archive.files["package.json"].size <= COPY_CAP else b""
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         manifest = None
     if not isinstance(manifest, dict):
         manifest, undetermined = {}, True
@@ -335,15 +413,74 @@ def npm_selection(files: dict, read) -> tuple:
         if script is None:
             continue
         found.append(hook)
-        named = [tidy(token) for token in re.split(r"[\s;&|()<>'\"`=]+", script if isinstance(script, str) else "")]
-        named = [path for path in named if path in files]
+        tokens = re.split(r"[\s;&|()<>'\"`=]+", script if isinstance(script, str) else "")
+        named = [path for path in (tidy(token) for token in tokens) if path and archive.has(path)]
         if not named:
             undetermined = True
-        selected += [path for path in named if path not in selected]
-    if "binding.gyp" in files:
+        selected += named
+    if archive.has("binding.gyp"):
         found.append("binding.gyp")
         selected.append("binding.gyp")
-    return selected, "undetermined" if undetermined else (found or "none")
+    return list(dict.fromkeys(selected)), found, undetermined, set()
+
+
+RUST_MOD = re.compile(r"\bmod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
+RUST_ESCAPE = re.compile(r"#\s*!?\s*\[\s*path\b|\binclude(?:_str|_bytes)?\s*!")
+JS_STRING = re.compile(r"""(['"`])((?:\\.|(?!\1).){1,512}?)\1""")
+JS_DYNAMIC = re.compile(r"""\b(?:require|import)\s*\(\s*[^'"`\s)]""")
+JS_EXTENSIONS = ("", ".js", ".cjs", ".mjs", ".json", "/index.js", "/index.cjs", "/index.json")
+
+
+def rust_partial(path: str, text: str, copied: set, roots: set) -> bool:
+    """Whether Rust file path names code that was not copied: a `mod x;` whose file is absent, `#[path]` or include!."""
+    if RUST_ESCAPE.search(text):
+        return True
+    directory, _, file = path.rpartition("/")
+    stem = file[: -len(".rs")]
+    base = directory if path in roots or stem in ("mod", "lib", "main") else posixpath.join(directory, stem)
+    for module in RUST_MOD.findall(text):
+        candidates = (posixpath.join(base, f"{module}.rs"), posixpath.join(base, module, "mod.rs"))
+        if not any(candidate in copied for candidate in candidates):
+            return True
+    return False
+
+
+def js_partial(path: str, text: str, copied: set, archive: Archive) -> bool:
+    """Whether install script path names a file that was not copied: a dynamic require or import, or a string
+    literal that resolves, from its directory or the package root, to an archive file that was not copied."""
+    if JS_DYNAMIC.search(text):
+        return True
+    directory = path.rpartition("/")[0]
+    for _, literal in JS_STRING.findall(text):
+        for start in {directory, ""}:
+            joined = posixpath.normpath(posixpath.join(start, literal))
+            if joined.startswith("../") or joined == "..":
+                if literal.startswith(("./", "../")):
+                    return True
+                continue
+            for suffix in JS_EXTENSIONS:
+                candidate = tidy(joined + suffix)
+                if candidate and candidate not in copied and archive.has(candidate):
+                    return True
+            if literal.startswith(("./", "../")) and not any(tidy(joined + s) in copied for s in JS_EXTENSIONS):
+                return True
+    return False
+
+
+def partial(ecosystem: str, archive: Archive, copied: list, roots: set) -> bool:
+    """Whether the copied build or install code references files that were not copied."""
+    paths = {path for path, _ in copied}
+    for path, data in copied:
+        text = data.decode("utf-8", errors="replace")
+        if ecosystem == "cargo":
+            if path.endswith(".rs") and rust_partial(path, text, paths, roots):
+                return True
+        elif path == "binding.gyp":
+            return True
+        elif path != "package.json":
+            if not path.endswith((".js", ".cjs", ".mjs")) or js_partial(path, text, paths, archive):
+                return True
+    return False
 
 
 # --- the registries ---------------------------------------------------------
@@ -400,13 +537,25 @@ def sha512_digests(integrity: str) -> list:
 
 
 def npm(name: str, version: str, integrity: str) -> tuple:
-    """(trimmed metadata, archive) of an npm package."""
+    """(trimmed metadata, archive) of an npm package.
+
+    The packument gives the release history; when it is over NPM_META_CAP, the version document
+    `<name>/<version>` alone is used and the history fields are null.
+    """
     digests = sha512_digests(integrity)
     if not digests:
         raise PackageError("failed", "the lockfile integrity has no sha512 hash")
-    packument = mapping(fetch_json(NPM_TARBALLS + name.replace("/", "%2f"), NPM_META_CAP))
-    versions, times = mapping(packument.get("versions")), mapping(packument.get("time"))
-    release = versions.get(version)
+    url = NPM_TARBALLS + name.replace("/", "%2f")
+    try:
+        packument, source = mapping(fetch_json(url, NPM_META_CAP)), "packument"
+        versions, times = mapping(packument.get("versions")), mapping(packument.get("time"))
+        release = versions.get(version)
+    except OverCap:
+        packument, source = {}, "version document"
+        versions, times = None, {}
+        release = fetch_json(f"{url}/{urllib.parse.quote(version, safe='')}", NPM_META_CAP)
+        if isinstance(release, dict) and release.get("version") != version:
+            release = None
     if not isinstance(release, dict):
         raise PackageError("failed", f"version {version} is not on registry.npmjs.org")
     tarball = mapping(release.get("dist")).get("tarball")
@@ -417,21 +566,25 @@ def npm(name: str, version: str, integrity: str) -> tuple:
     except FetchError as exc:
         raise PackageError("refused", f"dist.tarball: {exc}") from exc
     repository, licence = release.get("repository"), release.get("license")
-    scripts = release.get("scripts")
-    history = [{"version": v, "time": scalar(times.get(v))} for v in versions]
-    for item in history:
-        item["deprecated"] = bool(mapping(versions[item["version"]]).get("deprecated"))
+    maintainers = packument.get("maintainers") if source == "packument" else release.get("maintainers")
+    history = None
+    if versions is not None:
+        history = [{"version": v, "time": scalar(times.get(v))} for v in versions]
+        for item in history:
+            item["deprecated"] = bool(mapping(versions[item["version"]]).get("deprecated"))
+        history = newest(history, "time")
     trimmed = {
+        "source": source,
         "created": scalar(times.get("created")),
         "modified": scalar(times.get("modified")),
-        "versions_count": len(versions),
-        "history": newest(history, "time"),
-        "maintainers": [scalar(m.get("name")) for m in (packument.get("maintainers") or []) if isinstance(m, dict)],
+        "versions_count": len(versions) if versions is not None else None,
+        "history": history,
+        "maintainers": [scalar(m.get("name")) for m in (maintainers or []) if isinstance(m, dict)],
         "publisher": scalar(mapping(release.get("_npmUser")).get("name")),
         "license": scalar(mapping(licence).get("type") if isinstance(licence, dict) else licence),
         "repository": scalar(mapping(repository).get("url") if isinstance(repository, dict) else repository),
         "deprecated": scalar(release.get("deprecated")),
-        "scripts": {str(k)[:100]: scalar(v, SCRIPT_CAP) for k, v in mapping(scripts).items()},
+        "scripts": {str(k)[:100]: scalar(v, SCRIPT_CAP) for k, v in mapping(release.get("scripts")).items()},
         "hasInstallScript": scalar(release.get("hasInstallScript")),
         "downloads": "unavailable",
     }
@@ -464,26 +617,46 @@ def refusal(entry: dict) -> str:
     return ""
 
 
-def prefetch(entry: dict) -> dict:
-    """The metadata.json content and the copied files ([(archive path, bytes)]) of a package; PackageError."""
-    name, version = entry["name"], entry["version"]
+def prefetch(entry: dict) -> tuple:
+    """The metadata.json content and the copied files ([(archive path, bytes)]) of a package.
+
+    Every error, whatever its kind, is a PackageError, so one package never stops the run.
+    """
     try:
-        if entry["ecosystem"] == "cargo":
-            trimmed, archive = crate(name, version, entry["checksum"])
-            files, read = read_archive(archive, f"{name}-{version}")
-            selected, build_time = crate_selection(files, read)
-        else:
-            trimmed, archive = npm(name, version, entry["integrity"])
-            files, read = read_archive(archive)
-            selected, build_time = npm_selection(files, read)
+        return prefetch_package(entry)
+    except PackageError:
+        raise
     except FetchError as exc:
         raise PackageError("failed", str(exc)) from exc
-    copied = []
+    except Exception as exc:
+        raise PackageError("failed", f"{type(exc).__name__}: {str(exc)[:TEXT_CAP]}") from exc
+
+
+def prefetch_package(entry: dict) -> tuple:
+    name, version, ecosystem = entry["name"], entry["version"], entry["ecosystem"]
+    if ecosystem == "cargo":
+        trimmed, data = crate(name, version, entry["checksum"])
+        archive = Archive(data, f"{name}-{version}")
+        selected, found, undetermined, roots = crate_selection(archive)
+    else:
+        trimmed, data = npm(name, version, entry["integrity"])
+        archive = Archive(data)
+        selected, found, undetermined, roots = npm_selection(archive)
+    copied, total = [], 0
     for path in selected:
-        if files[path].size > COPY_CAP:
+        if archive.files[path].size > COPY_CAP:
             raise PackageError("failed", f"{path} is over {COPY_CAP} bytes")
-        copied.append((path, read(path)))
-    return {"registry": trimmed, "build_time": build_time}, copied
+        total += archive.files[path].size
+        if total > COPY_TOTAL:
+            raise PackageError("failed", f"the selected files are over {COPY_TOTAL} bytes together")
+        copied.append((path, archive.read(path)))
+    if undetermined:
+        build_time = "undetermined"
+    elif found and partial(ecosystem, archive, copied, roots):
+        build_time = "partial"
+    else:
+        build_time = found or "none"
+    return {"registry": trimmed, "build_time": build_time, "found": found}, copied
 
 
 def write_json(path: Path, value) -> None:
