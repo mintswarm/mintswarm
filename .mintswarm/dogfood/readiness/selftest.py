@@ -44,7 +44,8 @@ Checks:
   expected to fail too): exit 1
   with exactly the expected set of failing signals, each named on its line
   with its feature and the expected reason text; variants that must stay
-  ready (docs/CODEOWNERS, a symlinked CLAUDE.md, a gate with redirections
+  ready (docs/CODEOWNERS, a symlinked CLAUDE.md, partial per-component
+  plan limits with non_production globs, a gate with redirections
   and arguments after the script, a ref without render-agents.py, whose
   agents-drift passes as not applicable, the allowed builtins and source,
   the repository's own two gate commands, and a ref
@@ -1603,6 +1604,18 @@ GAP_CASES = [
         {"plan-approval-config"},
         {"plan-approval-config": "limits must have exactly"},
     ),
+    (
+        "plan approval limits for an undefined component",
+        m_set("pipeline", "plan_approval", "limits_by_component", {"nowhere": {"lines": 600}}),
+        {"plan-approval-config"},
+        {"plan-approval-config": "limits_by_component.nowhere names an undefined component"},
+    ),
+    (
+        "plan approval limits with an unknown key",
+        m_set("pipeline", "plan_approval", "limits_by_component", {"code": {"size": 600}}),
+        {"plan-approval-config"},
+        {"plan-approval-config": "unknown keys in pipeline.plan_approval.limits_by_component.code: size"},
+    ),
     ("no docs component", m_rename_docs, {"docs-component"}, {"docs-component": "components.docs has no paths"}),
     ("no tests", m_no_tests, {"tests-exist"}, {"tests-exist": "no test file is tracked"}),
     (
@@ -1680,6 +1693,14 @@ READY_CASES = [
         {},
     ),
     ("a test named after cd", m_web_gate("cd ./web && python3 tests/test_x.py", "web/tests/test_x.py"), {}),
+    (
+        "partial per-component limits and non_production globs",
+        m_all(
+            m_set("pipeline", "plan_approval", "limits_by_component", {"code": {"lines": 600}}),
+            m_set("pipeline", "plan_approval", "non_production", ["**/tests/**", "**/fixtures/**"]),
+        ),
+        {},
+    ),
     ("a ref without render-agents.py", m_no_renderer, {"agents-drift": "not applicable: the ref has no"}),
     (
         "a ref whose renderer differs",

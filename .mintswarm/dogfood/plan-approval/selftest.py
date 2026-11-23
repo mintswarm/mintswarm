@@ -69,9 +69,27 @@ Checks:
   issue kind other than implementation, another component, a repeated or
   missing header line and no --issue-document; `cli` at `dropped`, `api`
   (`feat(api)!:`) and `docs` are clean;
+- production lines: an eight-key footprint with a fixture among its files
+  is measured by production_lines, clean at the lines limit and a hit one
+  over, whatever estimated_lines; without a non-production file it is
+  measured by estimated_lines; production_lines above estimated_lines,
+  negative or `true` is a `footprint` hit;
+- new dependencies, at `lockfiles`, a commit beside `real` holding a root
+  Cargo.lock (`anyhow`), a root Cargo.toml with [workspace.dependencies]
+  (`serde`) and web/pnpm-lock.yaml (`left-pad`): packages present there are
+  not counted, a package in two Cargo.toml manifests counts once, the same
+  name in a Cargo.toml and a package.json counts twice, a pyproject.toml
+  package counts, and a base Cargo.lock that does not convert exits 2; at
+  `stray-lockfile`, `lockfiles` with a malformed
+  tests/fixtures/pnpm-lock.yaml, those packages are still clean and a
+  package.json under tests/fixtures/ exits 2;
+- per-component limits, at `component-limits` (docs lines 400): a docs plan
+  of 350 lines is clean, of 401 a hit naming the override, a tooling plan
+  of 350 lines a hit, and the docs plan's files limit stays 10;
 - unusable input: bad arguments, plans, documents (missing, unreadable, not
   UTF-8, given twice or with an empty value), refs and configs (among them
-  a `min_confidence` of 89, 101, `true` or `"95"`), and a
+  a `min_confidence` of 89, 101, `true` or `"95"`, and a
+  limits_by_component or non_production of the wrong shape), and a
   missing `yq`, exit 2 and leave no verdict file, even a stale one;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
@@ -242,6 +260,19 @@ EXPECTED_APPROVAL = {
         ],
     },
     "limits": {"files": 10, "lines": 300, "new_files": 3, "new_dependencies": 0},
+    "limits_by_component": {},
+    "non_production": [
+        "**/tests/**",
+        "**/*selftest*",
+        "**/test_*.py",
+        "**/*_test.*",
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/fixtures/**",
+        "**/Cargo.lock",
+        "**/pnpm-lock.yaml",
+        ".claude/agents/msw-*.md",
+    ],
 }
 CLEAN_BASE = {
     "files": ["CONTRIBUTING.md", "docs/architecture/repository-layout.md"],
@@ -365,6 +396,25 @@ class Sandbox:
     def commit_empty(self, message: str) -> str:
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")
+
+    def commit_files(self, files: dict, message: str, branch: str) -> str:
+        """A commit on top of HEAD that adds files ({path: bytes}), kept at refs/heads/<branch>; HEAD, the index
+        and the worktree do not move."""
+        env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{branch}"))
+
+        def git(*args: str, data: bytes = None) -> str:
+            proc = subprocess.run(["git", *args], cwd=self.repo, env=env, input=data, capture_output=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode().strip()}")
+            return proc.stdout.decode().strip()
+
+        git("read-tree", "HEAD")
+        for path, data in files.items():
+            oid = git("hash-object", "-w", "--stdin", data=data)
+            git("update-index", "--add", "--cacheinfo", f"100644,{oid},{path}")
+        commit = git("commit-tree", git("write-tree"), "-p", "HEAD", "-m", message)
+        git("update-ref", f"refs/heads/{branch}", commit)
+        return commit
 
     def write_plan(self, name: str, content) -> str:
         self.counter += 1
@@ -847,6 +897,180 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         "overridden-assumptions",
         only=True,
         reason="A1",
+    )
+
+
+def eight_keys(production_lines: int, **changes) -> dict:
+    """A footprint from the clean base with production_lines right after estimated_lines."""
+    footprint = base(**changes)
+    result = {}
+    for key, value in footprint.items():
+        result[key] = value
+        if key == "estimated_lines":
+            result["production_lines"] = production_lines
+    return result
+
+
+def check_production_lines(r: Runner, limits: dict) -> None:
+    n = limits["lines"]
+    split = ["docs/guide.md", "docs/fixtures/big.md"]
+    expect_clean(r, "production lines at the limit", eight_keys(n, files=split, estimated_lines=2000), ["limit-lines"])
+    expect_hit(
+        r,
+        "production lines one over",
+        eight_keys(n + 1, files=split, estimated_lines=2000),
+        "limit-lines",
+        only=True,
+        reasons=[f"production_lines is {n + 1}, over the limit of {n}"],
+    )
+    expect_hit(
+        r,
+        "no non-production file",
+        eight_keys(1, estimated_lines=n + 1),
+        "limit-lines",
+        only=True,
+        reasons=[f"lines is {n + 1}, over the limit of {n}"],
+    )
+    for label, value in (("above estimated_lines", 7), ("negative", -1), ("true", True)):
+        proc, verdict = r.run(f"production_lines {label}", plan_text(footprint=eight_keys(value)))
+        T.check(
+            f"production_lines {label}: footprint hit",
+            proc.returncode == 1
+            and results_of(verdict).get("footprint") == "hit"
+            and any("production_lines" in x for x in reasons_of(verdict, "footprint")),
+            proc.stdout,
+        )
+
+
+CARGO_LOCK = b"""version = 4
+
+[[package]]
+name = "anyhow"
+version = "1.0.98"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"""
+CARGO_TOML = b"""[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+"""
+PNPM_LOCK = b"""lockfileVersion: '9.0'
+importers:
+  apps/ui:
+    dependencies:
+      left-pad:
+        specifier: ^1.3.0
+        version: 1.3.0
+packages:
+  left-pad@1.3.0:
+    resolution: {integrity: sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQ7P5pI3pV8MyHxpVgLaFvvJNs8Qk8NLvYsa2a2LbOqa6xBw==}
+"""
+
+
+def check_new_dependencies(r: Runner, sb: Sandbox, commits: dict) -> None:
+    def dep(name: str, manifest: str) -> dict:
+        return {"name": name, "manifest": manifest}
+
+    rule = ["limit-new-dependencies"]
+    files = ["crates/runner/src/lib.rs"]
+    present = [
+        dep("serde", "Cargo.toml"),
+        dep("serde", "crates/runner/Cargo.toml"),
+        dep("anyhow", "crates/runner/Cargo.toml"),
+        dep("left-pad", "web/apps/ui/package.json"),
+    ]
+    expect_clean(r, "packages at the base", base(files=files, new_dependencies=present), rule, config="lockfiles")
+    expect_hit(
+        r,
+        "packages at the base, against real",
+        base(files=files, new_dependencies=present),
+        "limit-new-dependencies",
+        reason="new_dependencies is 3, over the limit of 0",
+    )
+    expect_hit(
+        r,
+        "a package in two Cargo.toml",
+        base(
+            files=files, new_dependencies=[dep("newcrate", "Cargo.toml"), dep("newcrate", "crates/runner/Cargo.toml")]
+        ),
+        "limit-new-dependencies",
+        reasons=["new_dependencies is 1, over the limit of 0: cargo newcrate"],
+        config="lockfiles",
+    )
+    expect_hit(
+        r,
+        "a name in Cargo.toml and package.json",
+        base(files=files, new_dependencies=[dep("newcrate", "Cargo.toml"), dep("newcrate", "web/package.json")]),
+        "limit-new-dependencies",
+        reasons=["new_dependencies is 2, over the limit of 0: cargo newcrate, npm newcrate"],
+        config="lockfiles",
+    )
+    expect_hit(
+        r,
+        "a pyproject.toml package",
+        base(files=files, new_dependencies=[dep("anyhow", "pyproject.toml")]),
+        "limit-new-dependencies",
+        reasons=["new_dependencies is 1, over the limit of 0: pyproject.toml anyhow"],
+        config="lockfiles",
+    )
+    expect_clean(
+        r,
+        "an unrelated malformed pnpm-lock.yaml",
+        base(files=files, new_dependencies=present),
+        rule,
+        config="stray-lockfile",
+    )
+    stray = base(files=files, new_dependencies=[dep("left-pad", "tests/fixtures/sub/package.json")])
+    used = sb.write_plan("malformed lockfile in use", plan_text(footprint=stray))
+    proc, verdict = sb.floor(["--plan", used, "--component", "docs", "--base", commits["stray-lockfile"]])
+    T.check(
+        "a malformed pnpm-lock.yaml a manifest uses: exit 2, no verdict",
+        proc.returncode == 2 and verdict is None and "tests/fixtures/pnpm-lock.yaml" in proc.stderr,
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
+    good = sb.write_plan("bad lockfile", plan_text())
+    proc, verdict = sb.floor(["--plan", good, "--component", "docs", "--base", commits["bad-lockfile"]])
+    T.check(
+        "unusable Cargo.lock at the base: exit 2, no verdict",
+        proc.returncode == 2 and verdict is None and "Cargo.lock" in proc.stderr,
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
+
+
+def check_component_limits(r: Runner, limits: dict) -> None:
+    config = "component-limits"
+    tooling = ["xtask/src/main.rs"]
+    expect_clean(r, "docs override at 350", base(estimated_lines=350), ["limit-lines"], config=config)
+    expect_hit(
+        r,
+        "docs override at 401",
+        base(estimated_lines=401),
+        "limit-lines",
+        only=True,
+        reasons=["lines is 401, over the limit of 400 (limits_by_component.docs)"],
+        config=config,
+    )
+    expect_hit(
+        r,
+        "tooling default at 350",
+        base(files=tooling, estimated_lines=350),
+        "limit-lines",
+        reasons=[f"lines is 350, over the limit of {limits['lines']}"],
+        component="tooling",
+        config=config,
+    )
+    n = limits["files"]
+    docs = [f"docs/limit-{i}.md" for i in range(n + 1)]
+    expect_clean(r, f"docs override, files at {n}", base(files=docs[:n]), ["limit-files"], config=config)
+    expect_hit(
+        r,
+        f"docs override, files at {n + 1}",
+        base(files=docs),
+        "limit-files",
+        only=True,
+        reasons=[f"files is {n + 1}, over the limit of {n}"],
+        config=config,
     )
 
 
@@ -1352,6 +1576,7 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         "undefined-component",
         "missing-limit",
         *MIN_CONFIDENCE_INVALID,
+        *SIZE_INVALID,
     ):
         cases.append((f"config {variant}", ["--plan", good, "--component", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
@@ -2952,6 +3177,19 @@ def check_stdlib() -> None:
 MIN_CONFIDENCE_INVALID = {"min-89": 89, "min-101": 101, "min-true": True, "min-string": "95"}
 
 
+# Config variants whose limits_by_component or non_production is unusable input.
+SIZE_INVALID = {
+    "lbc-undefined": {"limits_by_component": {"nowhere": {"lines": 1}}},
+    "lbc-unknown-key": {"limits_by_component": {"docs": {"size": 1}}},
+    "lbc-negative": {"limits_by_component": {"docs": {"lines": -1}}},
+    "lbc-true": {"limits_by_component": {"docs": {"lines": True}}},
+    "lbc-not-mapping": {"limits_by_component": {"docs": 5}},
+    "lbc-list": {"limits_by_component": []},
+    "non-production-string": {"non_production": "**/tests/**"},
+    "non-production-numbers": {"non_production": [1]},
+}
+
+
 def build_commits(sb: Sandbox) -> tuple:
     real_bytes = CONFIG.read_bytes()
     real = yq_json(CONFIG)
@@ -2980,6 +3218,9 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("min-100", lambda c: approval(c).update(mode="judged", min_confidence=100))
     for name, value in MIN_CONFIDENCE_INVALID.items():
         variant(name, lambda c, value=value: approval(c).update(min_confidence=value))
+    for name, change in SIZE_INVALID.items():
+        variant(name, lambda c, change=change: approval(c).update(change))
+    variant("component-limits", lambda c: approval(c).update(limits_by_component={"docs": {"lines": 400}}))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
     variant(
@@ -2992,6 +3233,11 @@ def build_commits(sb: Sandbox) -> tuple:
         ),
     )
     commits["real"] = sb.commit_config(real_bytes, "real")
+    lockfiles = {"Cargo.lock": CARGO_LOCK, "Cargo.toml": CARGO_TOML, "web/pnpm-lock.yaml": PNPM_LOCK}
+    commits["lockfiles"] = sb.commit_files(lockfiles, "lockfiles", "lockfiles")
+    commits["bad-lockfile"] = sb.commit_files({"Cargo.lock": b"[[package]\nname = \n"}, "bad lockfile", "bad-lockfile")
+    stray = dict(lockfiles, **{"tests/fixtures/pnpm-lock.yaml": b"importers: [\n"})
+    commits["stray-lockfile"] = sb.commit_files(stray, "stray lockfile", "stray-lockfile")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
     variant("dropped", lambda c: approval(c)["require_human"]["paths"].remove(".mintswarm/dogfood/github/**"))
@@ -3010,6 +3256,9 @@ def main() -> int:
         runner = Runner(sb, commits)
         check_clean_base(runner)
         check_single_rules(runner, limits)
+        check_production_lines(runner, limits)
+        check_new_dependencies(runner, sb, commits)
+        check_component_limits(runner, limits)
         check_unusable_footprints(runner)
         check_base_ref(runner, sb)
         check_historic(runner)

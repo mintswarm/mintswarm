@@ -22,14 +22,26 @@ Inputs:
   (see the plan stage): a single "```json" block holding
   {"footprint": {"files", "new_files", "estimated_lines", "new_dependencies",
   "external_steps", "gate_changes", "overridden_assumptions"}}, keys in that
-  order.
+  order, or the same with "production_lines" right after "estimated_lines".
+  A footprint without it reads as one whose production_lines is
+  estimated_lines.
 - NAME, the issue's component.
 - REF, the base ref. The configuration is .mintswarm/config.yaml at the
   commit REF resolves to, read with `git show` and converted with
   `yq -p=yaml -o=json`. The worktree's config is never opened, so a change
   to it in the branch under review cannot loosen the floor. The history is
   the subject of every commit reachable from that commit, read with
-  `git -c log.showSignature=false log -z --format=%s`.
+  `git -c log.showSignature=false log -z --format=%s`. The packages present
+  at the base are read from that commit's tree (`git ls-tree -r -z
+  --full-tree`, regular-file blobs only, each read with `git cat-file blob`):
+  the `package` names of the root Cargo.lock and the
+  `workspace.dependencies` keys of the root Cargo.toml (both converted with
+  `yq -p=toml -o=json`), and for every pnpm-lock.yaml, keyed by its
+  directory, the dependency names of each importer's `dependencies`,
+  `devDependencies`, `optionalDependencies` and `peerDependencies` and the
+  names of its `packages` keys (a peer suffix `(…)` and a leading `/`
+  dropped, then the text from the last `@` not at position 0 cut off),
+  converted with `yq -p=yaml -o=json`. A missing file contributes nothing.
 
 The base commit, the config at it and the history are read from an object
 store made for this run, never from the job repository's own objects:
@@ -87,7 +99,14 @@ non-negative integers `files`, `lines`, `new_files` and `new_dependencies`,
 optionally `require_human`, with optional lists `components` (each
 defined) and `paths` (globs), and optionally `min_confidence`, an integer
 (not a boolean) from 90 to 100, the auto-approval confidence the decision
-requires under `judged`, 90 when absent; `gates.tests` is absent or a string;
+requires under `judged`, 90 when absent, optionally `non_production`, a list
+of globs matching the paths whose lines are not production lines (when
+absent: `**/tests/**`, `**/*selftest*`, `**/test_*.py`, `**/*_test.*`,
+`**/*.test.*`, `**/*.spec.*`, `**/fixtures/**`, `**/Cargo.lock` and
+`**/pnpm-lock.yaml`), and optionally `limits_by_component`, mapping defined
+components to mappings with some of the keys of `limits`, each a
+non-negative integer (not a boolean), which replace the flat `limits` value
+key by key for that component; `gates.tests` is absent or a string;
 `gates.run` is absent or a list of mappings with a `command` string that
 shlex can split. NAME must be a defined component.
 
@@ -103,7 +122,9 @@ new dependency's `manifest`.
                              JSON (no duplicate keys, NaN or Infinity), not
                              of the shape above (lists without null or
                              repeated values, `estimated_lines` an integer
-                             of 0 or more, `files` not empty, every
+                             of 0 or more, `production_lines` an integer
+                             from 0 to `estimated_lines`, never a boolean,
+                             `files` not empty, every
                              `new_files` path in `files`)
                              or declares a path that is empty, absolute,
                              starts with `./`, ends with `/`, has an empty,
@@ -119,10 +140,21 @@ new dependency's `manifest`.
   no-component               a declared path is in no component's paths and
                              not in `shared`
   limit-files                len(files) is over limits.files
-  limit-lines                estimated_lines is over limits.lines
+  limit-lines                production_lines, when a path in `files`
+                             matches `non_production`, or else
+                             estimated_lines is over limits.lines
   limit-new-files            len(new_files) is over limits.new_files
-  limit-new-dependencies     len(new_dependencies) is over
-                             limits.new_dependencies
+  limit-new-dependencies     the number of distinct packages, by ecosystem
+                             and name, of new_dependencies that are not
+                             present at the base is over
+                             limits.new_dependencies (the reason names
+                             them): a Cargo.toml manifest is cargo, present
+                             when in the root Cargo.lock or
+                             [workspace.dependencies]; a package.json is
+                             npm, present when in the pnpm-lock.yaml of the
+                             nearest directory at or above the manifest's
+                             that has one; any other manifest basename is
+                             its own ecosystem, where nothing is present
   external-steps             external_steps is not empty
   gate-changes               gate_changes is not empty, or a declared path is
                              .mintswarm/config.yaml or a word of a gates.run
@@ -160,6 +192,12 @@ new dependency's `manifest`.
                              `: `, the scope compared exactly; no
                              --issue-document
 
+The limits of the limit-* rules are NAME's: limits with NAME's
+limits_by_component applied, a reason naming the override when it decides
+the limit. Of the base's pnpm-lock.yaml files, only those nearest a
+package.json in new_dependencies are read, so no other one can make the
+floor exit 2.
+
 Issue criteria are the column-0 items of `## Acceptance criteria` marked
 `N.`, `N)`, `-`, `*` or `+`, with an optional `[ ]` or `[x]` after the
 marker; following non-blank lines that are not items belong to the item,
@@ -186,7 +224,9 @@ identifiers skipped, in order). One line per evaluated rule is printed, then
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
 unresolvable base ref, a partial clone, a failed fetch into the object
 store (a forged or missing object, a shallow history), no config at the
-base, an invalid config, an unreadable
+base, an invalid config, a root Cargo.lock or Cargo.toml or a
+pnpm-lock.yaml at the base that does not convert or is not of the shape
+read, an unreadable
 or non-UTF-8 plan, issue document or analysis, git or yq missing or
 failing (reading the history too), a stale verdict that cannot be deleted,
 or any unexpected error. Unusable input leaves no verdict file, unless a
@@ -228,6 +268,24 @@ FOOTPRINT_KEYS = (
     "gate_changes",
     "overridden_assumptions",
 )
+# The eight-key footprint: production_lines right after estimated_lines.
+FOOTPRINT_KEYS_V2 = FOOTPRINT_KEYS[:3] + ("production_lines",) + FOOTPRINT_KEYS[3:]
+# pipeline.plan_approval.non_production when absent: paths whose lines are not production lines.
+NON_PRODUCTION = (
+    "**/tests/**",
+    "**/*selftest*",
+    "**/test_*.py",
+    "**/*_test.*",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/fixtures/**",
+    "**/Cargo.lock",
+    "**/pnpm-lock.yaml",
+)
+# The ecosystem of a new dependency, by its manifest's basename; any other basename is its own ecosystem.
+ECOSYSTEMS = {"Cargo.toml": "cargo", "package.json": "npm"}
+PNPM_LOCK = "pnpm-lock.yaml"
+PNPM_GROUPS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
 RULES = (
     "footprint",
     "require-human-paths",
@@ -617,7 +675,9 @@ def validate_config(config: dict, component: str) -> dict:
     approval = pipeline["plan_approval"]
     if not isinstance(approval, dict):
         raise InputError("config: pipeline.plan_approval must be a mapping")
-    unknown = sorted(set(approval) - {"mode", "require_human", "limits", "min_confidence"})
+    unknown = sorted(
+        set(approval) - {"mode", "require_human", "limits", "min_confidence", "non_production", "limits_by_component"}
+    )
     if unknown:
         raise InputError(f"config: unknown keys in pipeline.plan_approval: {', '.join(unknown)}")
     mode = approval.get("mode")
@@ -657,6 +717,25 @@ def validate_config(config: dict, component: str) -> dict:
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise InputError(f"config: limits.{key} must be a non-negative integer, not {value!r}")
 
+    non_production = approval.get("non_production", list(NON_PRODUCTION))
+    string_list(non_production, "pipeline.plan_approval.non_production", optional=False)
+
+    by_component = approval.get("limits_by_component", {})
+    if not isinstance(by_component, dict):
+        raise InputError("config: pipeline.plan_approval.limits_by_component must be a mapping")
+    for name, overrides in by_component.items():
+        where = f"pipeline.plan_approval.limits_by_component.{name}"
+        if name not in components:
+            raise InputError(f"config: {where} names an undefined component")
+        if not isinstance(overrides, dict):
+            raise InputError(f"config: {where} must be a mapping")
+        unknown = sorted(set(overrides) - set(LIMITS))
+        if unknown:
+            raise InputError(f"config: unknown keys in {where}: {', '.join(map(str, unknown))}")
+        for key, value in overrides.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise InputError(f"config: {where}.{key} must be a non-negative integer, not {value!r}")
+
     gates = config.get("gates")
     if gates is None:
         gates = {}
@@ -691,6 +770,7 @@ def validate_config(config: dict, component: str) -> dict:
 
     if component not in components:
         raise InputError(f"--component {component!r} is not a component in the config")
+    overrides = by_component.get(component, {})
     return {
         "paths": paths,
         "shared": shared,
@@ -698,10 +778,162 @@ def validate_config(config: dict, component: str) -> dict:
         "min_confidence": min_confidence,
         "rh_components": rh_components,
         "rh_paths": rh_paths,
-        "limits": limits,
+        "limits": {key: overrides.get(key, limits[key]) for key in LIMITS},
+        "limit_sources": {key: f"limits_by_component.{component}" for key in LIMITS if key in overrides},
+        "non_production": list(non_production),
+        "base_packages": None,
         "tests": tests,
         "gate_words": gate_words,
     }
+
+
+def prepare(commit: str, component: str, plan: bytes, git_dir=None) -> tuple:
+    """(config, cfg): the config at commit, validated for component, and the packages present at commit that
+    the plan's new_dependencies manifests can use."""
+    config = load_config(commit, git_dir=git_dir)
+    cfg = validate_config(config, component)
+    cfg["base_packages"] = base_packages(commit, plan_manifests(plan), git_dir=git_dir)
+    return config, cfg
+
+
+def plan_manifests(plan: bytes) -> list:
+    """The manifests the plan's new_dependencies name, or none when its footprint is unusable (the footprint
+    rule reports that, and no limit is evaluated)."""
+    try:
+        footprint = parse_footprint(plan.decode("utf-8"))
+    except FootprintError:
+        return []
+    return [dep["manifest"] for dep in footprint["new_dependencies"]]
+
+
+# --- packages at the base ------------------------------------------------
+
+
+def base_blobs(commit: str, git_dir=None) -> dict:
+    """{path: blob id} of every regular file in the commit's tree."""
+    listing = run(git_argv(git_dir, "ls-tree", "-r", "-z", "--full-tree", commit))
+    blobs = {}
+    for entry in listing.decode("utf-8", errors="surrogateescape").split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        mode, kind, oid = meta.split(" ")
+        if kind == "blob" and mode in ("100644", "100755"):
+            blobs[path] = oid
+    return blobs
+
+
+def blob_document(oid: str, path: str, fmt: str, git_dir=None) -> dict:
+    """The blob converted by `yq -p=<fmt> -o=json`, which must be a mapping; an empty blob is {}."""
+    data = run(git_argv(git_dir, "cat-file", "blob", oid))
+    if not data.strip():
+        return {}
+    try:
+        converted = run(["yq", f"-p={fmt}", "-o=json", "."], data)
+        document = strict_json(converted.decode("utf-8"))
+    except (InputError, UnicodeDecodeError, ValueError) as exc:
+        raise InputError(f"{path} at the base does not convert to JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise InputError(f"{path} at the base is not a mapping")
+    return document
+
+
+def mapping(value, where: str) -> dict:
+    """value when it is a mapping, {} when it is absent (None); anything else is unusable input."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InputError(f"{where} at the base is not a mapping")
+    return value
+
+
+def pnpm_name(key: str, path: str) -> str:
+    """The package name of a pnpm `packages` key: a peer suffix `(…)` and a leading `/` dropped, then the text
+    from the last `@` that is not at position 0 cut off."""
+    bare = key.split("(", 1)[0]
+    if bare.startswith("/"):
+        bare = bare[1:]
+    at = bare.rfind("@")
+    name = bare[:at] if at > 0 else bare
+    if not name:
+        raise InputError(f"{path} at the base has an unrecognised package key {key!r}")
+    return name
+
+
+def nearest_lockfile(manifest: str, blobs: dict):
+    """The path of the pnpm-lock.yaml in blobs of the nearest directory at or above the manifest's, or None."""
+    directory = manifest.rpartition("/")[0]
+    while True:
+        path = f"{directory}/{PNPM_LOCK}" if directory else PNPM_LOCK
+        if path in blobs:
+            return path
+        if not directory:
+            return None
+        directory = directory.rpartition("/")[0]
+
+
+def base_packages(commit: str, manifests: list, git_dir=None) -> dict:
+    """The packages present at the base: {"cargo": names in the root Cargo.lock and the root Cargo.toml's
+    [workspace.dependencies], "npm": {directory of a pnpm-lock.yaml: names in it}}, for the pnpm-lock.yaml
+    nearest each package.json among manifests only, so that no other lockfile is read."""
+    blobs = base_blobs(commit, git_dir)
+    cargo = set()
+    if "Cargo.lock" in blobs:
+        lock = blob_document(blobs["Cargo.lock"], "Cargo.lock", "toml", git_dir)
+        packages = lock.get("package", [])
+        if not isinstance(packages, list):
+            raise InputError("Cargo.lock at the base: package is not a list")
+        for package in packages:
+            if not isinstance(package, dict) or not isinstance(package.get("name"), str):
+                raise InputError("Cargo.lock at the base: a package has no name")
+            cargo.add(package["name"])
+    if "Cargo.toml" in blobs:
+        manifest = blob_document(blobs["Cargo.toml"], "Cargo.toml", "toml", git_dir)
+        workspace = mapping(manifest.get("workspace"), "Cargo.toml: workspace")
+        cargo.update(mapping(workspace.get("dependencies"), "Cargo.toml: workspace.dependencies"))
+    npm = {}
+    npm_manifests = [m for m in manifests if ECOSYSTEMS.get(m.rsplit("/", 1)[-1]) == "npm"]
+    for path in sorted({nearest_lockfile(m, blobs) for m in npm_manifests} - {None}):
+        lock = blob_document(blobs[path], path, "yaml", git_dir)
+        names = set()
+        importers = lock["importers"] if "importers" in lock else {".": lock}
+        for importer, spec in mapping(importers, f"{path}: importers").items():
+            spec = mapping(spec, f"{path}: importers.{importer}")
+            for group in PNPM_GROUPS:
+                names.update(mapping(spec.get(group), f"{path}: importers.{importer}.{group}"))
+        for key in mapping(lock.get("packages"), f"{path}: packages"):
+            names.add(pnpm_name(key, path))
+        npm[path.rpartition("/")[0]] = names
+    return {"cargo": cargo, "npm": npm}
+
+
+def present_at_base(packages, ecosystem: str, dep: dict) -> bool:
+    """Whether the new dependency's package is already present at the base (packages from base_packages)."""
+    if packages is None:
+        return False
+    if ecosystem == "cargo":
+        return dep["name"] in packages["cargo"]
+    if ecosystem == "npm":
+        directory = dep["manifest"].rpartition("/")[0]
+        while True:
+            if directory in packages["npm"]:
+                return dep["name"] in packages["npm"][directory]
+            if not directory:
+                return False
+            directory = directory.rpartition("/")[0]
+    return False
+
+
+def new_packages(footprint: dict, packages) -> list:
+    """The distinct (ecosystem, name) of the new dependencies not present at the base, in order of first mention."""
+    counted = []
+    for dep in footprint["new_dependencies"]:
+        basename = dep["manifest"].rsplit("/", 1)[-1]
+        ecosystem = ECOSYSTEMS.get(basename, basename)
+        pair = (ecosystem, dep["name"])
+        if pair not in counted and not present_at_base(packages, ecosystem, dep):
+            counted.append(pair)
+    return counted
 
 
 # --- footprint -----------------------------------------------------------
@@ -810,11 +1042,17 @@ def parse_footprint(text: str) -> dict:
     footprint = document["footprint"]
     if not isinstance(footprint, dict):
         raise FootprintError("footprint must be an object")
-    if tuple(footprint) != FOOTPRINT_KEYS:
-        raise FootprintError(f"footprint keys must be exactly {', '.join(FOOTPRINT_KEYS)}, in that order")
+    if tuple(footprint) not in (FOOTPRINT_KEYS, FOOTPRINT_KEYS_V2):
+        raise FootprintError(
+            f"footprint keys must be exactly {', '.join(FOOTPRINT_KEYS)}, in that order, "
+            "optionally with production_lines right after estimated_lines"
+        )
     lines_ = footprint["estimated_lines"]
     if not isinstance(lines_, int) or isinstance(lines_, bool) or lines_ < 0:
         raise FootprintError(f"estimated_lines must be an integer of 0 or more, not {lines_!r}")
+    production = footprint.get("production_lines", lines_)
+    if not isinstance(production, int) or isinstance(production, bool) or not 0 <= production <= lines_:
+        raise FootprintError(f"production_lines must be an integer from 0 to estimated_lines, not {production!r}")
     for key in FOOTPRINT_KEYS:
         if key != "estimated_lines":
             check_list(footprint[key], key)
@@ -834,6 +1072,8 @@ def parse_footprint(text: str) -> dict:
         check_path(path, "new_files")
     for dep in footprint["new_dependencies"]:
         check_path(dep["manifest"], "new_dependencies.manifest")
+    if "production_lines" not in footprint:  # a seven-key footprint: every line is a production line
+        footprint = {key: production if key == "production_lines" else footprint[key] for key in FOOTPRINT_KEYS_V2}
     return footprint
 
 
@@ -880,14 +1120,20 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
     rule("no-component", reasons)
 
     limits = cfg["limits"]
-    for name, key, value in (
-        ("limit-files", "files", len(footprint["files"])),
-        ("limit-lines", "lines", footprint["estimated_lines"]),
-        ("limit-new-files", "new_files", len(footprint["new_files"])),
-        ("limit-new-dependencies", "new_dependencies", len(footprint["new_dependencies"])),
+    sources = cfg.get("limit_sources", {})
+    split = any(matching(cfg["non_production"], path) for path in footprint["files"])
+    lines = ("production_lines", footprint["production_lines"]) if split else ("lines", footprint["estimated_lines"])
+    packages = new_packages(footprint, cfg.get("base_packages"))
+    named = ": " + ", ".join(f"{ecosystem} {name}" for ecosystem, name in packages) if packages else ""
+    for name, key, label, value, detail in (
+        ("limit-files", "files", "files", len(footprint["files"]), ""),
+        ("limit-lines", "lines", lines[0], lines[1], ""),
+        ("limit-new-files", "new_files", "new_files", len(footprint["new_files"]), ""),
+        ("limit-new-dependencies", "new_dependencies", "new_dependencies", len(packages), named),
     ):
+        source = f" ({sources[key]})" if key in sources else ""
         over = value > limits[key]
-        rule(name, [f"{key} is {value}, over the limit of {limits[key]}"] if over else [])
+        rule(name, [f"{label} is {value}, over the limit of {limits[key]}{source}{detail}"] if over else [])
 
     rule("external-steps", [f"external step: {step}" for step in footprint["external_steps"]])
 
@@ -1203,8 +1449,8 @@ def floor(argv: list) -> int:
     args = parse_args(argv)
     with job_object_store({"base": args["base"]}) as (store, commits):
         commit = commits["base"]
-        cfg = validate_config(load_config(commit, git_dir=store), args["component"])
         data = read_plan(args["plan"])
+        _, cfg = prepare(commit, args["component"], data, git_dir=store)
         documents = {}
         for key, what in (("issue_document", "issue document"), ("analysis", "analysis")):
             path = args[key]
