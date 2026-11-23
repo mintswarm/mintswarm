@@ -48,8 +48,10 @@ The configuration is validated; any failure is unusable input:
 globs; `shared` is absent or a list of globs; `pipeline.plan_approval` has
 `mode` (`always`, `shadow`, `judged` or `never`), `limits` with exactly the
 non-negative integers `files`, `lines`, `new_files` and `new_dependencies`,
-and optionally `require_human`, with optional lists `components` (each
-defined) and `paths` (globs); `gates.tests` is absent or a string;
+optionally `require_human`, with optional lists `components` (each
+defined) and `paths` (globs), and optionally `min_confidence`, an integer
+(not a boolean) from 90 to 100, the auto-approval confidence the decision
+requires under `judged`, 90 when absent; `gates.tests` is absent or a string;
 `gates.run` is absent or a list of mappings with a `command` string that
 shlex can split. NAME must be a defined component.
 
@@ -172,6 +174,7 @@ VERSION = 2
 DOCS = "docs"
 MODES = ("always", "shadow", "judged", "never")
 LIMITS = ("files", "lines", "new_files", "new_dependencies")
+MIN_CONFIDENCE = 90  # the default and lowest pipeline.plan_approval.min_confidence
 FOOTPRINT_KEYS = (
     "files",
     "new_files",
@@ -388,12 +391,23 @@ def validate_config(config: dict, component: str) -> dict:
     approval = pipeline["plan_approval"]
     if not isinstance(approval, dict):
         raise InputError("config: pipeline.plan_approval must be a mapping")
-    unknown = sorted(set(approval) - {"mode", "require_human", "limits"})
+    unknown = sorted(set(approval) - {"mode", "require_human", "limits", "min_confidence"})
     if unknown:
         raise InputError(f"config: unknown keys in pipeline.plan_approval: {', '.join(unknown)}")
     mode = approval.get("mode")
     if mode not in MODES:
         raise InputError(f"config: pipeline.plan_approval.mode must be one of {', '.join(MODES)}, not {mode!r}")
+
+    min_confidence = approval.get("min_confidence", MIN_CONFIDENCE)
+    if (
+        not isinstance(min_confidence, int)
+        or isinstance(min_confidence, bool)
+        or not MIN_CONFIDENCE <= min_confidence <= 100
+    ):
+        raise InputError(
+            f"config: pipeline.plan_approval.min_confidence must be an integer from {MIN_CONFIDENCE} to 100, "
+            f"not {min_confidence!r}"
+        )
 
     require = approval.get("require_human")
     if require is None:
@@ -450,6 +464,7 @@ def validate_config(config: dict, component: str) -> dict:
         "paths": paths,
         "shared": shared,
         "mode": mode,
+        "min_confidence": min_confidence,
         "rh_components": rh_components,
         "rh_paths": rh_paths,
         "limits": limits,

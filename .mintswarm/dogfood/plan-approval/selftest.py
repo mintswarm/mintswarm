@@ -68,7 +68,8 @@ Checks:
   missing header line and no --issue-document; `cli` at `dropped`, `api`
   (`feat(api)!:`) and `docs` are clean;
 - unusable input: bad arguments, plans, documents (missing, unreadable, not
-  UTF-8, given twice or with an empty value), refs and configs, and a
+  UTF-8, given twice or with an empty value), refs and configs (among them
+  a `min_confidence` of 89, 101, `true` or `"95"`), and a
   missing `yq`, exit 2 and leave no verdict file, even a stale one;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
@@ -76,30 +77,53 @@ Checks:
 - glob semantics: floor.py's glob_to_regex agrees with the one in
   .mintswarm/dogfood/github/request-review.py;
 - decision record shape, on every decision run that exits 0 or 1: the
-  record's keys and each layer's keys in order, the subject, the mode, the
-  floor layer's rules equal to the verdict's, the risk and reason equal to
-  the assessment's, harness and model equal to the arguments,
-  `as_configured` against the config, `judged_decision` and `decision`
-  recomputed from the layers, `as_configured` and the mode, the exit code,
-  and stdout: the auto-approval comment for `auto`, the shadow-record
-  comment in `shadow` mode, empty otherwise;
-- decision under `judged`: clean and `low` is `auto`; a floor hit, `medium`,
-  `high`, a missing or unparsable verdict, a verdict edited to break each
+  record's keys (version 2) and each layer's keys in order, the subject, the
+  mode, `min_confidence` (90 unless the config sets it), the floor layer's
+  rules equal to the verdict's, the confidence, band, hard triggers, doubts
+  and reason consistent with each other and equal to the envelope's,
+  harness and model equal to the arguments, `as_configured` against the
+  config, `judged_decision` and `decision` recomputed from the layers, the
+  threshold, `as_configured` and the mode, the judgement's reasons (its
+  confidence and band, then a hard trigger or a confidence below
+  `min_confidence`), the exit code, and stdout: the auto-approval comment
+  for `auto`, the shadow-record comment in `shadow` mode, empty otherwise;
+- bands under `judged` with the default threshold of 90: `blocked` 0 with
+  each of the six hard triggers, `uncertain` 1 and 49, `needs-review` 50
+  and 79 and `likely-safe` 80 and 89 are `human`; `likely-safe` 90 and 94
+  and `safe` 95 and 100 are `auto`; a floor hit with `safe` 100 is `human`;
+  under `never`, `blocked` with two triggers lists both in the comment;
+- thresholds: at `min_confidence` 95, 94 is `human` and 95 `auto`; at 100,
+  99 is `human` and 100 `auto`;
+- malformed envelopes, each `human` with the judgement unusable: a missing
+  or non-UTF-8 assessment, no envelope, two envelopes, an unclosed or a
+  four-backtick fence, not JSON, a list, a duplicate key, NaN, a missing,
+  extra or reordered key, a confidence that is a boolean, float or string or
+  is -1 or 101, an unknown band, a range (`80-94`) or a display name
+  (`Likely safe`) as the band, a confidence outside its band's range,
+  `blocked` without a trigger, a trigger outside `blocked`, an unknown or
+  repeated trigger, triggers that are not a list, an empty, format-only or
+  non-string reason, a doubt missing a field or with an empty one, 11
+  doubts, `safe` with a doubt, `likely-safe` without one, a `Risk:` line, a
+  summary confidence that differs from the envelope's, a summary in the old
+  risk form, without a reason or missing, and no title; trailing spaces on
+  the fence lines and CRLF still give `auto`;
+- decision under `judged`: a floor hit, a missing or unparsable verdict, a
+  verdict edited to break each
   binding (the documents' sha256 too), a verdict made without the documents
   or with another issue document or analysis, a forged verdict that is
   consistent in itself but differs from what floor.py gives for the plan
-  and documents (a `first-of-kind` hit set clean), and a missing, non-UTF-8
-  or malformed
-  assessment are `human`, with the failing layer unusable; a trailing space
-  and CRLF still give `auto`; a harness or model other than the config's
+  and documents (a `first-of-kind` hit set clean) are `human`, with the
+  floor layer unusable; a harness or model other than the config's
   sets `as_configured` false and gives `human`; a `blocking-questions` hit
   and a `footprint` hit give a usable floor layer equal to the verdict;
 - decision under `always`, `shadow` and `never`: `human`, `human` with
   `judged_decision` recorded, and `auto` whatever the layers say;
-- the comments: the auto-approval comment's heading, floor line, risk and
-  reason and veto paragraph; the shadow-record comment's heading and rows;
-  and in both, model and session text only inside code spans of at most
-  200 characters;
+- the comments: the auto-approval comment's heading, floor line,
+  Confidence row (the band's display name and score, the threshold and the
+  reason), Hard triggers row, one Doubt row per doubt and veto paragraph;
+  the shadow-record comment's heading and rows, also for an unusable
+  judgement; and in both, model and session text, a hostile reason and
+  doubt among it, only inside code spans of at most 200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a
   missing, unreadable or non-UTF-8 issue document or analysis, a missing
   `yq` and a record path that is a directory exit 2, print nothing
@@ -1270,6 +1294,7 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         "limit-true",
         "undefined-component",
         "missing-limit",
+        *MIN_CONFIDENCE_INVALID,
     ):
         cases.append((f"config {variant}", ["--plan", good, "--component", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
@@ -1377,6 +1402,7 @@ RECORD_KEYS = [
     "approval",
     "subject",
     "mode",
+    "min_confidence",
     "layers",
     "judged_decision",
     "decision",
@@ -1394,7 +1420,10 @@ JUDGEMENT_LAYER_KEYS = [
     "model",
     "expected",
     "as_configured",
-    "risk",
+    "confidence",
+    "band",
+    "hard_triggers",
+    "doubts",
     "reasons",
 ]
 EXPECTED_JUDGE = {"harness": "claude", "model": "sonnet"}
@@ -1403,18 +1432,74 @@ ARTIFACT = "https://github.com/mintswarm/mintswarm/issues/34/artifacts/7"
 SPAN_LIMIT = 200
 
 
+# The assess stage's named bands: identifier -> (display name, lowest, highest confidence).
+BANDS = {
+    "blocked": ("Blocked", 0, 0),
+    "uncertain": ("Uncertain", 1, 49),
+    "needs-review": ("Needs review", 50, 79),
+    "likely-safe": ("Likely safe", 80, 94),
+    "safe": ("Safe", 95, 100),
+}
+HARD_TRIGGERS = [
+    "criterion-not-met",
+    "outside-scope",
+    "not-revertible",
+    "credentials",
+    "weakens-safeguard",
+    "undeclared-high",
+]
+DOUBT = {
+    "statement": "the docs index may list the page twice",
+    "consequence": "a duplicate entry in the index",
+    "resolution": "check the index after the change",
+}
+# The mode and min_confidence of each base config Decider runs at, where they are not the config's name and 90.
+CONFIG_MODES = {"real": EXPECTED_APPROVAL["mode"], "judged-95": "judged", "min-100": "judged"}
+CONFIG_MIN_CONFIDENCE = {"judged-95": 95, "min-100": 100}
+
+
+def envelope(band: str = "safe", confidence: int = None, triggers: list = None, doubts: list = None, reason=REASON):
+    """An envelope object: a band at its lowest value, with a trigger for blocked and a doubt for likely-safe."""
+    if confidence is None:
+        confidence = BANDS[band][1]
+    if triggers is None:
+        triggers = ["criterion-not-met"] if band == "blocked" else []
+    if doubts is None:
+        doubts = [dict(DOUBT)] if band == "likely-safe" else []
+    return {"confidence": confidence, "band": band, "hard_triggers": triggers, "reason": reason, "doubts": doubts}
+
+
+SAFE = envelope("safe", 95)
+
+
 def assessment_text(
-    level: str = "low",
-    reason: str = REASON,
-    risk_line: str = None,
+    content=None,
     summary: str = None,
     eol: str = "\n",
     title: str = "# Assessment: selftest case",
+    fence: str = "```json",
+    close: str = "```",
+    extra: str = "",
 ) -> str:
-    risk_line = f"Risk: {level}" if risk_line is None else risk_line
-    summary = f"{level} risk: {reason}" if summary is None else summary
-    lines = [title, "", summary, "", risk_line, "", "## Reversibility", "", "A revert undoes it.", ""]
-    return eol.join(lines)
+    """An assessment document: content is an envelope object, or the envelope's raw text."""
+    content = SAFE if content is None else content
+    body = content if isinstance(content, str) else json.dumps(content, indent=2, ensure_ascii=False)
+    if summary is None:
+        number = content.get("confidence") if isinstance(content, dict) else None
+        number = number if type(number) is int and 0 <= number <= 100 else 95
+        summary = f"{number} confidence: {REASON}"
+    lines = [title, "", summary, "", "## Envelope", "", fence, *body.split("\n")]
+    if close is not None:
+        lines.append(close)
+    lines += ["", "## Reversibility", "", "A revert undoes it.", ""]
+    return eol.join(lines) + extra
+
+
+def confidence_line(band: str, confidence: int, threshold: int = 90, reason: str = REASON) -> str:
+    return f"`{BANDS[band][0]} · {confidence}` (min_confidence {threshold}), `{reason}`"
+
+
+SAFE_LINE = confidence_line("safe", 95)
 
 
 def code_spans(text: str) -> list:
@@ -1495,7 +1580,7 @@ class Decider:
         config: str = "judged",
         plan: str = "clean",
         verdict="floor",
-        assessment="low",
+        assessment=SAFE,
         harness: str = "claude",
         model: str = "sonnet",
         artifact: str = ARTIFACT,
@@ -1512,13 +1597,12 @@ class Decider:
             path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         elif verdict is not None:
             path.write_bytes(verdict)
+        expected = assessment if isinstance(assessment, dict) else None
         if assessment is None:
             rel = "cases/no-such-assessment.md"
-            level = None
         else:
-            content = assessment_text(assessment) if assessment in ("low", "medium", "high") else assessment
+            content = assessment_text(assessment) if expected is not None else assessment
             rel = self.sb.write_plan(f"assessment {name}", content)
-            level = assessment if assessment in ("low", "medium", "high") else None
         args = [
             "--issue",
             "34",
@@ -1557,7 +1641,7 @@ class Decider:
             "artifact": artifact,
             "harness": harness,
             "model": model,
-            "level": level,
+            "envelope": expected,
         }
         check_record(name, proc, record, expect, self.sb.repo)
         return proc, record
@@ -1568,10 +1652,11 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
         return T.check(f"{name}: record shape", False, f"no record (exit {proc.returncode}): {proc.stderr.strip()}")
     problems = []
     ctx = expect["ctx"]
-    mode = {"real": EXPECTED_APPROVAL["mode"]}.get(expect["config"], expect["config"])
+    mode = CONFIG_MODES.get(expect["config"], expect["config"])
+    threshold = CONFIG_MIN_CONFIDENCE.get(expect["config"], 90)
     if list(record) != RECORD_KEYS:
         return T.check(f"{name}: record shape", False, f"keys {list(record)}")
-    if (record["tool"], record["version"], record["approval"]) != ("mintswarm-approval-decision", 1, "plan"):
+    if (record["tool"], record["version"], record["approval"]) != ("mintswarm-approval-decision", 2, "plan"):
         problems.append("tool, version or approval")
     plan_sha = hashlib.sha256((repo / ctx["plan"]).read_bytes()).hexdigest()
     subject = {
@@ -1584,6 +1669,8 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
         problems.append(f"subject {record['subject']}")
     if record["mode"] != mode:
         problems.append(f"mode {record['mode']!r}, expected {mode!r}")
+    if type(record["min_confidence"]) is not int or record["min_confidence"] != threshold:
+        problems.append(f"min_confidence {record['min_confidence']!r}, expected {threshold}")
     layers = record["layers"]
     if not isinstance(layers, dict) or list(layers) != ["floor", "judgement"]:
         return T.check(f"{name}: record shape", False, f"layers {layers!r}")
@@ -1637,17 +1724,34 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
     wrong = [k for k, v in fixed.items() if jd[k] != v]
     if wrong:
         problems.append(f"judgement {', '.join(wrong)}")
-    if jd["status"] == "usable":
-        if jd["risk"] not in ("low", "medium", "high") or len(jd["reasons"]) != 1:
-            problems.append(f"judgement risk {jd['risk']!r}, reasons {jd['reasons']!r}")
-        if expect["level"] is not None and (jd["risk"], jd["reasons"]) != (expect["level"], [REASON]):
-            problems.append(f"judgement risk {jd['risk']!r}, reasons {jd['reasons']!r}")
-    elif (jd["risk"], jd["reasons"]) != (None, []):
+    usable = jd["status"] == "usable"
+    fields = (jd["confidence"], jd["band"], jd["hard_triggers"], jd["doubts"], jd["reasons"])
+    if usable:
+        band = BANDS.get(jd["band"]) if isinstance(jd["band"], str) else None
+        if (
+            band is None
+            or type(jd["confidence"]) is not int
+            or not band[1] <= jd["confidence"] <= band[2]
+            or not all(t in HARD_TRIGGERS for t in jd["hard_triggers"])
+            or bool(jd["hard_triggers"]) != (jd["band"] == "blocked")
+            or len(jd["reasons"]) != 1
+        ):
+            problems.append(f"judgement {fields!r}")
+        want = expect["envelope"]
+        if want is not None and fields != (
+            want["confidence"],
+            want["band"],
+            want["hard_triggers"],
+            want["doubts"],
+            [want["reason"]],
+        ):
+            problems.append(f"judgement {fields!r} differs from the envelope")
+    elif fields != (None, None, [], [], []):
         problems.append("unusable judgement layer holds content")
 
     clean = fl["status"] == "usable" and fl["verdict"] == "clean"
-    low = jd["status"] == "usable" and jd["risk"] == "low"
-    judged = "auto" if clean and low and as_configured else "human"
+    confident = usable and not jd["hard_triggers"] and jd["confidence"] >= threshold
+    judged = "auto" if clean and confident and as_configured else "human"
     decision = {"always": "human", "shadow": "human", "never": "auto", "judged": judged}.get(mode)
     if record["judged_decision"] != judged:
         problems.append(f"judged_decision {record['judged_decision']!r}, expected {judged!r}")
@@ -1663,6 +1767,16 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
         or not reasons[0].startswith(f"mode {mode}:")
     ):
         problems.append(f"reasons {reasons!r}")
+    elif usable:
+        triggers = jd["hard_triggers"]
+        wanted = [f"judgement: confidence {jd['confidence']} (band {jd['band']})"]
+        if triggers:
+            wanted.append(f"judgement: hard trigger {', '.join(triggers)}")
+        elif jd["confidence"] < threshold:
+            wanted.append(f"judgement: confidence below min_confidence {threshold}")
+        listed = [x for x in reasons if x.startswith("judgement: ") and "as configured" not in x]
+        if listed != wanted:
+            problems.append(f"judgement reasons {listed!r}, expected {wanted!r}")
     if record["decision"] == "human" and mode == "shadow":
         if not proc.stdout.startswith("### Shadow record: plan approval\n"):
             problems.append("no shadow-record comment in shadow mode")
@@ -1698,24 +1812,25 @@ def expect_decision(
     return record
 
 
-def check_comment(name: str, proc, floor_line: str, risk_line: str) -> None:
+def check_comment(name: str, proc, floor_line: str, confidence: str, triggers: str = "none") -> None:
     out = proc.stdout
     lines = out.splitlines()
     ok = (
         bool(lines)
         and lines[0] == "### Plan approved without a human"
         and f"- **Floor:** {floor_line}" in lines
-        and f"- **Risk:** {risk_line}" in lines
+        and f"- **Confidence:** {confidence}" in lines
+        and (triggers is None or f"- **Hard triggers:** {triggers}" in lines)
         and any(
             line.startswith("**To veto:**") and "awaiting plan approval" in line and "rejection at PR approval" in line
             for line in lines
         )
         and "PR approval stays with a human in every mode." in lines
     )
-    T.check(f"{name}: comment has the heading, floor, risk and veto", ok, repr(out))
+    T.check(f"{name}: comment has the heading, floor, confidence, hard triggers and veto", ok, repr(out))
 
 
-def check_shadow_comment(name: str, proc, floor_start: str, risk_line: str, judged: str) -> None:
+def check_shadow_comment(name: str, proc, floor_start: str, confidence: str, judged: str) -> None:
     lines = proc.stdout.splitlines()
     floor = next((line for line in lines if line.startswith("- **Floor:** ")), "")
     ok = (
@@ -1725,7 +1840,8 @@ def check_shadow_comment(name: str, proc, floor_start: str, risk_line: str, judg
         and any(
             line.startswith("- **Assess:** stage `assess`, `claude` with `sonnet`, as configured") for line in lines
         )
-        and f"- **Risk:** {risk_line}" in lines
+        and f"- **Confidence:** {confidence}" in lines
+        and "- **Hard triggers:** none" in lines
         and floor_start in floor
         and "clean: `" in floor
         and f"- **Would-be decision:** `{judged}` (`judged_decision`)" in lines
@@ -1735,20 +1851,147 @@ def check_shadow_comment(name: str, proc, floor_start: str, risk_line: str, judg
     T.check(f"{name}: shadow-record comment has the heading and rows", ok, repr(proc.stdout))
 
 
+def check_decision_bands(d: Decider) -> None:
+    proc, record = d.run("judged clean safe 95")
+    expect_decision("judged clean safe 95", (proc, record), "auto", "auto", "usable", "usable")
+    check_comment("judged clean safe 95", proc, f"clean, {len(RULES)} of {len(RULES)} rules", SAFE_LINE)
+    expect_decision(
+        "judged hit safe 100",
+        d.run("judged hit safe 100", plan="hit", assessment=envelope("safe", 100)),
+        "human",
+        "human",
+        "usable",
+        "usable",
+    )
+    for trigger in HARD_TRIGGERS:
+        name = f"judged blocked 0 {trigger}"
+        proc, record = d.run(name, assessment=envelope("blocked", 0, [trigger]))
+        expect_decision(name, (proc, record), "human", "human", "usable", "usable")
+    proc, record = d.run(
+        "never blocked two triggers", config="never", assessment=envelope("blocked", 0, HARD_TRIGGERS[2:4])
+    )
+    expect_decision("never blocked two triggers", (proc, record), "auto", "human", "usable", "usable")
+    check_comment(
+        "never blocked two triggers",
+        proc,
+        f"clean, {len(RULES)} of {len(RULES)} rules",
+        confidence_line("blocked", 0),
+        "`not-revertible`, `credentials`",
+    )
+    edges = [
+        ("uncertain", 1, "human"),
+        ("uncertain", 49, "human"),
+        ("needs-review", 50, "human"),
+        ("needs-review", 79, "human"),
+        ("likely-safe", 80, "human"),
+        ("likely-safe", 89, "human"),
+        ("likely-safe", 90, "auto"),
+        ("likely-safe", 94, "auto"),
+        ("safe", 95, "auto"),
+        ("safe", 100, "auto"),
+    ]
+    for band, confidence, want in edges:
+        name = f"judged {band} {confidence}"
+        expect_decision(name, d.run(name, assessment=envelope(band, confidence)), want, want, "usable", "usable")
+    for config, confidence, want in (
+        ("judged-95", 94, "human"),
+        ("judged-95", 95, "auto"),
+        ("min-100", 99, "human"),
+        ("min-100", 100, "auto"),
+    ):
+        band = "safe" if confidence >= 95 else "likely-safe"
+        name = f"{config} {band} {confidence}"
+        proc, record = d.run(name, config=config, assessment=envelope(band, confidence))
+        expect_decision(name, (proc, record), want, want, "usable", "usable")
+        if want == "auto":
+            check_comment(
+                name,
+                proc,
+                f"clean, {len(RULES)} of {len(RULES)} rules",
+                confidence_line(band, confidence, CONFIG_MIN_CONFIDENCE[config]),
+            )
+
+    doubts = [DOUBT, {"statement": "a second doubt", "consequence": "a stale link", "resolution": "run the checker"}]
+    proc, record = d.run("judged likely-safe two doubts", assessment=envelope("likely-safe", 92, doubts=doubts))
+    expect_decision("judged likely-safe two doubts", (proc, record), "auto", "auto", "usable", "usable")
+    rows = [line for line in proc.stdout.splitlines() if line.startswith("- **Doubt:** ")]
+    T.check(
+        "judged likely-safe two doubts: one Doubt row per doubt, in order",
+        rows
+        == [
+            f"- **Doubt:** `{x['statement']}`; if wrong: `{x['consequence']}`; resolved by: `{x['resolution']}`"
+            for x in doubts
+        ]
+        and f"- **Confidence:** {confidence_line('likely-safe', 92)}" in proc.stdout.splitlines(),
+        repr(proc.stdout),
+    )
+
+
+def malformed_assessments() -> list:
+    """(label, content): each makes the judgement unusable."""
+
+    def keyed(change) -> str:
+        document = dict(SAFE)
+        change(document)
+        return json.dumps(document, indent=2)
+
+    def doubt_without(key: str) -> dict:
+        return {k: v for k, v in DOUBT.items() if k != key}
+
+    raw = json.dumps(SAFE, indent=2)
+    return [
+        ("missing assessment", None),
+        ("assessment not UTF-8", b"# Assessment\n\n95 confidence: x\n\n```json\n{}\n```\n\xff\n"),
+        ("no envelope", assessment_text(fence="Envelope:", close="")),
+        ("two envelopes", assessment_text(extra="\n```json\n" + raw + "\n```\n")),
+        ("unclosed fence", assessment_text(close=None)),
+        ("a four-backtick fence", assessment_text(fence="````json", close="````")),
+        ("envelope not JSON", assessment_text("{ not json")),
+        ("envelope a list", assessment_text("[" + raw + "]")),
+        ("duplicate key", assessment_text(raw.replace('"band": "safe",', '"band": "safe",\n  "band": "safe",'))),
+        ("NaN confidence", assessment_text(raw.replace('"confidence": 95', '"confidence": NaN'))),
+        ("missing key", assessment_text(keyed(lambda e: e.pop("doubts")))),
+        ("extra key", assessment_text(keyed(lambda e: e.update(samples=1)))),
+        ("reordered keys", assessment_text(keyed(lambda e: e.update(band=e.pop("band"))))),
+        ("confidence true", assessment_text(envelope("blocked", True))),
+        ("confidence a float", assessment_text(envelope("safe", 95.0))),
+        ("confidence a string", assessment_text(envelope("safe", "95"))),
+        ("confidence -1", assessment_text(envelope("blocked", -1))),
+        ("confidence 101", assessment_text(envelope("safe", 101))),
+        ("unknown band", assessment_text(envelope("risky", 95))),
+        ("band as a range", assessment_text(envelope("80-94", 92, doubts=[DOUBT]))),
+        ("band as its display name", assessment_text(envelope("Likely safe", 92, doubts=[DOUBT]))),
+        ("safe at 90", assessment_text(envelope("safe", 90))),
+        ("likely-safe at 95", assessment_text(envelope("likely-safe", 95))),
+        ("blocked at 1", assessment_text(envelope("blocked", 1))),
+        ("blocked without a trigger", assessment_text(envelope("blocked", 0, []))),
+        ("a trigger outside blocked", assessment_text(envelope("needs-review", 60, ["credentials"]))),
+        ("an unknown trigger", assessment_text(envelope("blocked", 0, ["risky"]))),
+        ("a repeated trigger", assessment_text(envelope("blocked", 0, ["credentials", "credentials"]))),
+        ("hard_triggers not a list", assessment_text(envelope("blocked", 0, "credentials"))),
+        ("empty reason", assessment_text(envelope(reason=""))),
+        ("reason of format characters", assessment_text(envelope(reason="\u200b\u2060 "))),
+        ("reason not a string", assessment_text(envelope(reason=["a reason"]))),
+        ("a doubt missing a field", assessment_text(envelope("likely-safe", 92, doubts=[doubt_without("resolution")]))),
+        (
+            "a doubt with an empty field",
+            assessment_text(envelope("likely-safe", 92, doubts=[dict(DOUBT, statement="")])),
+        ),
+        ("11 doubts", assessment_text(envelope("likely-safe", 92, doubts=[DOUBT] * 11))),
+        ("safe with a doubt", assessment_text(envelope("safe", 95, doubts=[DOUBT]))),
+        ("likely-safe without a doubt", assessment_text(envelope("likely-safe", 92, doubts=[]))),
+        ("a Risk: line", assessment_text(extra="Risk: low\n")),
+        ("summary confidence differs", assessment_text(summary=f"96 confidence: {REASON}")),
+        ("summary as a risk level", assessment_text(summary=f"low risk: {REASON}")),
+        ("summary without reason", assessment_text(summary="95 confidence: ")),
+        ("summary reason of format characters", assessment_text(summary="95 confidence: \u200b\u2060")),
+        ("no summary line", assessment_text(summary="A plan.")),
+        ("no title", assessment_text(title="Assessment: selftest case")),
+    ]
+
+
 def check_decision_judged(d: Decider) -> None:
-    proc, record = d.run("judged clean low")
-    expect_decision("judged clean low", (proc, record), "auto", "auto", "usable", "usable")
-    check_comment("judged clean low", proc, f"clean, {len(RULES)} of {len(RULES)} rules", f"`low`, `{REASON}`")
-    expect_decision("judged hit low", d.run("judged hit low", plan="hit"), "human", "human", "usable", "usable")
-    for level in ("medium", "high"):
-        expect_decision(
-            f"judged clean {level}",
-            d.run(f"judged clean {level}", assessment=level),
-            "human",
-            "human",
-            "usable",
-            "usable",
-        )
+    check_decision_bands(d)
     expect_decision("judged no verdict", d.run("judged no verdict", verdict=None), "human", "human", "unusable")
     expect_decision(
         "judged unparsable verdict",
@@ -1812,36 +2055,22 @@ def check_decision_judged(d: Decider) -> None:
             "usable",
         )
 
-    bad_assessments = [
-        ("missing assessment", None),
-        ("assessment not UTF-8", b"# Assessment\n\nlow risk: x\n\nRisk: low\n\xff\n"),
-        ("no Risk line", assessment_text(risk_line="Rating: low")),
-        ("two Risk lines", assessment_text() + "Risk: low\n"),
-        ("Risk: Low", assessment_text(risk_line="Risk: Low")),
-        ("leading space", assessment_text(risk_line=" Risk: low")),
-        ("Risk: none", assessment_text(risk_line="Risk: none")),
-        ("Risk: low and more", assessment_text(risk_line="Risk: low, probably")),
-        ("Risk:low", assessment_text(risk_line="Risk:low")),
-        ("summary level differs", assessment_text(summary=f"medium risk: {REASON}")),
-        ("summary without reason", assessment_text(summary="low risk: ")),
-        ("summary reason of format characters", assessment_text(summary="low risk: \u200b\u2060")),
-        ("no summary line", assessment_text(summary="A plan.")),
-        ("no title", assessment_text(title="Assessment: selftest case")),
-    ]
-    for label, content in bad_assessments:
+    for label, content in malformed_assessments():
         expect_decision(
             f"judged {label}", d.run(f"judged {label}", assessment=content), "human", "human", "usable", "unusable"
         )
 
     for label, content in (
-        ("trailing space", assessment_text(risk_line="Risk: low \t")),
+        ("trailing space", assessment_text(fence="```json \t", close="``` ")),
         ("CRLF", assessment_text(eol="\r\n")),
     ):
         proc, record = d.run(f"judged {label}", assessment=content)
         expect_decision(f"judged {label}", (proc, record), "auto", "auto", "usable", "usable")
         T.check(
-            f"judged {label}: risk low with the reason",
-            isinstance(record, dict) and record["layers"]["judgement"]["reasons"] == [REASON],
+            f"judged {label}: safe 95 with the reason",
+            isinstance(record, dict)
+            and record["layers"]["judgement"]["reasons"] == [REASON]
+            and record["layers"]["judgement"]["confidence"] == 95,
         )
 
     for label, harness, model in (("other model", "claude", "opus"), ("other harness", "codex", "sonnet")):
@@ -1913,7 +2142,7 @@ def check_decision_documents(d: Decider) -> None:
         "shadow blocking question",
         proc,
         "hit on `blocking-questions` (`floor.py` exit 1)",
-        f"`low`, `{REASON}`",
+        SAFE_LINE,
         "human",
     )
 
@@ -1997,23 +2226,45 @@ def check_decision_documents(d: Decider) -> None:
 
 
 def check_decision_modes(d: Decider) -> None:
-    expect_decision("always clean low", d.run("always clean low", config="always"), "human", "auto")
+    blocked = envelope("blocked", 0, ["credentials"])
+    expect_decision("always clean safe", d.run("always clean safe", config="always"), "human", "auto")
     expect_decision(
-        "always hit high", d.run("always hit high", config="always", plan="hit", assessment="high"), "human", "human"
+        "always hit blocked",
+        d.run("always hit blocked", config="always", plan="hit", assessment=blocked),
+        "human",
+        "human",
     )
-    proc, record = d.run("shadow clean low", config="real")
-    expect_decision("shadow clean low", (proc, record), "human", "auto")
+    proc, record = d.run("shadow clean safe", config="real")
+    expect_decision("shadow clean safe", (proc, record), "human", "auto")
     check_shadow_comment(
-        "shadow clean low",
+        "shadow clean safe",
         proc,
         f"clean, {len(RULES)} of {len(RULES)} rules (`floor.py` exit 0)",
-        f"`low`, `{REASON}`",
+        SAFE_LINE,
         "auto",
     )
-    proc, record = d.run("shadow hit low", config="real", plan="hit")
-    expect_decision("shadow hit low", (proc, record), "human", "human")
+    proc, record = d.run("shadow hit safe", config="real", plan="hit")
+    expect_decision("shadow hit safe", (proc, record), "human", "human")
     check_shadow_comment(
-        "shadow hit low", proc, "hit on `require-human-paths` (`floor.py` exit 1)", f"`low`, `{REASON}`", "human"
+        "shadow hit safe", proc, "hit on `require-human-paths` (`floor.py` exit 1)", SAFE_LINE, "human"
+    )
+    proc, record = d.run("shadow clean uncertain", config="real", assessment=envelope("uncertain", 30))
+    expect_decision("shadow clean uncertain", (proc, record), "human", "human")
+    check_shadow_comment(
+        "shadow clean uncertain",
+        proc,
+        f"clean, {len(RULES)} of {len(RULES)} rules (`floor.py` exit 0)",
+        confidence_line("uncertain", 30),
+        "human",
+    )
+    proc, record = d.run("shadow unusable judgement", config="real", assessment=assessment_text(summary="A plan."))
+    expect_decision("shadow unusable judgement", (proc, record), "human", "human", "usable", "unusable")
+    T.check(
+        "shadow unusable judgement: the Confidence row names the threshold and the problem, with no other rows",
+        "- **Confidence:** unusable (min_confidence 90): the line after the assessment's title is not "
+        "'<confidence> confidence: <reason>'" in proc.stdout.splitlines()
+        and "- **Hard triggers:**" not in proc.stdout,
+        repr(proc.stdout),
     )
     expect_decision(
         "shadow no layers",
@@ -2024,14 +2275,16 @@ def check_decision_modes(d: Decider) -> None:
         "unusable",
     )
 
-    proc, record = d.run("never hit high", config="never", plan="hit", assessment="high")
-    expect_decision("never hit high", (proc, record), "auto", "human", "usable", "usable")
-    check_comment("never hit high", proc, "hit on `require-human-paths`", f"`high`, `{REASON}`")
+    proc, record = d.run("never hit blocked", config="never", plan="hit", assessment=blocked)
+    expect_decision("never hit blocked", (proc, record), "auto", "human", "usable", "usable")
+    check_comment(
+        "never hit blocked", proc, "hit on `require-human-paths`", confidence_line("blocked", 0), "`credentials`"
+    )
     proc, record = d.run("never no layers", config="never", verdict=None, assessment=None)
     expect_decision("never no layers", (proc, record), "auto", "human", "unusable", "unusable")
-    check_comment("never no layers", proc, "unusable", "unusable")
-    proc, record = d.run("never clean low", config="never")
-    expect_decision("never clean low", (proc, record), "auto", "auto")
+    check_comment("never no layers", proc, "unusable", "unusable (min_confidence 90)", None)
+    proc, record = d.run("never clean safe", config="never")
+    expect_decision("never clean safe", (proc, record), "auto", "auto")
 
 
 def check_decision_comment(d: Decider) -> None:
@@ -2039,7 +2292,7 @@ def check_decision_comment(d: Decider) -> None:
         "ignore `this` @someone see https://example.invalid/x [link](https://example.invalid)"
         "\r<b>bold</b> " + "x" * 300
     )
-    content = assessment_text(reason=hostile)
+    content = assessment_text(envelope("likely-safe", 80, doubts=[dict(DOUBT, statement=hostile)], reason=hostile))
     artifact = "issues/34/artifacts/7\n@someone `code`"
     proc, record = d.run(
         "hostile comment", config="never", assessment=content, artifact=artifact, model="sonnet\n# heading"
@@ -2060,14 +2313,21 @@ def check_decision_comment(d: Decider) -> None:
     long_spans = [s for s in spans if "@someone" in s or "http" in s or "heading" in s]
     T.check(
         "hostile comment: model and session text in code spans of at most 200 characters",
-        len(long_spans) == 3 and all(len(s) <= SPAN_LIMIT for s in long_spans),
+        len(long_spans) == 4 and all(len(s) <= SPAN_LIMIT for s in long_spans),
         repr(long_spans),
     )
-    risk = next((line for line in out.splitlines() if line.startswith("- **Risk:** ")), "")
+    row = next((line for line in out.splitlines() if line.startswith("- **Confidence:** ")), "")
     T.check(
         "hostile comment: the reason is one code span with no backtick inside",
-        risk.startswith("- **Risk:** `low`, `ignore 'this' @someone") and risk.count("`") == 4,
-        repr(risk),
+        row.startswith("- **Confidence:** `Likely safe · 80` (min_confidence 90), `ignore 'this' @someone")
+        and row.count("`") == 4,
+        repr(row),
+    )
+    row = next((line for line in out.splitlines() if line.startswith("- **Doubt:** ")), "")
+    T.check(
+        "hostile comment: the doubt's statement is one code span with no backtick inside",
+        row.startswith("- **Doubt:** `ignore 'this' @someone") and row.count("`") == 6,
+        repr(row),
     )
     lines = out.splitlines()
     T.check(
@@ -2096,7 +2356,7 @@ def check_decision_comment(d: Decider) -> None:
     spans = [s for s in code_spans(out) if "@someone" in s or "http" in s or "heading" in s]
     T.check(
         "hostile shadow comment: model and session text in code spans of at most 200 characters",
-        len(spans) == 3 and all(len(s) <= SPAN_LIMIT for s in spans),
+        len(spans) == 4 and all(len(s) <= SPAN_LIMIT for s in spans),
         repr(spans),
     )
     lines = out.splitlines()
@@ -2152,6 +2412,7 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
         ("unknown component", args(component="nope")),
         ("config mode-sometimes", args(base=d.commits["mode-sometimes"])),
         ("config unknown-key", args(base=d.commits["unknown-key"])),
+        *((f"config {name}", args(base=d.commits[name])) for name in MIN_CONFIDENCE_INVALID),
         ("missing --issue-document", args(issue_document=None)),
         ("missing --analysis", args(analysis=None)),
         ("issue document missing", args(issue_document="cases/missing.md")),
@@ -2308,6 +2569,10 @@ def check_stdlib() -> None:
         )
 
 
+# Config variants whose pipeline.plan_approval.min_confidence is unusable input.
+MIN_CONFIDENCE_INVALID = {"min-89": 89, "min-101": 101, "min-true": True, "min-string": "95"}
+
+
 def build_commits(sb: Sandbox) -> tuple:
     real_bytes = CONFIG.read_bytes()
     real = yq_json(CONFIG)
@@ -2332,6 +2597,10 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("always", lambda c: approval(c).update(mode="always"))
     variant("judged", lambda c: approval(c).update(mode="judged"))
     variant("never", lambda c: approval(c).update(mode="never"))
+    variant("judged-95", lambda c: approval(c).update(mode="judged", min_confidence=95))
+    variant("min-100", lambda c: approval(c).update(mode="judged", min_confidence=100))
+    for name, value in MIN_CONFIDENCE_INVALID.items():
+        variant(name, lambda c, value=value: approval(c).update(min_confidence=value))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
     commits["real"] = sb.commit_config(real_bytes, "real")

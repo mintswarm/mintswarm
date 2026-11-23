@@ -156,9 +156,12 @@ ensure_ascii off):
                  {path, sha256, record} only when --kickoff-floor is given
                  (the record is floor.py's verdict, a JSON object with tool
                  "mintswarm-plan-floor"), then `assessment` {path, sha256,
-                 risk} only when --assessment is given (risk is low, medium
-                 or high from the document's single `Risk:` line, or null
-                 when the document breaks the assess stage's rules for it)
+                 confidence, band} only when --assessment is given
+                 (confidence, 0 to 100, and band, the band's identifier,
+                 from the document's envelope as plan-approval/decision.py's
+                 envelope_problems reads it, both null when it reports any
+                 problem; decision.py is loaded by path, with its floor.py,
+                 and a load failure is unusable input)
 
 Steers. Items come from issue-comments (kind issue-comment), pr-comments
 (pr-comment), reviews (review) and review-comments (review-comment). The
@@ -191,6 +194,7 @@ Standard library only, apart from running bot-gh.sh (fetch), git and yq
 """
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -203,6 +207,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BOT_GH = HERE.parent / "github" / "bot-gh.sh"
+DECISION = HERE.parent / "plan-approval" / "decision.py"
 FACTS = Path(".mintswarm/job/inputs/landing/facts.json")
 RESPONSES = Path(".mintswarm/job/landing/responses")
 TOOL = "mintswarm-landing-facts"
@@ -219,7 +224,6 @@ BOT = "mintswarm-dev[bot]"
 MARKER = "<!-- mintswarm: steer -->"
 SEVERITIES = ("blocker", "major", "minor", "nit")
 REVIEW_VERDICTS = ("pass", "changes_required")
-RISKS = ("low", "medium", "high")
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")
@@ -900,16 +904,34 @@ def review_round(number: int, kept: dict, where: str, head: str) -> dict:
 # --- assemble: approval ---------------------------------------------------
 
 
-def assessment_risk(data: bytes):
+def load_decision():
+    """plan-approval/decision.py, loaded by path, with its floor set."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to decision.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_approval_decision", DECISION)
+        if spec is None or spec.loader is None:
+            raise InputError(f"cannot load {DECISION}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.floor = module.load_floor()
+    except InputError:
+        raise
+    except Exception as exc:
+        raise InputError(f"cannot load {DECISION}: {type(exc).__name__}") from exc
+    return module
+
+
+def assessment_confidence(data: bytes) -> tuple:
+    """(confidence, band) from an assessment's envelope, or (None, None) when it is unusable."""
+    decision = load_decision()
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return None
-    lines = [line for line in text.split("\n") if line.startswith("Risk:")]
-    if len(lines) != 1:
-        return None
-    level = lines[0][len("Risk: ") :] if lines[0].startswith("Risk: ") else None
-    return level if level in RISKS else None
+        return None, None
+    problems, envelope = decision.envelope_problems(text)
+    if problems:
+        return None, None
+    return envelope["confidence"], envelope["band"]
 
 
 def build_approval(opts: dict) -> dict:
@@ -941,7 +963,8 @@ def build_approval(opts: dict) -> dict:
     if "--assessment" in opts:
         path = opts["--assessment"]
         data = read_bytes(Path(path))
-        approval["assessment"] = {"path": path, "sha256": sha256(data), "risk": assessment_risk(data)}
+        confidence, band = assessment_confidence(data)
+        approval["assessment"] = {"path": path, "sha256": sha256(data), "confidence": confidence, "band": band}
     return approval
 
 

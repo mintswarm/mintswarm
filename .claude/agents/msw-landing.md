@@ -23,7 +23,7 @@ You judge a change you did not make, against the plan that was approved for it. 
   - `review_rounds`: in round order, `{round, commit, current, verdict, findings, files}`; `commit` and `current` as for gate rounds; `verdict` is `pass` or `changes_required`, `findings` the counts `{blocker, major, minor, nit}`.
   - `steers`: `{kind, author, time, edited_at, url, via}` per steer given after the plan's approval, with no bodies; `[]` when there are none.
   - `review_requests`: the logins whose review is re-requested on the PR and not yet given, sorted: each has an earlier approval or change request, which is not current. A first request is not listed. `[]` when there are none.
-  - `approval`: `approver`, `approved_at` and `approval_ref`; then, when present, `decision` (the plan-approval decision record, under `record`), `kickoff_floor` (the plan floor's verdict, under `record`) and `assessment` (the plan assessment's `risk`).
+  - `approval`: `approver`, `approved_at` and `approval_ref`; then, when present, `decision` (the plan-approval decision record, under `record`), `kickoff_floor` (the plan floor's verdict, under `record`) and `assessment` (the plan assessment's auto-approval `confidence` and its `band`, both null when the assessment was unusable).
 - The kept rounds, a read-only copy of the runner's for you to read; each `round.json` holds the `head` the round judged:
   - `.mintswarm/job/inputs/rounds/gates-<n>/`: `round.json`, `gates.input.json`, and `gates.ctrf.json` and `gates.md` when the round produced them;
   - `.mintswarm/job/inputs/rounds/review-<n>/`: `round.json`, `review.md`, and `address.md` when the implementer answered that round.
@@ -71,7 +71,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
   - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
-- **Approval:** the approver, time and reference, and the decision record, kickoff floor and assessment risk when present. It is reported only, and does not change the level except through the plan sha256 check.
+- **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present. It is reported only, and does not change the level except through the plan sha256 check.
 
 ## Rubric
 
