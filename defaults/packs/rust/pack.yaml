@@ -1,0 +1,57 @@
+id: "rust"
+version: 1
+name: "Rust"
+description: "Rust in one Cargo workspace at the repository root, formatted by rustfmt, linted by clippy and tested by cargo test."
+detect:
+  files: ["**/Cargo.toml", "**/*.rs"]
+  shebangs: []
+parameters:
+  - name: "rust_toolchain"
+    type: "string"
+    default: "1.87"
+    description: "Which Rust toolchain, 1.85 or later, does rust-toolchain.toml pin: a release such as 1.87 or 1.87.0, or stable?"
+    pattern: '1\.(8[5-9]|9[0-9]|[1-9][0-9]{2,})(\.(0|[1-9][0-9]*))?|stable'
+  - name: "edition"
+    type: "integer"
+    default: 2024
+    description: "Which Rust edition do the crates and rustfmt use?"
+    choices: [2021, 2024]
+  - name: "max_width"
+    type: "integer"
+    default: 100
+    description: "What is the longest line rustfmt allows?"
+    choices: [80, 100, 120]
+  - name: "unsafe_code"
+    type: "string"
+    default: "forbid"
+    description: "At which level does the workspace lint unsafe code: forbid, deny or warn?"
+    choices: ["forbid", "deny", "warn"]
+    pattern: "forbid|deny|warn"
+settings:
+  - template: "settings/rustfmt.toml"
+    target: "rustfmt.toml"
+    kind: "formatter"
+    alternatives: [".rustfmt.toml"]
+  - template: "settings/workspace-lints.toml"
+    target: "Cargo.toml"
+    kind: "linter"
+    mode: "fragment"
+    section: "workspace.lints"
+  - template: "settings/clippy.toml"
+    target: "clippy.toml"
+    kind: "linter"
+    alternatives: [".clippy.toml"]
+  - template: "settings/rust-toolchain.toml"
+    target: "rust-toolchain.toml"
+    kind: "toolchain"
+    alternatives: ["rust-toolchain"]
+gates:
+  - name: "rust-format"
+    command: "cargo fmt --all --check"
+    kind: "format"
+  - name: "rust-lint"
+    command: "cargo clippy --workspace --all-targets -- -D warnings"
+    kind: "lint"
+  - name: "rust-test"
+    command: "cargo test --workspace"
+    kind: "test"
