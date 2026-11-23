@@ -42,10 +42,15 @@ before the failure is still listed.
 
 A name is a likely typosquat when, compared after lower-casing and (for
 crates, where the registry treats them alike) mapping `_` to `-`, it is
-within Damerau-Levenshtein distance 1 of a name in `popular-names.json`
-(2 for names of 8 or more characters), equals one with the delimiters `-`,
-`_` and `.` removed, or is scoped with a scope within distance 1 of a listed
-scope. A name that is itself listed is exempt.
+within Damerau-Levenshtein distance 1 of a `popular` name in
+`popular-names.json` (2 for names of 8 or more characters), equals one with
+the delimiters `-`, `_` and `.` removed, or is scoped with a scope within
+distance 1 of a popular scope. When either name is shorter than SHORT
+characters, only a swap of two adjacent characters counts as distance 1,
+since nearly every short name is one edit from another. Only `popular`
+names are imitated; a name in `popular` or `exempt` (the lockfile names
+and known neighbours of popular names) is itself exempt, and so is a scope
+that either list already uses.
 
 `request` is the only network path: HTTPS to the four registry hosts of
 prefetch.py and `api.osv.dev`, no proxy, no redirect, no credential, the
@@ -102,6 +107,7 @@ DEPTH = 3
 WALK_REQUESTS = 40
 OWNERS = 50
 NAMES = HERE / "popular-names.json"
+SHORT = 5
 ECOSYSTEMS = {"Cargo.toml": "crates.io", "package.json": "npm"}
 LOCKFILES = {"crates.io": "Cargo.lock", "npm": "pnpm-lock.yaml"}
 DISQUALIFIERS = ("advisory", "yanked", "deprecated", "typosquat")
@@ -329,45 +335,65 @@ def scope(name: str):
     return None
 
 
-def typosquat_of(name: str, ecosystem: str, listed: list):
-    """The listed name (or `@scope/*`) that name likely imitates, or None."""
+def transposed(a: str, b: str) -> bool:
+    """Whether b is a with exactly one pair of adjacent characters swapped."""
+    if len(a) != len(b):
+        return False
+    apart = [i for i in range(len(a)) if a[i] != b[i]]
+    return len(apart) == 2 and apart[1] == apart[0] + 1 and a[apart[0]] == b[apart[1]] and a[apart[1]] == b[apart[0]]
+
+
+def close(wanted: str, key: str):
+    """The edit distance of wanted from key when the rule counts it as close, or None."""
+    if min(len(wanted), len(key)) < SHORT:
+        return 1 if transposed(wanted, key) else None
+    limit = 2 if len(wanted) >= 8 else 1
+    found = distance(wanted, key, limit)
+    return found if found <= limit else None
+
+
+def typosquat_of(name: str, ecosystem: str, popular: list, exempt: list = ()):
+    """The popular name (or `@scope/*`) that name likely imitates, or None; names on either list are exempt."""
     table = {}
-    for item in listed:
+    for item in popular:
         table.setdefault(normal(item, ecosystem), item)
+    known = set(table) | {normal(item, ecosystem) for item in exempt}
     wanted = normal(name, ecosystem)
-    if wanted in table:
+    if wanted in known:
         return None
     for key in sorted(table):
         if bare(wanted) == bare(key):
             return table[key]
-    limit = 2 if len(wanted) >= 8 else 1
     best = None
     for key in sorted(table):
-        found = distance(wanted, key, limit)
-        if found <= limit and (best is None or found < best[0]):
+        found = close(wanted, key)
+        if found is not None and (best is None or found < best[0]):
             best = (found, key)
     if best is not None:
         return table[best[1]]
     own = scope(wanted)
-    if own is not None:
-        scopes = sorted({scope(key) for key in table if scope(key) is not None})
-        if own not in scopes:
-            for other in scopes:
-                if distance(own, other, 1) <= 1:
-                    return f"@{other}/*"
+    if own is not None and own not in {scope(key) for key in known}:
+        for other in sorted({scope(key) for key in table if scope(key) is not None}):
+            if distance(own, other, 1) <= 1:
+                return f"@{other}/*"
     return None
 
 
 def popular_names(path: Path = NAMES) -> dict:
+    """{ecosystem: {"popular": [...], "exempt": [...]}} from the typosquat list; InputError when it is unusable."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise InputError(f"cannot read {path}: {exc}") from exc
-    if not isinstance(data, dict) or not all(
-        isinstance(data.get(e), list) and all(isinstance(n, str) for n in data[e]) for e in ("crates.io", "npm")
-    ):
-        raise InputError(f"{path} has no crates.io and npm name lists")
-    return {e: data[e] for e in ("crates.io", "npm")}
+
+    def names(kind: str, ecosystem: str):
+        group = data.get(kind) if isinstance(data, dict) else None
+        found = group.get(ecosystem) if isinstance(group, dict) else None
+        if not isinstance(found, list) or not all(isinstance(n, str) for n in found):
+            raise InputError(f"{path} has no {kind} {ecosystem} name list")
+        return found
+
+    return {e: {"popular": names("popular", e), "exempt": names("exempt", e)} for e in ("crates.io", "npm")}
 
 
 # --- crates.io --------------------------------------------------------------
@@ -620,7 +646,7 @@ def screen_package(dep: dict, root: Path, names: dict) -> dict:
         "advisories": None,
         "yanked": None,
         "deprecated": None,
-        "typosquat_of": typosquat_of(name, ecosystem, names[ecosystem]),
+        "typosquat_of": typosquat_of(name, ecosystem, names[ecosystem]["popular"], names[ecosystem]["exempt"]),
     }
     try:
         found = screen_crate(name) if ecosystem == "crates.io" else screen_npm(name)
@@ -699,7 +725,7 @@ def screen(deps: list, root: Path, names: dict, source) -> dict:
         "version": RECORD_VERSION,
         "mode": "plan",
         "date": today().isoformat(),
-        "advisory_source": getattr(source, "name", type(source).__name__),
+        "advisory_source": source.name,
         "packages": records,
     }
 

@@ -54,6 +54,17 @@ After the plan stage returns a plan, in this order:
 8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
 9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the band and confidence against `min_confidence`, any hard triggers, the reason, and links to the assessment and decision artifacts.
 
+## The plan's dependency screen
+
+For every plan the plan stage returns, revisions included and in every mode, the session screens the packages the plan declares, right after laying out the assess job (step 2) and before the floor (step 3). It runs, at the root of the assess job's worktree:
+
+```
+python3 -I .mintswarm/dogfood/dependencies/screen.py plan --plan .mintswarm/job/inputs/artefacts/plan.md \
+  --root . --out .mintswarm/job/outputs/screen.json
+```
+
+It runs with network access to `crates.io`, `index.crates.io`, `static.crates.io`, `registry.npmjs.org` and `api.osv.dev` only, over HTTPS, with no registry or other credential in its environment, and with the system CA bundle readable so that the default verified TLS context works. It reads the `new_dependencies` of the plan's `## Footprint` block (an empty list gives a record with no packages) and writes the versioned screen record to the assess job's `.mintswarm/job/outputs/screen.json`, which, like `floor.json`, is not committed. A package it cannot screen in full is recorded as `unscreened` with its reason, never as clean, and the script still exits 0. An exit of 2 (bad arguments, an unreadable plan or footprint, an unreadable `popular-names.json`, or a record it cannot write) means there is no usable record: the session stops the plan's approval until the cause is fixed and the screen reruns. Nothing in the assess job's `inputs/` gets the record.
+
 ## Outcomes
 
 - **Exit 2 or no record** counts as `human`. Exit 0 counts as `auto` only together with a `decision.json` whose `decision` is `auto`.

@@ -21,8 +21,12 @@ a failed advisory detail, an invalid name and an unsupported manifest give
 querybatch, no proxy, no redirect, no Authorization header, the response
 cap, the crates.io pause); a fake `AdvisorySource` in place of `OsvSource`;
 the CLI (exit codes, the record shape, the same output on two runs); the
-typosquat list; Python 3.9 syntax, standard-library imports, and an AST rule
-that `request` is the only function in screen.py that opens a URL and that
+typosquat list, with the known neighbours of popular names (poem, tide, curl,
+x25519-dalek, k256, gloo, gix, cbor, preact, nuxt, msw, h3) not flagged;
+Python 3.9 syntax, standard-library imports, and AST rules that `request`
+is the only function in screen.py that opens a URL, that every
+`subprocess.run` in it has a literal list argv starting with "yq", that
+`getattr`, `__import__` and `importlib` appear only in `load`, and that
 advisories.py opens none.
 
 Prints one `ok` or `FAIL` line per check, then a count, and exits 0 only
@@ -58,7 +62,24 @@ NETWORK = frozenset(
     | {"fetch", "fetch_json", "socket", "ssl", "http"}
 )
 TODAY = datetime.date(2024, 1, 1)
-NAMES = {"crates.io": ["serde_json", "tokio"], "npm": ["@types/node", "lodash"]}
+NAMES = {
+    "crates.io": {"popular": ["serde_json", "tokio"], "exempt": []},
+    "npm": {"popular": ["@types/node", "lodash"], "exempt": []},
+}
+# Legitimate packages one or two edits from a popular name, each with the name it is near.
+NEIGHBOURS = {
+    "crates.io": {
+        "poem": "pem",
+        "tide": "time",
+        "curl": "url",
+        "x25519-dalek": "ed25519-dalek",
+        "k256": "p256",
+        "gloo": "glob",
+        "gix": "nix",
+        "cbor": "ctor",
+    },
+    "npm": {"msw": "ms", "nuxt": "next", "preact": "react", "h3": "he"},
+}
 
 
 class SelfTest:
@@ -622,12 +643,35 @@ def disqualifiers(fx: Fixture):
         t("serde-jsonn2", "crates.io", ["serde-json"]) == "serde-json",
     )
     T.check("typosquat rule: two edits too many for short names", t("tokxyo", "crates.io", ["tokio"]) is None)
+    T.check("typosquat rule: a short name is not close by one substitution", t("tide", "crates.io", ["time"]) is None)
+    T.check("typosquat rule: a short name is not close by one deletion", t("poem", "crates.io", ["pem"]) is None)
+    T.check("typosquat rule: a short name is not close by one insertion", t("msw", "npm", ["ms"]) is None)
+    T.check("typosquat rule: a short name is close by a transposition", t("tmie", "crates.io", ["time"]) == "time")
+    T.check("typosquat rule: a name of five is close by one edit", t("serdr", "crates.io", ["serde"]) == "serde")
+    T.check("typosquat rule: exempt names are never flagged", t("tokoi", "crates.io", ["tokio"], ["tokoi"]) is None)
+    T.check("typosquat rule: exempt names are never imitated", t("tokoi", "crates.io", [], ["tokio"]) is None)
+    T.check(
+        "typosquat rule: a scope an exempt name uses is not flagged",
+        t("@tipes/other", "npm", ["@types/node"], ["@tipes/util"]) is None,
+    )
     T.check("typosquat rule: transposition is one edit", S.distance("tokio", "tokoi", 2) == 1)
     T.check(
         "typosquat rule: npm keeps _ and - apart", t("string-decoder", "npm", ["string_decoder"]) == "string_decoder"
     )
     T.check("typosquat rule: case is ignored", t("Tokio", "crates.io", ["tokio"]) is None)
     T.check("typosquat rule: an unrelated name", t("quantum-widget", "crates.io", ["tokio", "serde"]) is None)
+    names = S.popular_names()
+    for ecosystem, pairs in NEIGHBOURS.items():
+        for name, near in pairs.items():
+            T.check(
+                f"typosquat list: {near} is popular and {name} is not flagged",
+                near in names[ecosystem]["popular"]
+                and t(name, ecosystem, names[ecosystem]["popular"], names[ecosystem]["exempt"]) is None,
+            )
+            T.check(
+                f"typosquat rule: {name} flagged without the list's exemption",
+                len(name) < 5 or t(name, ecosystem, names[ecosystem]["popular"]) == near,
+            )
     record = run(fx, [cargo("vulncrate"), cargo("tokoi"), npm("old-npm"), cargo("yankedcrate")])
     T.check(
         "disqualifiers: only the four kinds",
@@ -953,16 +997,28 @@ def cli(fx: Fixture, tmp: Path):
 
 def names_list():
     data = json.loads((HERE / "popular-names.json").read_text(encoding="utf-8"))
-    T.check("names: note, crates.io and npm only", set(data) == {"note", "crates.io", "npm"}, str(sorted(data)))
+    T.check("names: note, popular and exempt only", set(data) == {"note", "popular", "exempt"}, str(sorted(data)))
     T.check("names: the note says how it was built", isinstance(data.get("note"), str) and "lock" in data["note"])
+    for kind, least in (("popular", 300), ("exempt", 1)):
+        group = data.get(kind) if isinstance(data.get(kind), dict) else {}
+        T.check(f"names: {kind} has crates.io and npm only", set(group) == {"crates.io", "npm"}, str(sorted(group)))
+        for ecosystem in ("crates.io", "npm"):
+            names = group.get(ecosystem, [])
+            T.check(
+                f"names: {kind} {ecosystem} sorted and de-duplicated",
+                names == sorted(set(names)) and len(names) >= least,
+                str(len(names)),
+            )
     for ecosystem in ("crates.io", "npm"):
-        names = data.get(ecosystem, [])
-        T.check(
-            f"names: {ecosystem} sorted and de-duplicated",
-            names == sorted(set(names)) and len(names) >= 300,
-            str(len(names)),
-        )
-    T.check("names: loaded by the screen", S.popular_names()["npm"] == data["npm"])
+        both = set(data["popular"][ecosystem]) & set(data["exempt"][ecosystem])
+        T.check(f"names: {ecosystem} popular and exempt do not overlap", not both, str(sorted(both)))
+        for name in NEIGHBOURS[ecosystem]:
+            T.check(f"names: {name} is exempt", name in data["exempt"][ecosystem])
+    loaded = S.popular_names()
+    T.check(
+        "names: loaded by the screen",
+        all(loaded[e] == {k: data[k][e] for k in ("popular", "exempt")} for e in ("crates.io", "npm")),
+    )
 
 
 def inside(tree: ast.AST) -> dict:
@@ -989,12 +1045,54 @@ def network_names(tree: ast.AST) -> list:
     return found
 
 
+def yq_argv(node: ast.AST) -> bool:
+    """Whether node is a subprocess.run call whose argv is a literal list starting with "yq"."""
+    if not node.args or not isinstance(node.args[0], ast.List) or not node.args[0].elts:
+        return False
+    first = node.args[0].elts[0]
+    return isinstance(first, ast.Constant) and first.value == "yq"
+
+
+def side_doors(tree: ast.AST, owner: dict):
+    """The rules that close screen.py's ways round request: subprocess for yq only, no dynamic lookup outside load."""
+    aliased = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in {"subprocess", "importlib"}:
+            aliased.append(f"from {node.module}")
+        elif isinstance(node, ast.Import):
+            aliased.extend(
+                a.name for a in node.names if a.asname and a.name.split(".")[0] in {"subprocess", "importlib"}
+            )
+    T.check("ast: subprocess and importlib imported only by their own names", not aliased, str(aliased))
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    runs, stray = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "subprocess":
+            parent = parents.get(node)
+            attr = parent.attr if isinstance(parent, ast.Attribute) else None
+            if attr == "run" and isinstance(parents.get(parent), ast.Call) and parents[parent].func is parent:
+                runs.append(parents[parent])
+            elif attr != "SubprocessError":
+                stray.append(f"{owner[node] or '<module>'}:{node.lineno}")
+    T.check("ast: subprocess is used only for run and SubprocessError", not stray, str(stray))
+    T.check("ast: screen.py runs a subprocess", bool(runs))
+    bad = [f"{owner[n] or '<module>'}:{n.lineno}" for n in runs if not yq_argv(n)]
+    T.check('ast: every subprocess.run has a literal list argv starting with "yq"', not bad, str(bad))
+    dynamic = sorted(
+        f"{owner[n] or '<module>'}:{n.lineno}"
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and n.id in {"getattr", "__import__", "importlib"} and owner[n] != "load"
+    )
+    T.check("ast: getattr, __import__ and importlib only in load", not dynamic, str(dynamic))
+
+
 def source_rules():
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"), feature_version=(3, 9))
     owner = inside(tree)
     outside = sorted({owner[n] or "<module>" for n in network_names(tree) if owner[n] != "request"})
     T.check("ast: request is the only function in screen.py that opens a URL", not outside, str(outside))
     T.check("ast: request opens through the opener", any(owner[n] == "request" for n in network_names(tree)))
+    side_doors(tree, owner)
     tree = ast.parse(ADVISORIES.read_text(encoding="utf-8"), feature_version=(3, 9))
     imports = set()
     for node in ast.walk(tree):
