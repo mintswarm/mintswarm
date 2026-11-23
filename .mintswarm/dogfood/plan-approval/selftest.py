@@ -39,7 +39,8 @@ Checks:
   and each limit clean at its value and a hit one over; tests/** and
   xtask/** in the tooling component are clean on both require-human
   rules, and .github/workflows/**, also differently cased, is a
-  `require-human-paths` hit;
+  `require-human-paths` hit; crates/rules/** and crates/github/** have a
+  component, in domain and runner;
 - footprint unusable: missing, misplaced, malformed and badly shaped
   footprints, and each bad path form, are `footprint` hits with the
   footprint rules not evaluated and the document rules evaluated;
@@ -721,6 +722,17 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     )
     expect_hit(r, "web/index.html", base(files=["web/index.html"]), "component-scope")
     expect_clean(r, "Cargo.toml", base(files=["Cargo.toml"]), ["component-scope", "no-component"])
+    expect_clean(
+        r,
+        "crates/rules and crates/github",
+        base(files=["crates/rules/src/lib.rs", "crates/github/src/lib.rs"]),
+        ["no-component"],
+    )
+    scope_rules = ["component-scope", "no-component"]
+    expect_clean(r, "crates/rules/src/lib.rs", base(files=["crates/rules/src/lib.rs"]), scope_rules, component="domain")
+    expect_clean(
+        r, "crates/github/src/lib.rs", base(files=["crates/github/src/lib.rs"]), scope_rules, component="runner"
+    )
     expect_clean(r, "LICENSE.md", base(files=["LICENSE.md"]), ["component-scope", "no-component"])
     expect_hit(r, "Makefile", base(files=["Makefile"]), "no-component")
 
