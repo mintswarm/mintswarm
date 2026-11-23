@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Must match the yq the dogfood scripts are developed and probed against.
+  YQ_VERSION: v4.45.1
+  YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
+
 jobs:
   matrix:
     name: gates-matrix
@@ -16,6 +21,19 @@ jobs:
       gates: ${{ steps.read.outputs.gates }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: yq ${{ env.YQ_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/yq" \
+            "https://github.com/mikefarah/yq/releases/download/$YQ_VERSION/yq_linux_amd64"
+          echo "$YQ_SHA256  $RUNNER_TEMP/bin/yq" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/yq"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/yq" --version
       - name: Read gates.run
         id: read
         shell: bash
@@ -50,6 +68,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+      - name: yq ${{ env.YQ_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/yq" \
+            "https://github.com/mikefarah/yq/releases/download/$YQ_VERSION/yq_linux_amd64"
+          echo "$YQ_SHA256  $RUNNER_TEMP/bin/yq" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/yq"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/yq" --version
       - name: Rust toolchain from rust-toolchain.toml
         if: hashFiles('rust-toolchain.toml') != ''
         run: |
