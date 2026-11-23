@@ -139,14 +139,15 @@ ensure_ascii off):
   steers         sorted by time, kind and url, {kind, author, time,
                  edited_at, url, via}; see below
   review_requests
-                 the logins in the saved pull's `requested_reviewers`,
-                 deduplicated and sorted, [] when there are none: users
-                 whose review is requested and not yet given, so an
-                 earlier review by them is not current (GitHub drops a
-                 user from the list when they submit a review). Team
-                 requests (`requested_teams`) are not read. A missing
-                 field, one that is not a list, or an entry without a
-                 string `login` is unusable input
+                 the logins in the saved pull's `requested_reviewers`
+                 that also have an APPROVED or CHANGES_REQUESTED review
+                 in `reviews`, deduplicated and sorted, [] when there
+                 are none: review re-requested and not yet given, so
+                 their earlier review is not current (GitHub drops a
+                 user from the list when they submit a review); a first
+                 request is not listed. Team requests are not read. A
+                 missing field, one that is not a list, or an entry
+                 without a string `login` is unusable input
   approval       {approver, approved_at, approval_ref (the URL, else the
                  id, else null)}, then `decision` {path, sha256, record}
                  only when --decision is given (the record is decision.py's
@@ -206,6 +207,7 @@ FACTS = Path(".mintswarm/job/inputs/landing/facts.json")
 RESPONSES = Path(".mintswarm/job/landing/responses")
 TOOL = "mintswarm-landing-facts"
 VERSION = 3
+REVIEWED = ("APPROVED", "CHANGES_REQUESTED")  # review states a re-request makes not current
 KEEP_TOOL = "mintswarm-keep-round"
 KEEP_VERSION = 2
 FLOOR_TOOL = "mintswarm-plan-floor"
@@ -525,7 +527,8 @@ def collect_review_requests(responses: Responses) -> list:
         if not isinstance(reviewer, dict) or not isinstance(reviewer.get("login"), str):
             raise InputError(f"a requested reviewer without a login: {reviewer!r}")
         found.add(reviewer["login"])
-    return sorted(found)
+    reviewed = {author(r)[0] for r in responses.listing("reviews", None) if r.get("state") in REVIEWED}
+    return sorted(found & reviewed)
 
 
 def collect_checks(responses: Responses) -> list:

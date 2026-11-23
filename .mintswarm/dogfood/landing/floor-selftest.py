@@ -50,7 +50,7 @@ Checks:
   stale earlier rounds followed by current passing ones are clean, `steers`
   (none is clean; one and two steers,
   named by author and URL), `review-requests` (none is clean; one and two
-  pending, one reason per login), and all four of gates, checks, review and
+  re-requested, one reason per login), and all four of gates, checks, review and
   steers at once, also with an unusable footprint;
 - submodules: a gitlink hidden by a worktree `.gitmodules` `ignore = all` is
   still a changed and added path, and every gitlink is unmeasurable for
@@ -83,10 +83,10 @@ Checks:
   floor.py reads, and facts written by the real `collect-facts.py
   assemble`, from saved responses and version 2 kept rounds made here, in a
   runner-state directory outside the repository, are read by
-  the floor: clean ones are clean, and a CTRF test without a name, a
-  failed check run, a human comment after the approval and a pending
-  review request give `gates` (an unnamed gate), `checks`, `steers` and
-  `review-requests` hits;
+  the floor: clean ones, with a first review request pending, are clean,
+  and a CTRF test without a name, a failed check run, a human comment
+  after the approval and a request re-made after a change request give
+  `gates` (an unnamed gate), `checks`, `steers` and `review-requests` hits;
 - the plan floor's own verdict is left alone, and a copy of both scripts
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
@@ -1600,7 +1600,7 @@ def check_facts_rules(r: Runner) -> None:
 
     # review-requests
     expect("review-requests: none", {"review_requests": []}, {})
-    pending = "review requested from {} is pending; earlier reviews are not current"
+    pending = "review re-requested from {} is pending; their earlier review is not current"
     expect("review-requests: one pending", {"review_requests": ["zmij"]}, {"review-requests": pending.format("zmij")})
     _, verdict = expect(
         "review-requests: two pending",
@@ -1691,30 +1691,23 @@ def kept_round(rounds: Path, kind: str, number: int, files: dict, head: str) -> 
 
 
 def collected_facts(
-    sb: Sandbox,
-    name: str,
-    base: str,
-    head: str,
-    tests: list,
-    check_runs: list,
-    pr_comments: list,
-    kept_at: str,
-    requested: list,
+    sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list, pr_comments: list, kept_at: str
 ) -> tuple:
     """Run collect-facts.py assemble on saved responses and rounds kept at `kept_at` in runner state outside
-    the repository; return (exit, facts bytes or None)."""
+    the repository; return (exit, facts bytes or None). The PR has a pending review request from zmij, who has
+    already requested changes only in the `hits` case."""
     responses = sb.tmp / f"collected-{name}" / "responses"
     rounds = sb.tmp / "runner-state" / f"collected-{name}" / "rounds"
     write_json(responses / "request.json", {"pr": 1, "issue": 2, "head": head, "fetched_at": "2026-01-03T00:00:00Z"})
-    write_json(
-        responses / "pull.1.json",
-        {"number": 1, "head": {"sha": head}, "base": {"sha": base}, "requested_reviewers": requested},
-    )
+    pull = {"number": 1, "head": {"sha": head}, "base": {"sha": base}, "requested_reviewers": [{"login": "zmij"}]}
+    write_json(responses / "pull.1.json", pull)
+    zmij = {"user": {"login": "zmij"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-01-01T00:00:00Z"}
+    zmij["html_url"] = "https://github.com/o/r/pull/1#pullrequestreview-1"
     write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
     write_json(responses / "status.1.json", {"statuses": []})
     for listing, items in (
         ("pr-comments", pr_comments),
-        ("reviews", []),
+        ("reviews", [zmij] if name == "hits" else []),
         ("review-comments", []),
         ("issue-comments", []),
     ):
@@ -1798,22 +1791,14 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
                 "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
                 "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
                 "https://github.com/o/r/pull/1#issuecomment-9",
-                "review-requests": "review requested from zmij is pending; earlier reviews are not current",
+                "review-requests": "review re-requested from zmij is pending; their earlier review is not current",
             },
         ),
     ]
     for name, tests, check_runs, comments, hits in cases:
         head = sb.child(base, appended("docs/guide.md", 1), f"collected {name}")
         proc, data = collected_facts(
-            sb,
-            name,
-            base,
-            head,
-            tests,
-            check_runs,
-            comments,
-            base if name == "stale" else head,
-            [{"login": "zmij"}] if name == "hits" else [],
+            sb, name, base, head, tests, check_runs, comments, base if name == "stale" else head
         )
         hits = {rule: reason.replace("{head}", head) for rule, reason in hits.items()}
         if not T.check(

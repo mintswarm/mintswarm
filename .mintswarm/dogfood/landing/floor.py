@@ -160,12 +160,11 @@ footprint's `files` plus each new dependency's `manifest`.
                              the head
   steers                     a steer is listed, each named with its kind,
                              author, time and URL
-  review-requests            a review is requested and not yet given:
-                             `review_requests` is not empty, each login
-                             named. GitHub drops a reviewer from the PR's
-                             requested_reviewers once they review, so while
-                             one is listed their earlier approval or change
-                             request is not current
+  review-requests            a review is re-requested and not yet given:
+                             `review_requests` (pending reviewers who have
+                             already approved or requested changes; a first
+                             request is not listed) is not empty, each login
+                             named; their earlier review is not current
 
 When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff or the facts
@@ -908,7 +907,7 @@ def facts_rules(facts: dict, base: str, head: str) -> list:
     rule(
         "review-requests",
         [
-            f"review requested from {login} is pending; earlier reviews are not current"
+            f"review re-requested from {login} is pending; their earlier review is not current"
             for login in facts["review_requests"]
         ],
     )

@@ -82,8 +82,9 @@ Checks:
   a review comment sharing the approval's id, bots without the marker,
   mintswarm-dev[bot] with the marker line, indented and inside a code
   fence, the marker mid-line, another bot with the marker, a pending
-  review, an inline review comment, a deleted user); review_requests from
-  the pull's requested_reviewers ([] for none, one login, two sorted, a
+  review, an inline review comment, a deleted user); review_requests, the
+  pull's requested_reviewers with an APPROVED or CHANGES_REQUESTED review
+  ([] for none, a first request and a COMMENTED reviewer, two sorted, a
   duplicate once) and exit 2 with no facts file when the field is missing,
   not a list or has an entry without a string login; every round with
   `commit` the head and `current` true; the approval with and without
@@ -1188,6 +1189,14 @@ def build_responses(head: str) -> dict:
             "body": "",
             "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3003",
         },
+        {
+            "id": 3004,
+            "user": user("alice"),
+            "state": "CHANGES_REQUESTED",
+            "submitted_at": at("11:20:00"),
+            "body": "",
+            "html_url": f"https://github.com/mintswarm/mintswarm/pull/{PR}#pullrequestreview-3004",
+        },
     ]
     review_comments = [
         {
@@ -1605,9 +1614,10 @@ def with_requested(sb: Sandbox, name: str, requested) -> Path:
 def review_requests_tests(sb: Sandbox, facts_review_requests) -> None:
     T.check("assemble: no pending review request gives []", facts_review_requests == [], str(facts_review_requests))
     cases = [
-        ("one pending reviewer", [{"login": "zmij", "type": "User"}], ["zmij"]),
-        ("two pending reviewers, sorted", [{"login": "zmij"}, {"login": "alice"}], ["alice", "zmij"]),
-        ("a reviewer listed twice, deduplicated", [{"login": "zmij"}, {"login": "zmij"}], ["zmij"]),
+        ("first request with no earlier review is clean", [{"login": "zmij", "type": "User"}], []),
+        ("a COMMENTED or PENDING review is not a re-request", [{"login": "bob"}], []),
+        ("two re-requested, sorted", [{"login": "zmij"}, {"login": "carol"}, {"login": "alice"}], ["alice", "carol"]),
+        ("a reviewer listed twice, deduplicated", [{"login": "carol"}, {"login": "carol"}], ["carol"]),
     ]
     for i, (name, requested, expected) in enumerate(cases):
         proc, facts = assemble(

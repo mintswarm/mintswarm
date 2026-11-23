@@ -22,7 +22,7 @@ You judge a change you did not make, against the plan that was approved for it. 
   - `gate_rounds`: in round order, `{round, commit, current, verdict, failed_tests, reason, files}`; `commit` is the commit the round judged and `current` whether it is `head`; `verdict` is `passed` or `failed`, the round's own, and a round whose `current` is `false` is not passed whatever its verdict; `files` the `{name, sha256}` list of the kept round.
   - `review_rounds`: in round order, `{round, commit, current, verdict, findings, files}`; `commit` and `current` as for gate rounds; `verdict` is `pass` or `changes_required`, `findings` the counts `{blocker, major, minor, nit}`.
   - `steers`: `{kind, author, time, edited_at, url, via}` per steer given after the plan's approval, with no bodies; `[]` when there are none.
-  - `review_requests`: the logins whose review is requested on the PR and not yet given, sorted; an earlier approval or change request by them is not current. `[]` when there are none.
+  - `review_requests`: the logins whose review is re-requested on the PR and not yet given, sorted: each has an earlier approval or change request, which is not current. A first request is not listed. `[]` when there are none.
   - `approval`: `approver`, `approved_at` and `approval_ref`; then, when present, `decision` (the plan-approval decision record, under `record`), `kickoff_floor` (the plan floor's verdict, under `record`) and `assessment` (the plan assessment's `risk`).
 - The kept rounds, a read-only copy of the runner's for you to read; each `round.json` holds the `head` the round judged:
   - `.mintswarm/job/inputs/rounds/gates-<n>/`: `round.json`, `gates.input.json`, and `gates.ctrf.json` and `gates.md` when the round produced them;
@@ -70,7 +70,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
-  - the pending review requests, by login, from `review_requests`; say so when there are none.
+  - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
 - **Approval:** the approver, time and reference, and the decision record, kickoff floor and assessment risk when present. It is reported only, and does not change the level except through the plan sha256 check.
 
 ## Rubric
@@ -81,7 +81,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - review passed in its first round: exactly one review round, verdict `pass`;
   - no gate failed and was then changed;
   - there is no steer: `steers` is `[]`;
-  - no review is pending: `review_requests` is `[]`;
+  - no review is re-requested: `review_requests` is `[]`;
   - every consistency check holds;
   - the latest gate round is `passed` and `current`;
   - every listed check concluded `success`;

@@ -197,7 +197,7 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
     bot-gh.sh api --method POST repos/{owner}/{repo}/pulls/<number>/requested_reviewers -f 'reviewers[]=<login>'
     ```
 
-    Then post one comment on the PR with the round's summary and the full URL of the address artefact, and assign the PR with `assign-approvers.py assign <number> pr --base <base commit>`, as in step 4. This step follows `CHANGES_REQUESTED` only, not a `COMMENTED` review. While the PR's `requested_reviewers` is not empty, the earlier approval or change request is not current: the PR is not merged, and the landing floor's `review-requests` rule is a hit.
+    Then post one comment on the PR with the round's summary and the full URL of the address artefact, and assign the PR with `assign-approvers.py assign <number> pr --base <base commit>`, as in step 4. This step follows `CHANGES_REQUESTED` only, not a `COMMENTED` review. While a re-requested reviewer is still in the PR's `requested_reviewers`, their earlier approval or change request is not current: the PR is not merged, and the landing floor's `review-requests` rule is a hit. A first request, from step 3, is not a re-request and does not make it a hit.
 
 A full URL is the `https://github.com/…` URL GitHub returned for the artifact or comment (its `html_url`), never `#N` or a relative link. `<base commit>` is the job's base commit, the one plan approval reads the config at; without `--base`, `assign` reads the local `origin/master`, which the session does not fetch. `release` removes every assignment the bot made on the item, whatever its reason, and leaves those a person made.
 
