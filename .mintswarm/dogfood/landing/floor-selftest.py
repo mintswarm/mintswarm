@@ -178,7 +178,7 @@ VERDICT_KEYS = [
     "not_evaluated",
 ]
 EXPECTED_LANDING = {
-    "mode": "always",
+    "mode": "shadow",
     "require_human": {
         "paths": [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     },
