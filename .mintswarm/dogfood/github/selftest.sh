@@ -21,7 +21,8 @@
 # backend (selection, round trips, put --confirm, the file backend's modes and
 # refusals, rotate and jwt through each); the bot identity include; push.sh
 # pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
-# resolution; assignment and release of approvers. Secrets and the manifest
+# resolution; assignment and release of approvers; re-classification of a split
+# issue and the parent check before children are filed. Secrets and the manifest
 # code must appear in no recorded argv, nothing may be left in TMPDIR, each
 # create adds only its own App's config to HOME, and .git/config stays
 # byte-identical across pushes. Every background process runs in its own
@@ -360,9 +361,13 @@ EOF
 cat > "$stubs/gh" <<'EOF'
 #!/usr/bin/env python3
 # Stub of gh: records argv, the environment it was given and stdin for --input -.
-# Issues, their assignees and events are kept in issues.json in the stub state:
-# {"<n>": {"assignees": [...], "events": [...], "unassignable": [...]}}; a PR's
-# reviews, served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
+# Issues, their assignees, events, type and comments are kept in issues.json in
+# the stub state: {"<n>": {"assignees": [...], "events": [...], "unassignable":
+# [...], "type": "<name>" or null, "comments": [...], "untypeable": bool,
+# "comment_failures": n}}; a PATCH of the issue sets its type unless it is
+# untypeable; a comment POST fails while comment_failures is above 0, counting
+# it down; a PR's reviews,
+# served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
@@ -384,15 +389,16 @@ if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/review
 elif argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
     print(json.dumps({"number": 7, "requested_reviewers": [{"login": r} for r in reviewers]}))
-elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events)?", a) for a in argv):
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments)?", a) for a in argv):
     path = next(a for a in argv if a.startswith("repos/"))
     n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
     method = opt(argv, "--method") or "GET"
     store = os.path.join(STATE, "issues.json")
     issues = json.load(open(store)) if os.path.exists(store) else {}
     item = issues.setdefault(n, {})
-    for k in ("assignees", "events", "unassignable"):
+    for k in ("assignees", "events", "unassignable", "comments"):
         item.setdefault(k, [])
+    item.setdefault("type", None)
     bot = {"login": "mintswarm-dev[bot]"}
     app = {"slug": "mintswarm-dev"}
     if tail == "/assignees" and method in ("POST", "DELETE"):
@@ -406,10 +412,28 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
                 item["events"].append({"event": "unassigned", "actor": bot, "assignee": {"login": login},
                                        "assigner": bot, "performed_via_github_app": app})
         json.dump(issues, open(store, "w"))
-    if tail == "/events":
+    if tail == "" and method == "PATCH":
+        if not item.get("untypeable"):
+            item["type"] = json.loads(data)["type"]
+        json.dump(issues, open(store, "w"))
+    if tail == "/comments" and method == "POST" and item.get("comment_failures", 0) > 0:
+        item["comment_failures"] -= 1
+        json.dump(issues, open(store, "w"))
+        print("gh: HTTP 502: Bad Gateway", file=sys.stderr)
+        sys.exit(1)
+    if tail == "/comments" and method == "POST":
+        url = "https://github.com/mintswarm/mintswarm/issues/%s#issuecomment-%d" % (n, 100 + len(item["comments"]))
+        comment = {"body": json.loads(data)["body"], "html_url": url}
+        item["comments"].append(comment)
+        json.dump(issues, open(store, "w"))
+        out = comment
+    elif tail == "/comments":
+        out = [item["comments"]] if "--slurp" in argv else item["comments"]
+    elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
     else:
-        out = {"number": int(n), "assignees": [{"login": a} for a in item["assignees"]]}
+        out = {"number": int(n), "assignees": [{"login": a} for a in item["assignees"]],
+               "type": {"name": item["type"]} if item["type"] else None}
     print(json.dumps(out))
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
@@ -1958,6 +1982,171 @@ check "approvers assigned in another case count as assigned" eq "$out" "nothing 
 check "and nothing is posted" eq "$(posts)" "$before"
 out="$(aa release 16 pr 2>/dev/null)" || out="(failed)"
 check "release matches events without regard to case" eq "$out" "nothing to release"
+
+# --- reclassify.py -----------------------------------------------------------
+
+C="$here/reclassify.py"
+check "reclassify.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$C" "$sandbox/reclassify.pyc"
+rc() { python3 -I "$C" "$@"; }
+writes() { jq -c 'select(.cmd == "gh") | .argv | select(index("PATCH") or index("POST"))' "$argv_log" | wc -l | tr -d ' '; }
+issue_type() { jq -r --arg n "$1" '.[$n].type // "null"' "$MSW_STUB_STATE/issues.json"; }
+comments() { jq -r --arg n "$1" '.[$n].comments // [] | length' "$MSW_STUB_STATE/issues.json"; }
+comment_body() { jq -r --arg n "$1" '.[$n].comments[0].body' "$MSW_STUB_STATE/issues.json"; }
+analysis() {  # analysis FILE JSON: an analysis whose ## Split holds JSON
+  printf '# Analysis: x\n\n## Components\n\nagents, docs\n\n## Split\n\n```json\n%s\n```\n\n## Approaches\n\n```json\n{"not": "this"}\n```\n' \
+    "$2" > "$1"
+}
+URL=https://github.com/mintswarm/mintswarm/issues/21#artifact-1
+FINDING="It spans agents and docs."
+analysis "$sandbox/split.md" '{"split": {"proposed": true, "reason": "components", "components": ["agents", "docs"], "finding": "It spans agents and docs."}}'
+analysis "$sandbox/nosplit.md" '{"split": {"proposed": false, "reason": "none", "components": ["agents"], "finding": ""}}'
+analysis "$sandbox/broken.md" '{"split": {"proposed": true,'
+printf '# Analysis: x\n\n## Components\n\nagents\n' > "$sandbox/missing.md"
+cat > "$sandbox/decoy.md" <<'MD'
+# Analysis: x
+
+## Existing context
+
+The analyse template ends with:
+
+````markdown
+## Split
+
+```json
+{"split": {"proposed": true, "reason": "other", "components": [], "finding": "decoy"}}
+```
+````
+
+~~~
+## Split
+~~~
+
+## Split
+
+```json
+{"split": {"proposed": false, "reason": "none", "components": ["agents"], "finding": ""}}
+```
+
+## Approaches
+
+```json
+{"not": "this"}
+```
+MD
+epic_base="$(commit_config 'tracker: {kinds: {design: {issue_type: Design}, plan: {issue_type: Epic}, implementation: {issue_type: Task}}}')"
+
+seed 21 '{"assignees": [], "events": [], "type": "Task"}'
+before="$(writes)"
+out="$(rc split 21 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "split re-classifies a Task and prints kind, state, comment and package" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+comment: https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100
+package: Re-classified from Task to Plan: $FINDING (https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100)"
+check "split PATCHes the issue through bot-gh.sh" \
+  gh_argv_seen '["api","--method","PATCH","repos/{owner}/{repo}/issues/21","--input","-"]'
+check "split sends the plan type on stdin" present '{"type": "Plan"}' "$MSW_STUB_STATE/stdin-gh.log"
+check "issue 21 is now a Plan" eq "$(issue_type 21)" "Plan"
+check "split posts one comment and makes two writes in all" eq "$(comments 21) $(( $(writes) - before ))" "1 2"
+check "the comment holds the marker" present "<!-- mintswarm: reclassified -->" <(comment_body 21)
+check "the comment names the old and new types" present 'from `Task` to `Plan`' <(comment_body 21)
+check "the comment holds the finding" present "$FINDING" <(comment_body 21)
+check "the comment holds the analysis URL" present "$URL" <(comment_body 21)
+check "the comment names the components" present '`agents`, `docs`' <(comment_body 21)
+
+before="$(writes)"
+out="$(rc split 21 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "a re-run on the Plan issue prints the four lines with the existing comment's URL" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+comment: https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100
+package: Re-classified from Task to Plan: $FINDING (https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100)"
+check "and sends no PATCH and no second comment" eq "$(( $(writes) - before )) $(comments 21)" "0 1"
+check "it lists the issue's comments, all pages" \
+  gh_argv_seen '["api","--paginate","--slurp","repos/{owner}/{repo}/issues/21/comments"]'
+
+seed 27 '{"assignees": [], "events": [], "type": "Task", "comment_failures": 1}'
+comment_fails() {  # exit 1 when the comment POST fails, after the type has changed
+  local rc=0
+  rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" >"$sandbox/rc.out" 2>&1 || rc=$?
+  cat "$sandbox/rc.out"
+  eq "$rc" 1
+}
+check "a failed comment POST fails split with 1" comment_fails
+check "and leaves the issue a Plan with no comment" eq "$(issue_type 27) $(comments 27)" "Plan 0"
+before="$(writes)"
+out="$(rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "a re-run posts the missing comment and prints all four lines" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+comment: https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100
+package: Re-classified from Task to Plan: $FINDING (https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100)"
+check "with exactly one comment, one write and no PATCH" eq "$(comments 27) $(( $(writes) - before ))" "1 1"
+check "the late comment holds the marker and names Task to Plan" \
+  present 'from `Task` to `Plan`' <(comment_body 27)
+check "and the marker" present "<!-- mintswarm: reclassified -->" <(comment_body 27)
+before="$(writes)"
+out="$(rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "a further re-run writes nothing and reuses the comment" \
+  eq "$(comments 27) $(( $(writes) - before )) $(sed -n 3p <<<"$out")" \
+  "1 0 comment: https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100"
+
+seed 22 '{"assignees": [], "events": [], "type": "Task"}'
+before="$(writes)"
+out="$(rc split 22 --analysis "$sandbox/nosplit.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "no proposed split prints kind: implementation" eq "$out" "kind: implementation"
+check "and writes nothing" eq "$(( $(writes) - before ))" "0"
+check "issue 22 stays a Task" eq "$(issue_type 22)" "Task"
+
+out="$(rc split 22 --analysis "$sandbox/decoy.md" --analysis-url "$URL" --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a fenced ## Split decoy is ignored" eq "$out" "kind: implementation"
+check "a missing ## Split section exits 2" exits_2 rc split 22 --analysis "$sandbox/missing.md" --analysis-url "$URL" --base "$real_base"
+check "broken json in ## Split exits 2" exits_2 rc split 22 --analysis "$sandbox/broken.md" --analysis-url "$URL" --base "$real_base"
+check "an analysis URL not on github.com exits 2" \
+  exits_2 rc split 22 --analysis "$sandbox/split.md" --analysis-url https://example.com/a --base "$real_base"
+seed 23 '{"assignees": [], "events": [], "type": "Design"}'
+before="$(writes)"
+check "a Design issue with a proposed split exits 2" \
+  exits_2 rc split 23 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base"
+check "and nothing is written for any of them" eq "$(( $(writes) - before )) $(issue_type 22) $(issue_type 23)" "0 Task Design"
+
+seed 24 '{"assignees": [], "events": [], "type": "Task", "untypeable": true}'
+split_untypeable() {  # exit 1 when GitHub does not take the type, with no comment
+  local rc=0
+  rc split 24 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" >"$sandbox/rc.out" 2>&1 || rc=$?
+  cat "$sandbox/rc.out"
+  eq "$rc" 1 && grep -qF "did not set #24's type to Plan" "$sandbox/rc.out"
+}
+check "an issue GitHub does not re-type fails split with 1" split_untypeable
+check "and gets no comment" eq "$(comments 24)" "0"
+
+seed 25 '{"assignees": [], "events": [], "type": "Task"}'
+before="$(writes)"
+out="$(rc split 25 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" --dry-run 2>/dev/null)" || out="(failed)"
+check "split --dry-run prints kind, state and package" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+package: Re-classified from Task to Plan: $FINDING"
+check "and writes nothing" eq "$(( $(writes) - before )) $(issue_type 25) $(comments 25)" "0 Task 0"
+
+seed 26 '{"assignees": [], "events": [], "type": "Task"}'
+rc split 26 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$epic_base" >/dev/null 2>&1 || true
+check "the plan type comes from the config at the base and goes into the PATCH body" \
+  present '{"type": "Epic"}' "$MSW_STUB_STATE/stdin-gh.log"
+check "and into the comment" present 'from `Task` to `Epic`' <(comment_body 26)
+check "issue 26 is now an Epic" eq "$(issue_type 26)" "Epic"
+
+seed 31 '{"assignees": [], "events": [], "type": "Plan"}'
+seed 32 '{"assignees": [], "events": [], "type": "Design"}'
+seed 33 '{"assignees": [], "events": [], "type": "Task"}'
+seed 34 '{"assignees": [], "events": []}'
+check "check-parent accepts a Plan parent" rc check-parent 31 --base "$real_base"
+check "check-parent accepts a Design parent" rc check-parent 32 --base "$real_base"
+check "check-parent refuses a Task parent with 1" fails_saying \
+  "refusing to file children under #33: type Task is neither Plan nor Design" rc check-parent 33 --base "$real_base"
+check "check-parent refuses an untyped parent" fails_saying \
+  "refusing to file children under #34: type none is neither Plan nor Design" rc check-parent 34 --base "$real_base"
+refused_with_1() { local rc=0; rc check-parent 33 --base "$real_base" >/dev/null 2>&1 || rc=$?; eq "$rc" 1; }
+check "the refusal exits 1" refused_with_1
+check "check-parent with a bad number exits 2" exits_2 rc check-parent 0 --base "$real_base"
 
 # --- summary -----------------------------------------------------------------
 
