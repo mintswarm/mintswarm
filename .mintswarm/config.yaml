@@ -93,6 +93,9 @@ pipeline:
     require_human:                   # any changed path that matches sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md"]
     footprint: { lines_factor: 1.5 } # the diff may count up to estimated_lines × lines_factor, rounded down
+  # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
+  dependencies:
+    review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
   review:
     max_rounds: 3
     reviewers: [zmij]                # default reviewers of a PR; see components above
@@ -124,6 +127,8 @@ gates:
       command: "bash .mintswarm/dogfood/github/selftest.sh"
     - name: readiness-selftest
       command: "python3 .mintswarm/dogfood/readiness/selftest.py"
+    - name: dependencies-selftest
+      command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
