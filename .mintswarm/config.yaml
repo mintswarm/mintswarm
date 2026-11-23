@@ -29,13 +29,13 @@ components:
     paths: ["api/**", "crates/proto/**"]
   domain:
     description: "shared model and configuration types used by control plane and runner"
-    paths: ["crates/domain/**", "crates/config/**", "crates/rules/**"]
+    paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
     paths: ["crates/core/**", "crates/server/**"]
   runner:
     description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
-    paths: ["crates/runner/**", "crates/github/**", "defaults/probes/**", "defaults/lsp/**"]
+    paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
   console-mcp:
     description: "console MCP server used from people's own agent sessions"
     paths: ["crates/console-mcp/**"]
