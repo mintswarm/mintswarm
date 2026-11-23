@@ -39,7 +39,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 11. Open the plan with a `## TL;DR` section, right after the summary line and before `## Approach`, for the maintainer who reviews it:
     - It holds three to six `- ` bullets and nothing else. Together they name what changes (files or areas), the approach in one line, what the plan deliberately leaves out, and what the maintainer must do or decide. The maintainer bullet is always there; when nothing but approval is needed, it says approval only.
     - It restates the plan: it adds no step, file or decision that the rest of the plan does not hold.
-    - The session posts it unchanged as a comment on the issue, so it holds no `@` mention, URL, Markdown link, HTML, heading or fenced block. Write names, paths and issue numbers in backticks.
+    - The session posts it unchanged as a comment on the issue, and posts only a link to the plan instead if the section breaks this rule. Each bullet is one line, with no continuation lines. Outside inline code spans it holds no `@`, HTML, Markdown link or bare GitHub reference (`#N`, `owner/repo#N`, `GH-N`, a full commit SHA); nowhere, not even in a code span, does it hold a URL. Write names, paths, issue and PR numbers and commits in backticks.
 
 ## Footprint
 

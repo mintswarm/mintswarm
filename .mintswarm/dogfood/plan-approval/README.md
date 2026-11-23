@@ -15,7 +15,13 @@ Both layers run in every mode, so a disagreement between them, or with the maint
 
 After the plan stage returns a plan, in this order:
 
-1. **Post the TL;DR.** Once the plan artifact is published, post one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). This is done in every mode and for every published plan, revisions included. The comment holds a heading line naming the plan's TL;DR, the bullets of the plan's `## TL;DR` section unchanged, and the full `html_url` GitHub returned for the plan artifact. If the section is missing, or holds an `@` mention, URL, Markdown link, HTML, heading or fenced block (rule 11 of `.mintswarm/stages/plan.md`), the comment says instead that the plan has no usable TL;DR and links only the plan artifact; the plan's text is then not posted.
+1. **Post the TL;DR.** Once the plan artifact is published, post one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). This is done in every mode and for every published plan, revisions included. The comment holds a heading line naming the plan's TL;DR, the section's bullets unchanged, and the full `html_url` GitHub returned for the plan artifact. The section is the lines after the plan's first `## TL;DR` line up to the next line starting with `## `; it must come right after the title and summary line (rule 11 of `.mintswarm/stages/plan.md`). Ignoring blank lines, it is usable only when all of these hold:
+   - it has three to six lines, and each starts with `- `; anything else, such as prose, an indented continuation line, a nested bullet, a heading or a fence line, makes it unusable, and nothing is dropped or repaired;
+   - every line has an even number of backticks, which pair up into inline code spans;
+   - outside those code spans, no line holds `@`, `<`, `>`, `](`, a bare GitHub reference (`#` followed by a digit, `owner/repo#N`, `GH-` followed by a digit) or a run of 40 hexadecimal characters; text inside a code span is exempt from these checks;
+   - no line holds a URL (`://` or `www.`), inside a code span or not.
+
+   Otherwise the comment says instead that the plan has no usable TL;DR and links only the plan artifact; the plan's text is then not posted.
 2. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md` and `.mintswarm/job/inputs/artefacts/analysis.md`. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
 3. **Run the floor** in that job's worktree, on that file and the job's issue document and analysis, with `--base` at the job's base commit:
 
