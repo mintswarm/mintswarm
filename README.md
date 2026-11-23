@@ -1,6 +1,6 @@
 # mintswarm
 
-mintswarm turns tickets into reviewed pull requests. You shape an idea into a design; runners on your own machines analyse it and decompose it into tickets, then carry each implementation ticket through analyse, plan and implement, and run its gates; each plan is approved by you or, where you allow it, by mintswarm, always or only when it judges the plan low-risk; an independent reviewer checks the result; you approve the PR.
+mintswarm turns tickets into reviewed pull requests. You shape an idea into a design; runners on your own machines analyse it and decompose it into tickets, then carry each implementation ticket through analyse, plan and implement, and run its gates; each plan is approved by you or, where you allow it, by mintswarm, always or only when its confidence that the plan is safe to approve reaches the project's threshold (`pipeline.plan_approval.min_confidence`); an independent reviewer checks the result; you approve the PR.
 
 It is built first for a developer or small team running several projects on one AI subscription:
 

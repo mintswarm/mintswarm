@@ -8,6 +8,7 @@ mintswarm/
 ├── Cargo.lock
 ├── rust-toolchain.toml     # pinned toolchain + rustfmt, clippy
 ├── rustfmt.toml
+├── clippy.toml             # clippy settings for the workspace
 ├── deny.toml               # cargo-deny: licences, advisories, duplicates
 ├── compose.yaml            # development: Postgres; profile `image` builds and runs the local image
 ├── .dockerignore           # build context is the repo root
@@ -56,6 +57,11 @@ mintswarm/
 │   ├── pnpm-workspace.yaml
 │   ├── pnpm-lock.yaml
 │   ├── .node-version
+│   ├── tsconfig.json       # shared compiler options
+│   ├── eslint.config.mjs   # lint config
+│   ├── eslint.extra.config.mjs
+│   ├── .prettierrc.json    # formatter settings
+│   ├── .prettierignore
 │   ├── apps/
 │   │   └── ui/             # React + Vite; builds static files for the image
 │   └── packages/
@@ -84,10 +90,11 @@ mintswarm/
 │
 ├── docs/
 │   ├── architecture/       # how the system is built, as it stands now
+│   ├── conventions/        # Rust, TypeScript and React conventions copied from the guideline packs
 │   └── guides/             # user-facing: setup, credentials and usage policy, …
 │
 └── .github/
-    ├── workflows/          # rust.yml, web.yml, image.yml (path-filtered), release.yml
+    ├── workflows/          # gates.yml (one check per gates.run entry), image.yml (path-filtered), release.yml
     ├── CODEOWNERS
     └── pull_request_template.md
 ```
