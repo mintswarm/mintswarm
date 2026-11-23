@@ -221,7 +221,13 @@ A readable simple command fails gate-scripts-named when:
   at another path. Such a binary is dependency code pinned by integrity in a
   tracked lockfile, which the dependency review judges, as cargo's
   dependencies are; a workspace package's own bin linked there is tracked
-  code the floors do not protect, a known limit.
+  code the floors do not protect, a known limit. Two more known limits of
+  this relaxation: the paths above the binary are compared with tracked
+  blobs case-sensitively, so on a case-insensitive checkout a tracked
+  symbolic link at a case variant of DIR/node_modules or its .bin (such as
+  web/Node_modules) is not seen; and files tracked inside DIR/node_modules
+  (added with `git add -f`, say) are not rejected, although whether pnpm
+  replaces them before the binary runs depends on its up-to-date check.
 
 `pnpm install` stays unreadable as a task runner: it runs a .pnpmfile.cjs,
 lifecycle scripts of package.json files the floors do not protect and
@@ -1258,6 +1264,8 @@ def gate_tools(ref: Ref) -> tuple:
             first = words[0]
             if first in INTERPRETERS:
                 tools += [tool for tool in SCRIPT_TOOLS.get(resolved(words[1], cwd), ()) if tool not in tools]
+            if "/" in first:
+                tools += [tool for tool in SCRIPT_TOOLS.get(resolved(first, cwd), ()) if tool not in tools]
             if "/" in first or first in ALLOWED_BUILTINS or first in ("source", ".", CD) or first in tools:
                 continue
             tools.append(first)

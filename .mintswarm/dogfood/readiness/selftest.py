@@ -567,6 +567,14 @@ def m_typescript_gates(config, files):
     config["gates"]["run"] += [{"name": name, "command": command} for name, command in TYPESCRIPT_GATES.items()]
 
 
+def m_typescript_gates_direct(config, files):
+    """The repository's TypeScript gates, running web-install.sh as the command word rather than through bash."""
+    m_typescript_gates(config, files)
+    for gate in config["gates"]["run"]:
+        if gate["name"] in TYPESCRIPT_GATES:
+            gate["command"] = gate["command"].replace("bash .mintswarm/dogfood/", "./.mintswarm/dogfood/")
+
+
 def m_all(*mutations):
     def mutate(config, files):
         for mutation in mutations:
@@ -1747,10 +1755,15 @@ def check_ready_variants(sb: Sandbox) -> None:
 
 def check_script_tools(sb: Sandbox) -> None:
     """The repository's TypeScript gates are ready with pnpm on PATH and fail gate-tools without it, though no gate
-    names pnpm: web-install.sh, which they run, needs it."""
-    commit = sb.fixture(m_typescript_gates)
+    names pnpm: web-install.sh, which they run through bash or as the command word, needs it."""
+    for how, mutation in (("", m_typescript_gates), (" run as the command word", m_typescript_gates_direct)):
+        check_script_tools_case(sb, how, mutation)
+
+
+def check_script_tools_case(sb: Sandbox, how: str, mutation) -> None:
+    commit = sb.fixture(mutation)
     for with_pnpm in (True, False):
-        bin_dir = sb.tmp / ("bin-with-pnpm" if with_pnpm else "bin-without-pnpm")
+        bin_dir = sb.tmp / (("bin-with-pnpm" if with_pnpm else "bin-without-pnpm") + how.replace(" ", "-"))
         bin_dir.mkdir()
         for tool in ("git", "yq", "bash"):
             os.symlink(shutil.which(tool), bin_dir / tool)
@@ -1765,7 +1778,9 @@ def check_script_tools(sb: Sandbox) -> None:
             if proc.returncode != 0 or found:
                 problems.append(f"exit {proc.returncode}, failing {sorted(found)}")
             T.check(
-                "ready: the repository's TypeScript gates with pnpm on PATH: exit 0", not problems, "; ".join(problems)
+                f"ready: the repository's TypeScript gates{how} with pnpm on PATH: exit 0",
+                not problems,
+                "; ".join(problems),
             )
             continue
         if set(found) != {"gate-tools"}:
@@ -1774,7 +1789,7 @@ def check_script_tools(sb: Sandbox) -> None:
         if fragment not in line_of(proc, "gate-tools"):
             problems.append(f"line {line_of(proc, 'gate-tools')!r} lacks {fragment!r}")
         T.check(
-            "gaps: the repository's TypeScript gates without pnpm on PATH: exit 1, fails gate-tools",
+            f"gaps: the repository's TypeScript gates{how} without pnpm on PATH: exit 1, fails gate-tools",
             not problems,
             "; ".join(problems),
         )
