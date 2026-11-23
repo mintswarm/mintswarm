@@ -191,6 +191,13 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
 7. **`needs_input`:** post one comment on the issue with the blocking questions and the full URL of the artefact that raised them, then `assign-approvers.py assign <issue> needs_input --base <base commit>`. When the maintainer has answered and the session resumes the job, run `assign-approvers.py release <issue> needs_input`.
 8. **External steps:** when the plan's footprint has a non-empty `external_steps`, the PR body links the issue with `Refs #<issue>` instead of `Closes #<issue>`, so the merge leaves the issue open and it shows under "Assigned to me". After the merge, post one comment on the issue listing the steps, with the full URLs of the merged PR and the plan artifact, then `assign-approvers.py assign <issue> external_steps --base <base commit>`. When the maintainer reports the steps done, run `assign-approvers.py release <issue> external_steps`, then `bot-gh.sh issue close <issue>`.
 9. **Plan approval:** the issue is assigned when the plan is published and released when the maintainer decides, as `.mintswarm/dogfood/plan-approval/README.md` describes.
+10. **Address round answering a human review:** when an address round that answers a human reviewer's `CHANGES_REQUESTED` review has been pushed with `push.sh`, re-request review from that reviewer: `request-review.py <number> --branch mintswarm/<id>-<slug>`, and check that the printed logins include them. `request-review.py` never skips a reviewer who has already reviewed. For a reviewer who is not configured, use instead:
+
+    ```
+    bot-gh.sh api --method POST repos/{owner}/{repo}/pulls/<number>/requested_reviewers -f 'reviewers[]=<login>'
+    ```
+
+    Then post one comment on the PR with the round's summary and the full URL of the address artefact, and assign the PR with `assign-approvers.py assign <number> pr --base <base commit>`, as in step 4. This step follows `CHANGES_REQUESTED` only, not a `COMMENTED` review. While the PR's `requested_reviewers` is not empty, the earlier approval or change request is not current: the PR is not merged, and the landing floor's `review-requests` rule is a hit.
 
 A full URL is the `https://github.com/…` URL GitHub returned for the artifact or comment (its `html_url`), never `#N` or a relative link. `<base commit>` is the job's base commit, the one plan approval reads the config at; without `--base`, `assign` reads the local `origin/master`, which the session does not fetch. `release` removes every assignment the bot made on the item, whatever its reason, and leaves those a person made.
 

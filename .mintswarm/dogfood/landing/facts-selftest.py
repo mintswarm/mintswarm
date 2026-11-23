@@ -82,7 +82,10 @@ Checks:
   a review comment sharing the approval's id, bots without the marker,
   mintswarm-dev[bot] with the marker line, indented and inside a code
   fence, the marker mid-line, another bot with the marker, a pending
-  review, an inline review comment, a deleted user); every round with
+  review, an inline review comment, a deleted user); review_requests from
+  the pull's requested_reviewers ([] for none, one login, two sorted, a
+  duplicate once) and exit 2 with no facts file when the field is missing,
+  not a list or has an entry without a string login; every round with
   `commit` the head and `current` true; the approval with and without
   decision, kickoff floor and assessment, and by mintswarm-dev[bot]; exit 2
   with no facts file for a head mismatch, a bad fetched_at, a tampered kept
@@ -148,6 +151,7 @@ FACTS_KEYS = [
     "gate_rounds",
     "review_rounds",
     "steers",
+    "review_requests",
     "approval",
 ]
 ROUND_KEYS = ["tool", "version", "kind", "round", "head", "kept_at", "files"]
@@ -1236,6 +1240,7 @@ def build_responses(head: str) -> dict:
         "state": "open",
         "head": {"sha": head, "ref": "mintswarm/47-landing-facts"},
         "base": {"sha": "0" * 40, "ref": "master"},
+        "requested_reviewers": [],
     }
     repo = "repos/{owner}/{repo}"
     q = "per_page=100&page="
@@ -1581,6 +1586,56 @@ def runner_state_tests(sb: Sandbox, baseline: dict, stale: Path) -> None:
     shutil.rmtree(sb.repo / "state")
 
 
+ABSENT = object()
+
+
+def with_requested(sb: Sandbox, name: str, requested) -> Path:
+    """Copy the saved responses with the pull's requested_reviewers replaced, or removed when ABSENT."""
+    responses = sb.tmp / name
+    shutil.copytree(sb.repo / RESPONSES, responses)
+    pull = json.loads((responses / "pull.1.json").read_text(encoding="utf-8"))
+    if requested is ABSENT:
+        del pull["requested_reviewers"]
+    else:
+        pull["requested_reviewers"] = requested
+    write(responses / "pull.1.json", json.dumps(pull, indent=1) + "\n")
+    return responses
+
+
+def review_requests_tests(sb: Sandbox, facts_review_requests) -> None:
+    T.check("assemble: no pending review request gives []", facts_review_requests == [], str(facts_review_requests))
+    cases = [
+        ("one pending reviewer", [{"login": "zmij", "type": "User"}], ["zmij"]),
+        ("two pending reviewers, sorted", [{"login": "zmij"}, {"login": "alice"}], ["alice", "zmij"]),
+        ("a reviewer listed twice, deduplicated", [{"login": "zmij"}, {"login": "zmij"}], ["zmij"]),
+    ]
+    for i, (name, requested, expected) in enumerate(cases):
+        proc, facts = assemble(
+            sb, replace={"--responses": str(with_requested(sb, f"responses-requested-{i}", requested))}
+        )
+        T.check(
+            f"assemble: review_requests, {name}",
+            written(proc, facts) and facts.get("review_requests") == expected,
+            detail(proc) + f" {facts.get('review_requests') if facts else None}",
+        )
+    refused = [
+        ("missing", ABSENT),
+        ("not a list", {"login": "zmij"}),
+        ("an entry without a login", [{"id": 1}]),
+        ("an entry with a login that is not a string", [{"login": 7}]),
+        ("an entry that is not an object", ["zmij"]),
+    ]
+    for i, (name, requested) in enumerate(refused):
+        proc, facts = assemble(
+            sb, replace={"--responses": str(with_requested(sb, f"responses-refused-{i}", requested))}
+        )
+        T.check(
+            f"assemble: requested_reviewers {name} exits 2 with no facts file",
+            proc.returncode == 2 and facts is None and "requested" in proc.stderr,
+            detail(proc),
+        )
+
+
 def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     proc, facts = assemble(sb)
     if not T.check(
@@ -1590,7 +1645,7 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     T.check("assemble: keys in order", list(facts) == FACTS_KEYS, str(list(facts)))
     T.check(
         "assemble: tool, version, pr and issue",
-        (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 2, PR, ISSUE),
+        (facts["tool"], facts["version"], facts["pr"], facts["issue"]) == ("mintswarm-landing-facts", 3, PR, ISSUE),
     )
     T.check(
         "assemble: head and base are the full hashes",
@@ -1697,6 +1752,8 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     write(empty / "status.1.json", '{"state": "pending", "total_count": 0, "statuses": []}\n')
     proc, facts = assemble(sb, replace={"--responses": str(empty)})
     T.check("assemble: no checks give an empty list", written(proc, facts) and facts.get("checks") == [], detail(proc))
+
+    review_requests_tests(sb, facts_review_requests=baseline["review_requests"])
 
     floor_record = {"tool": "mintswarm-plan-floor", "version": 1, "verdict": "hit"}
     floor_data = write(sb.tmp / "floor.json", json.dumps(floor_record) + "\n")
