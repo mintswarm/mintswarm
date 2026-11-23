@@ -24,15 +24,14 @@
 # resolution; assignment and release of approvers; re-classification of a split
 # issue and the parent check before children are filed; msw-state.py in field
 # and labels mode (exact bodies, no-op re-runs, a foreign field id, unavailable
-# fields, ignored writes, a single label swapped in one PUT) and the issue
-# status it maps to (reset after GitHub moves it, none and status: off leave it
-# alone), and the README's msw-state tables against the script's VALUES and
-# STATUS. Secrets and the manifest
-# code must appear in no recorded argv, nothing may be left in TMPDIR, each
-# create adds only its own App's config to HOME, and .git/config stays
-# byte-identical across pushes. Every background process runs in its own
-# process group, every wait is bounded, and any group still there is killed on
-# exit.
+# fields, ignored writes, a single label swapped in one PUT, label names in any
+# case) and the issue status it maps to (reset after GitHub moves it, none and
+# status: off leave it alone), and the README's msw-state tables against the
+# script's VALUES and STATUS. Secrets and the manifest code must appear in no
+# recorded argv, nothing may be left in TMPDIR, each create adds only its own
+# App's config to HOME, and .git/config stays byte-identical across pushes.
+# Every background process runs in its own process group, every wait is
+# bounded, and any group still there is killed on exit.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
@@ -2259,6 +2258,7 @@ bad_status_base="$(commit_config "$(state_cfg field on)")"
 bad_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
 bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, field_id: 50325307, label: "msw-state", status: off}}')"
 off_base="$(commit_config "$(state_cfg field off)")"
+labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
 labels_base="$(commit_config "$(state_cfg labels off)")"
 labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
 
@@ -2377,6 +2377,25 @@ check "none sets msw-state:none" eq "$(ms set 63 none --base "$labels_base" 2>&1
 seed 64 '{"labels": []}'
 ms set 64 implementing --base "$labels_base" >/dev/null 2>&1 || true
 check "an existing label is not created again" eq "$(repo_label_count msw-state:implementing) $(labels_of 64)" "1 msw-state:implementing"
+seed 66 '{"labels": ["bug"]}'
+check "labels mode needs no field or field_id" \
+  eq "$(ms set 66 designing --base "$labels_only_base" 2>&1) $(labels_of 66)" \
+  "set #66 msw-state to designing (was none) bug,msw-state:designing"
+check "but field mode without field_id exits 2" exits_2 ms set 66 designing \
+  --base "$(commit_config 'tracker: {state: {source: field, field: msw-state, label: "msw-state:{value}", status: off}}')"
+jq -c '. + [{"name": "MSW-State:Awaiting Merge", "color": "ededed"}]' "$MSW_STUB_STATE/labels.json" > "$sandbox/labels.json"
+mv "$sandbox/labels.json" "$MSW_STUB_STATE/labels.json"
+seed 67 '{"labels": []}'
+writes_before="$(label_writes)"
+out="$(ms set 67 'awaiting merge' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "a label that exists in another case is not created again" \
+  eq "$out $(( $(label_writes) - writes_before )) $(repo_label_count 'msw-state:awaiting merge')" \
+  "set #67 msw-state to awaiting merge (was none) 1 0"
+seed 68 '{"labels": ["MSW-State:Awaiting Merge"]}'
+writes_before="$(label_writes)"
+out="$(ms set 68 'awaiting merge' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "an issue label in another case is already the value" eq "$out $(( $(label_writes) - writes_before ))" \
+  "#68 msw-state is already awaiting merge 0"
 seed 65 '{"labels": [], "status": "Todo"}'
 check "labels mode sets the status too" eq "$(ms set 65 analysing --base "$labels_status_base" 2>&1) $(status_of 65)" \
   "set #65 msw-state to analysing (was none)

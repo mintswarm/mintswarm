@@ -208,7 +208,7 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
     4. The comment that asks the maintainer to approve the decomposition (the decomposition approval package) starts with the printed `package:` line, when there is one.
     5. Before filing each child, run `reclassify.py check-parent <issue> --base <base commit>`. On a non-zero exit, file nothing more and stop the job for a human as in step 7: post the refusal and run `assign-approvers.py assign <issue> needs_input --base <base commit>`.
 
-12. **`msw-state`:** whenever the session writes a new Status line to an issue's Pipeline state artifact or updates its `<!-- mintswarm: state -->` comment, it runs `msw-state.py set <issue> <value> --base <base commit>`, with the value the tables in [msw-state](#msw-state) map the state to. It does the same when a job stops for `needs_input` (step 7) or waits on external steps (step 8), both `escalated`, and runs `msw-state.py set <issue> none --base <base commit>` when a job is dropped. It also runs `set` again with the current value after every `assign-approvers.py assign` (steps 4, 7, 8 and 9) and after opening the PR (step 2): GitHub sets Todo when an issue is assigned and In review when a PR is linked, and the re-run puts the mapped status back. `msw-state.py get <issue> --base <base commit>` shows the current value and status.
+12. **`msw-state`:** whenever the session writes a new Status line to an issue's Pipeline state artifact or updates its `<!-- mintswarm: state -->` comment, it runs `msw-state.py set <issue> <value> --base <base commit>`, with the value the tables in [msw-state](#msw-state) map the state to. It does the same when a job stops for `needs_input` (step 7) or waits on external steps (step 8), both `escalated`, and runs `msw-state.py set <issue> none --base <base commit>` when a job is dropped. It sets `queued` when it picks up an issue whose job it has not yet started, and `blocked` when that job waits on dependencies that are still open. It also runs `set` again with the current value after every `assign-approvers.py assign` on the issue (steps 7, 8 and 9) and after opening the PR (step 2): GitHub sets Todo when an issue is assigned and In review when a PR is linked, and the re-run puts the mapped status back. `msw-state.py get <issue> --base <base commit>` shows the current value and status. A job whose base commit predates `tracker.state` in `.mintswarm/config.yaml` has no settings there, so `set` would exit 2: for such a job, run `git fetch origin master` and pass `--base origin/master` instead.
 
 A full URL is the `https://github.com/…` URL GitHub returned for the artifact or comment (its `html_url`), never `#N` or a relative link. `<base commit>` is the job's base commit, the one plan approval reads the config at; without `--base`, `assign` reads the local `origin/master`, which the session does not fetch. `release` removes every assignment the bot made on the item, whatever its reason, and leaves those a person made.
 
@@ -220,8 +220,8 @@ Every open `mintswarm` issue the session works on carries one `msw-state` value,
 
 `tracker.state.source` in `.mintswarm/config.yaml` chooses where the value lives:
 
-- `field`: the organisation-level single-select issue field `msw-state`, whose options are the values below, in that order. An organisation admin defines it once (it needs `admin:org`, which the bot does not have and does not get); the bot only sets values on issues. Listing the organisation's fields needs `read:org`, which the bot lacks too, so the config records the field's id (`field_id`) and `msw-state.py` sets the option by name.
-- `labels`, where issue fields are unavailable (a personal account, or the feature off): one `msw-state:<value>` label (`tracker.state.label`), for example `msw-state:implementing`. `msw-state.py` creates a missing label and swaps the old one for the new in a single `PUT` of the issue's labels, so every issue it has touched carries exactly one; an issue it has never touched carries none, which reads as `none`.
+- `field`: the organisation-level single-select issue field `msw-state`, whose options are the values below, in that order. An organisation admin defines it once (it needs `admin:org`, which the bot does not have and does not get); the bot only sets values on issues. Listing the organisation's fields needs `read:org`, which the bot lacks too, so the config records the field's id (`field_id`) and `msw-state.py` sets the option by name. `field` and `field_id` are read in this mode only.
+- `labels`, where issue fields are unavailable (a personal account, or the feature off): one `msw-state:<value>` label (`tracker.state.label`), for example `msw-state:implementing`; `field` and `field_id` may be left out. Label names are compared case-insensitively, as GitHub compares them. `msw-state.py` creates a missing label and swaps the old one for the new in a single `PUT` of the issue's labels, so every issue it has touched carries exactly one; an issue it has never touched carries none, which reads as `none`.
 
 ### Values
 
@@ -242,7 +242,7 @@ Every open `mintswarm` issue the session works on carries one `msw-state` value,
 
 ### Runner states
 
-Each fine state of the runner (`#152` design, §6) maps to one value.
+Each fine state of the runner ([#152](https://github.com/mintswarm/mintswarm/issues/152) design, §6) maps to one value.
 
 | Runner state | msw-state |
 | --- | --- |
@@ -270,15 +270,11 @@ Each Status wording the session writes to the Pipeline state artifact or the `<!
 | Analysing | `analysing` |
 | Planning | `planning` |
 | Decomposing (re-classified as plan) | `planning` |
-| Awaiting plan approval | `awaiting approval` |
-| Awaiting approval, for a plan, a decomposition or a design | `awaiting approval` |
+| Awaiting plan approval, or awaiting approval for a decomposition or a design | `awaiting approval` |
 | Implementing | `implementing` |
-| Reviewing, round 1 (PR #M) | `in review` |
 | Reviewing, round N (PR #M) | `in review` |
 | Awaiting approval, PR #N | `awaiting merge` |
-| Awaiting approval, for a PR | `awaiting merge` |
 | Decomposed into #a, #b, … (tracked through its children) | `blocked` |
-| Done | `done` |
 | Done (merged and closed) | `done` |
 | Stopped for `needs_input` (Session procedure, step 7) | `escalated` |
 | Waiting on external steps after the merge (Session procedure, step 8) | `escalated` |

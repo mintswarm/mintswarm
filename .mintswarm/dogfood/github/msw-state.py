@@ -18,14 +18,15 @@ copy: `git show COMMIT:.mintswarm/config.yaml` piped to
     tracker:
       state:
         source: field                # field | labels
-        field: msw-state
-        field_id: 50325307
+        field: msw-state             # field mode only
+        field_id: 50325307           # field mode only
         label: "msw-state:{value}"
         status: issue_status         # issue_status | off
 
-A source other than field or labels, an empty field, a field_id that is not a
-positive integer, a label without {value} or a status other than issue_status
-or off exits 2.
+A source other than field or labels, a label without {value} or a status
+other than issue_status or off exits 2; with source field, so does an empty
+field or a field_id that is not a positive integer. Source labels needs neither
+field nor field_id.
 
 With source field, the value is the organisation issue field: set GETs
 repos/{owner}/{repo}/issues/N/issue-field-values and takes the entry whose
@@ -44,10 +45,11 @@ unavailable.
 
 With source labels, the value is the one label made from the label template:
 set reads the issue's labels (all pages); the labels that match the template
-give the current value, none when there are none. When exactly one matches and
-it is the target, it writes nothing. Otherwise it reads the repository's
-labels (all pages), creates a missing target label (colour ededed,
-description `mintswarm state`) and PUTs the issue's other labels plus the
+give the current value, none when there are none. Label names are compared
+case-insensitively, as GitHub compares them. When exactly one matches and it
+is the target, it writes nothing. Otherwise it reads the repository's labels
+(all pages), creates the target label when no label has its name in any case
+(colour ededed, description `mintswarm state`) and PUTs the issue's other labels plus the
 target in one request, so the issue never has zero or two; the response must
 hold exactly one matching label, the target (exit 1 if not).
 
@@ -149,10 +151,11 @@ def settings(ref: str) -> dict:
     if state.get("source") not in SOURCES:
         raise UsageError(f"tracker.state.source at {ref} must be field or labels, not {state.get('source')!r}")
     field, field_id = state.get("field"), state.get("field_id")
-    if not isinstance(field, str) or not field.strip():
-        raise UsageError(f"tracker.state.field at {ref} must be a field name")
-    if not isinstance(field_id, int) or isinstance(field_id, bool) or field_id <= 0:
-        raise UsageError(f"tracker.state.field_id at {ref} must be a positive integer, not {field_id!r}")
+    if state["source"] == "field":
+        if not isinstance(field, str) or not field.strip():
+            raise UsageError(f"tracker.state.field at {ref} must be a field name")
+        if not isinstance(field_id, int) or isinstance(field_id, bool) or field_id <= 0:
+            raise UsageError(f"tracker.state.field_id at {ref} must be a positive integer, not {field_id!r}")
     label = state.get("label")
     if not isinstance(label, str) or label.count("{value}") != 1:
         raise UsageError(f"tracker.state.label at {ref} must hold {{value}} once, not {label!r}")
@@ -235,12 +238,19 @@ def label_of(value: str, config: dict) -> str:
     return config["label"].replace("{value}", value)
 
 
+def same_label(a: str, b: str) -> bool:
+    """GitHub compares label names case-insensitively."""
+    return a.casefold() == b.casefold()
+
+
 def label_value(name, config: dict):
-    """The value NAME carries under the label template, or None when it does not match."""
+    """The value NAME carries under the label template, in any case, or None when it does not match."""
     if not isinstance(name, str):
         return None
     prefix, suffix = config["label"].split("{value}")
-    if len(name) < len(prefix) + len(suffix) or not name.startswith(prefix) or not name.endswith(suffix):
+    if len(name) < len(prefix) + len(suffix):
+        return None
+    if not same_label(name[: len(prefix)], prefix) or not same_label(name[len(name) - len(suffix) :], suffix):
         return None
     return name[len(prefix) : len(name) - len(suffix)]
 
@@ -255,6 +265,12 @@ def matching(names: list, config: dict) -> list:
     return [name for name in names if label_value(name, config) is not None]
 
 
+def only_target(names: list, target: str, config: dict) -> bool:
+    """Whether exactly one of NAMES matches the template and it is TARGET, in any case."""
+    found = matching(names, config)
+    return len(found) == 1 and same_label(found[0], target)
+
+
 def read_labels(number: int, config: dict) -> tuple:
     """The issue's label names and its current value (none, or the matching values joined)."""
     names = label_names(pages(f"repos/{{owner}}/{{repo}}/issues/{number}/labels", number), number)
@@ -265,12 +281,12 @@ def read_labels(number: int, config: dict) -> tuple:
 def set_labels(number: int, value: str, config: dict, dry_run: bool) -> None:
     target = label_of(value, config)
     names, old = read_labels(number, config)
-    if matching(names, config) == [target]:
+    if only_target(names, target, config):
         print(f"#{number} msw-state is already {value}")
         return
     if not dry_run:
         known = label_names(pages("repos/{owner}/{repo}/labels", number), number)
-        if target not in known:
+        if not any(same_label(name, target) for name in known):
             gh(
                 ["--method", "POST", "repos/{owner}/{repo}/labels"],
                 {"name": target, "color": LABEL_COLOUR, "description": LABEL_DESCRIPTION},
@@ -281,7 +297,7 @@ def set_labels(number: int, value: str, config: dict, dry_run: bool) -> None:
             {"labels": keep + [target]},
         )
         left = matching(label_names(got, number), config)
-        if left != [target]:
+        if not only_target(left, target, config):
             raise RuntimeError(
                 f"GitHub did not leave #{number} with exactly the label {target} (it reports"
                 f" {', '.join(left) or 'none'})"
