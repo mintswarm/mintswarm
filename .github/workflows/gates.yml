@@ -1,0 +1,92 @@
+# Runs every entry of gates.run in .mintswarm/config.yaml as its own check, named after the gate.
+name: gates
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: gates-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      gates: ${{ steps.read.outputs.gates }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read gates.run
+        id: read
+        shell: bash
+        run: |
+          set -euo pipefail
+          gates=$(yq -o=json -I=0 '.gates.run // []' .mintswarm/config.yaml)
+          gates=$(jq -c '
+            if type != "array" or length == 0 then error("gates.run is missing or empty") else . end
+            | map(
+                if (.name | type) != "string" or .name == "" then error("a gates.run entry has no name") else . end
+                | if .name == "gates-matrix" then error("gate name gates-matrix is reserved for this job") else . end
+                | if (.command | type) != "string" or .command == "" then error("gate \(.name) has no command") else . end
+                | (.timeout // 1800) as $t
+                | if ($t | type) != "number" or $t <= 0 then error("gate \(.name) has an invalid timeout") else . end
+                | {name, command, timeout: $t, minutes: (($t / 60 | ceil) + 30)})
+            | ([.[].name] | group_by(.) | map(select(length > 1) | .[0])) as $dups
+            | if ($dups | length) > 0 then error("duplicate gate names: \($dups | join(", "))") else . end
+          ' <<<"$gates")
+          echo "gates=$gates" >>"$GITHUB_OUTPUT"
+          jq -r '.[].name' <<<"$gates"
+
+  gate:
+    name: ${{ matrix.name }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.gates) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rust toolchain from rust-toolchain.toml
+        if: hashFiles('rust-toolchain.toml') != ''
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+      - name: black at pyproject.toml's required-version
+        if: hashFiles('pyproject.toml') != ''
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb")).get("tool", {}).get("black", {}).get("required-version", ""))')
+          if [ -n "$version" ]; then
+            pipx install "black==$version"
+            black --version
+          fi
+      - name: Node from web/.node-version
+        if: hashFiles('web/.node-version') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+      - name: pnpm from web/package.json
+        if: hashFiles('web/package.json') != ''
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - name: Run the gate
+        env:
+          GATE_COMMAND: ${{ matrix.command }}
+          GATE_TIMEOUT: ${{ matrix.timeout }}
+        run: |
+          set -uo pipefail
+          printf 'gate command: %s\n' "$GATE_COMMAND"
+          status=0
+          timeout --kill-after=30 "$GATE_TIMEOUT" bash -c "$GATE_COMMAND" || status=$?
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "::error::the gate exceeded its timeout of ${GATE_TIMEOUT} s"
+          fi
+          exit "$status"
