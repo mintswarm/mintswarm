@@ -56,10 +56,10 @@ Inside a work branch commits can be as small as you like; the PR title is what l
 ## Pull requests
 
 - Every change reaches `master` through a PR; no direct pushes, including from maintainers.
-- **Squash merge only.** The PR title becomes the commit subject, so it must be a valid Conventional Commit; the `pr-title` check will verify it once CI is added. The changelog is generated from these subjects.
+- **Squash merge only.** The PR title becomes the commit subject, so it must be a valid Conventional Commit; no check verifies the title yet. The changelog is generated from these subjects.
 - One logical change per PR. A refactor that a feature needs goes in its own PR first.
 - Link the issue (`Closes #12`). Describe what changed, why, and how it was verified.
-- Required before merge: one approving review from a Code Owner (`.github/CODEOWNERS`), and all conversations resolved. Once CI is added, all checks green and the branch up to date with `master` as well.
+- Required before merge: one approving review from a Code Owner (`.github/CODEOWNERS`), and all conversations resolved. The gate checks run on every PR, and keeping them green with the branch up to date with `master` is expected but not yet enforced.
 - A change to a contract (anything under `api/`, `crates/core/migrations/`, or the job MCP tool list) states its compatibility impact in the description.
 - The repository describes the current state. A change that alters how the system works updates `docs/architecture/` in the same PR; the reasoning goes in the PR description or the issue, never in a file of its own.
 
@@ -76,7 +76,7 @@ The repository Admin role may bypass the ruleset for pull requests only; nothing
 
 The repository settings, outside the ruleset, allow squash merge only and delete head branches after merge.
 
-Waiting for CI, not required yet: the status checks `fmt`, `clippy`, `test`, `deny`, `proto` (buf lint + breaking), `generated` (OpenAPI and JSON Schema drift), `web` (UI lint, typecheck, test) and `pr-title`, and the branch being up to date with `master`.
+The `gates` workflow (`.github/workflows/gates.yml`) reports one status check per `gates.run` entry, named after the gate: `whitespace`, `agents-drift`, `packs-check`, `packs-selftest`, `python-format`, `shell-lint`, `save-output-selftest`, `plan-approval-selftest`, `landing-floor-selftest`, `landing-facts-selftest`, `github-selftest`, `readiness-selftest`, `rust-format`, `rust-lint`, `rust-test`, `dependencies-selftest`, `dependencies-prefetch-selftest`, `typescript-typecheck`, `typescript-lint`, `typescript-format` and `typescript-test`. The ruleset does not require them yet, nor the branch being up to date with `master`.
 
 ## Releases
 
@@ -87,11 +87,30 @@ Waiting for CI, not required yet: the status checks `fmt`, `clippy`, `test`, `de
 
 ## Local checks
 
-Before pushing, run what CI runs:
+CI runs each entry of `gates.run` in `.mintswarm/config.yaml` as its own check, and before pushing you run the same commands from the repository root:
 
 ```
+git diff --check origin/master...HEAD
+python3 .mintswarm/dogfood/render-agents.py --check
+python3 .mintswarm/dogfood/packs/pack.py check --base origin/master
+python3 .mintswarm/dogfood/packs/selftest.py
+black --check . .mintswarm/dogfood/github/linux/yq
+bash .mintswarm/dogfood/shell-lint.sh
+python3 .mintswarm/dogfood/save-output-selftest.py
+python3 .mintswarm/dogfood/plan-approval/selftest.py
+python3 .mintswarm/dogfood/landing/floor-selftest.py
+python3 .mintswarm/dogfood/landing/facts-selftest.py
+bash .mintswarm/dogfood/github/selftest.sh
+python3 .mintswarm/dogfood/readiness/selftest.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo xtask schemas --check
+python3 .mintswarm/dogfood/dependencies/selftest.py
+python3 .mintswarm/dogfood/dependencies/prefetch-selftest.py
+pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/tsc --noEmit
+pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/eslint .
+pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/prettier --check .
+pnpm --dir web install --frozen-lockfile && cd web/apps/ui && ./node_modules/.bin/vitest run
 ```
+
+`whitespace` needs `origin/master` fetched, and `python-format` needs `black`.
