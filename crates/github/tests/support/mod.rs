@@ -132,7 +132,6 @@ impl Home {
             "keychain_service": service,
             "key_store": "file",
             "key_fingerprint": "SHA256:test",
-            "key_confirm": "none",
         });
         std::fs::write(&path, config.to_string()).expect("cannot write the App config");
         path

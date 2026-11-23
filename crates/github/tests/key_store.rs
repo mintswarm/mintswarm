@@ -1,5 +1,6 @@
 //! Each key-store backend returns the value through its stdout pipe, never in argv, against fake
 //! backend CLIs.
+// Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
 mod support;
@@ -68,21 +69,34 @@ async fn secret_service_reads_its_pipe() {
 }
 
 #[tokio::test]
-async fn secret_service_is_stopped_after_the_timeout() {
-    let (fakes, mut home) = (Fakes::new(false), Home::new());
-    fakes.write("secret-tool", "exec sleep 10");
-    home.env.timeout = Duration::from_secs(1);
-    let started = Instant::now();
-    let error = read(KeyStore::SecretService, &fakes, &home)
-        .await
-        .unwrap_err();
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
-    assert!(matches!(error, KeyStoreError::TimedOut { .. }), "{error}");
-    assert!(error.to_string().contains("probably locked"), "{error}");
+async fn every_backend_that_can_prompt_is_stopped_after_the_timeout() {
+    for (store, name) in [
+        (KeyStore::Keychain, "security"),
+        (KeyStore::SecretService, "secret-tool"),
+        (KeyStore::Pass, "pass"),
+        (KeyStore::SystemdCreds, "systemd-creds"),
+    ] {
+        let (fakes, mut home) = (Fakes::new(false), Home::new());
+        fakes.write(name, "exec sleep 10");
+        home.env.timeout = Duration::from_secs(1);
+        let credstore = home.config_dir().join("credstore");
+        std::fs::create_dir_all(&credstore).unwrap();
+        std::fs::write(credstore.join(format!("{SERVICE}@{ACCOUNT}.cred")), b"x").unwrap();
+        let started = Instant::now();
+        let error = read(store, &fakes, &home).await.unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{name}: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(error, KeyStoreError::TimedOut { .. }),
+            "{name}: {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains(name), "{message}");
+        assert!(message.contains("store-credentials.sh rotate"), "{message}");
+    }
 }
 
 #[tokio::test]

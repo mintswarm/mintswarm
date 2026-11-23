@@ -1,5 +1,6 @@
 //! The runner acts as the runner App only: nothing in this crate names the steward App's
 //! configuration file, so no code path can read it.
+// Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
 use std::path::{Path, PathBuf};

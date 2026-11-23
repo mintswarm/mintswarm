@@ -1,5 +1,6 @@
 //! A minted App JWT verifies against the public half of a throwaway key, with the claims GitHub
 //! requires.
+// Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
 mod support;
@@ -7,7 +8,7 @@ mod support;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
-use mintswarm_github::{AppConfig, JwtError, KeyConfirm, KeyStore, SecretBytes, app_jwt};
+use mintswarm_github::{AppConfig, JwtError, KeyStore, SecretBytes, app_jwt};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -25,7 +26,6 @@ fn config() -> AppConfig {
         keychain_service: String::from("mintswarm-dev"),
         key_store: Some(KeyStore::File),
         key_fingerprint: None,
-        key_confirm: KeyConfirm::None,
     }
 }
 

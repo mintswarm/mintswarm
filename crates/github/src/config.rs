@@ -35,18 +35,9 @@ impl KeyStore {
     }
 }
 
-/// Whether every use of the App's key needs the user's confirmation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum KeyConfirm {
-    /// The keychain item has no trusted application, so every read asks the user.
-    KeychainAcl,
-    /// No confirmation; also what a configuration without the field means.
-    #[default]
-    None,
-}
-
-/// An App's identifiers and where its private key is kept.
+/// An App's identifiers and where its private key is kept. Unknown fields, such as a
+/// `key_confirm` an older `key-store.sh` recorded, are ignored: the runner runs unattended, so a
+/// key read that waits for a confirmation is stopped by the key store's timeout instead.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct AppConfig {
     /// The App's numeric id.
@@ -63,9 +54,6 @@ pub struct AppConfig {
     /// The fingerprint of the key, for example `SHA256:…`.
     #[serde(default)]
     pub key_fingerprint: Option<String>,
-    /// Whether every use of the key needs confirmation.
-    #[serde(default)]
-    pub key_confirm: KeyConfirm,
 }
 
 /// Why the App's configuration could not be used.
@@ -168,11 +156,11 @@ pub(crate) fn valid_name(value: &str) -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::{AppConfig, ConfigError, KeyConfirm, KeyStore, ParseError, valid_name};
+    use super::{AppConfig, ConfigError, KeyStore, ParseError, valid_name};
 
     const FULL: &str = r#"{"app_id": 123, "slug": "mintswarm-dev", "client_id": "Iv23liAbc",
         "keychain_service": "mintswarm-dev", "key_store": "secret-service",
-        "key_fingerprint": "SHA256:abc", "key_confirm": "keychain-acl"}"#;
+        "key_fingerprint": "SHA256:abc"}"#;
 
     fn parse(text: &str) -> Result<AppConfig, ParseError> {
         AppConfig::parse(text.as_bytes())
@@ -187,7 +175,6 @@ mod tests {
         assert_eq!(config.keychain_service, "mintswarm-dev");
         assert_eq!(config.key_store, Some(KeyStore::SecretService));
         assert_eq!(config.key_fingerprint.as_deref(), Some("SHA256:abc"));
-        assert_eq!(config.key_confirm, KeyConfirm::KeychainAcl);
         assert_eq!(config.key_store().unwrap(), KeyStore::SecretService);
     }
 
@@ -217,12 +204,17 @@ mod tests {
         let config = parse(text).ok().unwrap();
         assert_eq!(config.key_store, None);
         assert_eq!(config.key_fingerprint, None);
-        assert_eq!(config.key_confirm, KeyConfirm::None);
         if cfg!(target_os = "macos") {
             assert_eq!(config.key_store().unwrap(), KeyStore::Keychain);
         } else {
             assert!(matches!(config.key_store(), Err(ConfigError::NoKeyStore)));
         }
+    }
+
+    #[test]
+    fn ignores_a_recorded_key_confirm() {
+        let text = FULL.replace('}', r#", "key_confirm": "keychain-acl"}"#);
+        assert_eq!(parse(&text).ok().unwrap(), parse(FULL).ok().unwrap());
     }
 
     #[test]

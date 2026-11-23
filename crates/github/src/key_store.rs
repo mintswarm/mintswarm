@@ -2,12 +2,14 @@
 //! the backend's stdout, or is read in-process; it is never in argv, and no backend output other
 //! than the value is kept.
 
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
+use rustix::fs::{CWD, Mode, OFlags};
 use tokio::process::Command;
 
 use crate::config::{KeyStore, valid_name};
@@ -49,7 +51,8 @@ pub struct KeyStoreEnv {
     pub credentials_directory: Option<PathBuf>,
     /// `$PASSWORD_STORE_DIR`, passed on to `pass`.
     pub password_store_dir: Option<PathBuf>,
-    /// How long `secret-tool` may take before it is stopped.
+    /// How long any backend process may take before it is stopped, so that a prompt nobody can
+    /// answer (a locked keyring, a keychain confirmation, a pinentry) never hangs the runner.
     pub timeout: Duration,
     /// Whether the process runs as root.
     pub is_root: bool,
@@ -85,7 +88,7 @@ impl KeyStoreEnv {
             },
             Err(_) => DEFAULT_TIMEOUT,
         };
-        let is_root = process_uid().map_err(KeyStoreError::Uid)? == 0;
+        let is_root = process_uid() == 0;
         Ok(Self {
             home: home.into(),
             credentials_directory: std::env::var_os("CREDENTIALS_DIRECTORY")
@@ -121,12 +124,17 @@ pub enum KeyStoreError {
     /// `MSW_KEY_STORE_TIMEOUT` is not a whole number of seconds above 0.
     #[error("MSW_KEY_STORE_TIMEOUT must be a whole number of seconds above 0")]
     InvalidTimeout,
-    /// The process uid could not be found.
-    #[error("cannot find the process uid: {0}")]
-    Uid(io::Error),
     /// A backend could not be started.
     #[error("cannot run {program}: {source}")]
     Spawn {
+        /// The executable.
+        program: PathBuf,
+        /// The underlying error.
+        source: io::Error,
+    },
+    /// A backend started, but waiting for it failed.
+    #[error("cannot wait for {program}: {source}")]
+    Wait {
         /// The executable.
         program: PathBuf,
         /// The underlying error.
@@ -140,13 +148,18 @@ pub enum KeyStoreError {
         /// Its exit status.
         status: ExitStatus,
     },
-    /// `secret-tool` did not answer in time.
+    /// A backend did not answer in time, and was stopped.
     #[error(
-        "secret-tool did not answer within {} seconds: the keyring is probably locked; \
-         unlock it first",
+        "{} did not answer within {} seconds and was stopped: it is probably waiting for a \
+         prompt nobody can answer (a locked keyring, a keychain confirmation, a pinentry); \
+         unlock the store, or store the key again without confirmation with \
+         store-credentials.sh rotate PEM_PATH",
+        .program.display(),
         .timeout.as_secs()
     )]
     TimedOut {
+        /// The executable.
+        program: PathBuf,
         /// The timeout.
         timeout: Duration,
     },
@@ -212,7 +225,7 @@ pub async fn read_key(
         }
     }
     let value = match store {
-        KeyStore::Keychain => keychain(service, account, tools).await?,
+        KeyStore::Keychain => keychain(service, account, tools, env).await?,
         KeyStore::SecretService => secret_service(service, account, tools, env).await?,
         KeyStore::Pass => pass(service, account, tools, env).await?,
         KeyStore::SystemdCreds => systemd_creds(service, account, tools, env).await?,
@@ -228,10 +241,15 @@ pub async fn read_key(
     Ok(SecretBytes::new(value))
 }
 
-async fn keychain(service: &str, account: &str, tools: &Tools) -> Result<Vec<u8>, KeyStoreError> {
+async fn keychain(
+    service: &str,
+    account: &str,
+    tools: &Tools,
+    env: &KeyStoreEnv,
+) -> Result<Vec<u8>, KeyStoreError> {
     let mut command = Command::new(&tools.security);
     command.args(["find-generic-password", "-s", service, "-a", account, "-w"]);
-    let encoded = run(command, &tools.security, None).await?;
+    let encoded = run(command, &tools.security, env.timeout).await?;
     decode_base64(&encoded).ok_or_else(|| KeyStoreError::Decode {
         service: service.to_owned(),
         account: account.to_owned(),
@@ -246,7 +264,7 @@ async fn secret_service(
 ) -> Result<Vec<u8>, KeyStoreError> {
     let mut command = Command::new(&tools.secret_tool);
     command.args(["lookup", "service", service, "account", account]);
-    run(command, &tools.secret_tool, Some(env.timeout)).await
+    run(command, &tools.secret_tool, env.timeout).await
 }
 
 async fn pass(
@@ -262,7 +280,7 @@ async fn pass(
     if let Some(dir) = &env.password_store_dir {
         command.env("PASSWORD_STORE_DIR", dir);
     }
-    run(command, &tools.pass, None).await
+    run(command, &tools.pass, env.timeout).await
 }
 
 async fn systemd_creds(
@@ -291,9 +309,11 @@ async fn systemd_creds(
     if !env.is_root {
         let mut version = Command::new(&tools.systemd_creds);
         version.arg("--version");
-        let output = run(version, &tools.systemd_creds, None)
-            .await
-            .map_err(|_| KeyStoreError::SystemdUnusable)?;
+        let output = match run(version, &tools.systemd_creds, env.timeout).await {
+            Ok(output) => output,
+            Err(error @ KeyStoreError::TimedOut { .. }) => return Err(error),
+            Err(_) => return Err(KeyStoreError::SystemdUnusable),
+        };
         if systemd_version(&output).is_none_or(|v| v < 256) {
             return Err(KeyStoreError::SystemdUnusable);
         }
@@ -307,7 +327,7 @@ async fn systemd_creds(
         .arg(format!("--name={name}"))
         .arg(&file)
         .arg("-");
-    run(command, &tools.systemd_creds, None).await
+    run(command, &tools.systemd_creds, env.timeout).await
 }
 
 /// The major version on the first line of `systemd-creds --version`: `systemd 256 (256.1)`.
@@ -347,16 +367,23 @@ async fn file(
             });
         }
     }
-    if inside_work_tree(&dir, tools).await {
+    if inside_work_tree(&dir, tools, env.timeout).await {
         return Err(KeyStoreError::Refused {
             path: dir,
             reason: "it is inside a git work tree, where the key could be committed",
         });
     }
-    let uid = process_uid().map_err(KeyStoreError::Uid)?;
-    check_path(&dir, Kind::Directory, uid)?;
-    check_path(&file, Kind::File, uid)?;
-    read_file(&file)
+    let uid = process_uid();
+    // Each path is opened once without following a symlink, and checked on the open handle, so
+    // nothing can be swapped in between the check and the read.
+    let opened_dir = open_checked(CWD, &dir, &dir, Kind::Directory, uid)?;
+    let name = format!("{service}@{account}");
+    let mut opened = open_checked(&opened_dir, Path::new(&name), &file, Kind::File, uid)?;
+    let mut value = Vec::new();
+    opened
+        .read_to_end(&mut value)
+        .map_err(|source| KeyStoreError::Io { path: file, source })?;
+    Ok(value)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -365,29 +392,51 @@ enum Kind {
     File,
 }
 
-/// Refuses a symlink, the wrong kind, another owner, or any group or other permission.
-fn check_path(path: &Path, kind: Kind, uid: u32) -> Result<(), KeyStoreError> {
+/// Opens `name` below `at` without following a symlink, and refuses the wrong kind, another
+/// owner, or any group or other permission, checked on the open handle. `path` names it in
+/// errors.
+fn open_checked<Fd: rustix::fd::AsFd>(
+    at: Fd,
+    name: &Path,
+    path: &Path,
+    kind: Kind,
+    uid: u32,
+) -> Result<File, KeyStoreError> {
     let refuse = |reason| {
         Err(KeyStoreError::Refused {
             path: path.to_owned(),
             reason,
         })
     };
-    let meta = match path.symlink_metadata() {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    if kind == Kind::Directory {
+        flags |= OFlags::DIRECTORY;
+    }
+    let fd = match rustix::fs::openat(at, name, flags, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => {
             return Err(KeyStoreError::NotFound(path.display().to_string()));
         }
-        Err(source) => {
+        Err(rustix::io::Errno::LOOP) => return refuse("it is a symlink"),
+        Err(rustix::io::Errno::NOTDIR) if kind == Kind::Directory => {
+            // `O_DIRECTORY | O_NOFOLLOW` on a symlink fails with ENOTDIR on some systems.
+            return match path.symlink_metadata() {
+                Ok(meta) if meta.file_type().is_symlink() => refuse("it is a symlink"),
+                _ => refuse("not a directory"),
+            };
+        }
+        Err(errno) => {
             return Err(KeyStoreError::Io {
                 path: path.to_owned(),
-                source,
+                source: errno.into(),
             });
         }
     };
-    if meta.file_type().is_symlink() {
-        return refuse("it is a symlink");
-    }
+    let opened = File::from(fd);
+    let meta = opened.metadata().map_err(|source| KeyStoreError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
     match kind {
         Kind::Directory if !meta.is_dir() => return refuse("not a directory"),
         Kind::File if !meta.is_file() => return refuse("not a regular file"),
@@ -399,12 +448,12 @@ fn check_path(path: &Path, kind: Kind, uid: u32) -> Result<(), KeyStoreError> {
     if meta.permissions().mode() & 0o077 != 0 {
         return refuse("it has group or other permissions (chmod go= it)");
     }
-    Ok(())
+    Ok(opened)
 }
 
 /// Whether the nearest existing directory at or above `dir` is inside a git work tree. When
 /// `git` cannot run, there is no work tree it could commit to.
-async fn inside_work_tree(dir: &Path, tools: &Tools) -> bool {
+async fn inside_work_tree(dir: &Path, tools: &Tools, timeout: Duration) -> bool {
     let Some(existing) = dir.ancestors().find(|p| p.is_dir()) else {
         return false;
     };
@@ -415,7 +464,7 @@ async fn inside_work_tree(dir: &Path, tools: &Tools) -> bool {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_CEILING_DIRECTORIES");
-    match run(command, &tools.git, None).await {
+    match run(command, &tools.git, timeout).await {
         Ok(output) => output.trim_ascii() == b"true",
         Err(_) => false,
     }
@@ -429,11 +478,11 @@ fn read_file(path: &Path) -> Result<Vec<u8>, KeyStoreError> {
 }
 
 /// Runs `command` with stdin null and stdout and stderr piped, and returns its stdout. Stderr is
-/// discarded. With a timeout, the child is killed when it expires.
+/// discarded. The child is killed when `timeout` expires.
 async fn run(
     mut command: Command,
     program: &Path,
-    timeout: Option<Duration>,
+    timeout: Duration,
 ) -> Result<Vec<u8>, KeyStoreError> {
     command
         .stdin(Stdio::null())
@@ -444,15 +493,16 @@ async fn run(
         program: program.to_owned(),
         source,
     })?;
-    let output = child.wait_with_output();
-    let output = match timeout {
-        Some(timeout) => match tokio::time::timeout(timeout, output).await {
-            Ok(output) => output,
-            Err(_) => return Err(KeyStoreError::TimedOut { timeout }),
-        },
-        None => output.await,
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(output) => output,
+        Err(_) => {
+            return Err(KeyStoreError::TimedOut {
+                program: program.to_owned(),
+                timeout,
+            });
+        }
     }
-    .map_err(|source| KeyStoreError::Spawn {
+    .map_err(|source| KeyStoreError::Wait {
         program: program.to_owned(),
         source,
     })?;
@@ -465,9 +515,9 @@ async fn run(
     Ok(output.stdout)
 }
 
-/// The uid of this process: the owner of a new unnamed temporary file.
-pub(crate) fn process_uid() -> io::Result<u32> {
-    Ok(tempfile::tempfile()?.metadata()?.uid())
+/// The real uid of this process.
+fn process_uid() -> u32 {
+    rustix::process::getuid().as_raw()
 }
 
 /// Decodes standard base64 with padding, as `openssl base64 -d -A` does, ignoring surrounding

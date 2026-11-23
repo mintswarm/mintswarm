@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Method, StatusCode};
@@ -21,6 +21,10 @@ use crate::secret::Token;
 pub const GITHUB_API: &str = "https://api.github.com";
 /// A cached token is minted again once fewer than this many seconds remain before it expires.
 pub const REFRESH_MARGIN_SECS: u64 = 300;
+/// How long connecting to GitHub may take.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a whole request to GitHub may take.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The source of the current Unix time, in seconds.
 #[derive(Clone)]
@@ -133,14 +137,21 @@ struct CacheKey {
     permissions: Permissions,
 }
 
+/// One slot per owner, repository and permission set. The map's lock is held only to find a
+/// slot; a slot's own lock is held while its token is minted, so a slow mint delays only the
+/// callers that want the same token.
 #[derive(Default)]
-struct Cache(HashMap<CacheKey, Token>);
+struct Cache(HashMap<CacheKey, Arc<Mutex<Option<Token>>>>);
 
 impl fmt::Debug for Cache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Cache")
-            .field("tokens", &self.0.len())
-            .finish()
+        // A slot that is locked is being minted, and counts as empty.
+        let tokens = self
+            .0
+            .values()
+            .filter(|slot| slot.try_lock().is_ok_and(|token| token.is_some()))
+            .count();
+        f.debug_struct("Cache").field("tokens", &tokens).finish()
     }
 }
 
@@ -192,6 +203,8 @@ impl TokenClient {
         clock: Clock,
     ) -> Result<Self, TokenError> {
         let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_| TokenError::Client)?;
         Ok(Self {
@@ -237,16 +250,17 @@ impl TokenClient {
             repo: repo.to_owned(),
             permissions: permissions.clone(),
         };
-        let mut cache = self.cache.lock().await;
+        let slot = Arc::clone(self.cache.lock().await.0.entry(key).or_default());
+        let mut slot = slot.lock().await;
         let now = self.clock.now();
-        if let Some(token) = cache.0.get(&key) {
+        if let Some(token) = slot.as_ref() {
             if token.expires_at() >= now + REFRESH_MARGIN_SECS {
                 tracing::debug!(owner, repo, "using the cached installation token");
                 return Ok(token.clone());
             }
         }
         let token = self.mint(owner, repo, permissions, now).await?;
-        cache.0.insert(key, token.clone());
+        *slot = Some(token.clone());
         Ok(token)
     }
 

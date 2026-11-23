@@ -1,5 +1,6 @@
 //! Installation tokens against a scripted local server: narrowed to the permissions asked for,
 //! cached until five minutes before expiry, and never shown in `Debug`, `Display` or a log line.
+// Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
 mod support;
