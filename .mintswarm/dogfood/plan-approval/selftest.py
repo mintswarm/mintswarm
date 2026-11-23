@@ -35,7 +35,10 @@ Checks:
   with a `## TL;DR` section after the summary line, and is accepted with
   `mode: always`, which the verdict records;
 - single-rule hits: each rule hit by a case derived from the clean base,
-  and each limit clean at its value and a hit one over;
+  and each limit clean at its value and a hit one over; tests/** and
+  xtask/** in the tooling component are clean on both require-human
+  rules, and .github/workflows/**, also differently cased, is a
+  `require-human-paths` hit;
 - footprint unusable: missing, misplaced, malformed and badly shaped
   footprints, and each bad path form, are `footprint` hits with the
   footprint rules not evaluated and the document rules evaluated;
@@ -183,8 +186,14 @@ CRITERIA = [
 EXPECTED_APPROVAL = {
     "mode": "shadow",
     "require_human": {
-        "components": ["agents", "tooling"],
-        "paths": [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md"],
+        "components": ["agents"],
+        "paths": [
+            ".mintswarm/config.yaml",
+            ".mintswarm/dogfood/github/**",
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".github/workflows/**",
+        ],
     },
     "limits": {"files": 10, "lines": 300, "new_files": 3, "new_dependencies": 0},
 }
@@ -235,7 +244,7 @@ HISTORIC = {
             "gate-changes",
         },
     ),
-    "plan-19.md": ("tooling", {"require-human-components", "external-steps"}),
+    "plan-19.md": ("tooling", {"external-steps"}),
     "plan-20.md": ("docs", set()),
     "plan-10.md": ("docs", {"require-human-paths"}),
 }
@@ -644,13 +653,22 @@ def check_clean_base(r: Runner) -> None:
 def check_single_rules(r: Runner, limits: dict) -> None:
     expect_hit(r, "CLAUDE.md", base(files=["CLAUDE.md"]), "require-human-paths", only=True, reason="CLAUDE.md")
     expect_hit(r, "agents.md", base(files=["agents.md"]), "require-human-paths", reason="AGENTS.md")
-    expect_hit(r, "tests/e2e.rs", base(files=["tests/e2e.rs"]), "require-human-components", reason="tooling")
+    human_rules = ["require-human-paths", "require-human-components"]
+    expect_clean(r, "tests/e2e.rs", base(files=["tests/e2e.rs"]), human_rules, component="tooling")
+    expect_clean(r, "xtask/src/main.rs", base(files=["xtask/src/main.rs"]), human_rules, component="tooling")
     expect_hit(
         r,
-        "tooling component",
-        base(files=[".github/CODEOWNERS"]),
-        "require-human-components",
-        reason="component tooling",
+        ".github/workflows/ci.yml",
+        base(files=[".github/workflows/ci.yml"]),
+        "require-human-paths",
+        reason=".github/workflows/**",
+        component="tooling",
+    )
+    expect_clean(
+        r,
+        ".github/workflows/ci.yml component",
+        base(files=[".github/workflows/ci.yml"]),
+        ["require-human-components"],
         component="tooling",
     )
     expect_hit(r, "web/index.html", base(files=["web/index.html"]), "component-scope")
@@ -713,10 +731,10 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     expect_hit(r, "config.yaml", base(files=[".mintswarm/config.yaml"]), "gate-changes", reason="gates.run")
     expect_hit(
         r,
-        ".GitHub/CODEOWNERS",
-        base(files=[".GitHub/CODEOWNERS"]),
-        "require-human-components",
-        reason="component tooling",
+        ".GitHub/Workflows/CI.yml",
+        base(files=[".GitHub/Workflows/CI.yml"]),
+        "require-human-paths",
+        reason=".github/workflows/**",
     )
     expect_hit(r, "Config.yaml case", base(files=[".MintSwarm/Config.yaml"]), "gate-changes", reason="gates.run")
     expect_hit(
