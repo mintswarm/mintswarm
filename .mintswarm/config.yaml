@@ -124,6 +124,8 @@ gates:
       command: "python3 .mintswarm/dogfood/landing/floor-selftest.py"
     - name: landing-facts-selftest
       command: "python3 .mintswarm/dogfood/landing/facts-selftest.py"
+    - name: landing-judgement-selftest
+      command: "python3 .mintswarm/dogfood/landing/judgement-selftest.py"
     - name: github-selftest
       command: "bash .mintswarm/dogfood/github/selftest.sh"
     - name: readiness-selftest
