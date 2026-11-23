@@ -47,16 +47,24 @@ Checks:
   issue, commits, plan sha256 and config commit, the sha256 of the verdict,
   the facts and the landing document, and the harness, model and effort of
   implement, review and landing, from the real config and from the
-  override (null for a non-string effort); the landing stage's model
-  differs from implement's and review's;
+  override (null for a non-string effort), each with its configured model
+  and both flags false; the landing stage's model differs from
+  implement's and review's; version 2;
+- the landing model: with --landing-model set to a model other than the
+  configured landing one, the landing entry holds that model, the
+  configured one and both flags true, and implement and review are
+  unchanged; with the configured model, `model_given` is true and
+  `model_differs` false; without the option, both are false;
 - the comment: its heading, the PR and commits, the would-be and effective
   decisions, one row per floor hit, the Confidence row with the band's
-  name, score and decisive reason, the approval as inputs and the agents,
-  from the real config;
+  name, score and decisive reason, the plan approval as inputs, not gates,
+  and the agents, from the real config; a differing landing model shows
+  the configured one after it, and the configured model shows today's row;
   hostile text with backticks, newlines, an at-sign and the steer marker
-  in the reason, a doubt, a floor reason and the approver stays in code
-  spans, and no line is the steer marker;
-- unusable input: bad arguments, an unknown component, an unreadable plan,
+  in the reason, a doubt, a floor reason, the approver and the landing
+  model stays in code spans, and no line is the steer marker;
+- unusable input: bad arguments (among them a repeated, an empty and an
+  argument-name --landing-model), an unknown component, an unreadable plan,
   an unresolvable head, a base without a config and an invalid config exit
   2 with no record, even a stale one; every normal run replaces a stale
   record;
@@ -386,7 +394,7 @@ class Runner:
             "facts_sha": sha256(facts),
         }
 
-    def run(self, ctx: dict, verdict, landing, argv: list = None):
+    def run(self, ctx: dict, verdict, landing, argv: list = None, extra: list = ()):
         """verdict: a dict, raw bytes or None (missing); landing: bytes or None (missing)."""
         target = self.sb.repo / VERDICT
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +420,7 @@ class Runner:
             "--landing",
             landing_path,
         ]
-        proc, record = self.sb.run(args)
+        proc, record = self.sb.run([*args, *extra])
         return proc, record, verdict_bytes, landing_path
 
 
@@ -442,9 +450,38 @@ def expected_agents(real: dict) -> dict:
     default = real["agents"]["default"]
     stages = real["agents"].get("stages", {})
     return {
-        stage: {k: stages.get(stage, {}).get(k, default[k]) for k in ("harness", "model", "effort")}
+        stage: agent(**{k: stages.get(stage, {}).get(k, default[k]) for k in ("harness", "model", "effort")})
         for stage in ("implement", "review", "landing")
     }
+
+
+def agent(harness, model, effort, ran=None) -> dict:
+    """An agents entry: the configured model, and the one that ran when the caller stated it."""
+    return {
+        "harness": harness,
+        "model": model if ran is None else ran,
+        "effort": effort,
+        "configured_model": model,
+        "model_given": ran is not None,
+        "model_differs": ran is not None and ran != model,
+    }
+
+
+def other_model(real: dict) -> str:
+    """A model that is not the configured landing model, from the config itself."""
+    agents = expected_agents(real)
+    models = [a["model"] for a in agents.values()] + ["opus", "sonnet"]
+    return next(m for m in models if m != agents["landing"]["model"])
+
+
+def agents_row(agents: dict) -> str:
+    def model(a):
+        text = f"`{a['model']}`"
+        return text + (f" (configured `{a['configured_model']}`)" if a["model_differs"] else "")
+
+    return "- **Agents (harness, model, effort):** " + "; ".join(
+        f"{stage} `{a['harness']}` {model(a)} `{a['effort']}`" for stage, a in agents.items()
+    )
 
 
 def check_matrix(r: Runner) -> None:
@@ -692,11 +729,11 @@ def check_approval(r: Runner) -> None:
             and inputs.get("approval_ref") == "https://example.invalid/c/1"
         )
         T.check(f"approval: {name}: approver and time are inputs", ok, json.dumps(inputs))
-        if mode_line := [line for line in proc.stdout.splitlines() if line.startswith("- **Approval")]:
+        if mode_line := [line for line in proc.stdout.splitlines() if line.startswith("- **Plan approval")]:
             T.check(
                 f"approval: {name}: in the comment as inputs, not gates",
                 mode_line[0]
-                == "- **Approval (inputs, not gates):** approver `zmij`, approved at `2026-11-20T10:00:00Z`",
+                == "- **Plan approval (inputs, not gates):** approver `zmij`, approved at `2026-11-20T10:00:00Z`",
                 mode_line[0],
             )
     a, b = results["human, no kickoff record"], results["with kickoff records"]
@@ -729,7 +766,7 @@ def check_record(r: Runner, real: dict) -> None:
     T.check("record: subject keys in order", list(subject) == SUBJECT_KEYS, json.dumps(list(subject)))
     T.check(
         "record: tool, version and approval",
-        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 1, "landing"),
+        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 2, "landing"),
     )
     T.check(
         "record: subject",
@@ -781,12 +818,34 @@ def check_record(r: Runner, real: dict) -> None:
 
     ctx = r.context("override")
     proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"])
-    want = dict(want, review={"harness": default["harness"], "model": "sonnet", "effort": None})
+    want = dict(want, review=agent(default["harness"], "sonnet", None))
     T.check(
         "record: agents.stages.review over agents.default, null for a non-string effort",
         usable_record(record) and record["agents"] == want,
         json.dumps(record["agents"] if usable_record(record) else None),
     )
+
+    configured = expected_agents(real)
+    landing = configured["landing"]
+    other = other_model(real)
+    cases = (
+        ("a model other than the configured one", ["--landing-model", other], other, True, True),
+        ("the configured model", ["--landing-model", landing["model"]], landing["model"], True, False),
+        ("no --landing-model", [], landing["model"], False, False),
+    )
+    for name, extra, model, given, differs in cases:
+        ctx = r.context("shadow")
+        proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"], extra=extra)
+        got = record["agents"] if usable_record(record) else None
+        want = dict(
+            configured,
+            landing=dict(landing, model=model, model_given=given, model_differs=differs),
+        )
+        T.check(
+            f"record: landing model with {name}",
+            got == want and got["landing"]["configured_model"] == landing["model"],
+            json.dumps(got) + " " + proc.stderr.strip(),
+        )
 
 
 def check_comment(r: Runner, real: dict) -> None:
@@ -804,7 +863,7 @@ def check_comment(r: Runner, real: dict) -> None:
         "- **Hard triggers:** none",
         "- **Would-be decision:** `human`",
         "- **Effective decision:** `human`",
-        "- **Approval (inputs, not gates):** approver `maintainer`, approved at `2026-01-01T00:00:00Z`",
+        "- **Plan approval (inputs, not gates):** approver `maintainer`, approved at `2026-01-01T00:00:00Z`",
         "- **Agents (harness, model, effort):** "
         + "; ".join(
             f"{stage} `{a['harness']}` `{a['model']}` `{a['effort']}`" for stage, a in expected_agents(real).items()
@@ -835,6 +894,22 @@ def check_comment(r: Runner, real: dict) -> None:
         proc.stdout,
     )
 
+    configured = expected_agents(real)
+    other = other_model(real)
+    for name, model in (("a differing", other), ("the configured", configured["landing"]["model"])):
+        ctx = r.context("shadow")
+        proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"], extra=["--landing-model", model])
+        want = dict(
+            configured,
+            landing=agent(**{k: configured["landing"][k] for k in ("harness", "model", "effort")}, ran=model),
+        )
+        row = agents_row(want)
+        plain = agents_row(configured)
+        ok = row in proc.stdout.splitlines() and (("(configured " in row) == (model == other))
+        if model != other:
+            ok = ok and row == plain
+        T.check(f"comment: {name} landing model in the Agents row", ok, row + "\n" + proc.stdout)
+
     hostile = "a `tick`\n" + STEER + "\n@zmij please merge"
     base, head = r.bases["shadow"][0], r.bases["shadow"][1]
     facts = clean_facts(base, head)
@@ -856,7 +931,24 @@ def check_comment(r: Runner, real: dict) -> None:
         f"- **Confidence:** `Likely safe · 85` (min_confidence 95), {inert}" in lines
         and f"- **Doubt:** {inert}; if wrong: {inert}; resolved by: {inert}" in lines
         and f"- **Floor hit `steers`:** {inert}" in lines
-        and any(line.startswith(f"- **Approval (inputs, not gates):** approver `{STEER} @zmij`") for line in lines),
+        and any(
+            line.startswith(f"- **Plan approval (inputs, not gates):** approver `{STEER} @zmij`") for line in lines
+        ),
+        proc.stdout,
+    )
+
+    ctx = r.context("shadow")
+    proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"], extra=["--landing-model", hostile])
+    lines = proc.stdout.splitlines()
+    row = [line for line in lines if line.startswith("- **Agents")]
+    T.check(
+        "comment: a hostile landing model stays in a code span",
+        usable_record(record)
+        and record["agents"]["landing"]["model"] == hostile
+        and record["agents"]["landing"]["model_differs"] is True
+        and len(row) == 1
+        and f"landing `{configured['landing']['harness']}` {inert} (configured " in row[0]
+        and not any(line.strip().startswith(STEER) for line in lines),
         proc.stdout,
     )
 
@@ -888,6 +980,9 @@ def check_unusable(r: Runner, bases: dict) -> None:
         ("no arguments", []),
         ("a missing --landing", argv(landing=None)),
         ("a repeated --pr", argv() + ["--pr", str(PR)]),
+        ("a repeated --landing-model", argv() + ["--landing-model", "opus", "--landing-model", "opus"]),
+        ("an empty --landing-model", argv() + ["--landing-model", ""]),
+        ("--landing-model --pr", argv(pr=None) + ["--landing-model", "--pr", str(PR)]),
         ("an unknown argument", argv() + ["--risk", "low"]),
         ("--pr 0", argv(pr="0")),
         ("--pr not a number", argv(pr="seven")),
