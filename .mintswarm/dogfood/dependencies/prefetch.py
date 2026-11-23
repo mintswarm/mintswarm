@@ -424,31 +424,132 @@ def npm_selection(archive: Archive) -> tuple:
     return list(dict.fromkeys(selected)), found, undetermined, set()
 
 
-RUST_MOD = re.compile(r"\bmod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
-RUST_ESCAPE = re.compile(r"#\s*!?\s*\[\s*path\b|\binclude(?:_str|_bytes)?\s*!")
+RUST_TOKEN = re.compile(r"//|/\*|\bb?r#*\"|\"|'")
+RUST_CHAR = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|[^\n])|[^\\'\n])'")
+RUST_STRING = re.compile(r'"(?:\\.|[^"\\])*"', re.S)
+RUST_MOD = re.compile(r"mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*([;{])")
+RUST_ATTRIBUTE = re.compile(r"#\s*!?\s*\[")
+RUST_MACRO_RULES = re.compile(r"\bmacro_rules\s*!")
+RUST_INCLUDE = re.compile(r"\binclude(?:_str|_bytes)?\s*!")
 JS_STRING = re.compile(r"""(['"`])((?:\\.|(?!\1).){1,512}?)\1""")
-JS_DYNAMIC = re.compile(r"""\b(?:require|import)\s*\(\s*[^'"`\s)]""")
+JS_LOADER = re.compile(r"\b(?:require|import)\b")
+JS_LOAD = re.compile(r"""(?:require|import)\(\s*(['"])[^'"\\\n]*\1\s*\)""")
+JS_INDIRECT = re.compile(r"\b(?:eval|Function|createRequire|_load|child_process|vm)\b")
 JS_EXTENSIONS = ("", ".js", ".cjs", ".mjs", ".json", "/index.js", "/index.cjs", "/index.json")
+BRACKETS = {"(": ")", "[": "]", "{": "}"}
+
+
+def strip_rust(text: str):
+    """text with comments (line and nested block) replaced by a space and string and char literals by empty
+    ones, so nothing hides in either; None when a comment or literal does not end."""
+    out, at = [], 0
+    while True:
+        match = RUST_TOKEN.search(text, at)
+        if match is None:
+            out.append(text[at:])
+            return "".join(out)
+        start, token = match.start(), match.group()
+        out.append(text[at:start])
+        if token == "//":
+            end = text.find("\n", start)
+            at = len(text) if end < 0 else end
+            out.append(" ")
+        elif token == "/*":
+            depth, at = 1, start + 2
+            while depth:
+                opening, closing = text.find("/*", at), text.find("*/", at)
+                if closing < 0:
+                    return None
+                if 0 <= opening < closing:
+                    depth, at = depth + 1, opening + 2
+                else:
+                    depth, at = depth - 1, closing + 2
+            out.append(" ")
+        elif token.endswith('"') and token != '"':
+            closing = '"' + "#" * token.count("#")
+            end = text.find(closing, match.end())
+            if end < 0:
+                return None
+            at = end + len(closing)
+            out.append('""')
+        elif token == '"':
+            literal = RUST_STRING.match(text, start)
+            if literal is None:
+                return None
+            at = literal.end()
+            out.append('""')
+        else:
+            literal = RUST_CHAR.match(text, start)
+            at = literal.end() if literal else start + 1
+            out.append("' '" if literal else "'")
+
+
+def bracketed(text: str, start: int):
+    """The text inside the bracket group opening at or after start, or None when there is none or it never closes."""
+    opening = re.compile(r"[(\[{]").search(text, start)
+    if opening is None:
+        return None
+    stack, at = [BRACKETS[opening.group()]], opening.end()
+    for token in re.compile(r"[(\[{)\]}]").finditer(text, at):
+        if token.group() in BRACKETS:
+            stack.append(BRACKETS[token.group()])
+        elif token.group() != stack.pop():
+            return None
+        if not stack:
+            return text[at : token.start()]
+    return None
 
 
 def rust_partial(path: str, text: str, copied: set, roots: set) -> bool:
-    """Whether Rust file path names code that was not copied: a `mod x;` whose file is absent, `#[path]` or include!."""
-    if RUST_ESCAPE.search(text):
+    """Whether Rust file path may run code that was not copied. Fail safe: after comments and literals are
+    stripped, an include!, a `path` key in any attribute, a macro_rules! body with `mod`, a `mod` not of the form
+    `mod <ident>;` or `mod <ident> {`, unbalanced braces, or a `mod <ident>;` whose file was not copied."""
+    code = strip_rust(text)
+    if code is None or RUST_INCLUDE.search(code):
         return True
+    for attribute in RUST_ATTRIBUTE.finditer(code):
+        inside = bracketed(code, attribute.end() - 1)
+        if inside is None or re.search(r"\bpath\s*=", inside):
+            return True
+    for macro in RUST_MACRO_RULES.finditer(code):
+        body = bracketed(code, macro.end())
+        if body is None or re.search(r"\bmod\b", body):
+            return True
     directory, _, file = path.rpartition("/")
     stem = file[: -len(".rs")]
     base = directory if path in roots or stem in ("mod", "lib", "main") else posixpath.join(directory, stem)
-    for module in RUST_MOD.findall(text):
-        candidates = (posixpath.join(base, f"{module}.rs"), posixpath.join(base, module, "mod.rs"))
-        if not any(candidate in copied for candidate in candidates):
-            return True
-    return False
+    stack, pending = [], None
+    for token in re.finditer(r"\{|\}|\bmod\b", code):
+        if token.group() == "{":
+            stack.append(pending)
+            pending = None
+        elif token.group() == "}":
+            if not stack:
+                return True
+            stack.pop()
+        else:
+            declaration = RUST_MOD.match(code, token.start())
+            if declaration is None:
+                return True
+            module, end = declaration.groups()
+            if end == "{":
+                pending = module
+                continue
+            where = posixpath.join(base, *[name for name in stack if name])
+            candidates = (posixpath.join(where, f"{module}.rs"), posixpath.join(where, module, "mod.rs"))
+            if not any(candidate in copied for candidate in candidates):
+                return True
+    return bool(stack)
 
 
 def js_partial(path: str, text: str, copied: set, archive: Archive) -> bool:
-    """Whether install script path names a file that was not copied: a dynamic require or import, or a string
-    literal that resolves, from its directory or the package root, to an archive file that was not copied."""
-    if JS_DYNAMIC.search(text):
+    """Whether install script path may run a file that was not copied. Fail safe: a `require` or `import` not
+    immediately followed by `(` and one string literal, an indirect loader (eval, Function, createRequire, vm,
+    child_process, _load), or a string literal that resolves, from its directory or the package root, to an
+    archive file that was not copied."""
+    if JS_INDIRECT.search(text):
+        return True
+    if any(not JS_LOAD.match(text, loader.start()) for loader in JS_LOADER.finditer(text)):
         return True
     directory = path.rpartition("/")[0]
     for _, literal in JS_STRING.findall(text):

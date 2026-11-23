@@ -19,7 +19,8 @@ mismatches and missing hashes; unsafe archives (absolute, `..`, symlink,
 hard link, FIFO, gzip bomb, member count, outside the top directory,
 oversized selected file); proc-macro through `crate-type`; members equal
 only under case or Unicode folding; data after the gzip stream; build and
-install code that names files not copied (`partial`); errors of any kind
+install code that names files not copied, or that the scan cannot
+follow (`partial`); errors of any kind
 and non-regular members as `failed`, never a crash; the member cap on
 selected files only and the npm version-document fallback; single-package failures; the CLI
 (stale output, no packages.json, malformed input, bad arguments); Python
@@ -733,6 +734,63 @@ def build_code(box: Box):
     T.check("F4 binding.gyp: partial", metadata and metadata["build_time"] == "partial", str(record))
 
 
+def fooled_scan(box: Box):
+    main = CARGO + b'build = "build/main.rs"\n'
+    proc = CARGO + b"[lib]\nproc-macro = true\n"
+    cases = {
+        "N1 a comment inside mod": {
+            "Cargo.toml": CARGO,
+            "build.rs": b"mod /* c */ net;\nfn main() {}\n",
+            "net.rs": b"\n",
+        },
+        "N1b a line comment inside mod": {
+            "Cargo.toml": CARGO,
+            "build.rs": b"mod // c\nnet;\nfn main() {}\n",
+            "net.rs": b"\n",
+        },
+        "N2 a cfg_attr path with a decoy": {
+            "Cargo.toml": main,
+            "build/main.rs": b'#[cfg_attr(all(), path = "../evil.rs")] mod net;\nfn main() {}\n',
+            "build/net.rs": b"\n",
+            "evil.rs": b"\n",
+        },
+        "N3 a macro-generated mod": {
+            "Cargo.toml": CARGO,
+            "build.rs": b"macro_rules! m { ($n:ident) => { mod $n; } }\nm!(net);\nfn main() {}\n",
+            "net.rs": b"\n",
+        },
+        "N4 a proc-macro cfg_attr path with a decoy": {
+            "Cargo.toml": proc,
+            "src/lib.rs": b'#[cfg_attr(all(), path = "../payload/x.rs")] mod x;\n',
+            "src/x.rs": b"\n",
+            "payload/x.rs": b"\n",
+        },
+        "a string hiding a comment opener": {
+            "Cargo.toml": CARGO,
+            "build.rs": b'fn main() { let s = "/*"; }\nmod evil; // */\n',
+            "evil.rs": b"\n",
+        },
+        "an inline module with a decoy": {
+            "Cargo.toml": main,
+            "build/main.rs": b"mod a { mod b; }\nfn main() {}\n",
+            "build/b.rs": b"\n",
+        },
+    }
+    for label, files in cases.items():
+        record, metadata = one_crate(box, files)
+        build_time = metadata["build_time"] if metadata else record
+        T.check(f"F8 {label}: partial", build_time == "partial", str(build_time))
+    benign = b"// mod x;\n/* /* nested */ mod y; */\nfn main() { let path = 1; let c = '\"'; }\n"
+    record, metadata = one_crate(box, {"Cargo.toml": CARGO, "build.rs": benign})
+    build_time = metadata["build_time"] if metadata else record
+    T.check("F8 comments, a char quote and `let path`: not partial", build_time == ["build.rs"], str(build_time))
+    hook = b'{"name": "rp", "scripts": {"postinstall": "node install.js"}}'
+    alias = b'const r = require;\nr("li" + "b/evil.js");\n'
+    record, metadata = one_npm(box, {"package.json": hook, "install.js": alias, "lib/evil.js": b"\n"})
+    build_time = metadata["build_time"] if metadata else record
+    T.check("F8 N5 an aliased require: partial", build_time == "partial", str(build_time))
+
+
 def no_crash(box: Box):
     deep = b'{"name": "rp", "x": ' + b"[" * 200000 + b"]" * 200000 + b"}"
     record, metadata = one_npm(box, {"package.json": deep})
@@ -867,7 +925,7 @@ def main() -> int:
         integrity(box, fx)
         archives(box, fx)
         failures(box, fx)
-        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, no_crash, caps):
+        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps):
             case(box)
         hosts()
         cli(box)
