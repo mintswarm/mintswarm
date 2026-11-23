@@ -1,0 +1,63 @@
+id: "typescript"
+version: 1
+name: "TypeScript"
+description: "TypeScript in one package, type-checked by tsc, linted by ESLint with typescript-eslint and formatted by Prettier."
+detect:
+  files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts", "**/tsconfig.json"]
+  shebangs: ["ts-node", "tsx"]
+parameters:
+  - name: "package_root"
+    type: "string"
+    default: "."
+    description: "Which directory, relative to the repository root, holds the TypeScript package and its node_modules?"
+    pattern: '\.|[A-Za-z0-9_][A-Za-z0-9._+-]*(/[A-Za-z0-9_][A-Za-z0-9._+-]*)*'
+  - name: "node_major"
+    type: "integer"
+    default: 24
+    description: "Which major release line of Node.js does the package pin?"
+    choices: [22, 24, 26]
+  - name: "es_year"
+    type: "integer"
+    default: 2023
+    description: "Which ECMAScript edition does the compiler target?"
+    choices: [2022, 2023, 2024]
+  - name: "jsx"
+    type: "string"
+    default: "preserve"
+    description: "How does the compiler treat JSX: preserve, or react-jsx for React?"
+    choices: ["preserve", "react-jsx"]
+    pattern: "preserve|react-jsx"
+  - name: "print_width"
+    type: "integer"
+    default: 100
+    description: "What is the longest line Prettier allows?"
+    choices: [80, 100, 120]
+settings:
+  - template: "settings/tsconfig.json"
+    target: "{{ package_root }}/tsconfig.json"
+    kind: "compiler"
+  - template: "settings/eslint.config.mjs"
+    target: "{{ package_root }}/eslint.config.mjs"
+    kind: "linter"
+    alternatives: ["{{ package_root }}/eslint.config.*", "{{ package_root }}/.eslintrc*"]
+  - template: "settings/prettierrc.json"
+    target: "{{ package_root }}/.prettierrc.json"
+    kind: "formatter"
+    alternatives: ["{{ package_root }}/.prettierrc*", "{{ package_root }}/prettier.config.*"]
+  - template: "settings/prettierignore"
+    target: "{{ package_root }}/.prettierignore"
+    kind: "formatter"
+  - template: "settings/node-version"
+    target: "{{ package_root }}/.node-version"
+    kind: "toolchain"
+    alternatives: ["{{ package_root }}/.nvmrc"]
+gates:
+  - name: "typescript-typecheck"
+    command: "cd {{ package_root }} && ./node_modules/.bin/tsc --noEmit"
+    kind: "typecheck"
+  - name: "typescript-lint"
+    command: "cd {{ package_root }} && ./node_modules/.bin/eslint ."
+    kind: "lint"
+  - name: "typescript-format"
+    command: "cd {{ package_root }} && ./node_modules/.bin/prettier --check ."
+    kind: "format"
