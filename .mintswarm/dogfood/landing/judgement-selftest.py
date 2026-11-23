@@ -24,7 +24,11 @@ is loaded by its file path. The cases:
   keys of plan-approval/decision.py's judgement layer, in its order;
 - stage agreement: the hard triggers and band ranges under "## Bands" in
   .mintswarm/stages/landing.md are judgement.py's, its envelope template has
-  the envelope keys in order, and no line of it starts with `Risk:`.
+  the envelope keys in order, and no line of it starts with `Risk:`; under
+  "## Bands" in both landing.md and assess.md the value starts at the
+  band's highest value and only goes down, with no reasons for raising it
+  and none of the old "starts at the lowest value" wording, and only the
+  landing `weakens-safeguard` trigger excepts a declared change.
 
 Exits 0 when every case passes, 1 otherwise.
 """
@@ -42,6 +46,7 @@ sys.dont_write_bytecode = True  # leave no __pycache__ in the source tree
 HERE = Path(__file__).resolve().parent
 JUDGEMENT = HERE / "judgement.py"
 STAGE = HERE.parent.parent / "stages" / "landing.md"
+ASSESS = HERE.parent.parent / "stages" / "assess.md"
 NOUN = "landing document"
 
 
@@ -363,6 +368,26 @@ def check_stage() -> None:
         T.check(f"stage: the template has {heading}", heading in output, "")
 
 
+def check_stage_rules() -> None:
+    for name, path in (("landing", STAGE), ("assess", ASSESS)):
+        bands_section = section(path.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output")
+        text = "\n".join(bands_section)
+        for phrase in (
+            "starts at the band's highest value and only goes down",
+            "State no reasons for raising the value",
+        ):
+            T.check(f"stage rules: {name} says {phrase!r}", phrase in text, "")
+        for phrase in ("starts at the band's lowest value", "Raise it only"):
+            T.check(f"stage rules: {name} no longer says {phrase!r}", phrase not in text, "")
+        trigger = [line for line in bands_section if line.startswith("   - `weakens-safeguard`:")]
+        declared = len(trigger) == 1 and "declared" in trigger[0]
+        T.check(
+            f"stage rules: {name} weakens-safeguard {'excepts' if name == 'landing' else 'keeps'} a declared change",
+            len(trigger) == 1 and declared == (name == "landing"),
+            repr(trigger),
+        )
+
+
 def check_stdlib() -> None:
     allowed = set(sys.stdlib_module_names)
     for path in (JUDGEMENT, Path(__file__)):
@@ -384,6 +409,7 @@ def main() -> int:
     check_malformed()
     check_consumable()
     check_stage()
+    check_stage_rules()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
