@@ -29,19 +29,21 @@ lines, the maintainer's quoted words and the time following them:
     Approved head: SHA
 
 A steer is counted as .mintswarm/dogfood/landing/collect-facts.py counts one:
-any comment or submitted review by an account that is not a bot (user.type
-is not Bot and the login does not end in [bot]), and any comment or review
-by mintswarm-dev[bot] with a line that, trimmed of whitespace, is exactly the
-steer marker. The latest approval steer naming SHA (by created_at, then id)
-is the approval, and any other steer withdraws it: a comment created after
-it (by created_at, then id), a comment whose updated_at is after its
-created_at (an earlier comment may have been edited into a steer), or a
-review whose submitted_at is not before its created_at (reviews in state
-PENDING or without submitted_at are skipped; reviews have no updated_at, so
-an edited review body is not seen). So any later steer, relayed or the
-maintainer's own, a "Request changes" or comment review included, withdraws
-an approval. The approval itself is strict: the three lines count only at the
-top of a comment by mintswarm-dev[bot].
+any comment, inline review comment or submitted review by an account that is
+not a bot (user.type is not Bot and the login does not end in [bot]), and any
+comment or review by mintswarm-dev[bot] with a line that, trimmed of
+whitespace, is exactly the steer marker. The latest approval steer naming SHA
+(by created_at, then id) is the approval, and any other steer withdraws it: a
+comment created after it (by created_at, then id), a comment whose updated_at
+is after its created_at (an earlier comment may have been edited into a
+steer), an inline review comment (pulls/PR/comments) created at or after its
+created_at, or edited after it (an earlier one, in a resolved thread, may have
+been edited into a steer), or a review whose submitted_at is not before its
+created_at (reviews in state PENDING or without submitted_at are skipped;
+reviews have no updated_at, so an edited review body is not seen). So any
+later steer, relayed or the maintainer's own, a "Request changes" or comment
+review included, withdraws an approval. The approval itself is strict: the
+three lines count only at the top of a comment by mintswarm-dev[bot].
 
 Checks, all made with the steward's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
@@ -62,18 +64,19 @@ printed on stderr, and nothing is merged unless all of them hold:
 - commits/SHA/status: every status success, and no more than the 100 one page
   holds.
 - GraphQL pullRequest.reviewThreads, paged: no unresolved thread.
-- issues/PR/comments and pulls/PR/reviews, every page: an approval steer
-  naming SHA, with no steer that withdraws it.
+- issues/PR/comments, pulls/PR/comments and pulls/PR/reviews, every page: an
+  approval steer naming SHA, with no steer that withdraws it.
 
-When all hold and --dry-run is not given, it reads pulls/PR, the review
-threads, the comments and the reviews again, and refuses if any of the fields
-checked above (or the title) changed, a thread is unresolved or a steer now
-withdraws the approval, since GitHub does not re-check a ruleset
-bypass actor's merge for them; then it calls
-PUT repos/{owner}/{repo}/pulls/PR/merge with {"merge_method": "squash",
-"sha": SHA, "commit_title": "TITLE (#PR)"}, so GitHub refuses the merge if the
-head moved after the checks, then reads pulls/PR again and prints
-merge_commit_sha and merged_by.
+When all hold and --dry-run is not given, it reads pulls/PR, the check runs,
+check suites and statuses, the review threads, the comments, the inline review
+comments and the reviews again, and refuses if any of the fields checked above
+(or the title) changed, a check or status no longer passes, a thread is
+unresolved or a steer now withdraws the approval, since GitHub does not
+re-check a ruleset bypass actor's merge for them; then it calls PUT
+repos/{owner}/{repo}/pulls/PR/merge with {"merge_method": "squash", "sha":
+SHA, "commit_title": "TITLE (#PR)"}, so GitHub refuses the merge if the head
+moved after the checks, then reads pulls/PR again and prints merge_commit_sha
+and merged_by.
 
 Exit codes: 0 when merged, or when --dry-run passes every check; 1 on any
 refusal or GitHub failure, including a refused merge call, which is what
@@ -371,9 +374,11 @@ def steer_order(comment: dict):
 
 
 def check_steer(steward: Steward, pr: int, sha: str) -> list:
-    comments, reviews = [], []
+    comments, inline, reviews = [], [], []
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
         comments.extend(page or [])
+    for page in steward.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"):
+        inline.extend(page or [])
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"):
         reviews.extend(page or [])
     steers = [comment for comment in comments if isinstance(comment, dict) and is_steer(comment)]
@@ -392,6 +397,14 @@ def check_steer(steward: Steward, pr: int, sha: str) -> list:
             reasons.append(f"a later steer by {who} {withdraw}")
         elif str(steer.get("updated_at") or "") > approved_at:
             reasons.append(f"a steer by {who} edited after the approval {withdraw}")
+    for comment in inline:
+        if not isinstance(comment, dict) or not is_steer(comment):
+            continue
+        who = author(comment) or "a deleted user"
+        if str(comment.get("created_at") or "") >= approved_at:
+            reasons.append(f"a later inline review comment by {who} {withdraw}")
+        elif str(comment.get("updated_at") or "") > approved_at:
+            reasons.append(f"an inline review comment by {who} edited after the approval {withdraw}")
     for review in reviews:
         if not isinstance(review, dict) or review.get("state") == "PENDING" or not review.get("submitted_at"):
             continue
@@ -418,13 +431,15 @@ def snapshot(data: dict) -> dict:
 
 
 def recheck(steward: Steward, pr: int, sha: str, before: dict) -> list:
-    """Read the PR, its threads and its steers again right before the merge: a bypass actor's merge is not re-checked."""
+    """Read the PR, its checks, threads and steers again right before the merge: a bypass actor's merge is not re-checked."""
     after = pull(steward, pr)
     reasons = check_pull(after, sha)
     old, new = snapshot(before), snapshot(after)
     for field in old:
         if old[field] != new[field]:
             reasons.append(f"the PR's {field} changed during the checks, from {old[field]!r} to {new[field]!r}")
+    reasons += check_runs(steward, sha)
+    reasons += check_statuses(steward, sha)
     reasons += check_threads(steward, pr)
     reasons += check_steer(steward, pr, sha)
     return reasons

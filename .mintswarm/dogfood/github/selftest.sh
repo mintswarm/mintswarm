@@ -374,15 +374,18 @@ cat > "$stubs/gh" <<'EOF'
 # sets its type unless it is untypeable; a comment POST fails while
 # comment_failures is above 0, counting it down; a GET of the comments serves
 # one list of comment_reads per read, the last repeating, when it is set,
-# counted in comments-reads.json; a PR's reviews,
-# served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]} or
-# {"<n>": {"reads": [[...], ...]}}, one list per read, the last repeating,
-# counted in reviews-reads.json.
+# counted in comments-reads.json; a PR's reviews and inline review comments,
+# served for pulls/<n>/reviews and pulls/<n>/comments, in reviews.json and
+# review-comments.json: {"<n>": [...]} or {"<n>": {"reads": [[...], ...]}},
+# one list per read, the last repeating, counted in reviews-reads.json and
+# review-comments-reads.json.
 # For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
 # last read repeating, counted in pulls-reads.json; check runs, check suites
 # and statuses per commit in commits.json, {"<sha>": {"check_runs": [...],
-# "check_suites": [...], "statuses": [...], "status_total": n}}, check runs and
-# suites two to a page; review threads for "api graphql" in threads.json,
+# "check_suites": [...], "statuses": [...], "status_total": n}} or
+# {"<sha>": {"reads": [{...}, ...]}}, one per read of each of check-runs,
+# check-suites and status, the last repeating, counted per "<sha>/<kind>" in
+# commits-reads.json, check runs and suites two to a page; review threads for "api graphql" in threads.json,
 # {"<n>": [isResolved, ...]} or {"<n>": {"reads": [[isResolved, ...], ...]}},
 # one list per read of the first page, the last repeating, counted in
 # threads-reads.json, two to a page with the index as cursor; and PUT
@@ -403,12 +406,13 @@ data = ""
 if any(argv[i] == "--input" and argv[i + 1] == "-" for i in range(len(argv) - 1)):
     data = sys.stdin.read()
     record_stdin("gh", data)
-if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/reviews", a) for a in argv):
-    store = os.path.join(STATE, "reviews.json")
-    n = re.search(r"/pulls/(\d+)/", next(a for a in argv if a.startswith("repos/"))).group(1)
+if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/(reviews|comments)", a) for a in argv):
+    n, kind = re.search(r"/pulls/(\d+)/(reviews|comments)", next(a for a in argv if a.startswith("repos/"))).groups()
+    name = "reviews" if kind == "reviews" else "review-comments"
+    store = os.path.join(STATE, name + ".json")
     reviews = (json.load(open(store)) if os.path.exists(store) else {}).get(n, [])
     if isinstance(reviews, dict):
-        reads_path = os.path.join(STATE, "reviews-reads.json")
+        reads_path = os.path.join(STATE, name + "-reads.json")
         reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
         seen = reads.get(n, 0)
         reads[n] = seen + 1
@@ -467,6 +471,13 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-
     sha, kind = re.search(r"/commits/([0-9a-f]+)/(check-runs|check-suites|status)", next(a for a in argv if a.startswith("repos/"))).groups()
     store = os.path.join(STATE, "commits.json")
     commit = (json.load(open(store)) if os.path.exists(store) else {}).get(sha, {})
+    if "reads" in commit:
+        reads_path = os.path.join(STATE, "commits-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(sha + "/" + kind, 0)
+        reads[sha + "/" + kind] = seen + 1
+        json.dump(reads, open(reads_path, "w"))
+        commit = commit["reads"][min(seen, len(commit["reads"]) - 1)]
     if kind == "status":
         statuses = commit.get("statuses", [])
         print(json.dumps({"state": "success", "total_count": commit.get("status_total", len(statuses)),
@@ -2258,7 +2269,7 @@ check "land.py compiles" \
   "$L" "$sandbox/land.pyc"
 sha_of() { printf '%040x' "$1"; }
 OTHER_SHA="$(sha_of 4095)"
-for f in pulls commits threads issues merges reviews; do
+for f in pulls commits threads issues merges reviews review-comments; do
   [ -f "$MSW_STUB_STATE/$f.json" ] || printf '{}\n' > "$MSW_STUB_STATE/$f.json"
 done
 stub_update() {  # stub_update FILE JQ ARGS...: rewrite FILE.json in the gh stub's state with JQ
@@ -2472,6 +2483,26 @@ check "refused: an earlier comment edited after the approval withdraws it" \
 fixture 145 . . '[true, true, true]' '[{id: 497, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T11:30:00Z",
   user: {login: "zmij", type: "User"}, body: "looks good"}] + .'
 check "an earlier comment edited before the approval passes (--dry-run)" land 145 --sha "$(sha_of 145)" --dry-run
+fixture 147
+stub_update review-comments '.["147"] = [{id: 9101, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T11:00:00Z",
+  updated_at: "2026-11-23T12:05:00Z", body: "Not this way."}]'
+check "refused: an earlier inline review comment edited after the approval withdraws it" \
+  refused_land "an inline review comment by zmij edited after the approval withdraws the approval" 147
+check "having read pulls/147/comments over every page" \
+  sh -c 'jq -e "select(.cmd == \"gh\") | .argv | select(index(\"--paginate\") and index(\"--slurp\")) | .[-1] | select(test(\"pulls/147/comments\"))" "$1" >/dev/null' \
+  sh "$argv_log"
+fixture 148
+stub_update review-comments '.["148"] = [{id: 9102, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T12:05:00Z",
+  updated_at: "2026-11-23T12:05:00Z", body: "One more thing."}]'
+check "refused: a later inline review comment withdraws the approval" \
+  refused_land "a later inline review comment by zmij withdraws the approval" 148
+fixture 149
+stub_update review-comments '.["149"] = [
+  {id: 9103, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T11:30:00Z", body: "nit"},
+  {id: 9104, user: {login: "copilot[bot]", type: "Bot"}, created_at: "2026-11-23T12:05:00Z", updated_at: "2026-11-23T12:06:00Z",
+    body: "<!-- mintswarm: steer -->"}]'
+check "an inline comment edited before the approval and a later bot one that is not a steer pass (--dry-run)" \
+  land 149 --sha "$(sha_of 149)" --dry-run
 
 # Right before the merge, pulls/N and the threads are read again.
 fixture 132 '[.[0], (.[0] | .labels += [{name: "hold"}])]'
@@ -2495,6 +2526,24 @@ stub_update reviews '.["146"] = {reads: [[], [{id: 9007, user: {login: "zmij", t
 check "refused: a review submitted during the checks withdraws the approval" \
   refused_land "a later review by zmij (CHANGES_REQUESTED) withdraws the approval" 146
 check "after reading the reviews twice" eq "$(jq -r '.["146"]' "$MSW_STUB_STATE/reviews-reads.json")" 2
+fixture 150
+stub_update review-comments '.["150"] = {reads: [[], [{id: 9105, user: {login: "zmij", type: "User"},
+  created_at: "2026-11-23T12:05:00Z", updated_at: "2026-11-23T12:05:00Z", body: "Stop."}]]}'
+check "refused: an inline review comment posted during the checks withdraws the approval" \
+  refused_land "a later inline review comment by zmij withdraws the approval" 150
+check "after reading the inline review comments twice" \
+  eq "$(jq -r '.["150"]' "$MSW_STUB_STATE/review-comments-reads.json")" 2
+fixture 151 . '{reads: [., (.check_runs[1] |= (.status = "in_progress" | .conclusion = null))]}'
+check "refused: a check run re-run during the checks" refused_land "the check run gates (ubuntu) is in_progress, not completed" 151
+check "after reading the check runs twice" \
+  eq "$(jq -r --arg k "$(sha_of 151)/check-runs" '.[$k]' "$MSW_STUB_STATE/commits-reads.json")" 2
+fixture 152 . '{reads: [., (.check_suites[0] |= (.status = "in_progress" | .conclusion = null))]}'
+check "refused: a check suite re-run during the checks" \
+  refused_land "the check suite 7 of github-actions is in_progress, not completed" 152
+fixture 153 . '{reads: [., (.statuses[0].state = "failure")]}'
+check "refused: a status that failed during the checks" refused_land "the status ci/legacy is failure, not success" 153
+check "after reading the statuses twice" \
+  eq "$(jq -r --arg k "$(sha_of 153)/status" '.[$k]' "$MSW_STUB_STATE/commits-reads.json")" 2
 fixture 116 '.[0].mergeable = false | .[0].mergeable_state = "unknown"'
 check "refused: GitHub reports the PR not mergeable" refused_land "GitHub reports the PR not mergeable" 116
 
