@@ -15,7 +15,9 @@ is loaded by its file path. The cases:
   `require-human`, are not;
 - the threshold, through judged_decision: the confidence against
   min_confidence at the edges, and a hard trigger, an unusable layer, a
-  `hit` floor and a missing floor;
+  `hit` floor and a missing floor; a min_confidence that floor.py would
+  refuse (None, 89, True, 101, 0) is `human`, and judgement.py's
+  MIN_CONFIDENCE, taken from floor.py, is 90;
 - malformed and repeated envelopes, each unusable with a fixed problem that
   names the landing document;
 - consumable as is: judgement() gives the envelope's own values, with the
@@ -181,10 +183,16 @@ def check_threshold() -> None:
         ("an unusable layer", "clean", judge("not a landing document"), 90, "human"),
         ("a hit floor", "hit", layer("safe", 100), 90, "human"),
         ("a missing floor", None, layer("safe", 100), 90, "human"),
+        ("a None threshold", "clean", layer("safe", 100), None, "human"),
+        ("an 89 threshold", "clean", layer("safe", 100), 89, "human"),
+        ("a True threshold", "clean", layer("safe", 100), True, "human"),
+        ("a 101 threshold", "clean", layer("safe", 100), 101, "human"),
+        ("a 0 threshold", "clean", layer("likely-safe", 90), 0, "human"),
     ]
     for name, floor_verdict, judged, minimum, want in cases:
         got = J.judged_decision(floor_verdict, judged, minimum)
         T.check(f"threshold {name}: {want}", got == want, f"got {got}")
+    T.check("threshold: the lowest allowed is 90", J.MIN_CONFIDENCE == 90, repr(J.MIN_CONFIDENCE))
     forged = dict(layer("safe", 100), hard_triggers=["credentials"])
     T.check(
         "threshold: a usable layer that names a trigger is human",

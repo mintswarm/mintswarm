@@ -5,8 +5,9 @@ library, not a script: the landing decision loads it by its file path, as
 landing/collect-facts.py loads plan-approval/decision.py, and calls the
 functions below. It writes no files and runs nothing. Standard library only;
 it loads ../plan-approval/decision.py, found next to this file through its
-own path, with that module's floor.py set, and sets sys.dont_write_bytecode
-first, so no __pycache__ is left behind.
+own path, with that module's floor.py set, and floor.py next to this file
+(for MIN_CONFIDENCE), and sets sys.dont_write_bytecode first, so no
+__pycache__ is left behind.
 
 The landing document (.mintswarm/stages/landing.md, "## Output") carries the
 same envelope as the assess stage's assessment, parsed by decision.py's own
@@ -37,7 +38,9 @@ The contract the landing decision consumes:
   the landing floor's verdict is `clean`, the layer is usable with no hard
   trigger and its confidence is at least min_confidence
   (pipeline.landing.min_confidence, validated by landing/floor.py's
-  validate_landing); otherwise `human`.
+  validate_landing); otherwise `human`. It does not rely on that
+  validation: a min_confidence that is not an integer from floor.py's
+  MIN_CONFIDENCE to 100 (None, a boolean, 89, 101) also gives `human`.
 
 The landing decision, its record and its shadow comment are not here.
 """
@@ -48,6 +51,7 @@ from pathlib import Path
 from types import ModuleType
 
 DECISION = Path(__file__).resolve().parent.parent / "plan-approval" / "decision.py"
+LANDING_FLOOR = Path(__file__).resolve().parent / "floor.py"
 NOUN = "landing document"
 HARD_TRIGGERS = (
     "criterion-not-met",
@@ -74,7 +78,19 @@ def load_decision() -> ModuleType:
     return module
 
 
+def load_landing_floor() -> ModuleType:
+    """landing/floor.py, loaded by path, for its MIN_CONFIDENCE."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to floor.py
+    spec = importlib.util.spec_from_file_location("msw_landing_floor_for_judgement", LANDING_FLOOR)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {LANDING_FLOOR}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 decision = load_decision()
+MIN_CONFIDENCE = load_landing_floor().MIN_CONFIDENCE
 BANDS = decision.BANDS
 ENVELOPE_KEYS = decision.ENVELOPE_KEYS
 DOUBT_KEYS = decision.DOUBT_KEYS
@@ -117,7 +133,12 @@ def judgement(data: bytes) -> dict:
 
 
 def judged_decision(floor_verdict, layer: dict, min_confidence: int) -> str:
-    """`auto` for a clean floor and a usable, trigger-free judgement at or above min_confidence; else `human`."""
+    """`auto` for a clean floor and a usable, trigger-free judgement at or above min_confidence; else `human`.
+
+    A min_confidence that is not an integer from MIN_CONFIDENCE to 100 gives `human`.
+    """
+    if type(min_confidence) is not int or not MIN_CONFIDENCE <= min_confidence <= 100:
+        return "human"
     if floor_verdict != "clean" or layer.get("status") != "usable" or layer.get("hard_triggers"):
         return "human"
     confidence = layer.get("confidence")
