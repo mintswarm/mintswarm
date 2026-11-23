@@ -111,6 +111,8 @@ Nothing else from the plan goes into the review job. Without the section, the fi
 
 In every review round, the session runs `python3 -I .mintswarm/dogfood/dependencies/new-packages.py --base <diff.patch base> --head HEAD --out .mintswarm/job/inputs/dependencies` at the worktree root, with the same base as `diff.patch`. The script reads `pipeline.dependencies.review` from that base's config, and writes `packages.json` only when the option is `agent` and the change touches a dependency file. When it writes no file, the review job gets no dependency inputs. An exit other than 0 stops the round until the cause is fixed.
 
+Right after it, in every round, the session runs `python3 -I .mintswarm/dogfood/dependencies/prefetch.py --dir .mintswarm/job/inputs/dependencies` at the worktree root, with network access to `crates.io`, `index.crates.io`, `static.crates.io` and `registry.npmjs.org` only and no registry credential in its environment. The script first removes the previous round's prefetch output (`prefetch.json`, `cargo/`, `npm/`); with no `packages.json` it prints `no packages.json` and writes nothing. Otherwise it writes each package's trimmed registry metadata and extracted manifest and build or install code beside `packages.json`, executing nothing from the package. A package it refuses or fails to fetch is recorded in `prefetch.json` with its reason, and the review rejects it as unverifiable. An exit other than 0 stops the round until the cause is fixed.
+
 ## PR approval
 
 PR approval stays with a human in every mode, including `never`. Plan approval only decides whether implement may start without the maintainer.

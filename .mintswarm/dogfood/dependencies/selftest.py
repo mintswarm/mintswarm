@@ -17,7 +17,9 @@ Cargo change (a new registry crate, an upgrade, a git crate, a look-alike
 registry, a new transitive crate, a new workspace member); Cargo.lock tables
 in every form Cargo reads (whitespace or a comment in the header, quoted
 keys, inline tables, a table after [metadata], CRLF) and shapes that become
-a problem, never silence; a pnpm change (an
+a problem, never silence (a [root] table, an unknown top-level key, a
+non-string checksum among them); the lockfile `checksum` and `integrity`
+of every listed package; a pnpm change (an
 upgraded scoped package, a tarball package, a peer-suffixed key); a
 Cargo.toml without a lockfile change; an unreadable pnpm-lock.yaml; a changed
 .npmrc; an unknown option value and bad arguments; the checkout's own
@@ -129,7 +131,7 @@ PNPM_HEAD = pnpm_lock(
 )
 
 
-def package(ecosystem, lockfile, name, version, source, registry, direct, previous=()) -> dict:
+def package(ecosystem, lockfile, name, version, source, registry, direct, previous=(), checksum=None, integrity=None):
     return {
         "ecosystem": ecosystem,
         "lockfile": lockfile,
@@ -139,19 +141,23 @@ def package(ecosystem, lockfile, name, version, source, registry, direct, previo
         "source": source,
         "registry": registry,
         "direct": direct,
+        "checksum": checksum,
+        "integrity": integrity,
     }
 
 
 CARGO_EXPECTED = [
-    package("cargo", "Cargo.lock", "anyhow", "1.0.0", CRATES, True, True),
-    package("cargo", "Cargo.lock", "cc", "1.0.0", CRATES, True, False),
-    package("cargo", "Cargo.lock", "gitdep", "0.2.0", GIT_SOURCE, False, True),
-    package("cargo", "Cargo.lock", "lookalike", "0.1.0", EVIL, False, True),
-    package("cargo", "Cargo.lock", "serde", "1.0.1", CRATES, True, True, ["1.0.0"]),
+    package("cargo", "Cargo.lock", "anyhow", "1.0.0", CRATES, True, True, checksum="00"),
+    package("cargo", "Cargo.lock", "cc", "1.0.0", CRATES, True, False, checksum="00"),
+    package("cargo", "Cargo.lock", "gitdep", "0.2.0", GIT_SOURCE, False, True, checksum="00"),
+    package("cargo", "Cargo.lock", "lookalike", "0.1.0", EVIL, False, True, checksum="00"),
+    package("cargo", "Cargo.lock", "serde", "1.0.1", CRATES, True, True, ["1.0.0"], checksum="00"),
 ]
 PNPM_EXPECTED = [
-    package("npm", "web/pnpm-lock.yaml", "@scope/pkg", "1.2.0", "registry", True, True, ["1.1.0"]),
-    package("npm", "web/pnpm-lock.yaml", "react-dom", "18.0.0", "registry", True, True),
+    package(
+        "npm", "web/pnpm-lock.yaml", "@scope/pkg", "1.2.0", "registry", True, True, ["1.1.0"], integrity="sha512-b"
+    ),
+    package("npm", "web/pnpm-lock.yaml", "react-dom", "18.0.0", "registry", True, True, integrity="sha512-c"),
     package("npm", "web/pnpm-lock.yaml", "tarpkg", TARBALL, TARBALL, False, True),
 ]
 
@@ -302,6 +308,12 @@ CARGO_BROKEN = {
     "a numeric version": CARGO_BASE + b'\n[[package]]\nname = "hidden"\nversion = 1\n',
     "a dotted name": CARGO_BASE + b'\n[[package]]\nname.x = 1\nversion = "1"\n',
     "a package that is not an array": b'version = 4\n[package]\nname = "hidden"\nversion = "1"\n',
+    "a [root] table": CARGO_BASE + b'\n[root]\nname = "app"\n',
+    "an unknown top-level key": CARGO_BASE + b'\n[extra]\nname = "app"\n',
+    "a non-string checksum": CARGO_BASE
+    + b'\n[[package]]\nname = "hidden"\nversion = "0.1.0"\nsource = "'
+    + CRATES.encode()
+    + b'"\nchecksum = 1\n',
 }
 
 
