@@ -55,7 +55,21 @@ Spread says, in one line, whether the plan is mechanical-only and why.
 
 Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it. Touching tooling, a gate or stage instructions is not by itself a reason for `high`.
 
-- `low` only if all of these hold:
+Rate in this order: check the `high` triggers first; if none holds, check the `medium` triggers; rate `low` only when every `low` condition holds and no `high` or `medium` trigger applies. Otherwise the level is `medium`.
+
+- `high` if any of these holds:
+  - a criterion is `no`;
+  - the work goes outside the issue's scope or component;
+  - the change, or any step, cannot be undone by a plain revert, declared or not: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data);
+  - the change, or any step, reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger;
+  - the change weakens a gate, a floor rule, a check or a security boundary: it removes or loosens one, or widens permissions or network or file access, except for a bounded widening (below); a mechanical-only plan's configuration change that loosens a rule, such as adding to a tool's ignore list, is a weakening;
+  - there is an undeclared step or override that would itself be `high` under this list.
+- These are not steps outside the repository: work in a scratch directory (`$TMPDIR`, `mktemp -d`) that only verifies the change, the download cache a package manager fills while doing so, and a required tool version, wherever the plan records it. Installing or configuring anything outside the scratch directory, or pushing or publishing from it, still is.
+- `medium`, never `low`, when no `high` trigger holds and any of these holds:
+  - a mistake would reach the gates, a floor or every stage's instructions, unless the plan is mechanical-only; adding a check or a gate, and a revertible change to tooling or stage instructions, belong here;
+  - there is an undeclared step or override that would not itself be `high`; report it under Undeclared steps and overrides;
+  - the change is a bounded widening: network or file access only, read-only, to specific hosts or paths the plan names one by one (no wildcards, no "any"), none of them a credential store, sending no credentials, writing and publishing nothing to them, and undone by a plain revert. A bounded widening never covers credentials.
+- `low` only if no `high` or `medium` trigger holds and all of these hold:
   - every criterion is `yes`;
   - a revert undoes the change;
   - a mistake stays within the issue's component;
@@ -63,18 +77,7 @@ Rate by impact on the product and by reversibility: what a mistake would change,
   - no unresolved uncertainty would change the plan;
   - a mistake would not reach the gates, a floor or every stage's instructions, unless the plan is mechanical-only.
 
-  A mechanical-only plan is `low` when these conditions hold.
-- `high` if any of these holds:
-  - a criterion is `no`;
-  - the work goes outside the issue's scope or component;
-  - there is an irreversible step, or one that changes state outside the repository, declared or not: remote or tracker settings, credentials, published artefacts or packages, data;
-  - the change weakens a gate, a floor rule, a check or a security boundary: it removes or loosens one, widens permissions or network access, or touches credentials, except for a bounded widening (below);
-  - there is an undeclared step or override that would itself be `high` under this list.
-- These are not steps outside the repository: work in a scratch directory (`$TMPDIR`, `mktemp -d`) that only verifies the change, the download cache a package manager fills while doing so, and a required tool version, wherever the plan records it. Installing or configuring anything outside the scratch directory, or pushing or publishing from it, still is.
-- `medium`, never `low`, when no `high` trigger holds and any of these holds:
-  - a mistake would reach the gates, a floor or every stage's instructions, unless the plan is mechanical-only; adding a check or a gate, and a revertible change to tooling or stage instructions, belong here;
-  - there is an undeclared step or override that would not itself be `high`; report it under Undeclared steps and overrides;
-  - the change is a bounded widening: read-only access to targets the plan names, sending no credentials, writing and publishing nothing to them, and undone by a plain revert.
+  A mechanical-only plan is `low` when these conditions hold and no `high` or `medium` trigger applies.
 - Otherwise `medium`.
 - When in doubt between two levels, state the doubt as a reason in the section it concerns and take the level its concrete consequence supports: what the doubted mistake would change, how far it would reach, and whether a revert undoes it.
 
