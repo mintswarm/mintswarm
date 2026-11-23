@@ -370,9 +370,11 @@ cat > "$stubs/gh" <<'EOF'
 # Issues, their assignees, events, type and comments are kept in issues.json in
 # the stub state: {"<n>": {"assignees": [...], "events": [...], "unassignable":
 # [...], "type": "<name>" or null, "comments": [...], "untypeable": bool,
-# "comment_failures": n}}; a PATCH of the issue sets its type unless it is
-# untypeable; a comment POST fails while comment_failures is above 0, counting
-# it down; a PR's reviews,
+# "comment_failures": n, "comment_reads": [[...], ...]}}; a PATCH of the issue
+# sets its type unless it is untypeable; a comment POST fails while
+# comment_failures is above 0, counting it down; a GET of the comments serves
+# one list of comment_reads per read, the last repeating, when it is set,
+# counted in comments-reads.json; a PR's reviews,
 # served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
 # For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
 # last read repeating, counted in pulls-reads.json; check runs, check suites
@@ -507,7 +509,15 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         json.dump(issues, open(store, "w"))
         out = comment
     elif tail == "/comments":
-        out = [item["comments"]] if "--slurp" in argv else item["comments"]
+        comments = item["comments"]
+        if "comment_reads" in item:
+            reads_path = os.path.join(STATE, "comments-reads.json")
+            reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+            seen = reads.get(n, 0)
+            reads[n] = seen + 1
+            json.dump(reads, open(reads_path, "w"))
+            comments = item["comment_reads"][min(seen, len(item["comment_reads"]) - 1)]
+        out = [comments] if "--slurp" in argv else comments
     elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
     else:
@@ -2351,6 +2361,9 @@ fixture 119 . '.check_suites[0] |= (.status = "completed" | .conclusion = "failu
 check "refused: a check suite that concluded failure" refused_land "the check suite 7 of github-actions concluded failure, not success" 119
 fixture 120 . '.check_suites |= map(select(.id != 7))'
 check "refused: the gates-matrix run's check suite is missing" refused_land "the check suite 7 of gates-matrix is not among the check suites" 120
+fixture 140 . '.check_runs |= map(del(.check_suite)) | .check_runs[1].app.slug = "impostor"'
+check "refused: a gates-matrix run with no check suite" refused_land "the check suite None of gates-matrix is not among" 140
+check "with no gate lookup among runs that have no suite either" absent "in check suite None" "$sandbox/land.out"
 fixture 121 . '.check_suites += [{id: 10, app: {slug: "other-ci"}, status: "in_progress", conclusion: null, latest_check_runs_count: 1}]'
 check "refused: another App's check suite still running" refused_land "the check suite 10 of other-ci is in_progress, not completed" 121
 fixture 122 . '.check_runs[0].app.slug = "impostor"'
@@ -2401,8 +2414,22 @@ check "refused: a later steer withdraws the approval" refused_land "a later stee
 fixture 130 . . '[true, true, true]' '[{id: 499, created_at: "2026-11-23T11:00:00Z", user: {login: "mintswarm-dev[bot]"},
   body: "<!-- mintswarm: steer -->\nThe maintainer asked for a rebase.\n"}] + . + [{id: 502, created_at: "2026-11-23T12:10:00Z",
   user: {login: "mintswarm-dev[bot]"}, body: "Round summary.\n\n<!-- mintswarm: steer -->\n"}]'
-check "an approval after an earlier steer, followed by a bot comment that is not a steer, passes (--dry-run)" \
-  land 130 --sha "$(sha_of 130)" --dry-run
+check "refused: a later bot comment with the steer marker on a later line withdraws the approval" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 130
+fixture 136 . . '[true, true, true]' '. + [{id: 504, created_at: "2026-11-23T12:05:00Z", user: {login: "zmij", type: "User"},
+  body: "wait"}]'
+check "refused: a later comment by a person withdraws the approval" refused_land "a later steer by zmij withdraws the approval" 136
+fixture 137 . . '[true, true, true]' '[{id: 499, created_at: "2026-11-23T11:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked for a rebase.\n"}] + . + [
+  {id: 505, created_at: "2026-11-23T12:10:00Z", user: {login: "mintswarm-dev[bot]"}, body: "Round summary.\n"},
+  {id: 506, created_at: "2026-11-23T12:11:00Z", user: {login: "github-actions[bot]"}, body: "<!-- mintswarm: steer -->\n"},
+  {id: 507, created_at: "2026-11-23T12:12:00Z", user: {login: "some-app", type: "Bot"}, body: "<!-- mintswarm: steer -->\n"}]'
+check "an approval after an earlier steer, followed by bot comments that are not steers, passes (--dry-run)" \
+  land 137 --sha "$(sha_of 137)" --dry-run
+fixture 138 . . '[true, true, true]' '. + [{id: 508, created_at: "2026-11-23T12:05:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "Relayed decision:\n  <!-- mintswarm: steer -->  \nHold this one.\n"}]'
+check "refused: a later steer whose marker line has surrounding whitespace withdraws the approval" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 138
 fixture 131 . . '[true, true, true]' '[{id: 503, created_at: "2026-11-23T13:00:00Z", user: {login: "mintswarm-dev[bot]"},
   body: "<!-- mintswarm: steer -->\nThe maintainer asked to wait.\n"}] + .'
 check "refused: the latest steer by created_at wins, whatever the comment order" \
@@ -2418,6 +2445,12 @@ fixture 134 '[.[0], (.[0] | .mergeable_state = "dirty")]'
 check "refused: a conflict that appeared during the checks" refused_land "the PR conflicts with master" 134
 fixture 135 '[.[0], (.[0] | .title = "feat(agents): something else")]'
 check "refused: the title changed during the checks" refused_land "the PR's title changed during the checks" 135
+fixture 139
+stub_update issues '.["139"].comment_reads = [.["139"].comments, (.["139"].comments + [{id: 509, created_at: "2026-11-23T12:05:00Z",
+  user: {login: "zmij", type: "User"}, body: "wait, not yet"}])]'
+check "refused: a steer posted during the checks withdraws the approval" \
+  refused_land "a later steer by zmij withdraws the approval" 139
+check "after reading the comments twice" eq "$(jq -r '.["139"]' "$MSW_STUB_STATE/comments-reads.json")" 2
 fixture 116 '.[0].mergeable = false | .[0].mergeable_state = "unknown"'
 check "refused: GitHub reports the PR not mergeable" refused_land "GitHub reports the PR not mergeable" 116
 

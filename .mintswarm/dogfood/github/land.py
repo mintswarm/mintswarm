@@ -28,10 +28,14 @@ lines, the maintainer's quoted words and the time following them:
     <!-- mintswarm: steer approval -->
     Approved head: SHA
 
-A steer is any comment by mintswarm-dev[bot] whose first line is the steer
-marker. The latest steer on the PR (by created_at, then id) decides: it must be
-the approval steer naming SHA, so a later steer withdraws an approval. The
-lines anywhere but at the top of a comment count for nothing.
+A steer is counted as .mintswarm/dogfood/landing/collect-facts.py counts one:
+any comment by an account that is not a bot (user.type is not Bot and the
+login does not end in [bot]), and any comment by mintswarm-dev[bot] with a
+line that, trimmed of whitespace, is exactly the steer marker. The latest
+steer on the PR (by created_at, then id) decides: it must be the approval
+steer naming SHA, so any later steer, relayed or the maintainer's own,
+withdraws an approval. The approval itself is strict: the three lines count
+only at the top of a comment by mintswarm-dev[bot].
 
 Checks, all made with the steward's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
@@ -54,9 +58,10 @@ printed on stderr, and nothing is merged unless all of them hold:
 - GraphQL pullRequest.reviewThreads, paged: no unresolved thread.
 - issues/PR/comments, every page: an approval steer naming SHA.
 
-When all hold and --dry-run is not given, it reads pulls/PR and the review
-threads again, and refuses if any of the fields checked above (or the title)
-changed or a thread is unresolved, since GitHub does not re-check a ruleset
+When all hold and --dry-run is not given, it reads pulls/PR, the review
+threads and the comments again, and refuses if any of the fields checked above
+(or the title) changed, a thread is unresolved or the latest steer is no
+longer the approval, since GitHub does not re-check a ruleset
 bypass actor's merge for them; then it calls
 PUT repos/{owner}/{repo}/pulls/PR/merge with {"merge_method": "squash",
 "sha": SHA, "commit_title": "TITLE (#PR)"}, so GitHub refuses the merge if the
@@ -264,6 +269,7 @@ def check_runs(steward: Steward, sha: str) -> list:
         sid = suite_id(matrix)
         if sid is None or sid not in suites_by_id:
             reasons.append(f"the check suite {sid} of {REQUIRED_CHECK} is not among the check suites of {sha}")
+            continue
         gates = [run for run in runs if run is not matrix and suite_id(run) == sid]
         if not gates:
             reasons.append(f"the gates workflow (check suite {sid}) has no gate check run yet: the gates have not run")
@@ -329,12 +335,27 @@ def body_lines(comment: dict) -> list:
     return [line.rstrip("\r") for line in str(comment.get("body") or "").split("\n")]
 
 
+def author(comment: dict) -> str:
+    return str((comment.get("user") or {}).get("login") or "")
+
+
+def is_bot(comment: dict) -> bool:
+    return (comment.get("user") or {}).get("type") == "Bot" or author(comment).endswith("[bot]")
+
+
 def is_steer(comment: dict) -> bool:
-    return (comment.get("user") or {}).get("login") == BOT_LOGIN and body_lines(comment)[0] == STEER_MARKER
+    """A steer as collect-facts.py counts one: any comment by a person, or a bot comment with the marker on a line."""
+    if not is_bot(comment):
+        return True
+    return author(comment) == BOT_LOGIN and any(line.strip() == STEER_MARKER for line in body_lines(comment))
 
 
 def is_approval(comment: dict, sha: str) -> bool:
-    return is_steer(comment) and body_lines(comment)[1:3] == [APPROVAL_MARKER, f"Approved head: {sha}"]
+    return author(comment) == BOT_LOGIN and body_lines(comment)[:3] == [
+        STEER_MARKER,
+        APPROVAL_MARKER,
+        f"Approved head: {sha}",
+    ]
 
 
 def steer_order(comment: dict):
@@ -347,10 +368,14 @@ def check_steer(steward: Steward, pr: int, sha: str) -> list:
     for page in steward.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
         comments.extend(page or [])
     steers = [comment for comment in comments if isinstance(comment, dict) and is_steer(comment)]
-    if steers and is_approval(max(steers, key=steer_order), sha):
+    latest = max(steers, key=steer_order) if steers else None
+    if latest is not None and is_approval(latest, sha):
         return []
     if any(is_approval(steer, sha) for steer in steers):
-        return [f"a later steer by {BOT_LOGIN} withdraws the approval of {sha}: post the approval steer again"]
+        return [
+            f"a later steer by {author(latest) or 'a deleted user'} withdraws the approval of {sha}: "
+            "post the approval steer again"
+        ]
     return [f"no approval steer by {BOT_LOGIN} names the head {sha}"]
 
 
@@ -371,7 +396,7 @@ def snapshot(data: dict) -> dict:
 
 
 def recheck(steward: Steward, pr: int, sha: str, before: dict) -> list:
-    """Read the PR and its threads again right before the merge: a bypass actor's merge is not re-checked."""
+    """Read the PR, its threads and its steers again right before the merge: a bypass actor's merge is not re-checked."""
     after = pull(steward, pr)
     reasons = check_pull(after, sha)
     old, new = snapshot(before), snapshot(after)
@@ -379,6 +404,7 @@ def recheck(steward: Steward, pr: int, sha: str, before: dict) -> list:
         if old[field] != new[field]:
             reasons.append(f"the PR's {field} changed during the checks, from {old[field]!r} to {new[field]!r}")
     reasons += check_threads(steward, pr)
+    reasons += check_steer(steward, pr, sha)
     return reasons
 
 
