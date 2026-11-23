@@ -88,7 +88,9 @@ Checks:
   duplicate once) and exit 2 with no facts file when the field is missing,
   not a list or has an entry without a string login; every round with
   `commit` the head and `current` true; the approval with and without
-  decision, kickoff floor and assessment, and by mintswarm-dev[bot]; exit 2
+  decision, kickoff floor and assessment, and by mintswarm-dev[bot], the
+  assessment's confidence and band read from its envelope, and null for a
+  document with two envelopes; exit 2
   with no facts file for a head mismatch, a bad fetched_at, a tampered kept
   file, a version 1 round.json, a gates round without its input, a gap in
   round numbers, an unreadable review verdict, a bad --approved-at or
@@ -1767,7 +1769,11 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
 
     floor_record = {"tool": "mintswarm-plan-floor", "version": 1, "verdict": "hit"}
     floor_data = write(sb.tmp / "floor.json", json.dumps(floor_record) + "\n")
-    assessment = write(sb.tmp / "assessment.md", "# Assessment: x\n\nmedium risk: y\n\nRisk: medium\n")
+    envelope = (
+        '```json\n{"confidence": 88, "band": "likely-safe", "hard_triggers": [], "reason": "y", '
+        '"doubts": [{"statement": "s", "consequence": "c", "resolution": "r"}]}\n```\n'
+    )
+    assessment = write(sb.tmp / "assessment.md", "# Assessment: x\n\n88 confidence: y\n\n## Envelope\n\n" + envelope)
     decision_record = {"tool": "mintswarm-approval-decision", "version": 1, "decision": "auto"}
     decision_data = write(sb.tmp / "decision.json", json.dumps(decision_record) + "\n")
     proc, facts = assemble(
@@ -1809,16 +1815,19 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
             == {
                 "path": str(sb.tmp / "assessment.md"),
                 "sha256": sha(assessment),
-                "risk": "medium",
+                "confidence": 88,
+                "band": "likely-safe",
             }
         )
     T.check("assemble: an approval by mintswarm-dev[bot] with decision, kickoff floor and assessment", ok, detail(proc))
-    write(sb.tmp / "assessment-2.md", "# Assessment: x\n\nRisk: low\nRisk: high\n")
+    write(sb.tmp / "assessment-2.md", "# Assessment: x\n\n88 confidence: y\n\n" + envelope + "\n" + envelope)
     proc, facts = assemble(sb, ["--assessment", str(sb.tmp / "assessment-2.md")])
     T.check(
-        "assemble: an assessment with two Risk lines has risk null, and no decision or kickoff floor key",
+        "assemble: an assessment with two envelopes has confidence and band null, and no decision or kickoff "
+        "floor key",
         written(proc, facts)
-        and facts["approval"]["assessment"]["risk"] is None
+        and facts["approval"]["assessment"]["confidence"] is None
+        and facts["approval"]["assessment"]["band"] is None
         and "kickoff_floor" not in facts["approval"]
         and "decision" not in facts["approval"],
         detail(proc),

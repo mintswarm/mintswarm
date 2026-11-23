@@ -6,8 +6,12 @@ The mode is `pipeline.plan_approval.mode` in `.mintswarm/config.yaml` at the job
 
 - `always`: every plan goes to a human.
 - `shadow`: floor, assess and the decision run and are recorded, and every plan still goes to a human. The maintainer's own decisions become the comparison for the threshold review.
-- `judged`: a plan is approved without a human only when the floor is clean, the risk is `low` and assess ran on the configured harness and model.
+- `judged`: a plan is approved without a human only when the floor is clean, the assessment names no hard trigger, its confidence is at least `min_confidence`, and assess ran on the configured harness and model.
 - `never`: every plan is approved without a human.
+
+The threshold is `pipeline.plan_approval.min_confidence` at the same base commit: an integer from 90 to 100, 90 when absent. `floor.py` and `decision.py` reject any other value as unusable input. Like the rest of the config, it is changed only through a reviewed PR.
+
+Assess rates each plan by an auto-approval confidence from 0 to 100 in one of five named bands, defined in `.mintswarm/stages/assess.md`: `blocked` (Blocked, 0, a hard trigger), `uncertain` (Uncertain, 1 to 49), `needs-review` (Needs review, 50 to 79), `likely-safe` (Likely safe, 80 to 94) and `safe` (Safe, 95 to 100). It returns them in one JSON envelope with the hard triggers, the decisive reason and its doubts; an envelope that breaks the stage's rules makes the judgement unusable, so a human decides.
 
 Both layers run in every mode, so a disagreement between them, or with the maintainer, is always visible.
 
@@ -46,23 +50,23 @@ After the plan stage returns a plan, in this order:
      --assessment-artifact <artifact URL> --base <base commit> --harness <harness> --model <model>
    ```
 
-   It writes `.mintswarm/job/outputs/decision.json` and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Keep stdout in a file for the comment.
+   It writes `.mintswarm/job/outputs/decision.json` (version 2: the threshold, and the judgement's confidence, band, hard triggers, doubts and reason) and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Keep stdout in a file for the comment.
 8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
-9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the risk and its reason, and links to the assessment and decision artifacts.
+9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the band and confidence against `min_confidence`, any hard triggers, the reason, and links to the assessment and decision artifacts.
 
 ## Outcomes
 
 - **Exit 2 or no record** counts as `human`. Exit 0 counts as `auto` only together with a `decision.json` whose `decision` is `auto`.
-- **`shadow`:** post the shadow-record comment that `decision.py` printed on the issue, through `bot-gh.sh` (`-F body=@<file>`), unchanged except for one line the session appends with the URLs GitHub returned for the plan, `Plan assessment` and decision artifacts. Never write the body by hand: the script sets model and session text (the risk's reason, the harness, model, artifact, paths and ref) on one line, without backticks, at most 200 characters, in code spans, so mentions, links and Markdown in it do nothing. The body carries what shadow records 1 to 3 carried by hand:
+- **`shadow`:** post the shadow-record comment that `decision.py` printed on the issue, through `bot-gh.sh` (`-F body=@<file>`), unchanged except for one line the session appends with the URLs GitHub returned for the plan, `Plan assessment` and decision artifacts. Never write the body by hand: the script sets model and session text (the reason, the doubts, the harness, model, artifact, paths and ref) on one line, without backticks, at most 200 characters, in code spans, so mentions, links and Markdown in it do nothing. The body carries what shadow records 1 to 3 carried by hand:
   - the plan: its path, sha256 and the footprint in brief;
-  - assess: the stage, the harness and model, whether they are as configured, the risk, the decisive reason and the artifact;
+  - assess: the stage, the harness and model, whether they are as configured, the band's name and the confidence (for example `Likely safe · 92`) with the threshold, the decisive reason, the hard triggers, one row per doubt and the artifact;
   - the floor: the base commit, `--base`, the result, the exit code, and the hit and clean rules;
   - the would-be decision, `judged_decision`, and the decision;
   - the maintainer decision, pending.
 
   The plan then goes to the maintainer as before, with the approval package below; once it is posted, the session assigns the issue with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`. When the maintainer decides, record that decision beside the judgement, in the shadow-record comment and in the plan artifact: approved or rejected, whether it agrees with `judged_decision`, and any observation for the threshold review, such as a rule that should have hit or a path that should require a human.
-- **`auto`:** post the printed comment on the issue through `.mintswarm/dogfood/github/bot-gh.sh` (`-F body=@<file>`), unchanged. Implement then starts without the maintainer, and nobody is assigned, because nobody is waited on. The PR description of an auto-approved item says that the plan was auto-approved and why: the mode, the floor clean on all 16 rules, the risk and its reason, and links to the assessment and decision artifacts.
-- **`human`** (under `always`, `shadow`, or `judged` with a hit, a risk above `low`, an unusable layer, or assess run on a harness or model other than the configured one): the plan goes to the maintainer with the approval package; once it is posted, the session assigns the issue with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`.
+- **`auto`:** post the printed comment on the issue through `.mintswarm/dogfood/github/bot-gh.sh` (`-F body=@<file>`), unchanged. Implement then starts without the maintainer, and nobody is assigned, because nobody is waited on. The PR description of an auto-approved item says that the plan was auto-approved and why: the mode, the floor clean on all 16 rules, the band and confidence against `min_confidence`, the reason and the doubts, and links to the assessment and decision artifacts.
+- **`human`** (under `always`, `shadow`, or `judged` with a hit, a hard trigger, a confidence below `min_confidence`, an unusable layer, or assess run on a harness or model other than the configured one): the plan goes to the maintainer with the approval package; once it is posted, the session assigns the issue with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`.
 
 ## The approval package
 
@@ -70,7 +74,7 @@ For every plan that goes to the maintainer, the session posts the approval packa
 
 - the plan artifact, with its approach and footprint in brief;
 - the floor verdict: hit rules with their reasons, or clean;
-- the risk with its reason, and the `Plan assessment` artifact;
+- the band and confidence with the threshold, the hard triggers, the reason and the doubts, and the `Plan assessment` artifact;
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
 

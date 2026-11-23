@@ -17,9 +17,10 @@ that fails, the input is unusable.
 
 Inputs:
 
-- REF given to --base, the base ref. The mode is
-  `pipeline.plan_approval.mode` of .mintswarm/config.yaml at the commit it
-  resolves to, read and validated by floor.py's own code (loaded from the
+- REF given to --base, the base ref. The mode and the threshold are
+  `pipeline.plan_approval.mode` and `pipeline.plan_approval.min_confidence`
+  (an integer from 90 to 100, 90 when absent) of .mintswarm/config.yaml at
+  the commit it resolves to, read and validated by floor.py's own code (loaded from the
   file next to this one), so the worktree's config is never opened. NAME
   given to --component must be a defined component.
 - PATH given to --plan, the plan, and the PATHs given to --issue-document
@@ -51,48 +52,75 @@ consistent in itself still does not count. A usable verdict is therefore
 clean only when all of floor.py's rules ran and are clean.
 
 The judgement layer is usable only if the assessment is UTF-8 and, with
-lines split at LF only and trailing CR, space and tab removed from each:
-exactly one line starts with `Risk:` at column 0 and it is exactly
-`Risk: low`, `Risk: medium` or `Risk: high`; and the first non-blank line is
-a `# ` title, and the next non-blank line is `<level> risk: <reason>` with
-the same level and a reason that is not empty once whitespace, control and
-format characters are removed. That reason is the layer's only entry in
-`reasons`.
+lines split at LF only and trailing CR, space and tab removed from each
+(envelope_problems, which landing/collect-facts.py loads by path):
+
+- no line starts with `Risk:`;
+- the first non-blank line is a `# ` title, and the next non-blank line is
+  `<confidence> confidence: <reason>`, with a reason that is not empty once
+  whitespace, control and format characters are removed;
+- exactly one line is the fence opener ```json, closed by the next line of
+  exactly three backticks; between them is the envelope, strict JSON (no
+  duplicate keys, NaN or Infinity) with no string holding a lone surrogate
+  (an escape such as \\ud800, which UTF-8 cannot encode), one object with
+  exactly the keys `confidence`, `band`, `hard_triggers`, `reason` and
+  `doubts`, in order;
+- `confidence` is an integer (not a boolean) from 0 to 100, equal to the
+  summary line's, and inside the range of `band`, one of the BANDS
+  identifiers: `blocked` (0), `uncertain` (1-49), `needs-review` (50-79),
+  `likely-safe` (80-94) or `safe` (95-100);
+- `hard_triggers` holds unique HARD_TRIGGERS identifiers and is non-empty
+  exactly when the band is `blocked`;
+- `reason` is a non-empty string as above;
+- `doubts` holds at most 10 objects, each with exactly the non-empty strings
+  `statement`, `consequence` and `resolution`, in order; `likely-safe` has
+  at least one doubt and `safe` none.
+
+The envelope's reason is the layer's only entry in `reasons`.
 
 Problems in either layer are fixed strings that never quote the files.
 
 `judged_decision` is `auto` only when the floor layer is usable and clean,
-the judgement layer is usable with risk `low`, and the judge's harness and
-model are the configured ones (`as_configured`); otherwise `human`.
+the judgement layer is usable with no hard trigger and a confidence of at
+least `min_confidence`, and the judge's harness and model are the
+configured ones (`as_configured`); otherwise `human`.
 `decision` follows the mode: `always` and `shadow` give `human`, `never`
 gives `auto`, and `judged` gives `judged_decision`. Both layers are always
 read and recorded, whatever the mode.
 
 The record is .mintswarm/job/outputs/decision.json, written to a temporary
 file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-approval-decision`), `version` (1), `approval` (`plan`),
+(`mintswarm-approval-decision`), `version` (2), `approval` (`plan`),
 `subject` ({`issue`, `component`, `plan` {`path`, `sha256`}, `base`
-{`ref`, `commit`}}), `mode`, `layers`, `judged_decision`, `decision` and
-`reasons` (the mode's rule and each layer's outcome). `layers.floor` holds
+{`ref`, `commit`}}), `mode`, `min_confidence`, `layers`, `judged_decision`,
+`decision` and `reasons` (the mode's rule, each layer's outcome, the
+judgement's confidence and band, and a hard trigger or a confidence below
+`min_confidence`). `layers.floor` holds
 `status` (`usable` or `unusable`), `problems`, `path`, `sha256` (of the
 verdict's bytes), `verdict`, `rules` (the verdict's rule objects,
 unchanged) and `not_evaluated`. `layers.judgement` holds `status`,
 `problems`, `stage` (`assess`), `path`, `sha256`, `artifact`, `harness`,
-`model`, `expected` ({`harness`, `model`}), `as_configured`, `risk` and
-`reasons`. A field that cannot be filled, including the content of an
+`model`, `expected` ({`harness`, `model`}), `as_configured`, `confidence`,
+`band` (the identifier), `hard_triggers`, `doubts` and `reasons`. A field that cannot be filled, including the content of an
 unusable layer, is null, or [] for a list.
 
-One status line goes to stderr. After the record is written, the issue
+One status line goes to stderr, with the band and confidence or
+`unusable`. After the record is written, the issue
 comment the session posts goes to stdout, in two cases only:
 
 - for `auto`, the auto-approval comment: it says the plan was approved
-  without a human, the mode and base commit, the floor result, the risk
-  with its reason, the assessment artifact and who judged, and how to veto;
+  without a human, the mode and base commit, the floor result, the
+  judgement rows, the assessment artifact and who judged, and how to veto;
 - in `shadow` mode, the shadow-record comment: the plan's path, sha256 and
   footprint in brief, the assess harness, model and artifact and whether
-  they are as configured, the risk with its reason, the floor's base, result,
+  they are as configured, the judgement rows, the floor's base, result,
   exit code and hit and clean rules, `judged_decision` and `decision`, and a
   pending maintainer decision.
+
+The judgement rows are `Confidence` (the band's display name and the score
+as `<name> · <score>`, the threshold and the reason, or `unusable` with the
+problems), and for a usable judgement `Hard triggers` and one `Doubt` row
+per doubt (its statement, consequence if wrong and resolution).
 
 Model and session text in either is flattened to one line, stripped of
 control and format characters, its backticks replaced, cut to 200
@@ -126,7 +154,7 @@ RECORD = Path(".mintswarm/job/outputs/decision.json")
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 FLOOR = Path(__file__).resolve().parent / "floor.py"
 TOOL = "mintswarm-approval-decision"
-VERSION = 1
+VERSION = 2
 FLOOR_TOOL = "mintswarm-plan-floor"
 FLOOR_VERSION = 2
 FLOOR_KEYS = [
@@ -143,7 +171,27 @@ FLOOR_KEYS = [
     "rules",
     "not_evaluated",
 ]
-RISKS = ("low", "medium", "high")
+# The assess stage's named bands: identifier -> (display name, lowest, highest confidence).
+BANDS = {
+    "blocked": ("Blocked", 0, 0),
+    "uncertain": ("Uncertain", 1, 49),
+    "needs-review": ("Needs review", 50, 79),
+    "likely-safe": ("Likely safe", 80, 94),
+    "safe": ("Safe", 95, 100),
+}
+HARD_TRIGGERS = (
+    "criterion-not-met",
+    "outside-scope",
+    "not-revertible",
+    "credentials",
+    "weakens-safeguard",
+    "undeclared-high",
+)
+ENVELOPE_KEYS = ["confidence", "band", "hard_triggers", "reason", "doubts"]
+DOUBT_KEYS = ["statement", "consequence", "resolution"]
+MAX_DOUBTS = 10
+FENCE_OPEN = "```json"
+FENCE_CLOSE = "```"
 SPAN_LIMIT = 200
 ARGS = (
     "--issue",
@@ -168,7 +216,7 @@ MODE_REASONS = {
     "judged": "mode judged: the decision is judged_decision",
     "never": "mode never: every plan is approved without a human",
 }
-SUMMARY = re.compile(r"(low|medium|high) risk: (.*)", re.DOTALL)
+SUMMARY = re.compile(r"(0|[1-9][0-9]{0,2}) confidence: (.*)", re.DOTALL)
 
 floor: ModuleType  # floor.py, set by main() before anything uses it
 
@@ -357,30 +405,82 @@ def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents
 # --- judgement layer -----------------------------------------------------
 
 
-def assessment_problems(text: str) -> tuple:
-    """(problems, risk, reason) for an assessment's text."""
+def is_text(value) -> bool:
+    """A string that is not empty once whitespace, control and format characters are removed."""
+    return isinstance(value, str) and bool(inert(value))
+
+
+def envelope_fields(envelope) -> list:
+    """Problems with the envelope's parsed content, as fixed strings."""
+    if not isinstance(envelope, dict) or list(envelope) != ENVELOPE_KEYS:
+        return ["the assessment's envelope is not an object with exactly " + ", ".join(ENVELOPE_KEYS) + ", in order"]
+    confidence = envelope["confidence"]
+    band = envelope["band"]
+    if type(confidence) is not int or not 0 <= confidence <= 100:
+        return ["the assessment's confidence is not an integer from 0 to 100"]
+    if not isinstance(band, str) or band not in BANDS:
+        return ["the assessment's band is not one of " + ", ".join(BANDS)]
+    _, low, high = BANDS[band]
+    if not low <= confidence <= high:
+        return ["the assessment's confidence is outside its band's range"]
+    triggers = envelope["hard_triggers"]
+    if not isinstance(triggers, list) or not all(isinstance(t, str) and t in HARD_TRIGGERS for t in triggers):
+        return ["the assessment's hard_triggers is not a list of known hard trigger identifiers"]
+    if len(set(triggers)) != len(triggers):
+        return ["the assessment's hard_triggers repeats a trigger"]
+    if bool(triggers) != (band == "blocked"):
+        return ["the assessment's hard_triggers must be non-empty exactly when the band is blocked"]
+    if not is_text(envelope["reason"]):
+        return ["the assessment's envelope gives no reason"]
+    doubts = envelope["doubts"]
+    if not isinstance(doubts, list) or len(doubts) > MAX_DOUBTS:
+        return [f"the assessment's doubts is not a list of at most {MAX_DOUBTS}"]
+    for doubt in doubts:
+        if not isinstance(doubt, dict) or list(doubt) != DOUBT_KEYS or not all(is_text(doubt[k]) for k in DOUBT_KEYS):
+            return ["a doubt is not an object with exactly non-empty " + ", ".join(DOUBT_KEYS) + ", in order"]
+    if band == "likely-safe" and not doubts:
+        return ["the assessment's band is likely-safe without a doubt"]
+    if band == "safe" and doubts:
+        return ["the assessment's band is safe with a doubt"]
+    return []
+
+
+def envelope_problems(text: str) -> tuple:
+    """(problems, fields) for an assessment's text; fields is the envelope's object, or None when unusable."""
     lines = [line.rstrip("\r \t") for line in text.split("\n")]
-    risk_lines = [line for line in lines if line.startswith("Risk:")]
-    if not risk_lines:
-        return ["the assessment has no line starting with 'Risk:'"], None, None
-    if len(risk_lines) > 1:
-        return ["the assessment has more than one line starting with 'Risk:'"], None, None
-    values = {f"Risk: {level}": level for level in RISKS}
-    if risk_lines[0] not in values:
-        return ["the assessment's Risk: line is not 'Risk: low', 'Risk: medium' or 'Risk: high'"], None, None
-    risk = values[risk_lines[0]]
+    if any(line.startswith("Risk:") for line in lines):
+        return ["the assessment has a line starting with 'Risk:'"], None
     content = [line for line in lines if line.strip()]
     if not content or not content[0].startswith("# "):
-        return ["the assessment does not start with a '# ' title"], None, None
+        return ["the assessment does not start with a '# ' title"], None
     summary = SUMMARY.fullmatch(content[1]) if len(content) > 1 else None
     if summary is None:
-        return ["the line after the assessment's title is not '<level> risk: <reason>'"], None, None
-    if summary.group(1) != risk:
-        return ["the assessment's summary level differs from its Risk: line"], None, None
-    reason = summary.group(2).strip()
-    if not inert(reason):
-        return ["the assessment's summary gives no reason"], None, None
-    return [], risk, reason
+        return ["the line after the assessment's title is not '<confidence> confidence: <reason>'"], None
+    if not inert(summary.group(2)):
+        return ["the assessment's summary gives no reason"], None
+    opens = [i for i, line in enumerate(lines) if line == FENCE_OPEN]
+    if not opens:
+        return ["the assessment has no envelope"], None
+    if len(opens) > 1:
+        return ["the assessment has more than one envelope"], None
+    start = opens[0] + 1
+    closes = [i for i in range(start, len(lines)) if lines[i] == FENCE_CLOSE]
+    if not closes:
+        return ["the assessment's envelope is not closed"], None
+    try:
+        envelope = floor.strict_json("\n".join(lines[start : closes[0]]))
+    except (ValueError, RecursionError):
+        return ["the assessment's envelope is not strict JSON"], None
+    try:
+        json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:  # a \uD800-style escape decodes to a lone surrogate
+        return ["the assessment's envelope holds a string with a lone surrogate"], None
+    problems = envelope_fields(envelope)
+    if problems:
+        return problems, None
+    if int(summary.group(1)) != envelope["confidence"]:
+        return ["the assessment's summary confidence differs from its envelope"], None
+    return [], envelope
 
 
 def judgement_layer(args: dict, expected: dict) -> dict:
@@ -395,7 +495,10 @@ def judgement_layer(args: dict, expected: dict) -> dict:
         "model": args["model"],
         "expected": expected,
         "as_configured": args["harness"] == expected["harness"] and args["model"] == expected["model"],
-        "risk": None,
+        "confidence": None,
+        "band": None,
+        "hard_triggers": [],
+        "doubts": [],
         "reasons": [],
     }
     try:
@@ -412,11 +515,18 @@ def judgement_layer(args: dict, expected: dict) -> dict:
     except UnicodeDecodeError:
         layer["problems"] = ["the assessment is not UTF-8"]
         return layer
-    problems, risk, reason = assessment_problems(text)
+    problems, envelope = envelope_problems(text)
     if problems:
         layer["problems"] = problems
         return layer
-    layer.update(status="usable", risk=risk, reasons=[reason])
+    layer.update(
+        status="usable",
+        confidence=envelope["confidence"],
+        band=envelope["band"],
+        hard_triggers=envelope["hard_triggers"],
+        doubts=envelope["doubts"],
+        reasons=[envelope["reason"]],
+    )
     return layer
 
 
@@ -433,10 +543,11 @@ def hit_rules(layer: dict) -> list:
     return [r["rule"] for r in layer["rules"] if r["result"] == "hit"]
 
 
-def decide(mode: str, floor_: dict, judgement: dict) -> tuple:
+def decide(mode: str, min_confidence: int, floor_: dict, judgement: dict) -> tuple:
     clean = floor_result(floor_) == "clean"
-    low = judgement["status"] == "usable" and judgement["risk"] == "low"
-    judged = "auto" if clean and low and judgement["as_configured"] else "human"
+    usable = judgement["status"] == "usable"
+    confident = usable and not judgement["hard_triggers"] and judgement["confidence"] >= min_confidence
+    judged = "auto" if clean and confident and judgement["as_configured"] else "human"
     decision = {"always": "human", "shadow": "human", "never": "auto", "judged": judged}[mode]
     reasons = [MODE_REASONS[mode]]
     result = floor_result(floor_)
@@ -446,8 +557,12 @@ def decide(mode: str, floor_: dict, judgement: dict) -> tuple:
         reasons.append(f"floor: hit on {', '.join(hit_rules(floor_))}")
     else:
         reasons.append("floor: unusable")
-    if judgement["status"] == "usable":
-        reasons.append(f"judgement: risk {judgement['risk']}")
+    if usable:
+        reasons.append(f"judgement: confidence {judgement['confidence']} (band {judgement['band']})")
+        if judgement["hard_triggers"]:
+            reasons.append(f"judgement: hard trigger {', '.join(judgement['hard_triggers'])}")
+        elif judgement["confidence"] < min_confidence:
+            reasons.append(f"judgement: confidence below min_confidence {min_confidence}")
     else:
         reasons.append("judgement: unusable")
     if not judgement["as_configured"]:
@@ -481,10 +596,26 @@ def floor_line(layer: dict) -> str:
     return "unusable"
 
 
-def risk_line(layer: dict) -> str:
+def confidence_line(layer: dict, min_confidence: int) -> str:
     if layer["status"] == "usable":
-        return f"`{layer['risk']}`, {span(layer['reasons'][0])}"
-    return "unusable"
+        name = BANDS[layer["band"]][0]
+        return f"`{name} · {layer['confidence']}` (min_confidence {min_confidence}), {span(layer['reasons'][0])}"
+    return f"unusable (min_confidence {min_confidence})"
+
+
+def judgement_rows(layer: dict, min_confidence: int, suffix: str = "") -> list:
+    """The Confidence, Hard triggers and Doubt rows of a comment."""
+    rows = [f"- **Confidence:** {confidence_line(layer, min_confidence)}{suffix}"]
+    if layer["status"] != "usable":
+        return rows
+    triggers = ", ".join(f"`{t}`" for t in layer["hard_triggers"]) or "none"
+    rows.append(f"- **Hard triggers:** {triggers}")
+    for doubt in layer["doubts"]:
+        rows.append(
+            f"- **Doubt:** {span(doubt['statement'])}; if wrong: {span(doubt['consequence'])}; "
+            f"resolved by: {span(doubt['resolution'])}"
+        )
+    return rows
 
 
 def comment(record: dict) -> str:
@@ -497,7 +628,7 @@ def comment(record: dict) -> str:
         "",
         f"- **Mode:** `{record['mode']}`, base commit `{record['subject']['base']['commit']}`",
         f"- **Floor:** {floor_line(floor_)}",
-        f"- **Risk:** {risk_line(judgement)}",
+        *judgement_rows(judgement, record["min_confidence"]),
         f"- **Assessment:** {span(judgement['artifact'])}, judged by "
         f"{span(judgement['harness'])} with {span(judgement['model'])}",
         "",
@@ -550,9 +681,7 @@ def shadow_comment(record: dict, footprint) -> str:
             floor_detail += f"; not evaluated: {', '.join(f'`{rule}`' for rule in floor_['not_evaluated'])}"
     else:
         floor_detail = f"unusable: {problems_line(floor_)}"
-    risk = risk_line(judgement)
-    if judgement["status"] != "usable":
-        risk += f": {problems_line(judgement)}"
+    suffix = f": {problems_line(judgement)}" if judgement["status"] != "usable" else ""
     lines = [
         "### Shadow record: plan approval",
         "",
@@ -562,7 +691,7 @@ def shadow_comment(record: dict, footprint) -> str:
         f"- **Plan:** {span(subject['plan']['path'])}, sha256 `{subject['plan']['sha256']}`; "
         f"footprint: {footprint_brief(footprint)}",
         f"- **Assess:** stage `assess`, {assess}",
-        f"- **Risk:** {risk}",
+        *judgement_rows(judgement, record["min_confidence"], suffix),
         f"- **Floor:** at base commit `{subject['base']['commit']}` (`--base` {span(subject['base']['ref'])}): "
         f"{floor_detail}",
         f"- **Would-be decision:** `{record['judged_decision']}` (`judged_decision`)",
@@ -625,7 +754,7 @@ def run(argv: list) -> int:
 
     floor_ = floor_layer(plan_sha, commit, args["component"], mode, documents, (rules, skipped))
     judgement = judgement_layer(args, expected_judge(config))
-    judged, decision, reasons = decide(mode, floor_, judgement)
+    judged, decision, reasons = decide(mode, cfg["min_confidence"], floor_, judgement)
     record = {
         "tool": TOOL,
         "version": VERSION,
@@ -637,6 +766,7 @@ def run(argv: list) -> int:
             "base": {"ref": args["base"], "commit": commit},
         },
         "mode": mode,
+        "min_confidence": cfg["min_confidence"],
         "layers": {"floor": floor_, "judgement": judgement},
         "judged_decision": judged,
         "decision": decision,
@@ -649,9 +779,12 @@ def run(argv: list) -> int:
     else:
         text = None
     write_record(record)
+    if judgement["status"] == "usable":
+        judged_as = f"{judgement['band']} {judgement['confidence']}"
+    else:
+        judged_as = "unusable"
     print(
-        f"decision: {decision} (mode {mode}, floor {floor_result(floor_)}, "
-        f"judgement {judgement['risk'] or 'unusable'}, judged {judged})",
+        f"decision: {decision} (mode {mode}, floor {floor_result(floor_)}, " f"judgement {judged_as}, judged {judged})",
         file=sys.stderr,
     )
     if text is not None:
