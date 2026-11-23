@@ -764,8 +764,8 @@ def run(argv: list) -> int:
     try:
         with floor.job_object_store({"base": args["base"]}) as (store, commits):
             commit = commits["base"]
-            config, cfg = floor.prepare(commit, args["component"], git_dir=store)
             plan = floor.read_plan(args["plan"])
+            config, cfg = floor.prepare(commit, args["component"], plan, git_dir=store)
             issue = floor.read_document(args["issue_document"], "issue document")
             analysis = floor.read_document(args["analysis"], "analysis")
             rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit, store)

@@ -155,9 +155,6 @@ new dependency's `manifest`.
                              nearest directory at or above the manifest's
                              that has one; any other manifest basename is
                              its own ecosystem, where nothing is present
-
-The limits are NAME's: limits with NAME's limits_by_component applied, a
-reason naming the override when it decides the limit.
   external-steps             external_steps is not empty
   gate-changes               gate_changes is not empty, or a declared path is
                              .mintswarm/config.yaml or a word of a gates.run
@@ -194,6 +191,12 @@ reason naming the override when it decides the limit.
                              `<type>(NAME)`, with an optional `!`, then
                              `: `, the scope compared exactly; no
                              --issue-document
+
+The limits of the limit-* rules are NAME's: limits with NAME's
+limits_by_component applied, a reason naming the override when it decides
+the limit. Of the base's pnpm-lock.yaml files, only those nearest a
+package.json in new_dependencies are read, so no other one can make the
+floor exit 2.
 
 Issue criteria are the column-0 items of `## Acceptance criteria` marked
 `N.`, `N)`, `-`, `*` or `+`, with an optional `[ ]` or `[x]` after the
@@ -784,12 +787,23 @@ def validate_config(config: dict, component: str) -> dict:
     }
 
 
-def prepare(commit: str, component: str, git_dir=None) -> tuple:
-    """(config, cfg): the config at commit, validated for component, and the packages present at commit."""
+def prepare(commit: str, component: str, plan: bytes, git_dir=None) -> tuple:
+    """(config, cfg): the config at commit, validated for component, and the packages present at commit that
+    the plan's new_dependencies manifests can use."""
     config = load_config(commit, git_dir=git_dir)
     cfg = validate_config(config, component)
-    cfg["base_packages"] = base_packages(commit, git_dir=git_dir)
+    cfg["base_packages"] = base_packages(commit, plan_manifests(plan), git_dir=git_dir)
     return config, cfg
+
+
+def plan_manifests(plan: bytes) -> list:
+    """The manifests the plan's new_dependencies name, or none when its footprint is unusable (the footprint
+    rule reports that, and no limit is evaluated)."""
+    try:
+        footprint = parse_footprint(plan.decode("utf-8"))
+    except FootprintError:
+        return []
+    return [dep["manifest"] for dep in footprint["new_dependencies"]]
 
 
 # --- packages at the base ------------------------------------------------
@@ -846,9 +860,22 @@ def pnpm_name(key: str, path: str) -> str:
     return name
 
 
-def base_packages(commit: str, git_dir=None) -> dict:
+def nearest_lockfile(manifest: str, blobs: dict):
+    """The path of the pnpm-lock.yaml in blobs of the nearest directory at or above the manifest's, or None."""
+    directory = manifest.rpartition("/")[0]
+    while True:
+        path = f"{directory}/{PNPM_LOCK}" if directory else PNPM_LOCK
+        if path in blobs:
+            return path
+        if not directory:
+            return None
+        directory = directory.rpartition("/")[0]
+
+
+def base_packages(commit: str, manifests: list, git_dir=None) -> dict:
     """The packages present at the base: {"cargo": names in the root Cargo.lock and the root Cargo.toml's
-    [workspace.dependencies], "npm": {directory of each pnpm-lock.yaml: names in it}}."""
+    [workspace.dependencies], "npm": {directory of a pnpm-lock.yaml: names in it}}, for the pnpm-lock.yaml
+    nearest each package.json among manifests only, so that no other lockfile is read."""
     blobs = base_blobs(commit, git_dir)
     cargo = set()
     if "Cargo.lock" in blobs:
@@ -865,10 +892,9 @@ def base_packages(commit: str, git_dir=None) -> dict:
         workspace = mapping(manifest.get("workspace"), "Cargo.toml: workspace")
         cargo.update(mapping(workspace.get("dependencies"), "Cargo.toml: workspace.dependencies"))
     npm = {}
-    for path, oid in sorted(blobs.items()):
-        if path.rsplit("/", 1)[-1] != PNPM_LOCK:
-            continue
-        lock = blob_document(oid, path, "yaml", git_dir)
+    npm_manifests = [m for m in manifests if ECOSYSTEMS.get(m.rsplit("/", 1)[-1]) == "npm"]
+    for path in sorted({nearest_lockfile(m, blobs) for m in npm_manifests} - {None}):
+        lock = blob_document(blobs[path], path, "yaml", git_dir)
         names = set()
         importers = lock["importers"] if "importers" in lock else {".": lock}
         for importer, spec in mapping(importers, f"{path}: importers").items():
@@ -1423,8 +1449,8 @@ def floor(argv: list) -> int:
     args = parse_args(argv)
     with job_object_store({"base": args["base"]}) as (store, commits):
         commit = commits["base"]
-        _, cfg = prepare(commit, args["component"], git_dir=store)
         data = read_plan(args["plan"])
+        _, cfg = prepare(commit, args["component"], data, git_dir=store)
         documents = {}
         for key, what in (("issue_document", "issue document"), ("analysis", "analysis")):
             path = args[key]

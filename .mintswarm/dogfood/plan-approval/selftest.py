@@ -79,7 +79,10 @@ Checks:
   (`serde`) and web/pnpm-lock.yaml (`left-pad`): packages present there are
   not counted, a package in two Cargo.toml manifests counts once, the same
   name in a Cargo.toml and a package.json counts twice, a pyproject.toml
-  package counts, and a base Cargo.lock that does not convert exits 2;
+  package counts, and a base Cargo.lock that does not convert exits 2; at
+  `stray-lockfile`, `lockfiles` with a malformed
+  tests/fixtures/pnpm-lock.yaml, those packages are still clean and a
+  package.json under tests/fixtures/ exits 2;
 - per-component limits, at `component-limits` (docs lines 400): a docs plan
   of 350 lines is clean, of 401 a hit naming the override, a tooling plan
   of 350 lines a hit, and the docs plan's files limit stays 10;
@@ -1010,6 +1013,21 @@ def check_new_dependencies(r: Runner, sb: Sandbox, commits: dict) -> None:
         "limit-new-dependencies",
         reasons=["new_dependencies is 1, over the limit of 0: pyproject.toml anyhow"],
         config="lockfiles",
+    )
+    expect_clean(
+        r,
+        "an unrelated malformed pnpm-lock.yaml",
+        base(files=files, new_dependencies=present),
+        rule,
+        config="stray-lockfile",
+    )
+    stray = base(files=files, new_dependencies=[dep("left-pad", "tests/fixtures/sub/package.json")])
+    used = sb.write_plan("malformed lockfile in use", plan_text(footprint=stray))
+    proc, verdict = sb.floor(["--plan", used, "--component", "docs", "--base", commits["stray-lockfile"]])
+    T.check(
+        "a malformed pnpm-lock.yaml a manifest uses: exit 2, no verdict",
+        proc.returncode == 2 and verdict is None and "tests/fixtures/pnpm-lock.yaml" in proc.stderr,
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
     )
     good = sb.write_plan("bad lockfile", plan_text())
     proc, verdict = sb.floor(["--plan", good, "--component", "docs", "--base", commits["bad-lockfile"]])
@@ -3218,6 +3236,8 @@ def build_commits(sb: Sandbox) -> tuple:
     lockfiles = {"Cargo.lock": CARGO_LOCK, "Cargo.toml": CARGO_TOML, "web/pnpm-lock.yaml": PNPM_LOCK}
     commits["lockfiles"] = sb.commit_files(lockfiles, "lockfiles", "lockfiles")
     commits["bad-lockfile"] = sb.commit_files({"Cargo.lock": b"[[package]\nname = \n"}, "bad lockfile", "bad-lockfile")
+    stray = dict(lockfiles, **{"tests/fixtures/pnpm-lock.yaml": b"importers: [\n"})
+    commits["stray-lockfile"] = sb.commit_files(stray, "stray lockfile", "stray-lockfile")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
     variant("dropped", lambda c: approval(c)["require_human"]["paths"].remove(".mintswarm/dogfood/github/**"))
