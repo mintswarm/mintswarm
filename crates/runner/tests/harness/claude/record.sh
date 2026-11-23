@@ -15,8 +15,12 @@
 # (sonnet, effort low), max-turns (two Read calls asked for under
 # --max-turns 1), permission-denied and permission-allowed (a Write, which
 # needs permission in default mode, without and with --allowedTools Write)
-# and interrupt (SIGINT once the first stream line appears, SIGTERM 10 s
-# later if the CLI is still running, SIGKILL 10 s after that). With --repeat
+# and interrupt (SIGINT once a complete system/init line has been written,
+# or after MSW_HARNESS_INTERRUPT_WAIT seconds without one, SIGTERM 10 s
+# later if the CLI is still running, SIGKILL 10 s after that; run.txt records
+# whether the init line was seen before the signal, the lines and bytes
+# written by then and the seconds it took, and interrupt is confirmed only
+# when the line was seen and the transcript holds it). With --repeat
 # it records everything a second time, into RAW-repeat, for the repeat
 # check. It also runs the probe commands: claude --help, claude --version and,
 # when --help lists an auth command, claude auth status --json and
@@ -36,8 +40,11 @@
 # whether it was listed and whether the init events and the directories
 # agree (no CLAUDE.md in the working directories or their parents, none in a
 # git work tree, no memory path, none of the agents or skills found in the
-# operator's user configuration directory, no MCP server, no plugin), with
-# confirmed = false and the evidence when not. Prompts go to the CLI on
+# operator's user configuration directory, no MCP server, no plugin other
+# than the CLI's built-in ones), with confirmed = false and the evidence when
+# not. When system/init reports no memory_paths, memory is judged from the
+# user configuration directory instead: no projects/<working directory>/memory
+# directory for any scenario, with --safe-mode passed. Prompts go to the CLI on
 # standard input.
 #
 # Raw recordings are never committed. record writes them to RAW, by default
@@ -103,7 +110,10 @@
 #   MSW_HARNESS_USER_DIR    the operator's user configuration directory, whose
 #                           agents and skills must not load (default
 #                           $HOME/.claude)
-#   MSW_HARNESS_INJECT      self-test only: a line appended to the derived
+#   MSW_HARNESS_INTERRUPT_WAIT  the seconds the interrupt scenario waits for
+#                           the system/init line before signalling anyway
+#                           (default 300)
+#   MSW_HARNESS_INJECT     self-test only: a line appended to the derived
 #                           complete.jsonl before the leak check, to prove
 #                           that a value off the allowlist stops the write
 #
@@ -472,7 +482,7 @@ REPEAT_HEADER = [
     "# Event kinds of two recordings against the same version, written by",
     "# record.sh record --repeat; the comparison rule is in versions.toml.",
 ]
-REPEAT_LINE_RE = re.compile(r"([a-z-]+): (?:same: (.*)|differs|missing in (?:first|second))|  (?:first|second): (.*)")
+REPEAT_LINE_RE = re.compile(r"([a-z-]+): (?:same: (.*)|differs|missing in (?:first|second|both))|  (?:first|second): (.*)")
 
 
 def kind_ok(k):
@@ -607,7 +617,7 @@ def repeat_check(events, der, repeat, fixtures):
         ka, kb = kinds(first), kinds(second)
         if not ka or not kb:
             same_all = False
-            lines.append("%s: missing in %s" % (s, "first" if not ka else "second"))
+            lines.append("%s: missing in %s" % (s, "both" if not ka and not kb else "first" if not ka else "second"))
         elif ka == kb:
             lines.append("%s: same: %s" % (s, " ".join(ka)))
         else:
@@ -833,17 +843,27 @@ def derive(raw, stage, repeat=None):
     ss = meta.get("settings_flag", "")
     sm = meta.get("safe_mode_flag", "")
     mp = counts("memory_paths")
+    # When system/init reports no memory_paths, memory is judged from the
+    # user configuration directory: no project memory directory for any
+    # scenario's working directory, with safe mode passed.
+    mem_dirs = meta.get("memory_dirs", "")
+    if mp:
+        mem_ok = max(mp) == 0
+        mem_source = "the memory paths reported by system/init"
+    else:
+        mem_ok = bool(sm) and mem_dirs == "0"
+        mem_source = "the user configuration directory, as system/init reports no memory_paths"
     flags = " ".join(x for x in (ss, sm) if x)
-    ok = (bool(ss) and found == "0" and bool(inits) and bool(mp) and max(mp) == 0
-          and user_agents == 0 and user_skills == 0)
+    ok = bool(ss) and found == "0" and bool(inits) and mem_ok and user_agents == 0 and user_skills == 0
     put("isolation_settings", flags or "--setting-sources", ok,
         "--setting-sources listed in --help: %s, the user source left out: %s; --safe-mode listed in --help: %s, "
         "passed: %s; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: %s; "
-        "memory paths reported by system/init: %s; user-scope agents reported by system/init: %d of %d in the user "
-        "configuration directory; user-scope skills: %d of %d"
+        "memory paths reported by system/init: %s; scenarios with a project memory directory under the user "
+        "configuration directory: %s of %s; memory judged by %s; user-scope agents reported by system/init: %d of "
+        "%d in the user configuration directory; user-scope skills: %d of %d"
         % (yn(listed("--setting-sources")), yn(bool(ss)), yn(listed("--safe-mode")), yn(bool(sm)),
-           found or "not checked", highest(mp), user_agents, len(user_scope["agent"]), user_skills,
-           len(user_scope["skill"])))
+           found or "not checked", highest(mp), mem_dirs or "not checked", meta.get("memory_dirs_checked", "0"),
+           mem_source, user_agents, len(user_scope["agent"]), user_skills, len(user_scope["skill"])))
 
     mc = counts("mcp_servers")
     strict = meta.get("mcp_flag", "")
@@ -854,16 +874,35 @@ def derive(raw, stage, repeat=None):
 
     pc = counts("plugins")
     user_dir = meta.get("user_dir", "")
+    # The CLI always reports its built-in plugins: an entry whose path, where
+    # given, is "builtin" and whose source, where given, is "builtin" or
+    # "<name>@builtin". Only the others must be absent.
+    def builtin(p):
+        if not isinstance(p, dict) or (p.get("path") is None and p.get("source") is None):
+            return False
+        path, source = p.get("path"), p.get("source")
+        path_ok = path is None or path == "builtin"
+        source_ok = source is None or (isinstance(source, str) and (source == "builtin" or source.endswith("@builtin")))
+        return path_ok and source_ok
+
     in_user = 0
+    other = 0
+    built = []
     for i in inits:
-        for p in i.get("plugins") if isinstance(i.get("plugins"), list) else []:
+        plist = i.get("plugins") if isinstance(i.get("plugins"), list) else []
+        built.append(sum(1 for p in plist if builtin(p)))
+        for p in plist:
+            if builtin(p):
+                continue
+            other += 1
             path = p.get("path") if isinstance(p, dict) else None
             if user_dir and isinstance(path, str) and path.startswith(user_dir.rstrip("/") + "/"):
                 in_user += 1
-    put("isolation_plugins", sm or ss or "--safe-mode", bool(pc) and max(pc) == 0,
-        "--safe-mode listed in --help: %s, passed: %s; plugins reported by system/init: %s; plugin entries "
-        "loaded from the user configuration directory over all scenarios: %d"
-        % (yn(listed("--safe-mode")), yn(bool(sm)), highest(pc), in_user))
+    put("isolation_plugins", sm or ss or "--safe-mode", bool(pc) and other == 0,
+        "--safe-mode listed in --help: %s, passed: %s; plugins reported by system/init: %s; built-in plugins "
+        "(path builtin, source builtin or <name>@builtin): %s; other plugin entries over all scenarios: %d, of "
+        "them loaded from the user configuration directory: %d"
+        % (yn(listed("--safe-mode")), yn(bool(sm)), highest(pc), highest(built if pc else []), other, in_user))
 
     in_git = meta.get("workdir_in_git", "")
     put("isolation_workdir", "", in_git == "no",
@@ -929,6 +968,21 @@ def derive(raw, stage, repeat=None):
         intr_status = int(read(os.path.join(raw, "interrupt.status")).strip())
     except ValueError:
         intr_status = -1
+    # interrupt is pinned only when the CLI had written its system/init line
+    # before the SIGINT and the transcript holds it.
+    intr_signal = meta.get("interrupt_signal", "")
+    intr_seen = meta.get("interrupt_init_seen", "")
+    intr_init = init("interrupt") is not None
+    intr_ok = intr_signal.startswith("SIGINT") and intr_seen == "yes" and intr_init
+    if not intr_ok:
+        unconfirmed.append("interrupt")
+    intr_evidence = (
+        "system/init line seen before the signal: %s; complete lines at the signal: %s, bytes: %s; seconds from "
+        "the start to the signal: %s (waited up to %s); events in the transcript: %d, system/init among them: %s"
+        % (intr_seen or "not recorded", meta.get("interrupt_lines", "not recorded"),
+           meta.get("interrupt_bytes", "not recorded"), meta.get("interrupt_seconds", "not recorded"),
+           meta.get("interrupt_wait", "not recorded"), len(events["interrupt"]), yn(intr_init))
+    )
     vt = [
         "# Claude Code versions validated for the runner's claude adapter, written by",
         "# record.sh from a recording; re-run it rather than editing by hand.",
@@ -937,7 +991,8 @@ def derive(raw, stage, repeat=None):
         "# claude --help lists the flag. confirmed means the scenarios that use it ran",
         "# and the stream shows the behaviour: max_turns by a run stopped at its limit,",
         "# allowed_tools by a Write denied without the flag and run with it; the other",
-        "# flags also need to be listed. effort may be \"unsupported\".",
+        "# flags also need to be listed. effort may be \"unsupported\". interrupt is",
+        "# confirmed only when the CLI had written its system/init line before SIGINT.",
         "# The isolation_* entries record how the recording was kept apart from the",
         "# operator's settings, CLAUDE.md, memory, agents, skills, MCP servers and",
         "# plugins; repeat_check points to the event kinds of a second recording.",
@@ -966,7 +1021,8 @@ def derive(raw, stage, repeat=None):
     vt += [
         "restrict_tools = { flag = %s, listed = %s }" % (q(restrict or "--tools"), b(bool(restrict))),
         "permission_mode = { flag = %s, listed = %s, value = %s }" % (q(perm or "--permission-mode"), b(bool(perm)), q("default" if perm else "")),
-        "interrupt = { signal = %s, exit_status = %d, result_event = %s }" % (q(meta.get("interrupt_signal", "")), intr_status, b(intr)),
+        "interrupt = { signal = %s, exit_status = %d, result_event = %s, confirmed = %s, evidence = %s }"
+        % (q(intr_signal), intr_status, b(intr), b(intr_ok), q(intr_evidence)),
         "rate_limit_event = %s" % ("[%s]" % ", ".join(q("fixtures/%s.jsonl" % s) for s in rate) if rate else q("not observed")),
         "credential_mode = { value = %s, source = %s }" % (q(mode_value), q("inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed")),
     ]
@@ -1210,12 +1266,25 @@ Count from 1 to 3000, one number per line, with no other text.
 EOF
 }
 
-# Runs the interrupt scenario: SIGINT once the first stream line appears,
-# then SIGTERM and SIGKILL if the CLI is still running.
+# Whether FILE holds a complete (newline-terminated) system/init line.
+init_line_seen() {
+    local n
+    [ -s "$1" ] || return 1
+    n="$(wc -l <"$1" | tr -d '[:space:]')"
+    [ "${n:-0}" -gt 0 ] || return 1
+    head -n "$n" "$1" | grep -Eq '"type": ?"system".*"subtype": ?"init"|"subtype": ?"init".*"type": ?"system"'
+}
+
+# Runs the interrupt scenario: SIGINT once the CLI has written a complete
+# system/init line (or after MSW_HARNESS_INTERRUPT_WAIT seconds without
+# one), then SIGTERM and SIGKILL if the CLI is still running. Sets the
+# interrupt_* variables run.txt records.
 run_interrupt() {
-    local dir="$1" prompt="$2" pid status=0 i
+    local dir="$1" prompt="$2" pid status=0 i start limit
     shift 2
     printf '%s\n' "$@" >"$raw/interrupt.args"
+    start="$(date +%s)"
+    limit=$((interrupt_wait * 2))
     # Job control puts the CLI in its own process group with SIGINT not
     # ignored, as it is for background jobs of a non-interactive shell.
     set -m
@@ -1223,11 +1292,18 @@ run_interrupt() {
     pid=$!
     set +m
     i=0
-    while [ "$i" -lt 600 ] && [ ! -s "$raw/interrupt.jsonl" ] && kill -0 "$pid" 2>/dev/null; do
+    while [ "$i" -lt "$limit" ] && ! init_line_seen "$raw/interrupt.jsonl" && kill -0 "$pid" 2>/dev/null; do
         sleep 0.5
         i=$((i + 1))
     done
-    interrupt_signal="none (exited before the first line)"
+    interrupt_init_seen="no"
+    if init_line_seen "$raw/interrupt.jsonl"; then
+        interrupt_init_seen="yes"
+    fi
+    interrupt_lines="$(wc -l <"$raw/interrupt.jsonl" | tr -d '[:space:]')"
+    interrupt_bytes="$(wc -c <"$raw/interrupt.jsonl" | tr -d '[:space:]')"
+    interrupt_seconds=$(($(date +%s) - start))
+    interrupt_signal="none (exited before the signal)"
     if kill -0 "$pid" 2>/dev/null; then
         interrupt_signal="SIGINT"
         kill -INT "$pid" 2>/dev/null || true
@@ -1322,6 +1398,10 @@ cmd_record() {
         *) die "MSW_HARNESS_CREDENTIAL must be subscription or api_key" ;;
     esac
     user_dir="${MSW_HARNESS_USER_DIR:-$HOME/.claude}"
+    interrupt_wait="${MSW_HARNESS_INTERRUPT_WAIT:-300}"
+    case "$interrupt_wait" in
+        '' | *[!0-9]* | 0) die "MSW_HARNESS_INTERRUPT_WAIT must be a positive whole number of seconds" ;;
+    esac
 
     root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$root" ]; then
@@ -1485,8 +1565,23 @@ record_once() {
     if grep -qxF -- "$note_marker" "$scratch/permission-allowed/out.txt" 2>/dev/null; then
         allowed_file="yes"
     fi
-    interrupt_signal=""
+    interrupt_signal="" interrupt_init_seen="" interrupt_lines="" interrupt_bytes="" interrupt_seconds=""
     run_interrupt "$scratch/interrupt" "$prompts/interrupt.txt" "${common[@]}" --model haiku --max-turns 1
+
+    # Memory, judged directly: Claude Code keeps a project's memory under
+    # projects/<working directory, each non-alphanumeric character a dash>/memory
+    # in the user configuration directory. Both the logical and the physical
+    # path of each scenario's directory are checked.
+    local memory_dirs=0 memory_dirs_checked=0 d
+    for s in "${scenarios[@]}"; do
+        memory_dirs_checked=$((memory_dirs_checked + 1))
+        for d in "$scratch/$s" "$scratch_physical/$s"; do
+            if [ -d "$user_dir/projects/$(printf '%s' "$d" | sed 's/[^A-Za-z0-9]/-/g')/memory" ]; then
+                memory_dirs=$((memory_dirs + 1))
+                break
+            fi
+        done
+    done
 
     {
         printf 'recorded_on=%s\n' "$(date +%Y-%m-%d)"
@@ -1519,6 +1614,13 @@ record_once() {
         printf 'denied_file=%s\n' "$denied_file"
         printf 'allowed_file=%s\n' "$allowed_file"
         printf 'interrupt_signal=%s\n' "$interrupt_signal"
+        printf 'interrupt_init_seen=%s\n' "$interrupt_init_seen"
+        printf 'interrupt_lines=%s\n' "$interrupt_lines"
+        printf 'interrupt_bytes=%s\n' "$interrupt_bytes"
+        printf 'interrupt_seconds=%s\n' "$interrupt_seconds"
+        printf 'interrupt_wait=%s\n' "$interrupt_wait"
+        printf 'memory_dirs=%s\n' "$memory_dirs"
+        printf 'memory_dirs_checked=%s\n' "$memory_dirs_checked"
         printf 'env_pass=%s\n' "${MSW_HARNESS_ENV_PASS:-}"
     } >"$raw/run.txt"
 }
@@ -1625,23 +1727,45 @@ done
 prompt="$(cat)"
 scenario="$(printf '%s\n' "$prompt" | sed -n 's/^msw-scenario: //p' | head -n 1)"
 printf 'fake claude: %s from %s\n' "$scenario" "$HOME" >&2
+if [ "$scenario" = interrupt ]; then
+    trap 'exit 130' INT
+    # FAKE_INTERRUPT_SILENT=1 plays a CLI that writes nothing before the
+    # signal.
+    if [ "${FAKE_INTERRUPT_SILENT:-}" = 1 ]; then
+        i=0
+        while [ "$i" -lt 600 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        exit 0
+    fi
+fi
 sid="${resume:-$(uuid)}"
 # Without isolation the operator's MCP servers, plugins, agents, skills and
 # memory show up by name. As with the real CLI, leaving out the user setting
-# source does not stop the plugins; safe mode does.
+# source does not stop the plugins; safe mode does, and the built-in plugin
+# is always reported. FAKE_NO_MEMORY_FIELD=1 plays a CLI whose init event has
+# no memory_paths; without safe mode it then keeps a project memory directory
+# in the user configuration directory.
 user_dir="${MSW_HARNESS_USER_DIR:-$HOME/.claude}"
 tool_list='["Bash","Edit","Read","mcp__acme-private-mcp__search"]'
 [ -n "$tools" ] && tool_list="[\"$tools\"]"
 mcp_servers='[{"name":"acme-private-mcp","status":"connected"}]'
 [ -n "$strict" ] && mcp_servers='[]'
-plugins="[{\"name\":\"acme-private-plugin\",\"path\":\"$user_dir/plugins/acme-private-plugin\"}]"
+builtin_plugin='{"name":"msw-fake-builtin","source":"msw-fake-builtin@builtin","path":"builtin"}'
+plugins="[$builtin_plugin,{\"name\":\"acme-private-plugin\",\"path\":\"$user_dir/plugins/acme-private-plugin\"}]"
 agents='["general-purpose","Explore","acme-private-agent"]'
 skills='["acme-private-skill"]'
 memory="{\"auto\":\"$user_dir/projects/acme/memory\"}"
 if [ -n "$safe" ]; then
-    plugins='[]' agents='["general-purpose","Explore"]' skills='[]' memory='{}'
+    plugins="[$builtin_plugin]" agents='["general-purpose","Explore"]' skills='[]' memory='{}'
 fi
-emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":$mcp_servers,\"plugins\":$plugins,\"agents\":$agents,\"skills\":$skills,\"memory_paths\":$memory,\"model\":\"claude-$model-9-9\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\",\"acme-private-mcp:deploy\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
+memory_field="\"memory_paths\":$memory,"
+if [ "${FAKE_NO_MEMORY_FIELD:-}" = 1 ]; then
+    memory_field=""
+    [ -n "$safe" ] || mkdir -p "$user_dir/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')/memory"
+fi
+emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":$mcp_servers,\"plugins\":$plugins,\"agents\":$agents,\"skills\":$skills,${memory_field}\"model\":\"claude-$model-9-9\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\",\"acme-private-mcp:deploy\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
 emit "{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"$RANDOM\",\"session_id\":\"$sid\"}"
 assistant() {
     emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-$model-9-9\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a private thought\",\"signature\":\"c2lnbmF0dXJl\"},{\"type\":\"text\",\"text\":\"$1\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":7}},\"parent_tool_use_id\":null,\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
@@ -1735,7 +1859,6 @@ case "$scenario" in
         ;;
     interrupt)
         assistant "1\n2\n3"
-        trap 'exit 130' INT
         i=0
         while [ "$i" -lt 600 ]; do
             sleep 0.1
@@ -1762,7 +1885,7 @@ first_session() { grep -o '"session_id": "[^"]*"' "$1" | head -n 1; }
 
 cmd_self_test() {
     require_python
-    local t run s key status log repeat_arg=()
+    local t run s key status log no_memory repeat_arg=()
     t="$(temp_dir)" || die "mktemp failed"
     cleanup_paths+=("$t")
     failures=0
@@ -1776,12 +1899,17 @@ cmd_self_test() {
     log="$t/record.log"
     for run in 1 2; do
         status=0
-        # Run 1 records twice and writes the repeat check; run 2 once.
+        # Run 1 records twice and writes the repeat check; run 2 once, with
+        # no memory_paths in the init events.
         repeat_arg=()
+        no_memory=""
         if [ "$run" = 1 ]; then
             repeat_arg=(--repeat)
+        else
+            no_memory=1
         fi
-        CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_CREDENTIAL=subscription MSW_HARNESS_ENV_PASS="MSW_HARNESS_USER_DIR" \
+        CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_CREDENTIAL=subscription FAKE_NO_MEMORY_FIELD="$no_memory" \
+            MSW_HARNESS_ENV_PASS="MSW_HARNESS_USER_DIR FAKE_NO_MEMORY_FIELD" \
             bash "$script_path" record --raw "$t/raw$run" --out "$t/out$run" ${repeat_arg[@]+"${repeat_arg[@]}"} >"$log" 2>&1 || status=$?
         # Only the checks on the machine's own directories may fail here: a
         # CLAUDE.md above TMPDIR, or a TMPDIR inside a git work tree.
@@ -1819,7 +1947,12 @@ cmd_self_test() {
         check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = true, evidence = \".+\" \\}$" "$out/versions.toml"
     done
     check has_line '^isolation_plugins = \{ flag = "--safe-mode",' "$out/versions.toml"
-    check has_line '^isolation_settings = \{ flag = "--setting-sources project,local --safe-mode",.*memory paths reported by system/init: the highest count is 0 over 10 scenarios; user-scope agents reported by system/init: 0 of 1 .*user-scope skills: 0 of 1"' "$out/versions.toml"
+    check has_line '^isolation_settings = \{ flag = "--setting-sources project,local --safe-mode",.*memory paths reported by system/init: the highest count is 0 over 10 scenarios; scenarios with a project memory directory under the user configuration directory: 0 of 10; memory judged by the memory paths reported by system/init; user-scope agents reported by system/init: 0 of 1 .*user-scope skills: 0 of 1"' "$out/versions.toml"
+    # No memory_paths in system/init: memory is judged from the user
+    # configuration directory.
+    check has_line '^isolation_settings = .*memory paths reported by system/init: not reported; scenarios with a project memory directory under the user configuration directory: 0 of 10; memory judged by the user configuration directory, as system/init reports no memory_paths;' "$t/out2/versions.toml"
+    # Built-in plugins are reported and do not count against isolation.
+    check has_line '^isolation_plugins = .*plugins reported by system/init: the highest count is 1 over 10 scenarios; built-in plugins \(path builtin, source builtin or <name>@builtin\): the highest count is 1 over 10 scenarios; other plugin entries over all scenarios: 0, of them loaded from the user configuration directory: 0"' "$out/versions.toml"
     check has_line '^max_turns = .*result subtype = error_max_turns, terminal_reason = max_turns, num_turns = 1, Read calls = 1' "$out/versions.toml"
     check has_line '^allowed_tools = .*Write was called: yes, denied: yes, the file was written: no; .*denied: no, the file was written: yes; options: Read ran without error: yes, its tool_result holds the note: yes' "$out/versions.toml"
     # The repeat check: written by record --repeat, absent without it.
@@ -1833,14 +1966,14 @@ cmd_self_test() {
         check has_line "^$key = \\{ flag = \"[^\"]*\", confirmed = (true|false), evidence = \".+\" \\}$" "$out/versions.toml"
     done
     check has_line '^rate_limit_event = \["fixtures/complete\.jsonl"\]$' "$out/versions.toml"
-    check has_line '^interrupt = \{ signal = "SIGINT", exit_status = 130, result_event = false \}$' "$out/versions.toml"
+    check has_line '^interrupt = \{ signal = "SIGINT", exit_status = 130, result_event = false, confirmed = true, evidence = "system/init line seen before the signal: yes; complete lines at the signal: [1-9][0-9]*, bytes: [1-9][0-9]*; .*system/init among them: yes" \}$' "$out/versions.toml"
     # Content-free: free text becomes its length, the init event keeps counts.
     check has_line '"type": "text", "text": "<text:[0-9]+>"' "$out/fixtures/complete.jsonl"
     check has_line '"thinking": "<text:17>"' "$out/fixtures/complete.jsonl"
     check has_line '"result": "<text:[0-9]+>"' "$out/fixtures/complete.jsonl"
     check has_line '"rateLimitType": "five_hour"' "$out/fixtures/complete.jsonl"
     check has_line '"resetsAt": 0' "$out/fixtures/complete.jsonl"
-    check has_line '"subtype": "init".*"tools": 4, "mcp_servers": 0, "plugins": 0, "agents": 2, "skills": 0, "memory_paths": 0,.*"slash_commands": 2' "$out/fixtures/complete.jsonl"
+    check has_line '"subtype": "init".*"tools": 4, "mcp_servers": 0, "plugins": 1, "agents": 2, "skills": 0, "memory_paths": 0,.*"slash_commands": 2' "$out/fixtures/complete.jsonl"
     # A field name that is an id becomes the same <id:N> as the id itself; a
     # field name off the closed set becomes its length.
     local tool_id wire_id
@@ -1906,13 +2039,30 @@ cmd_self_test() {
         check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = false, evidence = \".+\" \\}$" "$t/out6/versions.toml"
     done
     check has_line '^isolation_mcp = .*MCP servers reported by system/init: the highest count is 1 over 10 scenarios' "$t/out6/versions.toml"
-    check has_line '^isolation_plugins = .*plugin entries loaded from the user configuration directory over all scenarios: 10"' "$t/out6/versions.toml"
-    check has_line '^isolation_settings = .*memory paths reported by system/init: the highest count is 1 over 10 scenarios; user-scope agents reported by system/init: 1 of 1 .*user-scope skills: 1 of 1"' "$t/out6/versions.toml"
-    check has_line '"mcp_servers": 1, "plugins": 1, "agents": 3, "skills": 1, "memory_paths": 1' "$t/out6/fixtures/complete.jsonl"
+    check has_line '^isolation_plugins = .*other plugin entries over all scenarios: 10, of them loaded from the user configuration directory: 10"' "$t/out6/versions.toml"
+    check has_line '^isolation_settings = .*memory paths reported by system/init: the highest count is 1 over 10 scenarios; .*user-scope agents reported by system/init: 1 of 1 .*user-scope skills: 1 of 1"' "$t/out6/versions.toml"
+    check has_line '"mcp_servers": 1, "plugins": 2, "agents": 3, "skills": 1, "memory_paths": 1' "$t/out6/fixtures/complete.jsonl"
     for s in "${private[@]}"; do
         check lacks "$s" "$t/out6"
     done
     check py leak-check "$t/out6"
+
+    # A CLI that writes nothing before the interrupt signal, reports no
+    # memory_paths and, without isolation, keeps project memory in the user
+    # configuration directory: interrupt and isolation_settings are not
+    # confirmed, and the empty interrupt transcripts are missing in both
+    # recordings.
+    status=0
+    CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_INTERRUPT_WAIT=1 FAKE_NO_ISOLATION=1 FAKE_NO_MEMORY_FIELD=1 FAKE_INTERRUPT_SILENT=1 \
+        MSW_HARNESS_ENV_PASS="FAKE_NO_ISOLATION FAKE_NO_MEMORY_FIELD FAKE_INTERRUPT_SILENT MSW_HARNESS_USER_DIR" \
+        bash "$script_path" record --raw "$t/raw7" --out "$t/out7" --repeat >"$log" 2>&1 || status=$?
+    check test "$status" -eq 1
+    check has_line '^record\.sh: not confirmed: .*interrupt' "$log"
+    check has_line '^interrupt = \{ signal = "SIGINT", exit_status = 130, result_event = false, confirmed = false, evidence = "system/init line seen before the signal: no; complete lines at the signal: 0, bytes: 0; .*waited up to 1\); events in the transcript: 0, system/init among them: no" \}$' "$t/out7/versions.toml"
+    check has_line '^isolation_settings = \{ flag = "[^"]*", confirmed = false, .*memory paths reported by system/init: not reported; scenarios with a project memory directory under the user configuration directory: [1-9] of 10; memory judged by the user configuration directory' "$t/out7/versions.toml"
+    check has_line '^interrupt: missing in both$' "$t/out7/fixtures/repeat-check.txt"
+    check has_line '^repeat_check = \{ same = false, ' "$t/out7/versions.toml"
+    check py leak-check "$t/out7"
 
     local root
     root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
