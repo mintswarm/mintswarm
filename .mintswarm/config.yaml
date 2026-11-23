@@ -88,9 +88,10 @@ pipeline:
       components: [agents]
       paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md", ".github/workflows/**"]
     limits: { files: 10, lines: 300, new_files: 3, new_dependencies: 0 }
-  # Read from the base ref, never the worktree, by landing/floor.py.
+  # Read from the base ref, never the worktree, by landing/floor.py and landing/decision.py.
   landing:
-    mode: always                     # always | shadow | judged | never; every finished change goes to the maintainer
+    mode: shadow                     # always | shadow | judged | never
+                                     # shadow: floor, landing stage and landing/decision.py run and are recorded on every PR, while a human decides
     require_human:                   # any changed path that matches sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # the diff may count up to estimated_lines × lines_factor, rounded down
@@ -126,6 +127,8 @@ gates:
       command: "python3 .mintswarm/dogfood/landing/facts-selftest.py"
     - name: landing-judgement-selftest
       command: "python3 .mintswarm/dogfood/landing/judgement-selftest.py"
+    - name: landing-decision-selftest
+      command: "python3 .mintswarm/dogfood/landing/decision-selftest.py"
     - name: github-selftest
       command: "bash .mintswarm/dogfood/github/selftest.sh"
     - name: readiness-selftest
