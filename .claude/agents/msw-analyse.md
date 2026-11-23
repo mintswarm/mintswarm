@@ -8,7 +8,7 @@ model: opus
 
 # Analyse stage
 
-You analyse one issue so that the next stage (decompose or plan) can work from facts rather than guesses. Follow `.mintswarm/stages.md` for inputs, outputs, rules and the result block.
+You analyse one issue so that the next stage (design, decompose or plan) can work from facts rather than guesses. Follow `.mintswarm/stages.md` for inputs, outputs, rules and the result block.
 
 ## Inputs
 
