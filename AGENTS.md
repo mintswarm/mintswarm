@@ -8,6 +8,7 @@ These instructions are for any coding agent working in this repository, whatever
 
 - **Design:** the Design issue [#3](https://github.com/mintswarm/mintswarm/issues/3) and its artifact "mintswarm design". Read the design from there; it is not in the repository.
 - **Architecture:** `docs/architecture/` describes how the system is built, as it stands now.
+- **Conventions:** [`docs/conventions/`](docs/conventions/) holds the Rust, TypeScript and React conventions the gates derive from, copied from the guideline packs.
 - **Contribution rules:** `CONTRIBUTING.md`.
 - The repository holds the current state only. Proposals, alternatives and reasoning live in issues and PRs, never in files here.
 
