@@ -47,10 +47,12 @@ Checks:
   issue, commits, plan sha256 and config commit, the sha256 of the verdict,
   the facts and the landing document, and the harness, model and effort of
   implement, review and landing, from the real config and from the
-  override (null for a non-string effort);
+  override (null for a non-string effort); the landing stage's model
+  differs from implement's and review's;
 - the comment: its heading, the PR and commits, the would-be and effective
   decisions, one row per floor hit, the Confidence row with the band's
-  name, score and decisive reason, the approval as inputs and the agents;
+  name, score and decisive reason, the approval as inputs and the agents,
+  from the real config;
   hostile text with backticks, newlines, an at-sign and the steer marker
   in the reason, a doubt, a floor reason and the approver stays in code
   spans, and no line is the steer marker;
@@ -435,6 +437,16 @@ def usable_record(record) -> bool:
 # --- checks ---------------------------------------------------------------
 
 
+def expected_agents(real: dict) -> dict:
+    """The harness, model and effort of implement, review and landing: agents.stages over agents.default."""
+    default = real["agents"]["default"]
+    stages = real["agents"].get("stages", {})
+    return {
+        stage: {k: stages.get(stage, {}).get(k, default[k]) for k in ("harness", "model", "effort")}
+        for stage in ("implement", "review", "landing")
+    }
+
+
 def check_matrix(r: Runner) -> None:
     for mode in MODES:
         for floor_name in ("clean", "hit", "missing"):
@@ -756,10 +768,15 @@ def check_record(r: Runner, real: dict) -> None:
         json.dumps(judged),
     )
     default = real["agents"]["default"]
-    want = {
-        stage: {k: default[k] for k in ("harness", "model", "effort")} for stage in ("implement", "review", "landing")
-    }
+    want = expected_agents(real)
     T.check("record: agents from the real config", record["agents"] == want, json.dumps(record["agents"]))
+    agents = record["agents"]
+    T.check(
+        "record: the landing stage's model differs from implement's and review's",
+        isinstance(agents["landing"]["model"], str)
+        and agents["landing"]["model"] not in (agents["implement"]["model"], agents["review"]["model"]),
+        json.dumps(agents),
+    )
     T.check("record: mode and min_confidence", (record["mode"], record["min_confidence"]) == ("shadow", 95))
 
     ctx = r.context("override")
@@ -772,7 +789,7 @@ def check_record(r: Runner, real: dict) -> None:
     )
 
 
-def check_comment(r: Runner) -> None:
+def check_comment(r: Runner, real: dict) -> None:
     ctx = r.context("shadow")
     proc, record, _, _ = r.run(ctx, verdict_for(ctx, HIT), JUDGEMENTS["at"])
     lines = proc.stdout.splitlines()
@@ -788,8 +805,10 @@ def check_comment(r: Runner) -> None:
         "- **Would-be decision:** `human`",
         "- **Effective decision:** `human`",
         "- **Approval (inputs, not gates):** approver `maintainer`, approved at `2026-01-01T00:00:00Z`",
-        "- **Agents (harness, model, effort):** implement `claude` `opus` `high`; review `claude` `opus` `high`; "
-        "landing `claude` `opus` `high`",
+        "- **Agents (harness, model, effort):** "
+        + "; ".join(
+            f"{stage} `{a['harness']}` `{a['model']}` `{a['effort']}`" for stage, a in expected_agents(real).items()
+        ),
     ]
     missing = [w for w in want if w not in lines]
     T.check("comment: rows", not missing, json.dumps(missing) + "\n" + proc.stdout)
@@ -1006,7 +1025,7 @@ def main() -> int:
         check_bindings(runner)
         check_approval(runner)
         check_record(runner, real)
-        check_comment(runner)
+        check_comment(runner, real)
         check_unusable(runner, bases)
         check_stale(runner)
         check_hygiene(sb)

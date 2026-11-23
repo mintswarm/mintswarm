@@ -77,6 +77,7 @@ agents:
   default: { harness: claude, model: opus, effort: high }
   stages:
     assess: { model: sonnet }        # must differ from the plan stage's model (opus, through default)
+    landing: { model: sonnet }       # must differ from the implement and review stages' model (opus, through default)
     gates: { model: sonnet, effort: low }
 
 pipeline:
