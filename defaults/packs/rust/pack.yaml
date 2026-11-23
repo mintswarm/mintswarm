@@ -1,5 +1,5 @@
 id: "rust"
-version: 1
+version: 2
 name: "Rust"
 description: "Rust in one Cargo workspace at the repository root, formatted by rustfmt, linted by clippy and tested by cargo test."
 detect:
@@ -27,6 +27,11 @@ parameters:
     description: "At which level does the workspace lint unsafe code: forbid, deny or warn?"
     choices: ["forbid", "deny", "warn"]
     pattern: "forbid|deny|warn"
+  - name: "target_dir"
+    type: "string"
+    default: "build/target"
+    description: "Which directory, relative to the repository root, does Cargo write build output to?"
+    pattern: '[A-Za-z0-9_][A-Za-z0-9._+-]*(/[A-Za-z0-9_][A-Za-z0-9._+-]*)*'
 settings:
   - template: "settings/rustfmt.toml"
     target: "rustfmt.toml"
@@ -45,6 +50,11 @@ settings:
     target: "rust-toolchain.toml"
     kind: "toolchain"
     alternatives: ["rust-toolchain"]
+  - template: "settings/cargo-config.toml"
+    target: ".cargo/config.toml"
+    kind: "compiler"
+    mode: "fragment"
+    section: "build"
 gates:
   - name: "rust-format"
     command: "cargo fmt --all --check"

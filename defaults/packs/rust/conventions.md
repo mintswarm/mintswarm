@@ -47,6 +47,11 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 - Features are additive: enabling a feature never removes or changes behaviour.
 - `Cargo.lock` at the workspace root is committed.
 
+## Build output
+
+- Build output goes under `{{ target_dir }}`, set by `target-dir` in `[build]` of `.cargo/config.toml`, never under Cargo's default `target/`.
+- Where `.cargo/config.toml` already has a `[build]` header without `target-dir`, the setting is not applied there, so add `target-dir = "{{ target_dir }}"` to that section by hand.
+
 ## Local checks
 
 All three pass before pushing:
