@@ -12,6 +12,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut files = Vec::new();
     collect_protos(&root, &mut files)?;
     files.sort();
+    // The root line alone makes Cargo watch the whole tree; the per-file lines
+    // also list in `-vv` output exactly which protos this build compiles.
     for file in &files {
         println!("cargo:rerun-if-changed={}", file.display());
     }
@@ -26,7 +28,6 @@ fn collect_protos(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Er
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
-            println!("cargo:rerun-if-changed={}", path.display());
             collect_protos(&path, files)?;
         } else if path.extension().is_some_and(|ext| ext == "proto") {
             files.push(path);
