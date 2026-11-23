@@ -123,7 +123,9 @@ is unusable input:
   require_human    optional mapping with optional lists `components` (each
                    a defined component) and `paths` (globs)
   footprint        required mapping with exactly `lines_factor`, an integer
-                   or a finite number, never a boolean, of 1 or more
+                   or a finite number, never a boolean, of 1 or more; it
+                   bounds the diff's production lines by production_lines
+                   and all its lines by estimated_lines (see `size`)
   min_confidence   optional integer, never a boolean, from 90 to 100; 95
                    when absent. The landing decision reads it (see
                    landing/judgement.py); no rule here does, and the
@@ -145,7 +147,13 @@ footprint's `files` plus each new dependency's `manifest`.
                              exactly
   size                       the added plus deleted lines of the diff are
                              over floor(estimated_lines × lines_factor),
-                             computed exactly, or an entry is binary
+                             or those of the paths that match no
+                             pipeline.plan_approval.non_production glob
+                             (the plan floor's globs, its defaults when
+                             absent) are over floor(production_lines ×
+                             lines_factor), production_lines being
+                             estimated_lines in a footprint without it,
+                             each computed exactly, or an entry is binary
                              (see above) or a submodule (gitlink) on
                              either side
   require-human-paths        a changed path matches require_human.paths,
@@ -793,7 +801,7 @@ def has_workflows(base: str, git_dir=None) -> bool:
 # --- rules ---------------------------------------------------------------
 
 
-def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict) -> list:
+def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict, cfg: dict) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
         if dep["manifest"] not in declared:
@@ -823,6 +831,14 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
         reasons.append(
             f"the diff counts {total} lines, over the limit of {limit} "
             f"(estimated_lines {footprint['estimated_lines']} × lines_factor {landing['lines_factor']!r})"
+        )
+    limit = line_limit(footprint["production_lines"], landing["lines_factor"])
+    production = sum(a + d for path, a, d in entries if a is not None and not P.matching(cfg["non_production"], path))
+    # With production_lines equal to estimated_lines (a seven-key footprint too) the total check covers it.
+    if footprint["production_lines"] < footprint["estimated_lines"] and production > limit:
+        reasons.append(
+            f"the diff counts {production} production lines, over the limit of {limit} "
+            f"(production_lines {footprint['production_lines']} × lines_factor {landing['lines_factor']!r})"
         )
     for path, added, _ in entries:
         if path in gitlinks:
@@ -1001,7 +1017,7 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
         results = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
     else:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        results += footprint_rules(footprint, entries, new, gitlinks, landing)
+        results += footprint_rules(footprint, entries, new, gitlinks, landing, cfg)
     results += policy_rules(entries, args["component"], cfg, landing)
     results += facts_rules(facts, base, head, store)
     evaluated = [r["rule"] for r in results]
