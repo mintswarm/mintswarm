@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+"""Read the job's history: msw-vcs log, diff and show. The dogfood shim over git.
+
+    msw-vcs log [REV | REV..REV] [-- PATH...]
+    msw-vcs diff [--numstat | --name-only | --raw] (REV REV | --job) [-- PATH...]
+    msw-vcs show REV[:PATH]
+
+The contract, with every output form, message and exit code, is
+.mintswarm/dogfood/msw-vcs.md; msw-vcs-selftest.py checks this shim against it.
+A revision is `base`, `head`, `merge-base` or a full commit id that is an
+ancestor of base or head. `base` comes from .mintswarm/job/inputs/vcs.json
+at the top of the repository, `head` is the worktree's HEAD and `merge-base`
+their single merge base. Every argument is checked before git sees it. git
+runs with no system, global or environment configuration, no replace objects,
+grafts or attributes, and with the landing floor's diff options. git cannot be
+told to ignore the repository's own attributes file, $GIT_DIR/info/attributes,
+so diff fails with `vcs failure` when that file is not empty.
+
+Exits 0 on success, 2 for a usage error or a refused argument, 3 for an
+unknown or unreachable revision or a missing path, 4 for a job set-up error
+and 5 for an unexpected VCS failure, with one `msw-vcs: <message>` line on
+stderr. Writes nothing. Standard library only.
+"""
+
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+NAMES = (b"base", b"head", b"merge-base")
+FULL_ID = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+FORMS = (b"--numstat", b"--name-only", b"--raw")
+JOB_FLAG = b"--job"
+VCS_JSON = ".mintswarm/job/inputs/vcs.json"
+USAGE = (
+    b"usage: msw-vcs log [REV | REV..REV] [-- PATH...]"
+    b" | msw-vcs diff [--numstat | --name-only | --raw] (REV REV | --job) [-- PATH...]"
+    b" | msw-vcs show REV[:PATH]"
+)
+# The landing floor's DIFF_OPTIONS (landing/floor.py) without -z; msw-vcs-selftest.py checks they are equal.
+DIFF_OPTIONS = (
+    "--no-renames",
+    "--ignore-submodules=none",
+    "--diff-algorithm=myers",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-relative",
+    "--no-color",
+)
+# What repository configuration could otherwise change in the output, for every form.
+PINNED_OPTIONS = ("--full-index", "--no-abbrev", f"-O{os.devnull}")
+# The same for the patch only: each of these makes git print a patch, so the other forms leave them out.
+PATCH_OPTIONS = (
+    "--patch",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--unified=3",
+    "--inter-hunk-context=0",
+    "--indent-heuristic",
+    "--submodule=short",
+)
+CONFIG = (
+    "core.quotePath=false",
+    "core.fsmonitor=false",
+    f"core.attributesFile={os.devnull}",
+    "core.commitGraph=false",
+    "core.bigFileThreshold=8g",
+    "diff.suppressBlankEmpty=false",
+    "advice.graftFileDeprecated=false",
+)
+DROPPED_ENV = (
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_DIFF_OPTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_ATTR_SOURCE",
+)
+DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+ESCAPES = {7: b"\\a", 8: b"\\b", 9: b"\\t", 10: b"\\n", 11: b"\\v", 12: b"\\f", 13: b"\\r", 34: b'\\"', 92: b"\\\\"}
+AUTHOR = re.compile(rb"(.*) <([^<>]*)> (\d+) [+-]\d{4}")
+TREE, GITLINK = b"040000", b"160000"
+
+
+class Fail(Exception):
+    def __init__(self, code: int, message: bytes):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def quote(path: bytes) -> bytes:
+    """git's C-style quoting under core.quotePath=false: only control bytes, DEL, `"` and `\\` force it.
+    An empty argument, which no path is, is written `""`."""
+    if path and not any(b < 0x20 or b in (0x22, 0x5C, 0x7F) for b in path):
+        return path
+    out = bytearray(b'"')
+    for b in path:
+        if b in ESCAPES:
+            out += ESCAPES[b]
+        elif b < 0x20 or b == 0x7F:
+            out += b"\\%03o" % b
+        else:
+            out.append(b)
+    out += b'"'
+    return bytes(out)
+
+
+def usage() -> Fail:
+    return Fail(2, USAGE)
+
+
+def refused_revision(arg: bytes) -> Fail:
+    return Fail(2, b"refused revision: " + quote(arg))
+
+
+def refused_path(arg: bytes) -> Fail:
+    return Fail(2, b"refused path: " + quote(arg))
+
+
+def unknown(arg: bytes) -> Fail:
+    return Fail(3, b"unknown revision or path: " + quote(arg))
+
+
+# --- arguments --------------------------------------------------------------
+
+
+def is_revision(token: bytes) -> bool:
+    return token in NAMES or FULL_ID.fullmatch(token) is not None
+
+
+def check_revision(token: bytes, arg: bytes) -> bytes:
+    if not is_revision(token):
+        raise refused_revision(arg)
+    return token
+
+
+def path_ok(path: bytes) -> bool:
+    return not path.startswith(b"/") and all(part not in (b"", b".", b"..") for part in path.split(b"/"))
+
+
+def split_paths(args: list) -> tuple:
+    if b"--" in args:
+        at = args.index(b"--")
+        return args[:at], args[at + 1 :], True
+    return args, [], False
+
+
+def check_paths(paths: list) -> list:
+    for path in paths:
+        if not path_ok(path):
+            raise refused_path(path)
+    return paths
+
+
+def parse_log(args: list) -> dict:
+    revs, paths, _ = split_paths(args)
+    spec = None
+    for arg in revs:
+        if b"..." in arg or arg.count(b"..") > 1:
+            raise refused_revision(arg)
+        if b".." in arg:
+            left, right = arg.split(b"..")
+            spec = (check_revision(left, arg), check_revision(right, arg), arg)
+        else:
+            spec = (None, check_revision(arg, arg), arg)
+    if len(revs) > 1:
+        raise usage()
+    return {"command": "log", "range": spec, "paths": check_paths(paths)}
+
+
+def parse_diff(args: list) -> dict:
+    rest, paths, _ = split_paths(args)
+    form, job = None, False
+    while rest and (rest[0] in FORMS or rest[0] == JOB_FLAG):
+        flag = rest.pop(0)
+        if flag == JOB_FLAG:
+            if job:
+                raise usage()
+            job = True
+        elif form is not None:
+            raise Fail(2, b"at most one of --numstat, --name-only and --raw")
+        else:
+            form = flag
+    for arg in rest:
+        check_revision(arg, arg)
+    if (job and rest) or (not job and len(rest) != 2):
+        raise usage()
+    return {"command": "diff", "form": form, "revs": rest, "paths": check_paths(paths)}
+
+
+def parse_show(args: list) -> dict:
+    if b"--" in args:
+        raise usage()
+    for arg in args:
+        rev, colon, path = arg.partition(b":")
+        check_revision(rev, arg)
+        if path and not path_ok(path):
+            raise refused_path(arg)
+    if len(args) != 1:
+        raise usage()
+    rev, colon, path = args[0].partition(b":")
+    return {"command": "show", "rev": rev, "path": path if colon else None, "arg": args[0]}
+
+
+def parse(argv: list) -> dict:
+    if not argv:
+        raise usage()
+    parsers = {b"log": parse_log, b"diff": parse_diff, b"show": parse_show}
+    if argv[0] not in parsers:
+        raise usage()
+    return parsers[argv[0]](list(argv[1:]))
+
+
+# --- git --------------------------------------------------------------------
+
+
+def neutral_env() -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in DROPPED_ENV and not k.startswith(DROPPED_ENV_PREFIXES)}
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_GRAFT_FILE": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        }
+    )
+    return env
+
+
+class Git:
+    def __init__(self):
+        self.env = neutral_env()
+        self.top = None
+        code, out = self.run(["rev-parse", "--show-toplevel"], ok=None)
+        if code != 0 or not out.strip():
+            raise Fail(4, b"not in a repository")
+        self.top = out.rstrip(b"\n")
+        code, out = self.run(["hash-object", "-t", "tree", "--stdin"], ok=None)
+        if code != 0:
+            raise Fail(5, b"vcs failure")
+        self.env["GIT_ATTR_SOURCE"] = out.strip().decode("ascii")  # the empty tree: no attributes apply
+
+    def run(self, args: list, ok=(0,)) -> tuple:
+        argv = ["git", "--literal-pathspecs", "--no-optional-locks"]
+        for item in CONFIG:
+            argv += ["-c", item]
+        try:
+            proc = subprocess.run(
+                argv + args,
+                cwd=self.top,
+                env=self.env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            raise Fail(5, b"vcs failure")
+        if ok is not None and proc.returncode not in ok:
+            raise Fail(5, b"vcs failure")
+        return proc.returncode, proc.stdout
+
+    def refuse_repository_attributes(self) -> None:
+        """Fail unless $GIT_DIR/info/attributes is missing or empty: no option makes git ignore it."""
+        _, out = self.run(["rev-parse", "--git-path", "info/attributes"])
+        path = os.path.join(self.top, out.rstrip(b"\n"))
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise Fail(5, b"vcs failure")
+        if not stat.S_ISREG(st.st_mode) or st.st_size != 0:
+            raise Fail(5, b"vcs failure")
+
+    def commit_id(self, rev: bytes):
+        """The full id when rev names a commit, else None."""
+        code, out = self.run(["rev-parse", "--verify", "--quiet", rev + b"^{commit}"], ok=(0, 1, 128))
+        return out.strip() if code == 0 else None
+
+    def is_ancestor(self, older: bytes, newer: bytes) -> bool:
+        code, _ = self.run(["merge-base", "--is-ancestor", older, newer], ok=(0, 1))
+        return code == 0
+
+
+class Job:
+    """The job's three named revisions, and resolution of every revision against them."""
+
+    def __init__(self, git: Git):
+        self.git = git
+        path = os.path.join(os.fsdecode(git.top), VCS_JSON)
+        try:
+            with open(path, "rb") as handle:
+                data = json.loads(handle.read().decode("utf-8"))
+        except FileNotFoundError:
+            raise Fail(4, f"missing job input {VCS_JSON}".encode())
+        except (OSError, ValueError):
+            raise Fail(4, f"invalid job input {VCS_JSON}".encode())
+        if not isinstance(data, dict) or not isinstance(data.get("base"), str):
+            raise Fail(4, f"invalid job input {VCS_JSON}".encode())
+        base = data["base"].encode("utf-8")
+        if not FULL_ID.fullmatch(base) or git.commit_id(base) != base:
+            raise Fail(4, f"base in {VCS_JSON} is not a full commit id".encode())
+        head = git.commit_id(b"HEAD")
+        if head is None:
+            raise Fail(4, b"head is not a commit")
+        code, out = git.run(["merge-base", "--all", base, head], ok=(0, 1))
+        bases = out.split()
+        if len(bases) != 1:
+            raise Fail(4, b"base and head do not have exactly one merge base")
+        self.names = {b"base": base, b"head": head, b"merge-base": bases[0]}
+
+    def resolve(self, token: bytes, arg: bytes) -> bytes:
+        if token in self.names:
+            return self.names[token]
+        if self.git.commit_id(token) != token:
+            raise unknown(arg)
+        if not (self.git.is_ancestor(token, self.names[b"base"]) or self.git.is_ancestor(token, self.names[b"head"])):
+            raise unknown(arg)
+        return token
+
+
+# --- commits ----------------------------------------------------------------
+
+
+def parse_commit(raw: bytes) -> dict:
+    header, _, message = raw.partition(b"\n\n")
+    parents, author = [], None
+    for line in header.split(b"\n"):
+        if line.startswith(b"parent "):
+            parents.append(line[len(b"parent ") :])
+        elif line.startswith(b"author ") and author is None:
+            author = line[len(b"author ") :]
+    match = AUTHOR.fullmatch(author or b"")
+    if match is None:
+        raise Fail(5, b"vcs failure")
+    when = datetime.fromtimestamp(int(match.group(3)), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "parents": parents,
+        "name": match.group(1),
+        "email": match.group(2),
+        "date": when.encode(),
+        "message": message,
+    }
+
+
+def changed_paths(git: Git, commit: bytes, parents: list) -> list:
+    """(status, path) per path changed against the first parent, or against the empty tree for a root commit."""
+    options = ["diff-tree", "-r", "-z", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none"]
+    if parents:
+        _, out = git.run(options + [parents[0], commit])
+    else:
+        _, out = git.run(options + ["--root", "--no-commit-id", commit])
+    fields = out.split(b"\0")
+    changes = []
+    for at in range(0, len(fields) - 1, 2):
+        changes.append((fields[at].split(b" ")[-1][:1], fields[at + 1]))
+    return changes
+
+
+def under(path: bytes, paths: list) -> bool:
+    return not paths or any(path == p or path.startswith(p + b"/") for p in paths)
+
+
+def record(commit: bytes, info: dict, changes: list) -> bytes:
+    lines = [b"commit " + commit]
+    lines += [b"parent " + parent for parent in info["parents"]]
+    lines.append(b"author " + info["name"] + b" <" + info["email"] + b">")
+    lines.append(b"date " + info["date"])
+    lines.append(b"subject " + info["message"].split(b"\n", 1)[0])
+    lines += [b"path " + status + b" " + quote(path) for status, path in changes]
+    return b"".join(line + b"\n" for line in lines)
+
+
+def read_commit(git: Git, commit: bytes) -> dict:
+    _, raw = git.run(["cat-file", "commit", commit])
+    return parse_commit(raw)
+
+
+# --- commands ---------------------------------------------------------------
+
+
+def run_log(git: Git, job: Job, request: dict) -> bytes:
+    spec = request["range"]
+    if spec is None:
+        exclude, include = job.names[b"merge-base"], job.names[b"head"]
+    else:
+        left, right, arg = spec
+        exclude = job.resolve(left, arg) if left is not None else None
+        include = job.resolve(right, arg)
+    args = ["rev-list", "--topo-order", include] + ([b"^" + exclude] if exclude is not None else []) + ["--"]
+    _, out = git.run(args)
+    records = []
+    for commit in out.split():
+        info = read_commit(git, commit)
+        changes = [(s, p) for s, p in changed_paths(git, commit, info["parents"]) if under(p, request["paths"])]
+        if request["paths"] and not changes:
+            continue
+        records.append(record(commit, info, changes))
+    return b"\n".join(records)
+
+
+def run_diff(git: Git, job: Job, request: dict) -> bytes:
+    if request["revs"]:
+        old, new = (job.resolve(rev, rev) for rev in request["revs"])
+    else:
+        old, new = job.names[b"merge-base"], job.names[b"head"]
+    git.refuse_repository_attributes()
+    form = [request["form"]] if request["form"] else list(PATCH_OPTIONS)
+    _, out = git.run(["diff", *DIFF_OPTIONS, *PINNED_OPTIONS, *form, old, new, "--", *request["paths"]])
+    return out
+
+
+def listing(git: Git, treeish: bytes, prefix: bytes) -> bytes:
+    _, out = git.run(["ls-tree", "-r", "-z", "--full-tree", treeish])
+    entries = []
+    for entry in out.split(b"\0"):
+        if entry:
+            meta, _, path = entry.partition(b"\t")
+            mode, _, rest = meta.partition(b" ")
+            entries.append((prefix + path, mode, rest.split(b" ")[-1]))
+    entries.sort()
+    return b"".join(mode + b" " + oid + b"\t" + quote(path) + b"\n" for path, mode, oid in entries)
+
+
+def run_show(git: Git, job: Job, request: dict) -> bytes:
+    arg = request["arg"]
+    commit = job.resolve(request["rev"], arg)
+    path = request["path"]
+    if path is None:
+        info = read_commit(git, commit)
+        out = record(commit, info, changed_paths(git, commit, info["parents"]))
+        message = info["message"][:-1] if info["message"].endswith(b"\n") else info["message"]
+        if message:
+            out += b"\n" + b"".join((b"    " + line if line else b"") + b"\n" for line in message.split(b"\n"))
+        return out
+    if not path:
+        return listing(git, commit, b"")
+    parent, _, name = path.rpartition(b"/")
+    code, out = git.run(["ls-tree", "-z", commit + b":" + parent if parent else commit], ok=None)
+    if code != 0:
+        raise unknown(arg)
+    for entry in out.split(b"\0"):
+        meta, _, entry_name = entry.partition(b"\t")
+        if entry_name != name:
+            continue
+        mode, _, rest = meta.partition(b" ")
+        oid = rest.split(b" ")[-1]
+        if mode == TREE:
+            return listing(git, commit + b":" + path, path + b"/")
+        if mode == GITLINK:
+            return mode + b" " + oid + b"\t" + quote(path) + b"\n"
+        _, data = git.run(["cat-file", "blob", oid])
+        return data
+    raise unknown(arg)
+
+
+def main(argv: list) -> int:
+    try:
+        request = parse(argv)
+        git = Git()
+        job = Job(git)
+        runners = {"log": run_log, "diff": run_diff, "show": run_show}
+        out = runners[request["command"]](git, job, request)
+    except Fail as exc:
+        sys.stderr.buffer.write(b"msw-vcs: " + exc.message + b"\n")
+        sys.stderr.buffer.flush()
+        return exc.code
+    sys.stdout.buffer.write(out)
+    sys.stdout.buffer.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main([os.fsencode(arg) for arg in sys.argv[1:]]))

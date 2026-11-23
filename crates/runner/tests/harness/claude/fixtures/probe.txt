@@ -1,0 +1,37 @@
+# Claude Code probe commands, written by record.sh. Content-free: every
+# free-text value is replaced by its length, <text:N>; field names, labels,
+# exit statuses, the version and enum values such as the login method are kept.
+# recorded on 2026-11-23
+
+== claude --version ==
+exit status: 0
+2.1.330 (Claude Code)
+
+== claude auth status --json ==
+exit status: 0
+{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": false, "projectsDirectory": "<text:28>", "configDirectory": "<text:19>", "loginExpiresAt": "<time>", "consoleProfileSignInOffered": true, "email": "<text:17>", "orgId": "<text:36>", "orgName": "<text:32>", "subscriptionType": "max", "storedClaudeAiLogin": true, "planTier": "<text:7>"}
+
+== claude auth status ==
+exit status: 0
+<text:1>
+<text:19>
+<text:28>
+<text:30>
+<text:29>
+<text:54>
+<text:43>
+<text:47>
+<text:38>
+<text:31>
+<text:50>
+<text:48>
+<text:28>
+<text:30>
+<text:23>
+<text:1>
+
+== credential mode ==
+apiKeySource in the complete scenario's system/init event: none
+ANTHROPIC_API_KEY passed to the CLI: no
+logged in (from claude auth status --json): true
+credential mode (inferred from apiKeySource and ANTHROPIC_API_KEY, not reported by the CLI): subscription

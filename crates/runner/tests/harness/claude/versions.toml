@@ -1,0 +1,42 @@
+# Claude Code versions validated for the runner's claude adapter, written by
+# record.sh from a recording; re-run it rather than editing by hand.
+#
+# Each requirement is { flag, listed, confirmed, evidence }. listed says whether
+# claude --help lists the flag. confirmed means the scenarios that use it ran
+# and the stream shows the behaviour: max_turns by a run stopped at its limit,
+# allowed_tools by a Write denied without the flag and run with it; the other
+# flags also need to be listed. effort may be "unsupported". interrupt is
+# confirmed only when the CLI had written its system/init line before SIGINT.
+# The isolation_* entries record how the recording was kept apart from the
+# operator's settings, CLAUDE.md, memory, agents, skills, MCP servers and
+# plugins; repeat_check points to the event kinds of a second recording.
+#
+# Event-kind comparison rule (record.sh compare): an event's kind is its type,
+# or type/subtype when it has a subtype; kinds containing rate_limit and system
+# kinds other than system/init are dropped, and consecutive repeats of a kind
+# collapse into one. Two recordings agree when every scenario has the same
+# sequence of kinds.
+#
+# fixtures/ holds only content-free files derived from the recording: free
+# text is replaced by its length, ids and times are normalised, the init event
+# keeps counts only. Raw recordings are never committed.
+
+[claude."2.1.330"]
+recorded_on = "2026-11-23"
+stream_json = { flag = "-p --output-format stream-json --verbose", listed = true, confirmed = true, evidence = "--output-format, stream-json and --verbose listed in --help: yes; complete exited 0 with system/init: yes, result: yes" }
+append_system_prompt = { flag = "--append-system-prompt", listed = true, confirmed = true, evidence = "listed in --help: yes; options exited 0; its reply starts with the marker the appended prompt asks for: yes" }
+model = { flag = "--model", listed = true, confirmed = true, evidence = "listed in --help: yes; system/init model for complete (haiku) = claude-haiku-5-5, exit 0, options (opus) = claude-opus-5-5, exit 0, effort-low (sonnet) = claude-sonnet-5-5, exit 0" }
+effort = { flag = "--effort", listed = true, confirmed = true, evidence = "listed in --help: yes; options (high) exited 0, effort-low (low) exited 0; the stream mentions effort" }
+max_turns = { flag = "--max-turns", listed = false, confirmed = true, evidence = "listed in --help: no; max-turns (limit 1, two reads asked for) exited 1, result subtype = error_max_turns, terminal_reason = max_turns, num_turns = 2, Read calls = 1; complete (limit 1) num_turns = 1; options (limit 2) num_turns = 2" }
+allowed_tools = { flag = "--allowedTools", listed = true, confirmed = true, evidence = "listed in --help: yes; without the flag (permission-denied, exit 0) Write was called: yes, denied: yes, the file was written: no; with --allowedTools Write (permission-allowed, exit 0) Write was called: yes, its tool_result has no error: yes, denied: no, the file was written: yes; options: Read ran without error: yes, its tool_result holds the note: yes; with --tools Read the init tool list is [\"Read\"]" }
+resume = { flag = "--resume", listed = true, confirmed = true, evidence = "listed in --help: yes; corrective exited 0; its session id equals missing-result's: yes; its reply has the msw-result block: yes" }
+isolation_settings = { flag = "--setting-sources project,local --safe-mode", confirmed = true, evidence = "--setting-sources listed in --help: yes, the user source left out: yes; --safe-mode listed in --help: yes, passed: yes; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: 0; memory paths reported by system/init: not reported; scenarios with a project memory directory under the user configuration directory: 0 of 10; memory judged by the user configuration directory, as system/init reports no memory_paths; user-scope agents reported by system/init: 0 of 0 in the user configuration directory; user-scope skills: 0 of 1" }
+isolation_mcp = { flag = "--strict-mcp-config --mcp-config (an empty mcpServers object)", confirmed = true, evidence = "--strict-mcp-config and --mcp-config listed in --help: yes; MCP servers reported by system/init: the highest count is 0 over 10 scenarios" }
+isolation_plugins = { flag = "--safe-mode", confirmed = true, evidence = "--safe-mode listed in --help: yes, passed: yes; plugins reported by system/init: the highest count is 4 over 10 scenarios; built-in plugins (path builtin, source builtin or <name>@builtin): the highest count is 4 over 10 scenarios; other plugin entries over all scenarios: 0, of them loaded from the user configuration directory: 0" }
+isolation_workdir = { flag = "", confirmed = true, evidence = "every scenario ran in a fresh directory under TMPDIR; inside a git work tree: no" }
+restrict_tools = { flag = "--tools", listed = true }
+permission_mode = { flag = "--permission-mode", listed = true, value = "default" }
+interrupt = { signal = "SIGINT", exit_status = 0, result_event = true, confirmed = true, evidence = "system/init line seen before the signal: yes; complete lines at the signal: 1, bytes: 3193; seconds from the start to the signal: 1 (waited up to 300); events in the transcript: 3, system/init among them: yes" }
+rate_limit_event = ["fixtures/complete.jsonl", "fixtures/needs-input.jsonl", "fixtures/missing-result.jsonl", "fixtures/corrective.jsonl", "fixtures/options.jsonl", "fixtures/effort-low.jsonl", "fixtures/max-turns.jsonl", "fixtures/permission-denied.jsonl", "fixtures/permission-allowed.jsonl"]
+credential_mode = { value = "subscription", source = "inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed" }
+repeat_check = { same = true, file = "fixtures/repeat-check.txt" }

@@ -29,7 +29,7 @@ components:
     paths: ["api/**", "crates/proto/**"]
   domain:
     description: "shared model and configuration types used by control plane and runner"
-    paths: ["crates/domain/**", "crates/config/**"]
+    paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
     paths: ["crates/core/**", "crates/server/**"]
@@ -114,11 +114,13 @@ gates:
     - name: packs-selftest
       command: "python3 .mintswarm/dogfood/packs/selftest.py"
     - name: python-format
-      command: "black --check . .mintswarm/dogfood/github/linux/yq"
+      command: "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs"
     - name: shell-lint
       command: "bash .mintswarm/dogfood/shell-lint.sh"
     - name: save-output-selftest
       command: "python3 .mintswarm/dogfood/save-output-selftest.py"
+    - name: msw-vcs-selftest
+      command: "python3 .mintswarm/dogfood/msw-vcs-selftest.py"
     - name: plan-approval-selftest
       command: "python3 .mintswarm/dogfood/plan-approval/selftest.py"
     - name: landing-floor-selftest
