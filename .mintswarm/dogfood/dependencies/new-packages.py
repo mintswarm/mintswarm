@@ -19,10 +19,14 @@ Otherwise it reads each changed Cargo.lock (through `yq -p=toml -o=json`,
 checking the shape of every `package` table) and pnpm-lock.yaml (through
 `yq -p=yaml -o=json`) at the base and the head; a file absent at a side counts as empty. A package is
 reported when its (name, version, source) is in the head lockfile and not
-in the base; `previous` holds the base versions of that name. Workspace
+in the base; `previous` holds the base versions of that name, `checksum` the
+Cargo.lock `checksum` and `integrity` the pnpm `resolution.integrity` (each
+null when the lockfile has none), which the prefetch checks archives
+against. Workspace
 members and path packages (a Cargo.lock entry without `source`) are part of
 the diff itself and are not reported. Problems are a lockfile that cannot be
-read and a changed Cargo.toml or package.json with no changed lockfile of
+read (a Cargo.lock top-level key other than `version`, `package`, `metadata`
+or `patch` included) and a changed Cargo.toml or package.json with no changed lockfile of
 its ecosystem.
 
 It first removes any `<dir>/packages.json` left by an earlier run, so the
@@ -57,6 +61,9 @@ class InputError(Exception):
 
 class LockError(Exception):
     """A lockfile that cannot be read; recorded as a problem."""
+
+
+CARGO_LOCK_KEYS = {"version", "package", "metadata", "patch"}
 
 
 # --- git and yq -------------------------------------------------------------
@@ -155,10 +162,12 @@ def read_blob(rev: str, path: str) -> bytes:
 
 
 def parse_cargo_lock(data: bytes) -> list:
-    """The `package` tables, read by `yq -p=toml`, as dicts with name, version, source (or None) and dependencies.
+    """The `package` tables, read by `yq -p=toml`, as dicts with name, version, source and checksum (each
+    possibly None) and dependencies.
 
-    Any shape other than a list of tables with string name and version, an optional string source and an
-    optional list of string dependencies is a LockError, so no table is dropped silently.
+    Any top-level key other than CARGO_LOCK_KEYS, and any shape other than a list of tables with string name
+    and version, an optional string source and checksum and an optional list of string dependencies, is a
+    LockError, so no table is dropped silently.
     """
     try:
         data.decode("utf-8")
@@ -169,6 +178,9 @@ def parse_cargo_lock(data: bytes) -> list:
     lock = to_json(data, "toml")
     if not isinstance(lock, dict):
         raise LockError("not a table")
+    unknown = sorted(set(lock) - CARGO_LOCK_KEYS)
+    if unknown:
+        raise LockError(f"unknown top-level key {unknown[0]!r}")
     tables = lock.get("package", [])
     if not isinstance(tables, list):
         raise LockError("package is not an array of tables")
@@ -179,18 +191,23 @@ def parse_cargo_lock(data: bytes) -> list:
             raise LockError(f"{where} is not a table")
         name, version = table.get("name"), table.get("version")
         source, dependencies = table.get("source"), table.get("dependencies", [])
+        checksum = table.get("checksum")
         if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
             raise LockError(f"{where} has no string name and version")
         if source is not None and not isinstance(source, str):
             raise LockError(f"{where} ({name}) has a source that is not a string")
+        if checksum is not None and not isinstance(checksum, str):
+            raise LockError(f"{where} ({name}) has a checksum that is not a string")
         if not isinstance(dependencies, list) or not all(isinstance(d, str) for d in dependencies):
             raise LockError(f"{where} ({name}) has dependencies that are not a list of strings")
-        packages.append({"name": name, "version": version, "source": source, "dependencies": dependencies})
+        packages.append(
+            {"name": name, "version": version, "source": source, "checksum": checksum, "dependencies": dependencies}
+        )
     return packages
 
 
 def cargo_entries(data: bytes) -> list:
-    """(name, version, source, registry, direct) for every package with a source."""
+    """(name, version, source, registry, direct, checksum, integrity) for every package with a source."""
     packages = parse_cargo_lock(data)
     wanted = []
     for member in packages:
@@ -204,7 +221,8 @@ def cargo_entries(data: bytes) -> list:
             continue
         name, version = package["name"], package["version"]
         direct = any(n == name and (v is None or v == version) for n, v in wanted)
-        entries.append((name, version, package["source"], package["source"] in CRATES_IO, direct))
+        source = package["source"]
+        entries.append((name, version, source, source in CRATES_IO, direct, package["checksum"], None))
     return entries
 
 
@@ -264,6 +282,7 @@ def importer_pairs(lock: dict) -> set:
 
 
 def npm_entries(data: bytes) -> list:
+    """(name, version, source, registry, direct, checksum, integrity) for every package; checksum is None."""
     if not data.strip():
         return []
     lock = to_json(data)
@@ -278,8 +297,10 @@ def npm_entries(data: bytes) -> list:
         name, version = split_key(key)
         resolution = entry.get("resolution") if isinstance(entry, dict) else None
         source, registry = npm_source(resolution)
-        entries.add((name, version, source, registry, (name, version) in direct))
-    return sorted(entries)
+        integrity = resolution.get("integrity") if isinstance(resolution, dict) else None
+        integrity = integrity if isinstance(integrity, str) else None
+        entries.add((name, version, source, registry, (name, version) in direct, None, integrity))
+    return sorted(entries, key=lambda e: tuple("" if x is None else x for x in e))
 
 
 # --- the report -------------------------------------------------------------
@@ -304,11 +325,11 @@ def report(base: str, head: str, changed: list) -> dict:
                 problems.append({"path": path, "problem": f"cannot read the {side} lockfile: {exc}"})
         if len(sides) != 2:
             continue
-        before = {(n, v, s) for n, v, s, _, _ in sides["base"]}
-        for n, v, s, registry, direct in sides["head"]:
+        before = {entry[:3] for entry in sides["base"]}
+        for n, v, s, registry, direct, checksum, integrity in sides["head"]:
             if (n, v, s) in before:
                 continue
-            previous = sorted({bv for bn, bv, _, _, _ in sides["base"] if bn == n})
+            previous = sorted({entry[1] for entry in sides["base"] if entry[0] == n})
             packages.append(
                 {
                     "ecosystem": ecosystem,
@@ -319,6 +340,8 @@ def report(base: str, head: str, changed: list) -> dict:
                     "source": s,
                     "registry": registry,
                     "direct": direct,
+                    "checksum": checksum,
+                    "integrity": integrity,
                 }
             )
     locked = {LOCKFILES[p.rsplit("/", 1)[-1]] for p in changed if p.rsplit("/", 1)[-1] in LOCKFILES}
