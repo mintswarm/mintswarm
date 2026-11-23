@@ -89,9 +89,11 @@ repository's own objects:
   and both ids are fetched, by protocol v2 over `file://` with an
   upload-pack that ignores replace objects, grafts and the commit-graph,
   into a fresh bare store in the system temp directory (prefix
-  `msw-floor-objects-`). The receiving side hashes every object and checks
-  that the history is complete, so a forged or missing object fails the
-  fetch; a shallow result is refused;
+  `msw-floor-objects-`). The receiving side hashes every object, so a
+  forged object fails the fetch; then the store is refused if shallow and
+  every object reachable from both ids is walked in it, so a history the
+  job repository's .git/shallow cuts short, or any other missing object,
+  fails the fetch too;
 - both ids are peeled to their commits in the store, every later read runs
   as `git --git-dir=<store>`, and the store is deleted when the run ends.
 
@@ -224,7 +226,7 @@ a reason cannot add a line. Then `floor: hit` or `floor: clean`.
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
 missing or broken plan-approval/floor.py, an unresolvable base or head, a
 partial clone, a failed fetch into the object store (a forged or missing
-object), a shallow result, no merge base, a head the base already
+object, a shallow history), no merge base, a head the base already
 contains, no config at the base, an invalid config, a missing,
 unreadable, malformed or mismatched facts file, an unreadable plan, a diff that does not parse, git or yq missing or
 failing, a stale verdict that cannot be deleted, or any unexpected error.

@@ -141,7 +141,11 @@ Checks:
   repository; a loose config blob of the base overwritten with another
   blob, which a plain `git show` then shows, makes floor.py and decision.py
   exit 2 with one line naming the fetch and no verdict or record, even a
-  stale one; a repository with extensions.partialClone exits 2; and no
+  stale one; a .git/shallow forged in the job repository below the base's
+  `(cli)` commit makes floor.py exit 2 with one line naming the fetch and no
+  verdict; a copy of the repository at a path holding `%41`, next to a
+  decoy repository at the path git would decode that to, gives the
+  untampered verdict; a repository with extensions.partialClone exits 2; and no
   `msw-floor-objects-*` store is left after clean and exit 2 runs;
 - standard library: every import of floor.py, decision.py and selftest.py is
   in the standard library.
@@ -2756,6 +2760,46 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
         path.write_bytes(original)
         path.chmod(0o444)
     T.check("object store, forged object: restored", plain("cat-file", "blob", blob).stdout == as_json(marked))
+
+    # a .git/shallow cutting the history below the `(cli)` commit: upload-pack sends the cut history, and the
+    # store is not marked shallow
+    cli_commit = sb.git("rev-parse", f"{dropped}^")
+    shallow = git_dir / "shallow"
+    shallow.write_text(f"{cli_commit}\n", encoding="ascii")
+    try:
+        T.check(
+            "object store, forged .git/shallow: plain git sees a shallow repository",
+            plain("rev-parse", "--is-shallow-repository").stdout.decode().strip() == "true",
+        )
+        proc, verdict = sb.floor(history_args)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged .git/shallow: floor.py exits 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "the fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+    finally:
+        shallow.unlink()
+    T.check("object store: no store is left after a shallow run", not stores_left(sb), str(stores_left(sb)))
+
+    # a job repository whose path holds a percent sign: the file:// URL is percent-encoded, so a decoy at the
+    # path git would decode it to is never read
+    percent = sb.tmp / "pct%41x"
+    shutil.copytree(sb.repo, percent, symlinks=True)
+    subprocess.run(["git", "init", "-q", str(sb.tmp / "pctAx")], env=plain_env, check=True, capture_output=True)
+    stale = percent / VERDICT
+    stale.write_text('{"stale": true}\n', encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(FLOOR), *config_args], cwd=percent, env=sb.env, capture_output=True, text=True
+    )
+    verdict = json.loads(stale.read_text(encoding="utf-8")) if stale.exists() else None
+    T.check(
+        "object store, a '%' in the repository path: the verdict is the untampered one",
+        (proc.returncode, verdict) == expected["config"],
+        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    )
+    shutil.rmtree(percent)
+    shutil.rmtree(sb.tmp / "pctAx")
 
     sb.git("config", "extensions.partialClone", "origin")
     try:

@@ -103,8 +103,11 @@ Checks:
   see the base, leave the hits in place; a loose blob only the head adds,
   overwritten with another blob that a plain `git cat-file` then shows,
   makes the floor exit 2 with one line naming the fetch and no verdict, even
-  a stale one; and no `msw-floor-objects-*` store is left after clean, hit
-  and exit 2 runs;
+  a stale one; a .git/shallow forged in the job repository at the head's
+  parent, cutting off the commit between it and the base, makes the floor
+  exit 2 with one
+  line naming the fetch and no verdict; and no `msw-floor-objects-*` store
+  is left after clean, hit and exit 2 runs;
 - standard library: every import of floor.py and floor-selftest.py is in the
   standard library.
 
@@ -1200,6 +1203,32 @@ def check_object_store(r: Runner, sb: Sandbox) -> None:
         path.chmod(0o444)
     T.check("object store, forged object: restored", sb.raw("cat-file", "blob", blob) == content)
     T.check("object store: no store is left after an exit 2 run", not stores_left(sb), str(stores_left(sb)))
+
+    # a .git/shallow at the head's parent, cutting off the commit between it and the base: upload-pack sends
+    # the cut history, and the store is not marked shallow
+    between = sb.child(base, appended("docs/guide.md", 1), "shallow between")
+    middle = sb.child(between, appended("docs/guide.md", 2), "shallow middle")
+    far_head = sb.child(middle, {"docs/added.md": text(2, "added")}, "shallow head")
+    plan = sb.write_plan("forged shallow", plan_text(fp))
+    facts = sb.write_facts("forged shallow", facts_for(base, far_head))
+    argv = ["--plan", plan, "--component", "docs", "--base", base, "--head", far_head, "--facts", facts]
+    shallow = sb.repo / ".git" / "shallow"
+    shallow.write_text(f"{middle}\n", encoding="ascii")
+    try:
+        T.check(
+            "object store, forged .git/shallow: plain git sees a shallow repository",
+            sb.raw("rev-parse", "--is-shallow-repository").decode().strip() == "true",
+        )
+        proc, verdict = sb.floor(argv)
+        lines = proc.stderr.strip().splitlines()
+        T.check(
+            "object store, forged .git/shallow: exit 2 naming the fetch, no verdict",
+            proc.returncode == 2 and verdict is None and len(lines) == 1 and "the fetch" in lines[0],
+            f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
+        )
+    finally:
+        shallow.unlink()
+    T.check("object store: no store is left after a shallow run", not stores_left(sb), str(stores_left(sb)))
 
 
 def check_binary_content(r: Runner, sb: Sandbox) -> None:

@@ -31,7 +31,8 @@ Inputs:
 The base commit, the config at it and the history are read as floor.py
 reads them: through floor.py's job_object_store, from a fresh bare store in
 the system temp directory, filled by a by-hash protocol v2 fetch over
-`file://` that re-hashes every object, under floor.py's neutral git
+`file://` that re-hashes every object, its closure then walked in the
+store, under floor.py's neutral git
 environment, and deleted afterwards. The trust boundary that remains is
 floor.py's: ref names are resolved in the job repository, the store is
 out of the stages' reach by convention only, and a forged object in the
@@ -138,7 +139,7 @@ strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
 record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, a partial
-clone, a failed fetch into the object store (a forged or missing object), a shallow result, no config at it, an invalid
+clone, a failed fetch into the object store (a forged or missing object, a shallow history), no config at it, an invalid
 config, an unknown component, an unreadable plan, issue document or
 analysis, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it

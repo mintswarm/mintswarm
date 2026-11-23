@@ -50,9 +50,12 @@ store made for this run, never from the job repository's own objects:
   worktree, and filled by a protocol v2 `git fetch` of that id over
   `file://` from the job repository's git directory, its upload-pack run
   with replace objects, grafts and the commit-graph off. The receiving side
-  hashes every object it is sent and checks that the history is complete,
-  so a forged or missing object anywhere in the history fails the fetch. A
-  shallow result is refused;
+  hashes every object it is sent, so a forged object fails the fetch. Its
+  connectivity check does not cover a history the job repository's own
+  .git/shallow cuts short, so the store is refused if it is shallow, and
+  then every object reachable from the fetched id is walked in it
+  (`git rev-list --objects`): an object missing from the store fails the
+  fetch too, with git's whole error output;
 - the id is peeled to its commit in that store, and every later read runs
   as `git --git-dir=<store>`; the store is deleted when the run ends,
   whatever its outcome.
@@ -178,7 +181,7 @@ identifiers skipped, in order). One line per evaluated rule is printed, then
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
 unresolvable base ref, a partial clone, a failed fetch into the object
-store (a forged or missing object), a shallow result, no config at the
+store (a forged or missing object, a shallow history), no config at the
 base, an invalid config, an unreadable
 or non-UTF-8 plan, issue document or analysis, git or yq missing or
 failing (reading the history too), a stale verdict that cannot be deleted,
@@ -201,6 +204,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
@@ -481,10 +485,26 @@ def resolve_id(label: str, ref: str) -> str:
     return oid
 
 
+def fetch(argv: list) -> None:
+    """Run one step of filling the object store; a failure is the fetch's, with all of git's error output."""
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise InputError(f"cannot run {argv[0]}: {exc}") from exc
+    if proc.returncode != 0:
+        lines = proc.stderr.decode("utf-8", errors="replace").splitlines()
+        detail = "; ".join(line.strip() for line in lines if line.strip())  # all of it, on one line
+        raise InputError(
+            "the fetch from the job repository into a fresh object store failed "
+            f"({command_name(argv)}, exit {proc.returncode})" + (f": {detail}" if detail else "")
+        )
+
+
 @contextlib.contextmanager
 def object_store(refs: dict):
     """Yield (store, {label: commit}) for refs ({label: ref}): a fresh bare store in the system temp directory,
-    filled by a by-hash fetch from the job repository that re-hashes every object, and removed afterwards.
+    filled by a by-hash fetch from the job repository that re-hashes every object, its closure from every
+    fetched id then walked, and removed afterwards.
 
     Ref names are resolved in the job repository without peeling; the store peels each id to its commit.
     Run under neutral_git_env(); job_object_store() sees to that."""
@@ -497,26 +517,23 @@ def object_store(refs: dict):
     try:
         run(["git", "init", "--bare", "--quiet", "--template=", store])
         wanted = sorted(set(ids.values()))
-        try:
-            run(
-                git_argv(
-                    store,
-                    "-c",
-                    "protocol.version=2",
-                    *FETCH_OPTIONS,
-                    f"--upload-pack={UPLOAD_PACK}",
-                    f"file://{common}",
-                    *wanted,
-                )
+        fetch(
+            git_argv(
+                store,
+                "-c",
+                "protocol.version=2",
+                *FETCH_OPTIONS,
+                f"--upload-pack={UPLOAD_PACK}",
+                "file://" + urllib.parse.quote(common),
+                *wanted,
             )
-        except InputError as exc:
-            raise InputError(
-                f"the fetch from the job repository into a fresh object store failed "
-                f"(a missing or forged object): {str(exc).split(' failed: ', 1)[-1]}"
-            ) from exc
+        )
         shallow = run(git_argv(store, "rev-parse", "--is-shallow-repository")).decode("ascii").strip()
         if shallow != "false":
             raise InputError("the fetch from the job repository gave a shallow history")
+        # A .git/shallow in the job repository cuts what upload-pack sends without marking the store shallow,
+        # so the store's closure from every fetched id is walked: a missing object fails the fetch.
+        fetch(git_argv(store, "rev-list", "--objects", *wanted, "--"))
         commits = {}
         for label, oid in ids.items():
             try:
