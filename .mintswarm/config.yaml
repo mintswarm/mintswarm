@@ -137,6 +137,14 @@ gates:
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
       command: "python3 .mintswarm/dogfood/dependencies/prefetch-selftest.py"
+    - name: typescript-typecheck
+      command: "pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/tsc --noEmit"
+    - name: typescript-lint
+      command: "pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/eslint ."
+    - name: typescript-format
+      command: "pnpm --dir web install --frozen-lockfile && cd web && ./node_modules/.bin/prettier --check ."
+    - name: typescript-test
+      command: "pnpm --dir web install --frozen-lockfile && cd web/apps/ui && ./node_modules/.bin/vitest run"
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py

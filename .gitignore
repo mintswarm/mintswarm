@@ -1,6 +1,12 @@
 # Rust
 /target/
 
+# Build tree
+/build/
+
+# Web dependencies
+node_modules/
+
 # Agent worktrees and job scratch
 .claude/worktrees/
 .claude/settings.local.json
