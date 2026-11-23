@@ -2,8 +2,8 @@
 # Record Claude Code's headless behaviour for the runner's claude adapter, and
 # derive the content-free fixtures its tests replay.
 #
-#   record.sh record [--raw DIR] [--out DIR] [--effort-args ARGS]
-#   record.sh derive RAW [--out DIR]
+#   record.sh record [--raw DIR] [--out DIR] [--effort-args ARGS] [--repeat]
+#   record.sh derive RAW [--repeat RAW2] [--out DIR]
 #   record.sh compare A B
 #   record.sh leak-check DIR
 #   record.sh self-test
@@ -12,9 +12,13 @@
 # output: complete, needs-input, missing-result, corrective (a resume of
 # missing-result's session), options (appended system prompt, opus, effort
 # high, max turns 2, tools restricted and pre-approved to Read), effort-low
-# (sonnet, effort low) and interrupt (SIGINT once the first stream line
-# appears, SIGTERM 10 s later if the CLI is still running, SIGKILL 10 s after
-# that). It also runs the probe commands: claude --help, claude --version and,
+# (sonnet, effort low), max-turns (two Read calls asked for under
+# --max-turns 1), permission-denied and permission-allowed (a Write, which
+# needs permission in default mode, without and with --allowedTools Write)
+# and interrupt (SIGINT once the first stream line appears, SIGTERM 10 s
+# later if the CLI is still running, SIGKILL 10 s after that). With --repeat
+# it records everything a second time, into RAW-repeat, for the repeat
+# check. It also runs the probe commands: claude --help, claude --version and,
 # when --help lists an auth command, claude auth status --json and
 # claude auth status.
 #
@@ -23,15 +27,18 @@
 # under ${TMPDIR:-/tmp}, outside the repository, with an environment built
 # from empty: HOME, PATH, USER, LANG, TERM, TMPDIR, the variables named in
 # MSW_HARNESS_ENV_PASS, and ANTHROPIC_API_KEY only when the credential mode is
-# api_key. --setting-sources project,local leaves out the user source, so no
-# user settings, user CLAUDE.md, memory or plugins load, and
+# api_key. --setting-sources project,local leaves out the user source (user
+# settings, user CLAUDE.md, memory); --safe-mode starts with CLAUDE.md,
+# skills, installed plugins, hooks and custom agents and commands disabled;
 # --strict-mcp-config with an empty --mcp-config loads no MCP server. Each
 # flag is used only when --help lists it; versions.toml records, as
 # isolation_settings, isolation_mcp, isolation_plugins and isolation_workdir,
 # whether it was listed and whether the init events and the directories
 # agree (no CLAUDE.md in the working directories or their parents, none in a
-# git work tree, no MCP server, no plugin), with confirmed = false and the
-# evidence when not. Prompts go to the CLI on standard input.
+# git work tree, no memory path, none of the agents or skills found in the
+# operator's user configuration directory, no MCP server, no plugin), with
+# confirmed = false and the evidence when not. Prompts go to the CLI on
+# standard input.
 #
 # Raw recordings are never committed. record writes them to RAW, by default
 # build/harness/claude/raw under the top of the git work tree (git-ignored),
@@ -45,20 +52,28 @@
 #       <text:N>; ids become <id:N>, numbered by first appearance across the
 #       run so a resumed session keeps its id; times become <time> or 0; the
 #       system/init event keeps counts (tools, MCP servers, slash commands,
-#       plugins), never names. Kept as they are: numbers, booleans, enum values
-#       the adapter relies on (type, subtype, role, stop_reason, status,
-#       permission mode, rate-limit and login state), model names, the CLI
-#       version and built-in tool names.
+#       plugins), never names. Field names are kept only when they are in a
+#       closed set of schema names or are model names; any other becomes the
+#       <id:N> of the id it is, or <key:N>. Kept as they are: numbers,
+#       booleans, enum values the adapter relies on (type, subtype, role,
+#       stop_reason, status, permission mode, rate-limit and login state),
+#       each from a closed set per field, model names, the CLI version and
+#       built-in tool names.
 #   fixtures/probe.txt  the probe commands with their exit status and output
 #       made content-free the same way, and the credential mode with where it
 #       was read from.
-#   versions.toml  the version, with { flag, confirmed, evidence } for each
-#       requirement and isolation measure, the interrupt behaviour and the
-#       rate-limit observation.
+#   fixtures/repeat-check.txt  with --repeat, whether each scenario's event
+#       kinds agree between the two recordings, from the derived events.
+#   versions.toml  the version, with { flag, listed, confirmed, evidence }
+#       for each requirement, { flag, confirmed, evidence } for each
+#       isolation measure, the interrupt behaviour, the rate-limit
+#       observation and the repeat check.
 # The derived files are written to a temporary directory and leak-checked
 # there; they are copied to DIR only when the leak check passes.
 #
-# derive re-derives DIR from an existing RAW. compare prints, for every
+# derive re-derives DIR from an existing RAW, and the repeat check from
+# RAW2 when given; without it, DIR's repeat-check.txt is removed. compare
+# prints, for every
 # scenario, whether the event kinds of A and B agree: a kind is an event's
 # type, or type/subtype when it has a subtype; kinds containing rate_limit and
 # system kinds other than system/init are dropped, and consecutive repeats
@@ -66,12 +81,14 @@
 # *.jsonl files themselves. leak-check checks DIR/fixtures (or DIR when it
 # has no fixtures/) against an allowlist: every string value must be a
 # placeholder or an allowlisted enum, model, version or tool name, every field
-# name an identifier, every probe.txt line one of the shapes record writes,
-# and no other file may be there. It then fails when any file in DIR holds
+# name in the closed set, a model name or a placeholder, every probe.txt and
+# repeat-check.txt line one of the shapes record writes, and no other file
+# may be there. It then fails when any file in DIR holds
 # $HOME, the user name, the host name, an e-mail address or an API key.
-# self-test runs record against a fake claude whose stream carries MCP server
-# and plugin names, a CLAUDE.md-like passage, an e-mail address and paths,
-# then compare and leak-check, in temporary directories only.
+# self-test runs record against a fake claude whose stream carries MCP server,
+# plugin, agent and skill names, memory paths, a CLAUDE.md-like passage, an
+# e-mail address, paths, and an id and a name used as field names, then
+# compare and leak-check, in temporary directories only.
 #
 # Options:
 #   --effort-args ARGS  when --help lists no --effort flag, the arguments that
@@ -83,6 +100,9 @@
 #   CLAUDE_BIN              the CLI to run (default claude)
 #   MSW_HARNESS_CREDENTIAL  subscription (default) or api_key
 #   MSW_HARNESS_ENV_PASS    extra variable names to pass, space-separated
+#   MSW_HARNESS_USER_DIR    the operator's user configuration directory, whose
+#                           agents and skills must not load (default
+#                           $HOME/.claude)
 #   MSW_HARNESS_INJECT      self-test only: a line appended to the derived
 #                           complete.jsonl before the leak check, to prove
 #                           that a value off the allowlist stops the write
@@ -98,7 +118,7 @@ script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
 script_path="$script_dir/$(basename "$script_path")"
 stage_marker="MSW-STAGE-BODY-OK"
 note_marker="msw-note-7f3a"
-scenarios=(complete needs-input missing-result corrective options effort-low interrupt)
+scenarios=(complete needs-input missing-result corrective options effort-low max-turns permission-denied permission-allowed interrupt)
 
 cleanup_paths=()
 cleanup() {
@@ -114,7 +134,7 @@ die() {
     note "$1"
     exit 2
 }
-usage() { die "usage: record.sh record [--raw DIR] [--out DIR] [--effort-args ARGS] | derive RAW [--out DIR] | compare A B | leak-check DIR | self-test"; }
+usage() { die "usage: record.sh record [--raw DIR] [--out DIR] [--effort-args ARGS] [--repeat] | derive RAW [--repeat RAW2] [--out DIR] | compare A B | leak-check DIR | self-test"; }
 
 temp_dir() { mktemp -d "${TMPDIR:-/tmp}/msw-claude.XXXXXX"; }
 
@@ -126,30 +146,123 @@ import re
 import socket
 import sys
 
-SCENARIOS = ["complete", "needs-input", "missing-result", "corrective", "options", "effort-low", "interrupt"]
+SCENARIOS = [
+    "complete", "needs-input", "missing-result", "corrective", "options", "effort-low", "max-turns",
+    "permission-denied", "permission-allowed", "interrupt",
+]
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 
 # The allowlist. A fixture's string values may only be placeholders or values
-# that pass kept(); its field names may only pass key_ok() or be placeholders.
+# that pass kept(); its field names may only be in KNOWN_KEYS, be model names
+# or be placeholders. Everything else is mapped: an id-like field name to
+# <id:N>, any other to <key:N>.
 PLACEHOLDER_RE = re.compile(r"<(?:text|key|id):\d+>|<time>")
-TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(?:\.[a-z]{2,10})?")
-MODEL_RE = re.compile(r"claude-[a-z0-9.-]{1,60}(?:\[1m\])?|haiku|sonnet|opus|<synthetic>")
+MODEL_RE = re.compile(
+    r"claude-(?:\d+(?:-\d+)?-)?(?:haiku|sonnet|opus)(?:-\d{1,8}){0,3}(?:\[1m\])?|haiku|sonnet|opus|<synthetic>"
+)
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
-TOOL_RE = re.compile(r"[A-Z][A-Za-z]{1,39}")
-KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+# A field name that is an id rather than a schema name: a prefixed id such as
+# toolu_..., a UUID, or a long run of letters and digits with a digit in it.
+ID_KEY_RE = re.compile(
+    r"(?:toolu|srvtoolu|msg|req|call|sess|session|run|task|agent)_[A-Za-z0-9]{6,}"
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}"
+)
 TIME_RE = re.compile(r"timestamp|time|[A-Za-z_]*At|[a-z_]*_at")
 ID_KEYS = {
     "id", "uuid", "session_id", "tool_use_id", "parent_tool_use_id", "request_id", "requestId", "message_id",
     "parent_uuid", "parentUuid", "agent_id", "task_id",
 }
-# Fields whose values are enums the adapter relies on: event kinds, roles,
-# stop reasons, permission and credential modes, rate-limit and login state.
-ENUM_KEYS = {
-    "type", "subtype", "role", "stop_reason", "permissionMode", "apiKeySource", "status", "rateLimitType",
-    "overageStatus", "overageDisabledReason", "terminal_reason", "service_tier", "error", "authMethod",
-    "apiProvider", "subscriptionType", "method",
+# The field names a fixture may carry: the stream's and the probe's schema.
+KNOWN_KEYS = ID_KEYS | {
+    "additional_directories", "agents", "analyticsDisabled", "analytics_disabled", "apiKeySource", "apiProvider",
+    "api_error_status", "authMethod", "background", "budget", "by_type", "cacheCreationEphemeral1hInputTokens",
+    "cacheCreationEphemeral5mInputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "cache_creation",
+    "cache_creation_input_tokens", "cache_miss_reason", "cache_missed_input_tokens", "cache_read_input_tokens",
+    "caller", "canonicalModel", "capabilities", "claude_code_version", "completed", "concurrency_limit",
+    "configDirectory", "consoleProfileSignInOffered", "container", "content", "contextWindow", "context_management",
+    "costBasis", "costUSD", "credential_expires_at", "cwd", "decision", "depth_limit", "diagnostics",
+    "duration_api_ms", "duration_ms", "email", "ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens", "error",
+    "errors", "failed", "fallback_credit", "fast_mode_disabled_reason", "fast_mode_state", "file", "filePath",
+    "file_path", "first_content_frame_ms", "five_hour", "foreground", "inference_geo", "input", "inputTokens",
+    "input_tokens", "input_transformations", "interrupted", "isImage", "isUsingOverage", "is_error", "iterations",
+    "killed", "loggedIn", "loginExpiresAt", "maxOutputTokens", "max_depth", "mcp_servers", "memory_paths",
+    "message", "messaging_socket_path", "model", "modelUsage", "model_usage_since_last_result", "name",
+    "noOutputExpected", "numLines", "num_turns", "orgId", "orgName", "original_cwd", "originalFile",
+    "outputTokens", "output_style", "output_tokens", "output_tokens_details", "overageDisabledReason",
+    "overageStatus", "parent", "per_turn_effort_active", "permissionMode", "permission_decision",
+    "permission_denials", "planTier", "plugins", "product_feedback_disabled", "projectsDirectory", "provider",
+    "queued_turn_count", "rateLimitType", "rate_limit_info", "reason_type", "refused", "requested", "resetsAt",
+    "result", "result_index", "role", "safety_stops", "served_by_anthropic", "server_tool_use", "service_tier",
+    "seven_day", "seven_day_opus", "seven_day_sonnet", "signature", "skills", "slash_commands", "source",
+    "spawned", "spawned_by_subagents", "speed", "startLine", "started_in_background", "status", "stderr",
+    "stdout", "stop_details", "stop_reason", "stop_sequence", "storedClaudeAiLogin", "structuredPatch",
+    "subagent_stats", "subscriptionType", "subtype", "system", "terminal_reason", "terminal_slash_commands",
+    "text", "thinking", "thinkingTokens", "thinking_tokens", "time_to_request_ms", "timestamp", "tool_input",
+    "tool_name", "tool_result_meta", "tool_use_result", "tools", "totalLines", "total_cost_usd", "ttft_ms",
+    "ttft_stream_ms", "type", "ultrathink_available", "ultrathink_typed_raises", "unifiedWindows", "unset",
+    "usage", "user", "utilization", "view_mode", "webSearchRequests", "web_fetch_requests", "web_search_requests",
+    "wire_tool_inputs",
+}
+# Fields whose values are enums the adapter relies on, each with the closed
+# set of values kept: event kinds, roles, stop reasons, permission and
+# credential modes, rate-limit and login state. Any other value becomes
+# <text:N>.
+ENUM_VALUES = {
+    "type": {
+        "system", "assistant", "user", "result", "rate_limit_event", "stream_event", "message", "text", "thinking",
+        "redacted_thinking", "tool_use", "tool_result", "server_tool_use", "web_search_tool_result", "image",
+        "document", "direct", "messages_changed", "control_request", "control_response", "keep_alive",
+        "tool_progress", "auth_status", "non-json", "create", "update",
+    },
+    "subtype": {
+        "init", "success", "error_during_execution", "error_max_turns", "error_max_budget_usd",
+        "error_max_structured_output_retries", "status", "compact_boundary", "hook_started", "hook_progress",
+        "hook_response", "task_started", "task_progress", "task_notification", "api_retry",
+        "local_command_output", "files_persisted", "informational",
+    },
+    "role": {"user", "assistant", "system"},
+    "stop_reason": {
+        "end_turn", "tool_use", "max_tokens", "stop_sequence", "pause_turn", "refusal",
+        "model_context_window_exceeded",
+    },
+    "permissionMode": {"default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"},
+    "apiKeySource": {"none", "user", "project", "org", "temporary", "ANTHROPIC_API_KEY", "apiKeyHelper"},
+    "status": {"allowed", "allowed_warning", "rejected", "connected", "failed", "pending", "needs-auth", "disabled"},
+    "rateLimitType": {"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "overage"},
+    "overageStatus": {"allowed", "allowed_warning", "rejected"},
+    "overageDisabledReason": {
+        "org_level_disabled", "org_level_disabled_until", "out_of_credits", "overage_not_provisioned",
+        "member_level_disabled", "seat_tier_level_disabled", "unknown",
+    },
+    "terminal_reason": {
+        "completed", "aborted_streaming", "aborted_tools", "max_turns", "prompt_too_long", "model_error",
+        "blocking_limit", "stop_hook_prevented", "hook_stopped", "budget_exceeded",
+    },
+    "service_tier": {"standard", "priority", "batch"},
+    "error": {
+        "authentication_failed", "billing_error", "rate_limit", "invalid_request", "server_error", "unknown",
+        "max_output_tokens",
+    },
+    "authMethod": {"claude.ai", "console", "api_key", "oauth_token", "none", "third_party"},
+    "apiProvider": {"firstParty", "bedrock", "vertex", "foundry"},
+    "subscriptionType": {"max", "pro", "team", "enterprise", "free"},
+}
+# Built-in tool names, kept under a tool_use's name and a denial's tool_name.
+TOOL_NAMES = {
+    "Agent", "AskUserQuestion", "Bash", "BashOutput", "Edit", "EnterPlanMode", "ExitPlanMode", "Glob", "Grep",
+    "KillBash", "KillShell", "LS", "MultiEdit", "NotebookEdit", "NotebookRead", "Read", "Skill", "SlashCommand",
+    "Task", "TaskOutput", "TaskStop", "TodoWrite", "ToolSearch", "WebFetch", "WebSearch", "Write",
 }
 TOOL_USE_TYPES = {"tool_use", "server_tool_use"}
+# Values kept after a label in the text probe output, and in the probe's
+# apiKeySource line.
+PROBE_VALUES = (
+    {"true", "false", "yes", "no"}
+    | ENUM_VALUES["authMethod"]
+    | ENUM_VALUES["apiProvider"]
+    | ENUM_VALUES["subscriptionType"]
+)
 LABELS = {
     "login method", "auth method", "authentication method", "logged in", "status", "api provider",
     "subscription", "subscription type", "plan", "organization", "organisation", "org", "email", "account", "user",
@@ -174,7 +287,7 @@ PROBE_RES = [
         r"\d+\.\d+\.\d+ \(Claude Code\)",
         r"<text:\d+>",
         r"apiKeySource in the complete scenario's system/init event: (?:not reported|<text:\d+>|"
-        + TOKEN_RE.pattern
+        + "|".join(re.escape(v) for v in sorted(ENUM_VALUES["apiKeySource"]))
         + r")",
         r"ANTHROPIC_API_KEY passed to the CLI: (?:yes|no)",
         r"logged in \(from claude auth status --json\): (?:true|false|not reported)",
@@ -191,19 +304,26 @@ def placeholder(s):
 
 def kept(key, parent, s):
     """Whether a string value is on the allowlist as it stands."""
-    if key in ENUM_KEYS:
-        return TOKEN_RE.fullmatch(s) is not None
+    if key in ENUM_VALUES:
+        return s in ENUM_VALUES[key]
     if key == "model":
         return MODEL_RE.fullmatch(s) is not None
     if key == "claude_code_version":
         return VERSION_RE.fullmatch(s) is not None
     if key == "name" and isinstance(parent, dict) and parent.get("type") in TOOL_USE_TYPES:
-        return TOOL_RE.fullmatch(s) is not None
+        return s in TOOL_NAMES
+    if key == "tool_name":
+        return s in TOOL_NAMES
     return False
 
 
+def enum_or_placeholder(key, s):
+    s = "" if s is None else str(s)
+    return s if s in ENUM_VALUES.get(key, ()) else placeholder(s)
+
+
 def key_ok(k):
-    return KEY_RE.fullmatch(k) is not None or MODEL_RE.fullmatch(k) is not None
+    return k in KNOWN_KEYS or MODEL_RE.fullmatch(k) is not None
 
 
 def is_time(key):
@@ -227,7 +347,13 @@ class Deriver:
         return self.ids[s]
 
     def key(self, k):
-        return k if key_ok(k) else "<key:%d>" % len(k)
+        """A field name off the closed set becomes the id it names, numbered
+        like the same id elsewhere, or its length."""
+        if key_ok(k):
+            return k
+        if ID_KEY_RE.fullmatch(k):
+            return self.ident(k)
+        return "<key:%d>" % len(k)
 
     def event(self, ev):
         if not is_init(ev):
@@ -339,18 +465,45 @@ def probe_line_ok(line):
     value = m.group(2)
     if re.fullmatch(r"<text:\d+>", value):
         return True
-    return m.group(1).lower() in VALUE_LABELS and TOKEN_RE.fullmatch(value) is not None
+    return m.group(1).lower() in VALUE_LABELS and value in PROBE_VALUES
+
+
+REPEAT_HEADER = [
+    "# Event kinds of two recordings against the same version, written by",
+    "# record.sh record --repeat; the comparison rule is in versions.toml.",
+]
+REPEAT_LINE_RE = re.compile(r"([a-z-]+): (?:same: (.*)|differs|missing in (?:first|second))|  (?:first|second): (.*)")
+
+
+def kind_ok(k):
+    t, slash, sub = k.partition("/")
+    if not (t in ENUM_VALUES["type"] or t == "untyped" or PLACEHOLDER_RE.fullmatch(t)):
+        return False
+    return not slash or sub in ENUM_VALUES["subtype"] or PLACEHOLDER_RE.fullmatch(sub) is not None
+
+
+def repeat_line_ok(line):
+    if line in REPEAT_HEADER:
+        return True
+    m = REPEAT_LINE_RE.fullmatch(line)
+    if not m or (m.group(1) is not None and m.group(1) not in SCENARIOS):
+        return False
+    ks = m.group(2) if m.group(2) is not None else m.group(3)
+    return ks is None or all(kind_ok(k) for k in ks.split(" ") if k)
 
 
 def allowlist_problems(fixtures, problems):
     for name in sorted(os.listdir(fixtures)):
         path = os.path.join(fixtures, name)
-        if os.path.isdir(path) or not (name.endswith(".jsonl") or name == "probe.txt"):
+        if os.path.isdir(path) or not (name.endswith(".jsonl") or name in ("probe.txt", "repeat-check.txt")):
             problems.append("%s: not a fixture file" % name)
             continue
         for i, line in enumerate(read(path).splitlines(), 1):
             where = "%s:%d" % (name, i)
-            if name.endswith(".jsonl"):
+            if name == "repeat-check.txt":
+                if not repeat_line_ok(line):
+                    problems.append("%s: line is not allowlisted" % where)
+            elif name.endswith(".jsonl"):
                 json_line_problems(line, where, problems)
             elif line.startswith("{"):
                 json_line_problems(line, where, problems)
@@ -436,13 +589,35 @@ def probe_text_line(line):
     m = LABEL_LINE_RE.fullmatch(line)
     if m and m.group(1).lower() in LABELS:
         value = m.group(2).strip()
-        if m.group(1).lower() in VALUE_LABELS and TOKEN_RE.fullmatch(value):
+        if m.group(1).lower() in VALUE_LABELS and value in PROBE_VALUES:
             return "%s: %s" % (m.group(1), value)
         return "%s: %s" % (m.group(1), placeholder(value))
     return placeholder(line)
 
 
-def derive(raw, stage):
+def repeat_check(events, der, repeat, fixtures):
+    """Write fixtures/repeat-check.txt: the event kinds of the derived events
+    of RAW and of a second recording, REPEAT, scenario by scenario."""
+    der2 = Deriver()
+    lines = list(REPEAT_HEADER)
+    same_all = True
+    for s in SCENARIOS:
+        first = [der.event(e) if isinstance(e, dict) else {"type": "non-json"} for e in events[s]]
+        second = [der2.event(e) if isinstance(e, dict) else {"type": "non-json"} for e in load_events(os.path.join(repeat, s + ".jsonl"))]
+        ka, kb = kinds(first), kinds(second)
+        if not ka or not kb:
+            same_all = False
+            lines.append("%s: missing in %s" % (s, "first" if not ka else "second"))
+        elif ka == kb:
+            lines.append("%s: same: %s" % (s, " ".join(ka)))
+        else:
+            same_all = False
+            lines += ["%s: differs" % s, "  first: %s" % " ".join(ka), "  second: %s" % " ".join(kb)]
+    write_lines(os.path.join(fixtures, "repeat-check.txt"), lines)
+    return same_all
+
+
+def derive(raw, stage, repeat=None):
     meta = read_meta(raw)
     if not meta:
         print("record.sh: %s has no run.txt; not a raw recording" % raw, file=sys.stderr)
@@ -501,30 +676,56 @@ def derive(raw, stage):
     req = {}
     unconfirmed = []
 
-    def put(key, flag, ok, evidence):
-        req[key] = (flag, bool(ok), evidence)
+    def put(key, flag, ok, evidence, shown_listed=None):
+        req[key] = (flag, shown_listed, bool(ok), evidence)
         if not ok:
             unconfirmed.append(key)
+
+    def contents(s, role):
+        for e in dicts[s]:
+            if e.get("type") == role:
+                for c in (e.get("message") or {}).get("content") or []:
+                    if isinstance(c, dict):
+                        yield c
+
+    def tool_uses(s, tool):
+        return {c.get("id") for c in contents(s, "assistant") if c.get("type") == "tool_use" and c.get("name") == tool}
+
+    def tool_results(s, tool):
+        ids = tool_uses(s, tool)
+        return [c for c in contents(s, "user") if c.get("type") == "tool_result" and c.get("tool_use_id") in ids]
+
+    def result_text_of(c):
+        v = c.get("content")
+        if isinstance(v, list):
+            return " ".join(x.get("text", "") for x in v if isinstance(x, dict) and isinstance(x.get("text"), str))
+        return v if isinstance(v, str) else ""
+
+    def denied(s, tool):
+        r = result(s) or {}
+        ds = r.get("permission_denials")
+        return [d for d in ds if isinstance(d, dict) and d.get("tool_name") == tool] if isinstance(ds, list) else []
 
     sf = meta.get("stream_flags", "")
     ok = listed("--output-format") and "stream-json" in help_text and listed("--verbose")
     put("stream_json", sf, ok and status("complete") == 0 and init("complete") and result("complete"),
         "--output-format, stream-json and --verbose listed in --help: %s; complete exited %s with system/init: %s, result: %s"
-        % (yn(ok), status("complete"), yn(init("complete")), yn(result("complete"))))
+        % (yn(ok), status("complete"), yn(init("complete")), yn(result("complete"))), ok)
 
     f = meta.get("append_flag", "")
     marker = meta.get("stage_marker", "")
     has = bool(marker) and marker in result_text("options")
     put("append_system_prompt", f, listed(f) and status("options") == 0 and has,
         "listed in --help: %s; options exited %s; its reply starts with the marker the appended prompt asks for: %s"
-        % (yn(listed(f)), status("options"), yn(has)))
+        % (yn(listed(f)), status("options"), yn(has)), listed(f))
 
     f = meta.get("model_flag", "")
     pairs = [("complete", "haiku"), ("options", "opus"), ("effort-low", "sonnet")]
     agree = all(status(s) == 0 and alias in init_model(s).lower() for s, alias in pairs)
     put("model", f, listed(f) and agree,
         "listed in --help: %s; system/init model for %s"
-        % (yn(listed(f)), ", ".join("%s (%s) = %s, exit %s" % (s, a, safe(init_model(s), MODEL_RE) if init_model(s) else "none", status(s)) for s, a in pairs)))
+        % (yn(listed(f)), ", ".join("%s (%s) = %s, exit %s" % (s, a, safe(init_model(s), MODEL_RE) if init_model(s) else "none", status(s)) for s, a in pairs)),
+        listed(f))
 
     mode = meta.get("effort_mode", "unsupported")
     f = meta.get("effort_flag", "")
@@ -533,79 +734,136 @@ def derive(raw, stage):
     if mode == "flag":
         put("effort", f, listed(f) and ran,
             "listed in --help: %s; options (high) exited %s, effort-low (low) exited %s; the stream %s effort"
-            % (yn(listed(f)), status("options"), status("effort-low"), "mentions" if echoed else "does not report"))
+            % (yn(listed(f)), status("options"), status("effort-low"), "mentions" if echoed else "does not report"),
+            listed(f))
     elif mode == "args":
         put("effort", f, ran,
             "no --effort in --help; passed with --effort-args; options (high) exited %s, effort-low (low) exited %s; the stream %s effort"
-            % (status("options"), status("effort-low"), "mentions" if echoed else "does not report"))
+            % (status("options"), status("effort-low"), "mentions" if echoed else "does not report"), False)
     else:
-        put("effort", "unsupported", False, "no --effort in --help and no --effort-args given")
+        put("effort", "unsupported", False, "no --effort in --help and no --effort-args given", False)
 
+    # max turns: decided by behaviour, whether or not --help lists the flag.
+    # The max-turns scenario needs two Read calls under a limit of one turn,
+    # so an unlimited run would finish with success.
     f = meta.get("max_turns_flag", "")
     t1, t2 = turns("complete"), turns("options")
-    ok = status("complete") == 0 and status("options") == 0 and t1 is not None and t1 <= 1 and t2 is not None and t2 <= 2
-    put("max_turns", f, listed(f) and ok,
-        "listed in --help: %s; complete (limit 1) num_turns = %s; options (limit 2) num_turns = %s"
-        % (yn(listed(f)), t1, t2))
+    mr = result("max-turns") or {}
+    mt, m_sub, m_reason = turns("max-turns"), mr.get("subtype"), mr.get("terminal_reason")
+    stopped = m_sub == "error_max_turns" or m_reason == "max_turns"
+    ok = stopped and mt is not None and 1 <= mt <= 2 and len(tool_uses("max-turns", "Read")) <= 1
+    put("max_turns", f, ok,
+        "listed in --help: %s; max-turns (limit 1, two reads asked for) exited %s, result subtype = %s, "
+        "terminal_reason = %s, num_turns = %s, Read calls = %d; complete (limit 1) num_turns = %s; "
+        "options (limit 2) num_turns = %s"
+        % (yn(listed(f)), status("max-turns"), enum_or_placeholder("subtype", m_sub) if m_sub else "none",
+           enum_or_placeholder("terminal_reason", m_reason) if m_reason else "none", mt,
+           len(tool_uses("max-turns", "Read")), t1, t2),
+        listed(f))
 
+    # allowed tools: Write needs permission in default mode. permission-denied
+    # runs without the flag, permission-allowed with it; the flag is confirmed
+    # by the difference in the stream and on disk, not by the reply.
     f = meta.get("allowed_flag", "")
     restrict = meta.get("restrict_flag", "")
-    read_ids = set()
-    for e in dicts["options"]:
-        if e.get("type") == "assistant":
-            for c in (e.get("message") or {}).get("content") or []:
-                if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "Read":
-                    read_ids.add(c.get("id"))
-    read_ok = False
-    for e in dicts["options"]:
-        if e.get("type") == "user":
-            for c in (e.get("message") or {}).get("content") or []:
-                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in read_ids:
-                    read_ok = read_ok or not c.get("is_error")
+    d_tried = bool(tool_uses("permission-denied", "Write"))
+    d_denied = bool(denied("permission-denied", "Write")) or any(c.get("is_error") for c in tool_results("permission-denied", "Write"))
+    d_file = meta.get("denied_file", "")
+    a_tried = bool(tool_uses("permission-allowed", "Write"))
+    a_results = tool_results("permission-allowed", "Write")
+    a_ran = bool(a_results) and not any(c.get("is_error") for c in a_results)
+    a_denied = bool(denied("permission-allowed", "Write"))
+    a_file = meta.get("allowed_file", "")
+    ok = d_tried and d_denied and d_file == "no" and a_tried and a_ran and not a_denied and a_file == "yes"
+    read_results = tool_results("options", "Read")
+    read_ok = bool(read_results) and not any(c.get("is_error") for c in read_results)
+    note_seen = any(meta.get("note_marker", "-") in result_text_of(c) for c in read_results)
     tools = (init("options") or {}).get("tools")
-    only_read = tools == ["Read"]
-    shown = json.dumps([safe(x, TOOL_RE) for x in tools]) if isinstance(tools, list) else "not reported"
-    note_seen = meta.get("note_marker", "") in result_text("options")
-    ok = listed(f) and status("options") == 0 and read_ok and note_seen and (only_read if restrict else True)
+    shown = json.dumps([x if x in TOOL_NAMES else placeholder(str(x)) for x in tools]) if isinstance(tools, list) else "not reported"
     put("allowed_tools", f, ok,
-        "listed in --help: %s; options exited %s; Read ran without error: %s; the reply quotes the file: %s; %s"
-        % (yn(listed(f)), status("options"), yn(read_ok), yn(note_seen),
-           "with %s Read the init tool list is %s" % (restrict, shown) if restrict else "no flag restricts the tool set"))
+        "listed in --help: %s; without the flag (permission-denied, exit %s) Write was called: %s, denied: %s, "
+        "the file was written: %s; with %s Write (permission-allowed, exit %s) Write was called: %s, its "
+        "tool_result has no error: %s, denied: %s, the file was written: %s; options: Read ran without error: %s, "
+        "its tool_result holds the note: %s; %s"
+        % (yn(listed(f)), status("permission-denied"), yn(d_tried), yn(d_denied), d_file or "not checked", f,
+           status("permission-allowed"), yn(a_tried), yn(a_ran), yn(a_denied), a_file or "not checked",
+           yn(read_ok), yn(note_seen),
+           "with %s Read the init tool list is %s" % (restrict, shown) if restrict else "no flag restricts the tool set"),
+        listed(f))
 
     f = meta.get("resume_flag", "")
     same = sid("corrective") is not None and sid("corrective") == sid("missing-result")
     fixed = "msw-result" in result_text("corrective")
     put("resume", f, listed(f) and status("corrective") == 0 and same and fixed,
         "listed in --help: %s; corrective exited %s; its session id equals missing-result's: %s; its reply has the msw-result block: %s"
-        % (yn(listed(f)), status("corrective"), yn(same), yn(fixed)))
+        % (yn(listed(f)), status("corrective"), yn(same), yn(fixed)), listed(f))
 
-    # Isolation from the operator's settings, CLAUDE.md, memory, MCP servers
-    # and plugins, checked against --help and the init events.
+    # Isolation from the operator's settings, CLAUDE.md, memory, agents,
+    # skills, MCP servers and plugins, checked against --help, the init events
+    # and the operator's user configuration directory.
     inits = [init(s) for s in SCENARIOS if init(s)]
 
     def counts(field):
         return [len(i[field]) for i in inits if isinstance(i.get(field), (list, dict))]
 
+    def names(v):
+        if isinstance(v, dict):
+            v = list(v.keys()) if not v.get("name") else [v]
+        out = set()
+        for x in v if isinstance(v, list) else []:
+            n = x.get("name") if isinstance(x, dict) else x
+            if isinstance(n, str):
+                out.add(n)
+        return out
+
+    user_scope = {"agent": set(), "skill": set()}
+    for line in read(os.path.join(raw, "user-scope.txt")).splitlines():
+        k, _, n = line.partition(" ")
+        if k in user_scope and n:
+            user_scope[k].add(n)
+    seen_agents = set().union(*(names(i.get("agents")) for i in inits)) if inits else set()
+    seen_skills = set().union(*(names(i.get("skills")) for i in inits)) if inits else set()
+    user_agents = len(seen_agents & user_scope["agent"])
+    user_skills = len(seen_skills & user_scope["skill"])
+
+    def highest(c):
+        return "the highest count is %d over %d scenarios" % (max(c), len(c)) if c else "not reported"
+
     found = meta.get("instruction_files", "")
     ss = meta.get("settings_flag", "")
-    ok = bool(ss) and listed("--setting-sources") and found == "0" and bool(inits)
-    put("isolation_settings", ss or "--setting-sources", ok,
-        "listed in --help: %s; the user source, which holds the user settings, CLAUDE.md and memory, is left out: %s; "
-        "CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: %s"
-        % (yn(listed("--setting-sources")), yn(bool(ss)), found or "not checked"))
+    sm = meta.get("safe_mode_flag", "")
+    mp = counts("memory_paths")
+    flags = " ".join(x for x in (ss, sm) if x)
+    ok = (bool(ss) and found == "0" and bool(inits) and bool(mp) and max(mp) == 0
+          and user_agents == 0 and user_skills == 0)
+    put("isolation_settings", flags or "--setting-sources", ok,
+        "--setting-sources listed in --help: %s, the user source left out: %s; --safe-mode listed in --help: %s, "
+        "passed: %s; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: %s; "
+        "memory paths reported by system/init: %s; user-scope agents reported by system/init: %d of %d in the user "
+        "configuration directory; user-scope skills: %d of %d"
+        % (yn(listed("--setting-sources")), yn(bool(ss)), yn(listed("--safe-mode")), yn(bool(sm)),
+           found or "not checked", highest(mp), user_agents, len(user_scope["agent"]), user_skills,
+           len(user_scope["skill"])))
 
     mc = counts("mcp_servers")
     strict = meta.get("mcp_flag", "")
     ok = bool(strict) and listed("--strict-mcp-config") and listed("--mcp-config") and bool(mc) and max(mc) == 0
     put("isolation_mcp", strict or "--strict-mcp-config", ok,
         "--strict-mcp-config and --mcp-config listed in --help: %s; MCP servers reported by system/init: %s"
-        % (yn(listed("--strict-mcp-config") and listed("--mcp-config")),
-           "the highest count is %d over %d scenarios" % (max(mc), len(mc)) if mc else "not reported"))
+        % (yn(listed("--strict-mcp-config") and listed("--mcp-config")), highest(mc)))
 
     pc = counts("plugins")
-    put("isolation_plugins", ss or "--setting-sources", bool(ss) and bool(pc) and max(pc) == 0,
-        "plugins are enabled only from settings, and the user source is left out: %s; plugins reported by system/init: %s"
-        % (yn(bool(ss)), "the highest count is %d over %d scenarios" % (max(pc), len(pc)) if pc else "not reported"))
+    user_dir = meta.get("user_dir", "")
+    in_user = 0
+    for i in inits:
+        for p in i.get("plugins") if isinstance(i.get("plugins"), list) else []:
+            path = p.get("path") if isinstance(p, dict) else None
+            if user_dir and isinstance(path, str) and path.startswith(user_dir.rstrip("/") + "/"):
+                in_user += 1
+    put("isolation_plugins", sm or ss or "--safe-mode", bool(pc) and max(pc) == 0,
+        "--safe-mode listed in --help: %s, passed: %s; plugins reported by system/init: %s; plugin entries "
+        "loaded from the user configuration directory over all scenarios: %d"
+        % (yn(listed("--safe-mode")), yn(bool(sm)), highest(pc), in_user))
 
     in_git = meta.get("workdir_in_git", "")
     put("isolation_workdir", "", in_git == "no",
@@ -657,7 +915,7 @@ def derive(raw, stage):
     probe += [
         "",
         "== credential mode ==",
-        "apiKeySource in the complete scenario's system/init event: %s" % ("not reported" if source is None else safe(source, TOKEN_RE)),
+        "apiKeySource in the complete scenario's system/init event: %s" % ("not reported" if source is None else enum_or_placeholder("apiKeySource", source)),
         "ANTHROPIC_API_KEY passed to the CLI: %s" % ("yes" if passed else "no"),
         "logged in (from claude auth status --json): %s" % ("not reported" if logged is None else b(logged)),
         "credential mode (inferred from apiKeySource and ANTHROPIC_API_KEY, not reported by the CLI): %s" % mode_value,
@@ -675,11 +933,14 @@ def derive(raw, stage):
         "# Claude Code versions validated for the runner's claude adapter, written by",
         "# record.sh from a recording; re-run it rather than editing by hand.",
         "#",
-        "# Each requirement is { flag, confirmed, evidence }. confirmed means the flag is",
-        "# listed in claude --help, the scenarios that use it exited 0 and, where the",
-        "# stream shows the setting, the stream agrees. effort may be \"unsupported\".",
+        "# Each requirement is { flag, listed, confirmed, evidence }. listed says whether",
+        "# claude --help lists the flag. confirmed means the scenarios that use it ran",
+        "# and the stream shows the behaviour: max_turns by a run stopped at its limit,",
+        "# allowed_tools by a Write denied without the flag and run with it; the other",
+        "# flags also need to be listed. effort may be \"unsupported\".",
         "# The isolation_* entries record how the recording was kept apart from the",
-        "# operator's settings, CLAUDE.md, memory, MCP servers and plugins.",
+        "# operator's settings, CLAUDE.md, memory, agents, skills, MCP servers and",
+        "# plugins; repeat_check points to the event kinds of a second recording.",
         "#",
         "# Event-kind comparison rule (record.sh compare): an event's kind is its type,",
         "# or type/subtype when it has a subtype; kinds containing rate_limit and system",
@@ -698,8 +959,9 @@ def derive(raw, stage):
         "stream_json", "append_system_prompt", "model", "effort", "max_turns", "allowed_tools", "resume",
         "isolation_settings", "isolation_mcp", "isolation_plugins", "isolation_workdir",
     ):
-        flag, ok, ev = req[key]
-        vt.append("%s = { flag = %s, confirmed = %s, evidence = %s }" % (key, q(flag), b(ok), q(ev)))
+        flag, shown_listed, ok, ev = req[key]
+        lst = "" if shown_listed is None else ", listed = %s" % b(shown_listed)
+        vt.append("%s = { flag = %s%s, confirmed = %s, evidence = %s }" % (key, q(flag), lst, b(ok), q(ev)))
     perm = meta.get("permission_flag", "")
     vt += [
         "restrict_tools = { flag = %s, listed = %s }" % (q(restrict or "--tools"), b(bool(restrict))),
@@ -708,6 +970,13 @@ def derive(raw, stage):
         "rate_limit_event = %s" % ("[%s]" % ", ".join(q("fixtures/%s.jsonl" % s) for s in rate) if rate else q("not observed")),
         "credential_mode = { value = %s, source = %s }" % (q(mode_value), q("inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed")),
     ]
+    if repeat:
+        same = repeat_check(events, der, repeat, fixtures)
+        if not same:
+            unconfirmed.append("repeat")
+        vt.append("repeat_check = { same = %s, file = %s }" % (b(same), q("fixtures/repeat-check.txt")))
+    else:
+        vt.append("repeat_check = %s" % q("not run"))
     write_lines(os.path.join(stage, "versions.toml"), vt)
 
     if unconfirmed:
@@ -756,7 +1025,7 @@ def session_id(path):
 def main(argv):
     mode = argv[0]
     if mode == "derive":
-        return derive(argv[1], argv[2])
+        return derive(argv[1], argv[2], argv[3] if len(argv) > 3 and argv[3] else None)
     if mode == "compare":
         return compare(argv[1], argv[2])
     if mode == "session-id":
@@ -792,14 +1061,21 @@ publish() {
         cp "$stage/fixtures/$name.jsonl" "$out/fixtures/$name.jsonl" || die "cannot write $out/fixtures"
     done
     cp "$stage/fixtures/probe.txt" "$out/fixtures/probe.txt" || die "cannot write $out/fixtures"
+    # Without a second recording the old comparison no longer applies.
+    if [ -f "$stage/fixtures/repeat-check.txt" ]; then
+        cp "$stage/fixtures/repeat-check.txt" "$out/fixtures/repeat-check.txt" || die "cannot write $out/fixtures"
+    else
+        rm -f "$out/fixtures/repeat-check.txt"
+    fi
 }
 
-# Derive RAW into a temporary directory, leak-check it and copy it to OUT.
+# Derive RAW (and the comparison with REPEAT, when given) into a temporary
+# directory, leak-check it and copy it to OUT.
 run_derive() {
-    local raw="$1" out="$2" stage status=0
+    local raw="$1" out="$2" repeat="${3:-}" stage status=0
     stage="$(temp_dir)" || die "mktemp failed"
     cleanup_paths+=("$stage")
-    py derive "$raw" "$stage" || status=$?
+    py derive "$raw" "$stage" "$repeat" || status=$?
     case "$status" in
         0 | 1) ;;
         *) die "derive failed on $raw" ;;
@@ -916,6 +1192,18 @@ EOF
 msw-scenario: effort-low
 Reply with exactly this line and nothing else: low effort ok
 EOF
+    cat >"$dir/max-turns.txt" <<'EOF'
+msw-scenario: max-turns
+Use the Read tool to read the file first.txt in the current directory. After that, use the Read tool to read the file second.txt in the current directory. Then reply with the first line of each.
+EOF
+    local p
+    for p in permission-denied permission-allowed; do
+        cat >"$dir/$p.txt" <<EOF
+msw-scenario: $p
+Use the Write tool to create the file out.txt in the current directory, containing exactly this line: $note_marker
+Then reply with exactly this word and nothing else: done
+EOF
+    done
     cat >"$dir/interrupt.txt" <<'EOF'
 msw-scenario: interrupt
 Count from 1 to 3000, one number per line, with no other text.
@@ -967,8 +1255,40 @@ run_interrupt() {
     note "interrupt: $interrupt_signal, exit $status"
 }
 
+# Refuses a raw directory inside the work tree but outside its build/
+# directory, and prints its real path.
+raw_path() {
+    local dir="$1" root="$2"
+    dir="$(py realpath "$dir")"
+    if [ -n "$root" ]; then
+        case "$dir/" in
+            "$root/build/"*) ;;
+            "$root/"*) die "raw recordings are never kept in the work tree: give a --raw outside $root or under $root/build/" ;;
+        esac
+    fi
+    printf '%s\n' "$dir"
+}
+
+# Lists, by name only, the agents and skills in the operator's user
+# configuration directory, into the raw recording (never committed); derive
+# checks that none of them shows up in the init events.
+list_user_scope() {
+    local path name
+    : >"$raw/user-scope.txt"
+    for path in "$user_dir"/agents/*.md; do
+        [ -e "$path" ] || continue
+        name="$(basename "$path" .md)"
+        printf 'agent %s\n' "$name" >>"$raw/user-scope.txt"
+    done
+    for path in "$user_dir"/skills/*/; do
+        [ -d "$path" ] || continue
+        name="$(basename "$path")"
+        printf 'skill %s\n' "$name" >>"$raw/user-scope.txt"
+    done
+}
+
 cmd_record() {
-    local out="$script_dir" root default_raw=""
+    local out="$script_dir" root default_raw="" repeat="no" raw1 raw2=""
     raw=""
     effort_template=""
     while [ "$#" -gt 0 ]; do
@@ -988,6 +1308,7 @@ cmd_record() {
                 effort_template="$2"
                 shift
                 ;;
+            --repeat) repeat="yes" ;;
             *) usage ;;
         esac
         shift
@@ -1000,6 +1321,7 @@ cmd_record() {
         subscription | api_key) ;;
         *) die "MSW_HARNESS_CREDENTIAL must be subscription or api_key" ;;
     esac
+    user_dir="${MSW_HARNESS_USER_DIR:-$HOME/.claude}"
 
     root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$root" ]; then
@@ -1008,18 +1330,15 @@ cmd_record() {
     fi
     [ -n "$raw" ] || raw="$default_raw"
     [ -n "$raw" ] || die "not in a git work tree: give --raw DIR"
-    raw="$(py realpath "$raw")"
-    if [ -n "$root" ]; then
-        case "$raw/" in
-            "$root/build/"*) ;;
-            "$root/"*) die "raw recordings are never kept in the work tree: give a --raw outside $root or under $root/build/" ;;
-        esac
+    raw1="$(raw_path "$raw" "$root")" || exit 2
+    if [ "$repeat" = yes ]; then
+        raw2="$(raw_path "$raw1-repeat" "$root")" || exit 2
     fi
-    mkdir -p "$raw" || die "cannot create $raw"
     out="$(py realpath "$out")"
 
     env_args=("HOME=$HOME" "PATH=$PATH" "USER=${USER:-}" "LANG=${LANG:-en_GB.UTF-8}" "TERM=${TERM:-dumb}" "TMPDIR=${TMPDIR:-/tmp}")
-    local name api_key_passed="no"
+    local name
+    api_key_passed="no"
     for name in ${MSW_HARNESS_ENV_PASS:-}; do
         case "$name" in
             *[!A-Za-z0-9_]* | [0-9]*) die "MSW_HARNESS_ENV_PASS: not a variable name: $name" ;;
@@ -1034,6 +1353,21 @@ cmd_record() {
         api_key_passed="yes"
     fi
 
+    raw="$raw1"
+    record_once
+    if [ -n "$raw2" ]; then
+        note "second recording, for the repeat check"
+        raw="$raw2"
+        record_once
+        raw="$raw1"
+    fi
+    run_derive "$raw1" "$out" "$raw2"
+}
+
+# Records every scenario and the probe commands into $raw. Every file a
+# scenario or probe writes is overwritten, never appended to.
+record_once() {
+    mkdir -p "$raw" || die "cannot create $raw"
     scratch="$(temp_dir)" || die "mktemp failed"
     cleanup_paths+=("$scratch")
     local scratch_physical
@@ -1048,17 +1382,25 @@ cmd_record() {
         probe auth-json auth status --json
         probe auth-text auth status
     fi
+    list_user_scope
 
     local stream_flags="-p --output-format stream-json --verbose"
     local common=(-p --output-format stream-json --verbose)
-    # Isolation: leave out the user setting source (user settings, CLAUDE.md,
-    # memory and the plugins they enable) and load no MCP server.
-    local settings_flag="" mcp_flag=""
+    # Isolation: leave out the user setting source (user settings, CLAUDE.md
+    # and memory), start in safe mode (no CLAUDE.md, skills, installed
+    # plugins, hooks, custom agents or commands) and load no MCP server.
+    local settings_flag="" mcp_flag="" safe_mode_flag=""
     if listed --setting-sources; then
         common+=(--setting-sources "project,local")
         settings_flag="--setting-sources project,local"
     else
         note "isolation: --help lists no --setting-sources"
+    fi
+    if listed --safe-mode; then
+        common+=(--safe-mode)
+        safe_mode_flag="--safe-mode"
+    else
+        note "isolation: --help lists no --safe-mode"
     fi
     if listed --strict-mcp-config && listed --mcp-config; then
         printf '%s\n' '{"mcpServers":{}}' >"$scratch/mcp.json"
@@ -1086,9 +1428,10 @@ cmd_record() {
     if ! listed --allowedTools && listed --allowed-tools; then
         allowed_flag="--allowed-tools"
     fi
-    local restrict=() restrict_flag=""
+    local restrict_read=() restrict_write=() restrict_flag=""
     if listed --tools; then
-        restrict=(--tools Read)
+        restrict_read=(--tools Read)
+        restrict_write=(--tools Write)
         restrict_flag="--tools"
     fi
     local permission=() permission_flag=""
@@ -1097,12 +1440,14 @@ cmd_record() {
         permission_flag="--permission-mode"
     fi
 
-    local prompts="$scratch/prompts" dir s
+    local prompts="$scratch/prompts" s
     write_prompts "$prompts"
     for s in "${scenarios[@]}"; do
         mkdir -p "$scratch/$s"
     done
     printf 'MSW harness note.\n%s\n' "$note_marker" >"$scratch/options/note.txt"
+    printf 'MSW harness first.\n' >"$scratch/max-turns/first.txt"
+    printf 'MSW harness second.\n' >"$scratch/max-turns/second.txt"
 
     run_scenario complete "$scratch/complete" "$prompts/complete.txt" "${common[@]}" --model haiku --max-turns 1
     run_scenario needs-input "$scratch/needs-input" "$prompts/needs-input.txt" "${common[@]}" --model haiku --max-turns 1
@@ -1121,9 +1466,25 @@ cmd_record() {
     local stage_body="You are the mintswarm harness-experiment stage. Begin every reply with the line $stage_marker, then answer on the next line."
     effort_for high
     run_scenario options "$scratch/options" "$prompts/options.txt" "${common[@]}" --model opus ${effort_args[@]+"${effort_args[@]}"} \
-        --append-system-prompt "$stage_body" --max-turns 2 ${permission[@]+"${permission[@]}"} ${restrict[@]+"${restrict[@]}"} "$allowed_flag" Read
+        --append-system-prompt "$stage_body" --max-turns 2 ${permission[@]+"${permission[@]}"} ${restrict_read[@]+"${restrict_read[@]}"} "$allowed_flag" Read
     effort_for low
     run_scenario effort-low "$scratch/effort-low" "$prompts/effort-low.txt" "${common[@]}" --model sonnet ${effort_args[@]+"${effort_args[@]}"} --max-turns 1
+    # Two reads asked for under a limit of one turn.
+    run_scenario max-turns "$scratch/max-turns" "$prompts/max-turns.txt" "${common[@]}" --model haiku --max-turns 1 \
+        ${permission[@]+"${permission[@]}"} ${restrict_read[@]+"${restrict_read[@]}"} "$allowed_flag" Read
+    # Write needs permission in default mode: once without and once with the
+    # flag that pre-approves it.
+    run_scenario permission-denied "$scratch/permission-denied" "$prompts/permission-denied.txt" "${common[@]}" --model haiku --max-turns 3 \
+        ${permission[@]+"${permission[@]}"} ${restrict_write[@]+"${restrict_write[@]}"}
+    run_scenario permission-allowed "$scratch/permission-allowed" "$prompts/permission-allowed.txt" "${common[@]}" --model haiku --max-turns 3 \
+        ${permission[@]+"${permission[@]}"} ${restrict_write[@]+"${restrict_write[@]}"} "$allowed_flag" Write
+    local denied_file="no" allowed_file="no"
+    if [ -e "$scratch/permission-denied/out.txt" ]; then
+        denied_file="yes"
+    fi
+    if grep -qxF -- "$note_marker" "$scratch/permission-allowed/out.txt" 2>/dev/null; then
+        allowed_file="yes"
+    fi
     interrupt_signal=""
     run_interrupt "$scratch/interrupt" "$prompts/interrupt.txt" "${common[@]}" --model haiku --max-turns 1
 
@@ -1136,6 +1497,7 @@ cmd_record() {
         printf 'host=%s\n' "$(hostname -s 2>/dev/null || true)"
         printf 'scratch=%s\n' "$scratch"
         printf 'scratch_physical=%s\n' "$scratch_physical"
+        printf 'user_dir=%s\n' "$user_dir"
         printf 'stage_marker=%s\n' "$stage_marker"
         printf 'note_marker=%s\n' "$note_marker"
         printf 'auth_listed=%s\n' "$auth_listed"
@@ -1150,27 +1512,43 @@ cmd_record() {
         printf 'permission_flag=%s\n' "$permission_flag"
         printf 'resume_flag=%s\n' "--resume"
         printf 'settings_flag=%s\n' "$settings_flag"
+        printf 'safe_mode_flag=%s\n' "$safe_mode_flag"
         printf 'mcp_flag=%s\n' "$mcp_flag"
         printf 'instruction_files=%s\n' "$instruction_files"
         printf 'workdir_in_git=%s\n' "$workdir_in_git"
+        printf 'denied_file=%s\n' "$denied_file"
+        printf 'allowed_file=%s\n' "$allowed_file"
         printf 'interrupt_signal=%s\n' "$interrupt_signal"
         printf 'env_pass=%s\n' "${MSW_HARNESS_ENV_PASS:-}"
     } >"$raw/run.txt"
-
-    run_derive "$raw" "$out"
 }
 
 cmd_derive() {
     [ "$#" -ge 1 ] || usage
-    local raw_in="$1" out="$script_dir"
+    local raw_in="$1" out="$script_dir" repeat_in=""
     shift
-    if [ "$#" -gt 0 ]; then
-        [ "$#" -eq 2 ] && [ "$1" = --out ] || usage
-        out="$2"
-    fi
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --out)
+                [ "$#" -ge 2 ] || usage
+                out="$2"
+                shift
+                ;;
+            --repeat)
+                [ "$#" -ge 2 ] || usage
+                repeat_in="$2"
+                shift
+                ;;
+            *) usage ;;
+        esac
+        shift
+    done
     require_python
     [ -f "$raw_in/run.txt" ] || die "$raw_in is not a raw recording (no run.txt)"
-    run_derive "$raw_in" "$out"
+    if [ -n "$repeat_in" ]; then
+        [ -f "$repeat_in/run.txt" ] || die "$repeat_in is not a raw recording (no run.txt)"
+    fi
+    run_derive "$raw_in" "$out" "$repeat_in"
 }
 
 write_fake() {
@@ -1210,6 +1588,7 @@ HELP
             cat <<'HELP'
   --setting-sources <sources>       Setting sources to load
   --strict-mcp-config               Only use MCP servers from --mcp-config
+  --safe-mode                       Start with all customizations disabled
   --mcp-config <configs...>         MCP server configuration
 HELP
         fi
@@ -1228,12 +1607,15 @@ HELP
         exit 1
         ;;
 esac
-model="" resume="" system="" tools="" sources="user,project,local" strict=""
+model="" resume="" system="" tools="" strict="" safe="" allowed="" max_turns=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --model) model="$2"; shift ;;
-        --setting-sources) sources="$2"; shift ;;
+        --setting-sources) shift ;;
+        --safe-mode) safe=1 ;;
         --strict-mcp-config) strict=1 ;;
+        --allowedTools | --allowed-tools) allowed="$2"; shift ;;
+        --max-turns) max_turns="$2"; shift ;;
         --resume) resume="$2"; shift ;;
         --append-system-prompt) system="$2"; shift ;;
         --tools) tools="$2"; shift ;;
@@ -1244,20 +1626,38 @@ prompt="$(cat)"
 scenario="$(printf '%s\n' "$prompt" | sed -n 's/^msw-scenario: //p' | head -n 1)"
 printf 'fake claude: %s from %s\n' "$scenario" "$HOME" >&2
 sid="${resume:-$(uuid)}"
-# Without isolation the operator's MCP servers and plugins show up by name.
+# Without isolation the operator's MCP servers, plugins, agents, skills and
+# memory show up by name. As with the real CLI, leaving out the user setting
+# source does not stop the plugins; safe mode does.
+user_dir="${MSW_HARNESS_USER_DIR:-$HOME/.claude}"
 tool_list='["Bash","Edit","Read","mcp__acme-private-mcp__search"]'
 [ -n "$tools" ] && tool_list="[\"$tools\"]"
 mcp_servers='[{"name":"acme-private-mcp","status":"connected"}]'
 [ -n "$strict" ] && mcp_servers='[]'
-plugins="[{\"name\":\"acme-private-plugin\",\"path\":\"$HOME/.claude/plugins/acme-private-plugin\"}]"
-case ",$sources," in *,user,*) ;; *) plugins='[]' ;; esac
-emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":$mcp_servers,\"plugins\":$plugins,\"model\":\"claude-$model-fake\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\",\"acme-private-mcp:deploy\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
+plugins="[{\"name\":\"acme-private-plugin\",\"path\":\"$user_dir/plugins/acme-private-plugin\"}]"
+agents='["general-purpose","Explore","acme-private-agent"]'
+skills='["acme-private-skill"]'
+memory="{\"auto\":\"$user_dir/projects/acme/memory\"}"
+if [ -n "$safe" ]; then
+    plugins='[]' agents='["general-purpose","Explore"]' skills='[]' memory='{}'
+fi
+emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":$mcp_servers,\"plugins\":$plugins,\"agents\":$agents,\"skills\":$skills,\"memory_paths\":$memory,\"model\":\"claude-$model-9-9\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\",\"acme-private-mcp:deploy\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
 emit "{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"$RANDOM\",\"session_id\":\"$sid\"}"
 assistant() {
-    emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-$model-fake\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a private thought\",\"signature\":\"c2lnbmF0dXJl\"},{\"type\":\"text\",\"text\":\"$1\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":7}},\"parent_tool_use_id\":null,\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
+    emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-$model-9-9\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a private thought\",\"signature\":\"c2lnbmF0dXJl\"},{\"type\":\"text\",\"text\":\"$1\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":7}},\"parent_tool_use_id\":null,\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
 }
+# result TEXT TURNS [SUBTYPE [DENIALS]]
 result() {
-    emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":$RANDOM,\"num_turns\":$2,\"result\":\"$1\",\"session_id\":\"$sid\",\"total_cost_usd\":0.0001,\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"cache_read_input_tokens\":0},\"permission_denials\":[],\"uuid\":\"$(uuid)\"}"
+    emit "{\"type\":\"result\",\"subtype\":\"${3:-success}\",\"is_error\":false,\"duration_ms\":$RANDOM,\"num_turns\":$2,\"result\":\"$1\",\"session_id\":\"$sid\",\"total_cost_usd\":0.0001,\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"cache_read_input_tokens\":0},\"permission_denials\":${4:-[]},\"uuid\":\"$(uuid)\"}"
+}
+tool_id() { printf 'toolu_01%s' "$(uuid | tr -d -)"; }
+# tool_use ID NAME INPUT
+tool_use() {
+    emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"role\":\"assistant\",\"model\":\"claude-$model-9-9\",\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"$2\",\"input\":$3}],\"stop_reason\":\"tool_use\"},\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
+}
+# tool_result ID CONTENT IS_ERROR
+tool_result() {
+    emit "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":\"$2\",\"is_error\":$3}]},\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
 }
 fence='```'
 # The msw-result block, JSON-escaped: \n stays two characters.
@@ -1285,14 +1685,49 @@ case "$scenario" in
         result "$text" 1
         ;;
     options)
-        tid="toolu_01$RANDOM$RANDOM"
-        emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"role\":\"assistant\",\"model\":\"claude-$model-fake\",\"content\":[{\"type\":\"tool_use\",\"id\":\"$tid\",\"name\":\"Read\",\"input\":{\"file_path\":\"$PWD/note.txt\"}}],\"stop_reason\":\"tool_use\"},\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
-        emit "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$tid\",\"content\":\"$(tail -n 1 note.txt)\",\"is_error\":false}]},\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
+        tid="$(tool_id)"
+        tool_use "$tid" Read "{\"file_path\":\"$PWD/note.txt\"}"
+        tool_result "$tid" "$(tail -n 1 note.txt)" false
+        # An id and a name used as field names, as in wire_tool_inputs.
+        emit "{\"type\":\"system\",\"subtype\":\"status\",\"wire_tool_inputs\":{\"$tid\":{\"file_path\":\"$PWD/note.txt\"}},\"Captain_Zed_secret_project\":1,\"session_id\":\"$sid\"}"
         prefix=""
         case "$system" in *MSW-STAGE-BODY-OK*) prefix='MSW-STAGE-BODY-OK\n' ;; esac
-        text="$prefix$(tail -n 1 note.txt)"
+        # The reply does not quote the note: the tool_result decides.
+        text="${prefix}Read it."
         assistant "$text"
         result "$text" 2
+        ;;
+    max-turns)
+        tid="$(tool_id)"
+        tool_use "$tid" Read "{\"file_path\":\"$PWD/first.txt\"}"
+        tool_result "$tid" "$(head -n 1 first.txt)" false
+        if [ -n "$max_turns" ] && [ "$max_turns" -lt 2 ]; then
+            emit "{\"type\":\"result\",\"subtype\":\"error_max_turns\",\"is_error\":true,\"num_turns\":$max_turns,\"terminal_reason\":\"max_turns\",\"session_id\":\"$sid\",\"permission_denials\":[],\"uuid\":\"$(uuid)\"}"
+            exit 1
+        fi
+        tid="$(tool_id)"
+        tool_use "$tid" Read "{\"file_path\":\"$PWD/second.txt\"}"
+        tool_result "$tid" "$(head -n 1 second.txt)" false
+        assistant "both read"
+        result "both read" 3
+        ;;
+    permission-denied | permission-allowed)
+        tid="$(tool_id)"
+        input="{\"file_path\":\"$PWD/out.txt\",\"content\":\"msw-note-7f3a\"}"
+        tool_use "$tid" Write "$input"
+        case ",$allowed," in
+            *,Write,*)
+                printf 'msw-note-7f3a\n' >out.txt
+                tool_result "$tid" "File created successfully at: $PWD/out.txt" false
+                assistant "done"
+                result "done" 2
+                ;;
+            *)
+                tool_result "$tid" "Claude requested permissions to write to $PWD/out.txt, but you have not granted it yet." true
+                assistant "done"
+                result "done" 2 success "[{\"tool_name\":\"Write\",\"tool_use_id\":\"$tid\",\"tool_input\":$input}]"
+                ;;
+        esac
         ;;
     effort-low)
         assistant "low effort ok"
@@ -1327,17 +1762,27 @@ first_session() { grep -o '"session_id": "[^"]*"' "$1" | head -n 1; }
 
 cmd_self_test() {
     require_python
-    local t run s key status log
+    local t run s key status log repeat_arg=()
     t="$(temp_dir)" || die "mktemp failed"
     cleanup_paths+=("$t")
     failures=0
     mkdir -p "$t/bin"
     write_fake "$t/bin/claude"
+    # The operator's user configuration directory, with one agent and one
+    # skill of their own.
+    export MSW_HARNESS_USER_DIR="$t/user"
+    mkdir -p "$t/user/agents" "$t/user/skills/acme-private-skill"
+    printf 'An agent of the operator.\n' >"$t/user/agents/acme-private-agent.md"
     log="$t/record.log"
     for run in 1 2; do
         status=0
-        CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_CREDENTIAL=subscription MSW_HARNESS_ENV_PASS="" \
-            bash "$script_path" record --raw "$t/raw$run" --out "$t/out$run" >"$log" 2>&1 || status=$?
+        # Run 1 records twice and writes the repeat check; run 2 once.
+        repeat_arg=()
+        if [ "$run" = 1 ]; then
+            repeat_arg=(--repeat)
+        fi
+        CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_CREDENTIAL=subscription MSW_HARNESS_ENV_PASS="MSW_HARNESS_USER_DIR" \
+            bash "$script_path" record --raw "$t/raw$run" --out "$t/out$run" ${repeat_arg[@]+"${repeat_arg[@]}"} >"$log" 2>&1 || status=$?
         # Only the checks on the machine's own directories may fail here: a
         # CLAUDE.md above TMPDIR, or a TMPDIR inside a git work tree.
         if [ "$status" -eq 1 ] && grep -Eq '^record\.sh: not confirmed: (isolation_settings|isolation_workdir)(, isolation_(settings|workdir))?$' "$log" &&
@@ -1367,9 +1812,23 @@ cmd_self_test() {
     check has_line '^<text:32>$' "$out/fixtures/probe.txt"
     check has_line 'credential mode .*: subscription$' "$out/fixtures/probe.txt"
     check has_line '^\[claude\."9\.9\.9"\]$' "$out/versions.toml"
-    for key in stream_json append_system_prompt model effort max_turns allowed_tools resume isolation_mcp isolation_plugins; do
+    for key in stream_json append_system_prompt model effort max_turns allowed_tools resume; do
+        check has_line "^$key = \\{ flag = \"[^\"]+\", listed = true, confirmed = true, evidence = \".+\" \\}$" "$out/versions.toml"
+    done
+    for key in isolation_mcp isolation_plugins; do
         check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = true, evidence = \".+\" \\}$" "$out/versions.toml"
     done
+    check has_line '^isolation_plugins = \{ flag = "--safe-mode",' "$out/versions.toml"
+    check has_line '^isolation_settings = \{ flag = "--setting-sources project,local --safe-mode",.*memory paths reported by system/init: the highest count is 0 over 10 scenarios; user-scope agents reported by system/init: 0 of 1 .*user-scope skills: 0 of 1"' "$out/versions.toml"
+    check has_line '^max_turns = .*result subtype = error_max_turns, terminal_reason = max_turns, num_turns = 1, Read calls = 1' "$out/versions.toml"
+    check has_line '^allowed_tools = .*Write was called: yes, denied: yes, the file was written: no; .*denied: no, the file was written: yes; options: Read ran without error: yes, its tool_result holds the note: yes' "$out/versions.toml"
+    # The repeat check: written by record --repeat, absent without it.
+    check has_line '^repeat_check = \{ same = true, file = "fixtures/repeat-check\.txt" \}$' "$out/versions.toml"
+    check has_line '^permission-denied: same: system/init assistant user assistant result/success$' "$out/fixtures/repeat-check.txt"
+    check has_line '^max-turns: same: system/init assistant user result/error_max_turns$' "$out/fixtures/repeat-check.txt"
+    check test "$(grep -c ': same: ' "$out/fixtures/repeat-check.txt")" -eq "${#scenarios[@]}"
+    check test ! -e "$t/out2/fixtures/repeat-check.txt"
+    check has_line '^repeat_check = "not run"$' "$t/out2/versions.toml"
     for key in isolation_settings isolation_workdir; do
         check has_line "^$key = \\{ flag = \"[^\"]*\", confirmed = (true|false), evidence = \".+\" \\}$" "$out/versions.toml"
     done
@@ -1381,12 +1840,22 @@ cmd_self_test() {
     check has_line '"result": "<text:[0-9]+>"' "$out/fixtures/complete.jsonl"
     check has_line '"rateLimitType": "five_hour"' "$out/fixtures/complete.jsonl"
     check has_line '"resetsAt": 0' "$out/fixtures/complete.jsonl"
-    check has_line '"subtype": "init".*"tools": 4, "mcp_servers": 0, "plugins": 0,.*"slash_commands": 2' "$out/fixtures/complete.jsonl"
+    check has_line '"subtype": "init".*"tools": 4, "mcp_servers": 0, "plugins": 0, "agents": 2, "skills": 0, "memory_paths": 0,.*"slash_commands": 2' "$out/fixtures/complete.jsonl"
+    # A field name that is an id becomes the same <id:N> as the id itself; a
+    # field name off the closed set becomes its length.
+    local tool_id wire_id
+    tool_id="$(grep -o '"type": "tool_use", "id": "<id:[0-9]*>"' "$out/fixtures/options.jsonl" | grep -o '<id:[0-9]*>' | head -n 1)"
+    wire_id="$(grep -o '"wire_tool_inputs": {"<id:[0-9]*>"' "$out/fixtures/options.jsonl" | grep -o '<id:[0-9]*>' | head -n 1)"
+    check test -n "$tool_id"
+    check test "$tool_id" = "$wire_id"
+    check has_line '"<key:26>": 1' "$out/fixtures/options.jsonl"
+    check has_line '"permission_denials": \[\{"tool_name": "Write", "tool_use_id": "<id:[0-9]+>", "tool_input": \{"file_path": "<text:[0-9]+>", "content": "<text:13>"\}\}\]' "$out/fixtures/permission-denied.jsonl"
     check has_line '"tools": 1,' "$out/fixtures/options.jsonl"
     check has_line '"name": "Read", "input": \{"file_path": "<text:[0-9]+>"\}' "$out/fixtures/options.jsonl"
-    check has_line '"model": "claude-haiku-fake"' "$out/fixtures/complete.jsonl"
+    check has_line '"model": "claude-haiku-9-9"' "$out/fixtures/complete.jsonl"
     check has_line '"session_id": "<id:[0-9]+>"' "$out/fixtures/complete.jsonl"
-    local private=(acme-private-mcp acme-private-plugin operator-private-command "Captain Zed" "Per CLAUDE" Acme
+    local private=(acme-private-mcp acme-private-plugin acme-private-agent acme-private-skill operator-private-command
+        "Captain Zed" Captain_Zed toolu_01 "Per CLAUDE" Acme MSW-harness "MSW harness"
         someone@example.com /Users/someone "a private thought" "MSW harness note" "$note_marker" "$stage_marker"
         "Working on it" mcp__ "$HOME" "$t")
     for s in "${private[@]}"; do
@@ -1413,8 +1882,14 @@ cmd_self_test() {
     # an enum field, a field name that is not an identifier, an unknown line
     # in probe.txt's place.
     local inject
+    # Also an id or a name as a field name, and a word or a domain under an
+    # enum field.
     for inject in '{"type": "assistant", "note": "plain words"}' '{"type": "Captain Zed"}' \
-        '{"type": "assistant", "acme-private-mcp": 1}' '{"type": "assistant", "model": "/Users/someone/model"}'; do
+        '{"type": "assistant", "acme-private-mcp": 1}' '{"type": "assistant", "model": "/Users/someone/model"}' \
+        '{"type": "assistant", "wire_tool_inputs": {"acme_private_server": {"x": 1}}, "Captain_Zed_secret_project": 1}' \
+        '{"type": "assistant", "wire_tool_inputs": {"toolu_0171FN1K7WyZF1M8dBr3ic3y": {}}}' \
+        '{"type": "assistant", "status": "AcmeWidgets"}' '{"type": "result", "subtype": "acme.com"}' \
+        '{"type": "assistant", "model": "claude-acme-secret"}' '{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "AcmeDeploy"}]}}'; do
         status=0
         MSW_HARNESS_INJECT="$inject" bash "$script_path" derive "$t/raw1" --out "$t/out5" >/dev/null 2>&1 || status=$?
         check test "$status" -eq 1
@@ -1424,14 +1899,16 @@ cmd_self_test() {
     # A CLI without the isolation flags: recorded as not confirmed, and the
     # operator's MCP server and plugin names still stay out of the fixtures.
     status=0
-    CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_ENV_PASS=FAKE_NO_ISOLATION FAKE_NO_ISOLATION=1 \
+    CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_ENV_PASS="FAKE_NO_ISOLATION MSW_HARNESS_USER_DIR" FAKE_NO_ISOLATION=1 \
         bash "$script_path" record --raw "$t/raw6" --out "$t/out6" >"$log" 2>&1 || status=$?
     check test "$status" -eq 1
     for key in isolation_settings isolation_mcp isolation_plugins; do
         check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = false, evidence = \".+\" \\}$" "$t/out6/versions.toml"
     done
-    check has_line '^isolation_mcp = .*MCP servers reported by system/init: the highest count is 1 over 7 scenarios' "$t/out6/versions.toml"
-    check has_line '"mcp_servers": 1, "plugins": 1' "$t/out6/fixtures/complete.jsonl"
+    check has_line '^isolation_mcp = .*MCP servers reported by system/init: the highest count is 1 over 10 scenarios' "$t/out6/versions.toml"
+    check has_line '^isolation_plugins = .*plugin entries loaded from the user configuration directory over all scenarios: 10"' "$t/out6/versions.toml"
+    check has_line '^isolation_settings = .*memory paths reported by system/init: the highest count is 1 over 10 scenarios; user-scope agents reported by system/init: 1 of 1 .*user-scope skills: 1 of 1"' "$t/out6/versions.toml"
+    check has_line '"mcp_servers": 1, "plugins": 1, "agents": 3, "skills": 1, "memory_paths": 1' "$t/out6/fixtures/complete.jsonl"
     for s in "${private[@]}"; do
         check lacks "$s" "$t/out6"
     done
