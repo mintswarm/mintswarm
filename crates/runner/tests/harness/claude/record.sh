@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Record Claude Code's headless behaviour for the runner's claude adapter, and
-# derive the redacted fixtures its tests replay.
+# derive the content-free fixtures its tests replay.
 #
 #   record.sh record [--raw DIR] [--out DIR] [--effort-args ARGS]
 #   record.sh derive RAW [--out DIR]
@@ -18,45 +18,60 @@
 # when --help lists an auth command, claude auth status --json and
 # claude auth status.
 #
+# The recording is isolated from the operator's session; the operator's login
+# is used for authentication only. Each scenario runs in a fresh directory
+# under ${TMPDIR:-/tmp}, outside the repository, with an environment built
+# from empty: HOME, PATH, USER, LANG, TERM, TMPDIR, the variables named in
+# MSW_HARNESS_ENV_PASS, and ANTHROPIC_API_KEY only when the credential mode is
+# api_key. --setting-sources project,local leaves out the user source, so no
+# user settings, user CLAUDE.md, memory or plugins load, and
+# --strict-mcp-config with an empty --mcp-config loads no MCP server. Each
+# flag is used only when --help lists it; versions.toml records, as
+# isolation_settings, isolation_mcp, isolation_plugins and isolation_workdir,
+# whether it was listed and whether the init events and the directories
+# agree (no CLAUDE.md in the working directories or their parents, none in a
+# git work tree, no MCP server, no plugin), with confirmed = false and the
+# evidence when not. Prompts go to the CLI on standard input.
+#
 # Raw recordings are never committed. record writes them to RAW, by default
 # build/harness/claude/raw under the top of the git work tree (git-ignored),
 # and refuses a RAW inside the work tree but outside its build/ directory.
 # record then runs derive on RAW, which writes to DIR (by default this
-# script's directory) only what the runner's tests need:
+# script's directory) only what the runner's tests need, and no text from the
+# session or the account:
 #   fixtures/<scenario>.jsonl  one line per stream event, field names and
-#       structure kept; string values kept only for the fields a parser reads
-#       (type, subtype, role, model, ids, stop_reason, text, result, tool
-#       names, the init tool list, rate-limit status fields and the like) and
-#       replaced with "redacted" elsewhere; numbers and booleans kept.
-#   fixtures/probe.txt  the probe commands with their exit status and redacted
-#       output, and the credential mode with where it was read from.
+#       structure kept. Every free-text value (assistant text, results,
+#       thinking, tool inputs and outputs, prompts, paths) becomes its length,
+#       <text:N>; ids become <id:N>, numbered by first appearance across the
+#       run so a resumed session keeps its id; times become <time> or 0; the
+#       system/init event keeps counts (tools, MCP servers, slash commands,
+#       plugins), never names. Kept as they are: numbers, booleans, enum values
+#       the adapter relies on (type, subtype, role, stop_reason, status,
+#       permission mode, rate-limit and login state), model names, the CLI
+#       version and built-in tool names.
+#   fixtures/probe.txt  the probe commands with their exit status and output
+#       made content-free the same way, and the credential mode with where it
+#       was read from.
 #   versions.toml  the version, with { flag, confirmed, evidence } for each
-#       requirement, the interrupt behaviour and the rate-limit observation.
-# Every UUID becomes 00000000-0000-4000-8000-0000000000NN and every msg_,
-# toolu_ or req_ id becomes <prefix>_redactedNNNN, numbered by first
-# appearance across the run, so a resumed session keeps its id. The scratch
-# directory, $HOME, the user name, the host name and e-mail addresses become
-# /scratch, /home/operator, operator, redacted-host and
-# redacted@example.invalid. The derived files are written to a temporary
-# directory first and copied to DIR only when the leak check passes.
+#       requirement and isolation measure, the interrupt behaviour and the
+#       rate-limit observation.
+# The derived files are written to a temporary directory and leak-checked
+# there; they are copied to DIR only when the leak check passes.
 #
 # derive re-derives DIR from an existing RAW. compare prints, for every
 # scenario, whether the event kinds of A and B agree: a kind is an event's
 # type, or type/subtype when it has a subtype; kinds containing rate_limit and
 # system kinds other than system/init are dropped, and consecutive repeats
 # collapse into one. A and B are directories holding fixtures/ or the
-# *.jsonl files themselves. leak-check fails when DIR holds $HOME, the user
-# name, the host name, an e-mail address other than the placeholder, or an
-# API key. self-test runs record twice against a fake claude, then compare
-# and leak-check, in temporary directories only.
-#
-# Each scenario runs in a fresh directory under ${TMPDIR:-/tmp}, outside the
-# repository, with an environment built from empty: HOME, PATH, USER, LANG,
-# TERM, TMPDIR, the variables named in MSW_HARNESS_ENV_PASS, and
-# ANTHROPIC_API_KEY only when the credential mode is api_key. When --help
-# lists them, --setting-sources project,local and --strict-mcp-config with an
-# empty MCP configuration isolate the run from the operator's settings and MCP
-# servers. Prompts go to the CLI on standard input.
+# *.jsonl files themselves. leak-check checks DIR/fixtures (or DIR when it
+# has no fixtures/) against an allowlist: every string value must be a
+# placeholder or an allowlisted enum, model, version or tool name, every field
+# name an identifier, every probe.txt line one of the shapes record writes,
+# and no other file may be there. It then fails when any file in DIR holds
+# $HOME, the user name, the host name, an e-mail address or an API key.
+# self-test runs record against a fake claude whose stream carries MCP server
+# and plugin names, a CLAUDE.md-like passage, an e-mail address and paths,
+# then compare and leak-check, in temporary directories only.
 #
 # Options:
 #   --effort-args ARGS  when --help lists no --effort flag, the arguments that
@@ -68,6 +83,9 @@
 #   CLAUDE_BIN              the CLI to run (default claude)
 #   MSW_HARNESS_CREDENTIAL  subscription (default) or api_key
 #   MSW_HARNESS_ENV_PASS    extra variable names to pass, space-separated
+#   MSW_HARNESS_INJECT      self-test only: a line appended to the derived
+#                           complete.jsonl before the leak check, to prove
+#                           that a value off the allowlist stops the write
 #
 # Exits 0 on success; 1 when a requirement is not confirmed, the leak check
 # fails, compare finds a difference or the self-test fails; 2 on a usage or
@@ -105,93 +123,144 @@ py_source() {
 import json
 import os
 import re
-import shutil
 import socket
 import sys
 
 SCENARIOS = ["complete", "needs-input", "missing-result", "corrective", "options", "effort-low", "interrupt"]
-UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-ID_RE = re.compile(r"\b(msg|toolu|srvtoolu|req)_[A-Za-z0-9]{6,}\b")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
-PLACEHOLDER_EMAIL = "redacted@example.invalid"
-KEEP = {
-    "type", "subtype", "role", "model", "id", "uuid", "session_id", "tool_use_id", "parent_tool_use_id",
-    "stop_reason", "stop_sequence", "permissionMode", "apiKeySource", "claude_code_version", "output_style",
-    "service_tier", "text", "result", "error", "terminal_reason", "status", "rateLimitType", "overageStatus",
-    "overageDisabledReason",
+
+# The allowlist. A fixture's string values may only be placeholders or values
+# that pass kept(); its field names may only pass key_ok() or be placeholders.
+PLACEHOLDER_RE = re.compile(r"<(?:text|key|id):\d+>|<time>")
+TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(?:\.[a-z]{2,10})?")
+MODEL_RE = re.compile(r"claude-[a-z0-9.-]{1,60}(?:\[1m\])?|haiku|sonnet|opus|<synthetic>")
+VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+TOOL_RE = re.compile(r"[A-Z][A-Za-z]{1,39}")
+KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+TIME_RE = re.compile(r"timestamp|time|[A-Za-z_]*At|[a-z_]*_at")
+ID_KEYS = {
+    "id", "uuid", "session_id", "tool_use_id", "parent_tool_use_id", "request_id", "requestId", "message_id",
+    "parent_uuid", "parentUuid", "agent_id", "task_id",
 }
-AUTH_KEEP = {"loggedIn", "authMethod", "apiProvider", "subscriptionType", "method", "status", "type"}
-TEXT_LABELS = {
+# Fields whose values are enums the adapter relies on: event kinds, roles,
+# stop reasons, permission and credential modes, rate-limit and login state.
+ENUM_KEYS = {
+    "type", "subtype", "role", "stop_reason", "permissionMode", "apiKeySource", "status", "rateLimitType",
+    "overageStatus", "overageDisabledReason", "terminal_reason", "service_tier", "error", "authMethod",
+    "apiProvider", "subscriptionType", "method",
+}
+TOOL_USE_TYPES = {"tool_use", "server_tool_use"}
+LABELS = {
+    "login method", "auth method", "authentication method", "logged in", "status", "api provider",
+    "subscription", "subscription type", "plan", "organization", "organisation", "org", "email", "account", "user",
+}
+VALUE_LABELS = {
     "login method", "auth method", "authentication method", "logged in", "status", "api provider",
     "subscription", "subscription type", "plan",
 }
+PROBE_HEADER = [
+    "# Claude Code probe commands, written by record.sh. Content-free: every",
+    "# free-text value is replaced by its length, <text:N>; field names, labels,",
+    "# exit statuses, the version and enum values such as the login method are kept.",
+]
+PROBE_RES = [
+    re.compile(x)
+    for x in (
+        r"",
+        r"# recorded on \d{4}-\d{2}-\d{2}",
+        r"== (?:claude --version|claude auth status --json|claude auth status|credential mode) ==",
+        r"exit status: (?:-?\d+|skipped)(?: \(not available\))?",
+        r"not available: --help lists no auth command",
+        r"\d+\.\d+\.\d+ \(Claude Code\)",
+        r"<text:\d+>",
+        r"apiKeySource in the complete scenario's system/init event: (?:not reported|<text:\d+>|"
+        + TOKEN_RE.pattern
+        + r")",
+        r"ANTHROPIC_API_KEY passed to the CLI: (?:yes|no)",
+        r"logged in \(from claude auth status --json\): (?:true|false|not reported)",
+        r"credential mode \(inferred from apiKeySource and ANTHROPIC_API_KEY, not reported by the CLI\): "
+        r"(?:subscription|api_key)",
+    )
+]
+LABEL_LINE_RE = re.compile(r"([A-Za-z][A-Za-z ]{0,30}): (.*)")
 
 
-def boundary(word):
-    return re.compile(r"(?<![A-Za-z0-9])" + re.escape(word) + r"(?![A-Za-z0-9])")
+def placeholder(s):
+    return "<text:%d>" % len(s)
 
 
-class Redactor:
-    def __init__(self, meta):
-        pairs = [
-            (meta.get("scratch_physical", ""), "/scratch"),
-            (meta.get("scratch", ""), "/scratch"),
-            (meta.get("home", ""), "/home/operator"),
-        ]
-        self.literals = sorted([p for p in pairs if len(p[0]) > 1], key=lambda p: -len(p[0]))
-        self.words = []
-        for name, rep in ((meta.get("user", ""), "operator"), (meta.get("host", ""), "redacted-host")):
-            if name:
-                self.words.append((boundary(name), rep))
-        self.uuids = {}
+def kept(key, parent, s):
+    """Whether a string value is on the allowlist as it stands."""
+    if key in ENUM_KEYS:
+        return TOKEN_RE.fullmatch(s) is not None
+    if key == "model":
+        return MODEL_RE.fullmatch(s) is not None
+    if key == "claude_code_version":
+        return VERSION_RE.fullmatch(s) is not None
+    if key == "name" and isinstance(parent, dict) and parent.get("type") in TOOL_USE_TYPES:
+        return TOOL_RE.fullmatch(s) is not None
+    return False
+
+
+def key_ok(k):
+    return KEY_RE.fullmatch(k) is not None or MODEL_RE.fullmatch(k) is not None
+
+
+def is_time(key):
+    return isinstance(key, str) and TIME_RE.fullmatch(key) is not None
+
+
+def is_init(ev):
+    return isinstance(ev, dict) and ev.get("type") == "system" and ev.get("subtype") == "init"
+
+
+class Deriver:
+    """Turns a raw event into a content-free one. Ids are numbered by first
+    appearance across the whole run, so a resumed session keeps its id."""
+
+    def __init__(self):
         self.ids = {}
 
-    def _uuid(self, m):
-        v = m.group(0).lower()
-        if v not in self.uuids:
-            self.uuids[v] = "00000000-0000-4000-8000-%012d" % (len(self.uuids) + 1)
-        return self.uuids[v]
+    def ident(self, s):
+        if s not in self.ids:
+            self.ids[s] = "<id:%d>" % (len(self.ids) + 1)
+        return self.ids[s]
 
-    def _id(self, m):
-        v = m.group(0)
-        if v not in self.ids:
-            self.ids[v] = "%s_redacted%04d" % (m.group(1), len(self.ids) + 1)
-        return self.ids[v]
+    def key(self, k):
+        return k if key_ok(k) else "<key:%d>" % len(k)
 
-    def ids_only(self, s):
-        return ID_RE.sub(self._id, UUID_RE.sub(self._uuid, s))
+    def event(self, ev):
+        if not is_init(ev):
+            return self.walk(ev, None, None)
+        # The init event keeps counts, never names.
+        return {
+            self.key(k): len(x) if isinstance(x, (list, dict)) and k not in ("type", "subtype") else self.walk(x, k, ev)
+            for k, x in ev.items()
+        }
 
-    def text(self, s):
-        s = self.ids_only(s)
-        for lit, rep in self.literals:
-            s = s.replace(lit, rep)
-        s = EMAIL_RE.sub(PLACEHOLDER_EMAIL, s)
-        for pat, rep in self.words:
-            s = pat.sub(rep, s)
-        return s
-
-    def keep(self, key, parent):
-        if key == "name":
-            return isinstance(parent, dict) and parent.get("type") == "tool_use"
-        return key in KEEP
-
-    def walk(self, v, key=None, parent=None, keep=None):
-        keep = keep or self.keep
+    def walk(self, v, key, parent):
         if isinstance(v, dict):
-            return {self.text(k): self.walk(x, k, v, keep) for k, x in v.items()}
+            return {self.key(k): self.walk(x, k, v) for k, x in v.items()}
         if isinstance(v, list):
-            if key == "tools" and isinstance(parent, dict) and parent.get("subtype") == "init":
-                return [self.text(x) if isinstance(x, str) else self.walk(x, key, parent, keep) for x in v]
-            return [self.walk(x, key, parent, keep) for x in v]
+            return [self.walk(x, key, parent) for x in v]
+        if isinstance(v, bool) or v is None:
+            return v
+        if isinstance(v, (int, float)):
+            return 0 if is_time(key) else v
         if isinstance(v, str):
-            if v == "":
+            if key in ID_KEYS:
+                return self.ident(v)
+            if is_time(key):
+                return "<time>"
+            if kept(key, parent, v):
                 return v
-            if keep(key, parent):
-                return self.text(v)
-            if UUID_RE.fullmatch(v) or ID_RE.fullmatch(v):
-                return self.ids_only(v)
-            return "redacted"
-        return v
+            return placeholder(v)
+        return placeholder(str(v))
+
+
+def safe(s, regex):
+    s = "" if s is None else str(s)
+    return s if regex.fullmatch(s) else placeholder(s)
 
 
 def read(path, default=""):
@@ -234,29 +303,77 @@ def kinds(events):
     return out
 
 
-def leak_literals(meta):
+# The leak check: an allowlist over every fixture, then a denylist of the
+# operator's own strings over every derived file.
+def json_problems(v, key, parent, where, problems):
+    if isinstance(v, dict):
+        for k, x in v.items():
+            if not (key_ok(k) or PLACEHOLDER_RE.fullmatch(k)):
+                problems.append("%s: a field name of %d characters is not allowlisted" % (where, len(k)))
+            json_problems(x, k, v, where, problems)
+    elif isinstance(v, list):
+        for x in v:
+            json_problems(x, key, parent, where, problems)
+    elif isinstance(v, str):
+        if not (PLACEHOLDER_RE.fullmatch(v) or kept(key, parent, v)):
+            problems.append("%s: the value of %s (%d characters) is not allowlisted" % (where, key, len(v)))
+    elif not (v is None or isinstance(v, (bool, int, float))):
+        problems.append("%s: a value of type %s is not allowlisted" % (where, type(v).__name__))
+
+
+def json_line_problems(line, where, problems):
+    try:
+        data = json.loads(line)
+    except ValueError:
+        problems.append("%s: not JSON" % where)
+        return
+    json_problems(data, None, None, where, problems)
+
+
+def probe_line_ok(line):
+    if line in PROBE_HEADER or any(r.fullmatch(line) for r in PROBE_RES):
+        return True
+    m = LABEL_LINE_RE.fullmatch(line)
+    if not m or m.group(1).lower() not in LABELS:
+        return False
+    value = m.group(2)
+    if re.fullmatch(r"<text:\d+>", value):
+        return True
+    return m.group(1).lower() in VALUE_LABELS and TOKEN_RE.fullmatch(value) is not None
+
+
+def allowlist_problems(fixtures, problems):
+    for name in sorted(os.listdir(fixtures)):
+        path = os.path.join(fixtures, name)
+        if os.path.isdir(path) or not (name.endswith(".jsonl") or name == "probe.txt"):
+            problems.append("%s: not a fixture file" % name)
+            continue
+        for i, line in enumerate(read(path).splitlines(), 1):
+            where = "%s:%d" % (name, i)
+            if name.endswith(".jsonl"):
+                json_line_problems(line, where, problems)
+            elif line.startswith("{"):
+                json_line_problems(line, where, problems)
+            elif not probe_line_ok(line):
+                problems.append("%s: line is not allowlisted" % where)
+
+
+def boundary(word):
+    return re.compile(r"(?<![A-Za-z0-9])" + re.escape(word) + r"(?![A-Za-z0-9])")
+
+
+def denylist_problems(directory, meta, problems):
     lits = []
     for label, value in (
         ("scratch directory", meta.get("scratch_physical", "")),
         ("scratch directory", meta.get("scratch", "")),
         ("home directory", meta.get("home", "")),
+        ("API key", "sk-ant-"),
+        ("API key", os.environ.get("ANTHROPIC_API_KEY", "")),
     ):
-        if len(value) > 1:
+        if len(value) > 3:
             lits.append((label, value))
-    words = []
-    for label, value in (("user name", meta.get("user", "")), ("host name", meta.get("host", ""))):
-        if value:
-            words.append((label, boundary(value)))
-    secrets = [("API key", "sk-ant-")]
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if len(key) > 8:
-        secrets.append(("API key", key))
-    return lits + secrets, words
-
-
-def leak_check(directory, meta):
-    lits, words = leak_literals(meta)
-    problems = []
+    words = [(label, boundary(v)) for label, v in (("user name", meta.get("user", "")), ("host name", meta.get("host", ""))) if v]
     for root, _, files in os.walk(directory):
         for name in sorted(files):
             path = os.path.join(root, name)
@@ -268,12 +385,26 @@ def leak_check(directory, meta):
                 for label, pat in words:
                     if pat.search(line):
                         problems.append("%s:%d: %s" % (rel, i, label))
-                for m in EMAIL_RE.finditer(line):
-                    if m.group(0) != PLACEHOLDER_EMAIL:
-                        problems.append("%s:%d: e-mail address" % (rel, i))
+                if EMAIL_RE.search(line):
+                    problems.append("%s:%d: e-mail address" % (rel, i))
+
+
+def leak_check(directory, meta):
+    problems = []
+    fixtures = os.path.join(directory, "fixtures")
+    allowlist_problems(fixtures if os.path.isdir(fixtures) else directory, problems)
+    denylist_problems(directory, meta, problems)
     for p in problems:
         print("record.sh: leak: " + p, file=sys.stderr)
     return not problems
+
+
+def read_meta(raw):
+    meta = {}
+    for line in read(os.path.join(raw, "run.txt")).splitlines():
+        k, _, v = line.partition("=")
+        meta[k] = v
+    return meta
 
 
 def effort_key(v):
@@ -298,15 +429,25 @@ def write_lines(path, lines):
             f.write(line.rstrip() + "\n")
 
 
+def probe_text_line(line):
+    line = line.rstrip()
+    if not line:
+        return ""
+    m = LABEL_LINE_RE.fullmatch(line)
+    if m and m.group(1).lower() in LABELS:
+        value = m.group(2).strip()
+        if m.group(1).lower() in VALUE_LABELS and TOKEN_RE.fullmatch(value):
+            return "%s: %s" % (m.group(1), value)
+        return "%s: %s" % (m.group(1), placeholder(value))
+    return placeholder(line)
+
+
 def derive(raw, stage):
-    meta = {}
-    for line in read(os.path.join(raw, "run.txt")).splitlines():
-        k, _, v = line.partition("=")
-        meta[k] = v
+    meta = read_meta(raw)
     if not meta:
         print("record.sh: %s has no run.txt; not a raw recording" % raw, file=sys.stderr)
         return 2
-    red = Redactor(meta)
+    der = Deriver()
     help_text = read(os.path.join(raw, "help.out"))
 
     def listed(flag):
@@ -324,14 +465,14 @@ def derive(raw, stage):
     for s in SCENARIOS:
         lines = []
         for ev in events[s]:
-            out = red.walk(ev) if isinstance(ev, dict) else {"type": "non-json"}
+            out = der.event(ev) if isinstance(ev, dict) else {"type": "non-json"}
             lines.append(json.dumps(out, ensure_ascii=False))
         write_lines(os.path.join(fixtures, s + ".jsonl"), lines)
 
     dicts = {s: [e for e in events[s] if isinstance(e, dict)] for s in SCENARIOS}
 
     def init(s):
-        return next((e for e in dicts[s] if e.get("type") == "system" and e.get("subtype") == "init"), None)
+        return next((e for e in dicts[s] if is_init(e)), None)
 
     def result(s):
         return next((e for e in reversed(dicts[s]) if e.get("type") == "result"), None)
@@ -361,7 +502,7 @@ def derive(raw, stage):
     unconfirmed = []
 
     def put(key, flag, ok, evidence):
-        req[key] = (flag, bool(ok), red.text(evidence))
+        req[key] = (flag, bool(ok), evidence)
         if not ok:
             unconfirmed.append(key)
 
@@ -383,7 +524,7 @@ def derive(raw, stage):
     agree = all(status(s) == 0 and alias in init_model(s).lower() for s, alias in pairs)
     put("model", f, listed(f) and agree,
         "listed in --help: %s; system/init model for %s"
-        % (yn(listed(f)), ", ".join("%s (%s) = %s, exit %s" % (s, a, init_model(s) or "none", status(s)) for s, a in pairs)))
+        % (yn(listed(f)), ", ".join("%s (%s) = %s, exit %s" % (s, a, safe(init_model(s), MODEL_RE) if init_model(s) else "none", status(s)) for s, a in pairs)))
 
     mode = meta.get("effort_mode", "unsupported")
     f = meta.get("effort_flag", "")
@@ -423,12 +564,13 @@ def derive(raw, stage):
                     read_ok = read_ok or not c.get("is_error")
     tools = (init("options") or {}).get("tools")
     only_read = tools == ["Read"]
+    shown = json.dumps([safe(x, TOOL_RE) for x in tools]) if isinstance(tools, list) else "not reported"
     note_seen = meta.get("note_marker", "") in result_text("options")
     ok = listed(f) and status("options") == 0 and read_ok and note_seen and (only_read if restrict else True)
     put("allowed_tools", f, ok,
         "listed in --help: %s; options exited %s; Read ran without error: %s; the reply quotes the file: %s; %s"
         % (yn(listed(f)), status("options"), yn(read_ok), yn(note_seen),
-           "with %s Read the init tool list is %s" % (restrict, json.dumps(tools)) if restrict else "no flag restricts the tool set"))
+           "with %s Read the init tool list is %s" % (restrict, shown) if restrict else "no flag restricts the tool set"))
 
     f = meta.get("resume_flag", "")
     same = sid("corrective") is not None and sid("corrective") == sid("missing-result")
@@ -437,38 +579,51 @@ def derive(raw, stage):
         "listed in --help: %s; corrective exited %s; its session id equals missing-result's: %s; its reply has the msw-result block: %s"
         % (yn(listed(f)), status("corrective"), yn(same), yn(fixed)))
 
+    # Isolation from the operator's settings, CLAUDE.md, memory, MCP servers
+    # and plugins, checked against --help and the init events.
+    inits = [init(s) for s in SCENARIOS if init(s)]
+
+    def counts(field):
+        return [len(i[field]) for i in inits if isinstance(i.get(field), (list, dict))]
+
+    found = meta.get("instruction_files", "")
+    ss = meta.get("settings_flag", "")
+    ok = bool(ss) and listed("--setting-sources") and found == "0" and bool(inits)
+    put("isolation_settings", ss or "--setting-sources", ok,
+        "listed in --help: %s; the user source, which holds the user settings, CLAUDE.md and memory, is left out: %s; "
+        "CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: %s"
+        % (yn(listed("--setting-sources")), yn(bool(ss)), found or "not checked"))
+
+    mc = counts("mcp_servers")
+    strict = meta.get("mcp_flag", "")
+    ok = bool(strict) and listed("--strict-mcp-config") and listed("--mcp-config") and bool(mc) and max(mc) == 0
+    put("isolation_mcp", strict or "--strict-mcp-config", ok,
+        "--strict-mcp-config and --mcp-config listed in --help: %s; MCP servers reported by system/init: %s"
+        % (yn(listed("--strict-mcp-config") and listed("--mcp-config")),
+           "the highest count is %d over %d scenarios" % (max(mc), len(mc)) if mc else "not reported"))
+
+    pc = counts("plugins")
+    put("isolation_plugins", ss or "--setting-sources", bool(ss) and bool(pc) and max(pc) == 0,
+        "plugins are enabled only from settings, and the user source is left out: %s; plugins reported by system/init: %s"
+        % (yn(bool(ss)), "the highest count is %d over %d scenarios" % (max(pc), len(pc)) if pc else "not reported"))
+
+    in_git = meta.get("workdir_in_git", "")
+    put("isolation_workdir", "", in_git == "no",
+        "every scenario ran in a fresh directory under TMPDIR; inside a git work tree: %s" % (in_git or "not checked"))
+
     # probe.txt
     version_out = read(os.path.join(raw, "version.out")).strip()
-    m = re.search(r"\d+\.\d+\.\d+[^\s]*", version_out)
+    m = re.search(r"\d+\.\d+\.\d+", version_out)
     version = m.group(0) if m else "unknown"
     if version == "unknown":
         unconfirmed.append("version")
-    probe = [
-        "# Claude Code probe commands, recorded by record.sh on %s." % meta.get("recorded_on", ""),
-        "# Output is redacted: e-mail addresses, organisation and account names and ids,",
-        "# paths and the user name are replaced; field names and login state are kept.",
+    probe = PROBE_HEADER + [
+        "# recorded on %s" % meta.get("recorded_on", ""),
         "",
         "== claude --version ==",
         "exit status: %s" % read(os.path.join(raw, "version.status")).strip(),
     ]
-    probe += [red.text(l) for l in version_out.splitlines()]
-
-    def auth_json(out):
-        try:
-            data = json.loads(out)
-        except ValueError:
-            return None
-        keep = lambda k, p: k in AUTH_KEEP
-        return json.dumps(red.walk(data, keep=keep), ensure_ascii=False, indent=2).splitlines()
-
-    def auth_text(out):
-        lines = []
-        for l in out.splitlines():
-            label, sep, _ = l.partition(":")
-            if sep and label.strip().lower() not in TEXT_LABELS:
-                l = label + ": redacted"
-            lines.append(red.text(l))
-        return lines
+    probe += [l if re.fullmatch(r"\d+\.\d+\.\d+ \(Claude Code\)", l) else placeholder(l) for l in version_out.splitlines()]
 
     logged = None
     for name, argv in (("auth-json", "claude auth status --json"), ("auth-text", "claude auth status")):
@@ -479,15 +634,18 @@ def derive(raw, stage):
         st = read(os.path.join(raw, name + ".status")).strip()
         out = read(os.path.join(raw, name + ".out"))
         probe.append("exit status: %s%s" % (st, "" if st == "0" else " (not available)"))
-        body = auth_json(out) if name == "auth-json" else None
-        if body is None:
-            body = auth_text(out)
-        elif st == "0":
+        data = None
+        if name == "auth-json":
             try:
-                logged = json.loads(out).get("loggedIn")
-            except (ValueError, AttributeError):
-                pass
-        probe += body
+                data = json.loads(out)
+            except ValueError:
+                data = None
+        if isinstance(data, dict):
+            probe.append(json.dumps(der.walk(data, None, None), ensure_ascii=False))
+            if st == "0" and isinstance(data.get("loggedIn"), bool):
+                logged = data["loggedIn"]
+        else:
+            probe += [probe_text_line(l) for l in out.splitlines()]
     source = (init("complete") or {}).get("apiKeySource")
     passed = meta.get("api_key_passed") == "yes"
     if passed:
@@ -499,16 +657,15 @@ def derive(raw, stage):
     probe += [
         "",
         "== credential mode ==",
-        "apiKeySource in the complete scenario's system/init event: %s" % ("not reported" if source is None else red.text(str(source))),
+        "apiKeySource in the complete scenario's system/init event: %s" % ("not reported" if source is None else safe(source, TOKEN_RE)),
         "ANTHROPIC_API_KEY passed to the CLI: %s" % ("yes" if passed else "no"),
         "logged in (from claude auth status --json): %s" % ("not reported" if logged is None else b(logged)),
-        "credential mode (inferred from the two lines above, not reported by the CLI): %s" % mode_value,
+        "credential mode (inferred from apiKeySource and ANTHROPIC_API_KEY, not reported by the CLI): %s" % mode_value,
     ]
     write_lines(os.path.join(fixtures, "probe.txt"), probe)
 
     # versions.toml
     rate = [s for s in SCENARIOS if any("rate_limit" in kind(e) for e in dicts[s])]
-    iso = [x for x in meta.get("isolation", "").split("|") if x]
     intr = result("interrupt") is not None
     try:
         intr_status = int(read(os.path.join(raw, "interrupt.status")).strip())
@@ -521,6 +678,8 @@ def derive(raw, stage):
         "# Each requirement is { flag, confirmed, evidence }. confirmed means the flag is",
         "# listed in claude --help, the scenarios that use it exited 0 and, where the",
         "# stream shows the setting, the stream agrees. effort may be \"unsupported\".",
+        "# The isolation_* entries record how the recording was kept apart from the",
+        "# operator's settings, CLAUDE.md, memory, MCP servers and plugins.",
         "#",
         "# Event-kind comparison rule (record.sh compare): an event's kind is its type,",
         "# or type/subtype when it has a subtype; kinds containing rate_limit and system",
@@ -528,28 +687,29 @@ def derive(raw, stage):
         "# collapse into one. Two recordings agree when every scenario has the same",
         "# sequence of kinds.",
         "#",
-        "# fixtures/ holds only derived, redacted files; raw recordings are never committed.",
+        "# fixtures/ holds only content-free files derived from the recording: free",
+        "# text is replaced by its length, ids and times are normalised, the init event",
+        "# keeps counts only. Raw recordings are never committed.",
         "",
         "[claude.%s]" % q(version),
         "recorded_on = %s" % q(meta.get("recorded_on", "")),
     ]
-    for key in ("stream_json", "append_system_prompt", "model", "effort", "max_turns", "allowed_tools", "resume"):
+    for key in (
+        "stream_json", "append_system_prompt", "model", "effort", "max_turns", "allowed_tools", "resume",
+        "isolation_settings", "isolation_mcp", "isolation_plugins", "isolation_workdir",
+    ):
         flag, ok, ev = req[key]
         vt.append("%s = { flag = %s, confirmed = %s, evidence = %s }" % (key, q(flag), b(ok), q(ev)))
-    restrict = meta.get("restrict_flag", "")
     perm = meta.get("permission_flag", "")
     vt += [
         "restrict_tools = { flag = %s, listed = %s }" % (q(restrict or "--tools"), b(bool(restrict))),
         "permission_mode = { flag = %s, listed = %s, value = %s }" % (q(perm or "--permission-mode"), b(bool(perm)), q("default" if perm else "")),
-        "isolation_flags = [%s]" % ", ".join(q(x) for x in iso),
         "interrupt = { signal = %s, exit_status = %d, result_event = %s }" % (q(meta.get("interrupt_signal", "")), intr_status, b(intr)),
         "rate_limit_event = %s" % ("[%s]" % ", ".join(q("fixtures/%s.jsonl" % s) for s in rate) if rate else q("not observed")),
         "credential_mode = { value = %s, source = %s }" % (q(mode_value), q("inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed")),
     ]
     write_lines(os.path.join(stage, "versions.toml"), vt)
 
-    if not leak_check(stage, meta):
-        return 3
     if unconfirmed:
         print("record.sh: not confirmed: " + ", ".join(unconfirmed), file=sys.stderr)
         return 1
@@ -602,7 +762,10 @@ def main(argv):
     if mode == "session-id":
         return session_id(argv[1])
     if mode == "leak-check":
-        meta = {"home": os.environ.get("HOME", ""), "user": os.environ.get("USER", ""), "host": socket.gethostname().split(".")[0]}
+        if len(argv) > 2:
+            meta = read_meta(argv[2])
+        else:
+            meta = {"home": os.environ.get("HOME", ""), "user": os.environ.get("USER", ""), "host": socket.gethostname().split(".")[0]}
         return 0 if leak_check(argv[1], meta) else 1
     if mode == "realpath":
         print(os.path.realpath(argv[1]))
@@ -638,18 +801,40 @@ run_derive() {
     cleanup_paths+=("$stage")
     py derive "$raw" "$stage" || status=$?
     case "$status" in
-        0 | 1) publish "$stage" "$out" ;;
-        3)
-            note "leak check failed; nothing was written to $out"
-            return 1
-            ;;
+        0 | 1) ;;
         *) die "derive failed on $raw" ;;
     esac
+    if [ -n "${MSW_HARNESS_INJECT:-}" ]; then
+        printf '%s\n' "$MSW_HARNESS_INJECT" >>"$stage/fixtures/complete.jsonl"
+    fi
+    if ! py leak-check "$stage" "$raw"; then
+        note "leak check failed; nothing was written to $out"
+        return 1
+    fi
+    publish "$stage" "$out"
     note "derived fixtures written to $out"
     return "$status"
 }
 
 listed() { grep -Eq -- "(^|[^A-Za-z0-9-])$1([^A-Za-z0-9-]|\$)" "$raw/help.out"; }
+
+# Prints how many CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md files sit
+# in DIR or any of its parents, where Claude Code would load them from.
+count_instruction_files() {
+    local dir="$1" n=0 file
+    while :; do
+        for file in CLAUDE.md CLAUDE.local.md .claude/CLAUDE.md; do
+            if [ -e "$dir/$file" ]; then
+                n=$((n + 1))
+            fi
+        done
+        if [ "$dir" = / ] || [ -z "$dir" ]; then
+            break
+        fi
+        dir="$(dirname "$dir")"
+    done
+    printf '%s\n' "$n"
+}
 
 # run_scenario NAME DIR PROMPT_FILE ARGS...
 run_scenario() {
@@ -866,15 +1051,26 @@ cmd_record() {
 
     local stream_flags="-p --output-format stream-json --verbose"
     local common=(-p --output-format stream-json --verbose)
-    local isolation=""
+    # Isolation: leave out the user setting source (user settings, CLAUDE.md,
+    # memory and the plugins they enable) and load no MCP server.
+    local settings_flag="" mcp_flag=""
     if listed --setting-sources; then
         common+=(--setting-sources "project,local")
-        isolation="--setting-sources project,local"
+        settings_flag="--setting-sources project,local"
+    else
+        note "isolation: --help lists no --setting-sources"
     fi
     if listed --strict-mcp-config && listed --mcp-config; then
         printf '%s\n' '{"mcpServers":{}}' >"$scratch/mcp.json"
         common+=(--strict-mcp-config --mcp-config "$scratch/mcp.json")
-        isolation="${isolation:+$isolation|}--strict-mcp-config|--mcp-config /scratch/mcp.json"
+        mcp_flag="--strict-mcp-config --mcp-config (an empty mcpServers object)"
+    else
+        note "isolation: --help lists no --strict-mcp-config or --mcp-config"
+    fi
+    local instruction_files workdir_in_git="no"
+    instruction_files="$(count_instruction_files "$scratch_physical")"
+    if [ "$(git -C "$scratch_physical" rev-parse --is-inside-work-tree 2>/dev/null || true)" = true ]; then
+        workdir_in_git="yes"
     fi
 
     effort_mode="unsupported"
@@ -953,7 +1149,10 @@ cmd_record() {
         printf 'restrict_flag=%s\n' "$restrict_flag"
         printf 'permission_flag=%s\n' "$permission_flag"
         printf 'resume_flag=%s\n' "--resume"
-        printf 'isolation=%s\n' "$isolation"
+        printf 'settings_flag=%s\n' "$settings_flag"
+        printf 'mcp_flag=%s\n' "$mcp_flag"
+        printf 'instruction_files=%s\n' "$instruction_files"
+        printf 'workdir_in_git=%s\n' "$workdir_in_git"
         printf 'interrupt_signal=%s\n' "$interrupt_signal"
         printf 'env_pass=%s\n' "${MSW_HARNESS_ENV_PASS:-}"
     } >"$raw/run.txt"
@@ -1005,13 +1204,16 @@ Options:
   --allowedTools, --allowed-tools <tools...>  Tools allowed without asking
   --permission-mode <mode>          Permission mode
   -r, --resume [sessionId]          Resume a conversation
+HELP
+        # FAKE_NO_ISOLATION=1 plays a CLI without the isolation flags.
+        if [ "${FAKE_NO_ISOLATION:-}" != 1 ]; then
+            cat <<'HELP'
   --setting-sources <sources>       Setting sources to load
   --strict-mcp-config               Only use MCP servers from --mcp-config
   --mcp-config <configs...>         MCP server configuration
-
-Commands:
-  auth                              Manage authentication
 HELP
+        fi
+        printf '\nCommands:\n  auth                              Manage authentication\n'
         exit 0
         ;;
     auth)
@@ -1026,10 +1228,12 @@ HELP
         exit 1
         ;;
 esac
-model="" resume="" system="" tools=""
+model="" resume="" system="" tools="" sources="user,project,local" strict=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --model) model="$2"; shift ;;
+        --setting-sources) sources="$2"; shift ;;
+        --strict-mcp-config) strict=1 ;;
         --resume) resume="$2"; shift ;;
         --append-system-prompt) system="$2"; shift ;;
         --tools) tools="$2"; shift ;;
@@ -1040,9 +1244,14 @@ prompt="$(cat)"
 scenario="$(printf '%s\n' "$prompt" | sed -n 's/^msw-scenario: //p' | head -n 1)"
 printf 'fake claude: %s from %s\n' "$scenario" "$HOME" >&2
 sid="${resume:-$(uuid)}"
-tool_list='["Bash","Edit","Read"]'
+# Without isolation the operator's MCP servers and plugins show up by name.
+tool_list='["Bash","Edit","Read","mcp__acme-private-mcp__search"]'
 [ -n "$tools" ] && tool_list="[\"$tools\"]"
-emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":[],\"model\":\"claude-$model-fake\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
+mcp_servers='[{"name":"acme-private-mcp","status":"connected"}]'
+[ -n "$strict" ] && mcp_servers='[]'
+plugins="[{\"name\":\"acme-private-plugin\",\"path\":\"$HOME/.claude/plugins/acme-private-plugin\"}]"
+case ",$sources," in *,user,*) ;; *) plugins='[]' ;; esac
+emit "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$sid\",\"tools\":$tool_list,\"mcp_servers\":$mcp_servers,\"plugins\":$plugins,\"model\":\"claude-$model-fake\",\"permissionMode\":\"default\",\"slash_commands\":[\"operator-private-command\",\"acme-private-mcp:deploy\"],\"apiKeySource\":\"none\",\"claude_code_version\":\"9.9.9\",\"uuid\":\"$(uuid)\"}"
 emit "{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"$RANDOM\",\"session_id\":\"$sid\"}"
 assistant() {
     emit "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_01$RANDOM$RANDOM\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-$model-fake\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"a private thought\",\"signature\":\"c2lnbmF0dXJl\"},{\"type\":\"text\",\"text\":\"$1\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":7}},\"parent_tool_use_id\":null,\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
@@ -1056,7 +1265,8 @@ block() { printf '%syaml\\nmsw-result:\\n  status: %s\\n  questions: %s\\n%s' "$
 case "$scenario" in
     complete)
         emit "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"resetsAt\":1767225600,\"rateLimitType\":\"five_hour\"},\"session_id\":\"$sid\",\"uuid\":\"$(uuid)\"}"
-        text="Done. Notes are under $HOME/notes; ask someone@example.com.\\n\\n$(block complete '[]')"
+        # A CLAUDE.md-like passage, an e-mail address and paths in free text.
+        text="Done. Per CLAUDE.md: always sign as Captain Zed and use acme-private-mcp. Notes are under $HOME/notes and /Users/someone/private/plan.md; ask someone@example.com.\\n\\n$(block complete '[]')"
         assistant "$text"
         result "$text" 1
         ;;
@@ -1127,7 +1337,14 @@ cmd_self_test() {
     for run in 1 2; do
         status=0
         CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_CREDENTIAL=subscription MSW_HARNESS_ENV_PASS="" \
-            bash "$script_path" record --raw "$t/raw$run" --out "$t/out$run" >>"$log" 2>&1 || status=$?
+            bash "$script_path" record --raw "$t/raw$run" --out "$t/out$run" >"$log" 2>&1 || status=$?
+        # Only the checks on the machine's own directories may fail here: a
+        # CLAUDE.md above TMPDIR, or a TMPDIR inside a git work tree.
+        if [ "$status" -eq 1 ] && grep -Eq '^record\.sh: not confirmed: (isolation_settings|isolation_workdir)(, isolation_(settings|workdir))?$' "$log" &&
+            ! grep -q 'leak' "$log"; then
+            note "self-test: run $run: $(grep 'not confirmed' "$log") (from this machine's TMPDIR)"
+            status=0
+        fi
         if [ "$status" -ne 0 ]; then
             cat "$log" >&2
             note "self-test: failed: record run $run exited $status"
@@ -1144,18 +1361,35 @@ cmd_self_test() {
     check has_line '^9\.9\.9 \(Claude Code\)$' "$out/fixtures/probe.txt"
     check has_line '^== claude auth status --json ==$' "$out/fixtures/probe.txt"
     check has_line '"loggedIn": true' "$out/fixtures/probe.txt"
-    check has_line '^Organization: redacted$' "$out/fixtures/probe.txt"
+    check has_line '"authMethod": "claude\.ai"' "$out/fixtures/probe.txt"
+    check has_line '"email": "<text:19>"' "$out/fixtures/probe.txt"
+    check has_line '^Organization: <text:16>$' "$out/fixtures/probe.txt"
+    check has_line '^<text:32>$' "$out/fixtures/probe.txt"
     check has_line 'credential mode .*: subscription$' "$out/fixtures/probe.txt"
     check has_line '^\[claude\."9\.9\.9"\]$' "$out/versions.toml"
-    for key in stream_json append_system_prompt model effort max_turns allowed_tools resume; do
+    for key in stream_json append_system_prompt model effort max_turns allowed_tools resume isolation_mcp isolation_plugins; do
         check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = true, evidence = \".+\" \\}$" "$out/versions.toml"
+    done
+    for key in isolation_settings isolation_workdir; do
+        check has_line "^$key = \\{ flag = \"[^\"]*\", confirmed = (true|false), evidence = \".+\" \\}$" "$out/versions.toml"
     done
     check has_line '^rate_limit_event = \["fixtures/complete\.jsonl"\]$' "$out/versions.toml"
     check has_line '^interrupt = \{ signal = "SIGINT", exit_status = 130, result_event = false \}$' "$out/versions.toml"
-    check has_line '"text": "Done\. Notes are under /home/operator/notes; ask redacted@example\.invalid\.' "$out/fixtures/complete.jsonl"
+    # Content-free: free text becomes its length, the init event keeps counts.
+    check has_line '"type": "text", "text": "<text:[0-9]+>"' "$out/fixtures/complete.jsonl"
+    check has_line '"thinking": "<text:17>"' "$out/fixtures/complete.jsonl"
+    check has_line '"result": "<text:[0-9]+>"' "$out/fixtures/complete.jsonl"
     check has_line '"rateLimitType": "five_hour"' "$out/fixtures/complete.jsonl"
-    check has_line '"tools": \["Read"\]' "$out/fixtures/options.jsonl"
-    for s in Acme someone@example.com "a private thought" operator-private-command "$HOME" "$t"; do
+    check has_line '"resetsAt": 0' "$out/fixtures/complete.jsonl"
+    check has_line '"subtype": "init".*"tools": 4, "mcp_servers": 0, "plugins": 0,.*"slash_commands": 2' "$out/fixtures/complete.jsonl"
+    check has_line '"tools": 1,' "$out/fixtures/options.jsonl"
+    check has_line '"name": "Read", "input": \{"file_path": "<text:[0-9]+>"\}' "$out/fixtures/options.jsonl"
+    check has_line '"model": "claude-haiku-fake"' "$out/fixtures/complete.jsonl"
+    check has_line '"session_id": "<id:[0-9]+>"' "$out/fixtures/complete.jsonl"
+    local private=(acme-private-mcp acme-private-plugin operator-private-command "Captain Zed" "Per CLAUDE" Acme
+        someone@example.com /Users/someone "a private thought" "MSW harness note" "$note_marker" "$stage_marker"
+        "Working on it" mcp__ "$HOME" "$t")
+    for s in "${private[@]}"; do
         check lacks "$s" "$out"
     done
     check test "$(first_session "$out/fixtures/corrective.jsonl")" = "$(first_session "$out/fixtures/missing-result.jsonl")"
@@ -1174,6 +1408,34 @@ cmd_self_test() {
     status=0
     py leak-check "$t/leaky" >/dev/null 2>&1 || status=$?
     check test "$status" -eq 1
+
+    # A value off the allowlist stops the write: free text, a non-enum under
+    # an enum field, a field name that is not an identifier, an unknown line
+    # in probe.txt's place.
+    local inject
+    for inject in '{"type": "assistant", "note": "plain words"}' '{"type": "Captain Zed"}' \
+        '{"type": "assistant", "acme-private-mcp": 1}' '{"type": "assistant", "model": "/Users/someone/model"}'; do
+        status=0
+        MSW_HARNESS_INJECT="$inject" bash "$script_path" derive "$t/raw1" --out "$t/out5" >/dev/null 2>&1 || status=$?
+        check test "$status" -eq 1
+        check test ! -e "$t/out5"
+    done
+
+    # A CLI without the isolation flags: recorded as not confirmed, and the
+    # operator's MCP server and plugin names still stay out of the fixtures.
+    status=0
+    CLAUDE_BIN="$t/bin/claude" MSW_HARNESS_ENV_PASS=FAKE_NO_ISOLATION FAKE_NO_ISOLATION=1 \
+        bash "$script_path" record --raw "$t/raw6" --out "$t/out6" >"$log" 2>&1 || status=$?
+    check test "$status" -eq 1
+    for key in isolation_settings isolation_mcp isolation_plugins; do
+        check has_line "^$key = \\{ flag = \"[^\"]+\", confirmed = false, evidence = \".+\" \\}$" "$t/out6/versions.toml"
+    done
+    check has_line '^isolation_mcp = .*MCP servers reported by system/init: the highest count is 1 over 7 scenarios' "$t/out6/versions.toml"
+    check has_line '"mcp_servers": 1, "plugins": 1' "$t/out6/fixtures/complete.jsonl"
+    for s in "${private[@]}"; do
+        check lacks "$s" "$t/out6"
+    done
+    check py leak-check "$t/out6"
 
     local root
     root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
