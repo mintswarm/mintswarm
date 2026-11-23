@@ -16,6 +16,7 @@ mintswarm/
 ├── CONTRIBUTING.md
 ├── LICENSE.md              # FSL-1.1-ALv2
 ├── README.md
+├── .cargo/config.toml      # Cargo: target-dir = "build/target"
 │
 ├── .claude/agents/         # stage agents for Claude Code, generated from `.mintswarm/stages/`; dogfooding only
 ├── .mintswarm/             # this repository's own mintswarm config
@@ -25,6 +26,8 @@ mintswarm/
 │   ├── dogfood/            # stand-ins for runner and control-plane functions while mintswarm does not run; each script, and github/README.md, says what it replaces
 │   ├── job/                # per-job inputs and outputs inside a worktree, never committed
 │   └── worktrees/          # job worktrees created by the session acting as runner, never committed
+│
+├── build/                  # build output, git-ignored: build/target/ (Cargo), build/web/ui/ (Vite build of apps/ui), build/cache/vite/ (Vite and Vitest cache)
 │
 ├── api/                    # every contract, language-neutral
 │   ├── proto/              # the only hand-written API contract
@@ -106,7 +109,8 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 - **Commercial BFF:** implements the same proto services, so the UI never gets more than the console MCP.
 - **Versioning:** a breaking change to any contract gets a new version directory (`v2/`) beside the old one until the old version is retired.
 - **Migrations are append-only.** A merged migration is never edited; fix forward.
-- **Docker:** every image builds from the repo root as context; `.dockerignore` keeps `target/` and `node_modules/` out. Runner images, when they come, go in `docker/runner/`.
+- **Build tree:** all build output goes only under the git-ignored `build/` at the repository root, never next to sources: Cargo's under `build/target` (set in `.cargo/config.toml`), Vite's build and cache under `build/web/ui` and `build/cache/vite` (set in `web/apps/ui/vite.config.ts`). Dependency installs such as `node_modules/` are not build output.
+- **Docker:** every image builds from the repo root as context; `.dockerignore` keeps `build/` and `node_modules/` out. Runner images, when they come, go in `docker/runner/`.
 - **`defaults/` is data.** Prompts carry a template version that ends up in each `StageJob`.
 - **Spikes never land.** Experimental code lives on `exp/*` branches; its findings go to the spike's issue, and what they settle goes into these documents.
 

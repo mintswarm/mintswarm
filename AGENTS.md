@@ -20,3 +20,4 @@ These instructions are for any coding agent working in this repository, whatever
 - Commit messages and PR titles follow Conventional Commits; PRs are squash-merged, so the PR title is what lands on `master`.
 - Stage files by name; never `git add -A` or `git add .`.
 - Call the project "fair source", never "open source": it is licensed under FSL-1.1-ALv2 (see `LICENSE.md`).
+- Build artefacts go only under the git-ignored `build/` at the repository root, never next to sources. Dependency installs such as `node_modules/` are not build artefacts.

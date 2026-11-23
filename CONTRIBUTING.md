@@ -95,3 +95,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo xtask schemas --check
 ```
+
+The listed commands write their build output only under the git-ignored `build/` at the repository root, never next to sources.
