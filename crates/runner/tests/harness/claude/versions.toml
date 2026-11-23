@@ -5,7 +5,8 @@
 # claude --help lists the flag. confirmed means the scenarios that use it ran
 # and the stream shows the behaviour: max_turns by a run stopped at its limit,
 # allowed_tools by a Write denied without the flag and run with it; the other
-# flags also need to be listed. effort may be "unsupported".
+# flags also need to be listed. effort may be "unsupported". interrupt is
+# confirmed only when the CLI had written its system/init line before SIGINT.
 # The isolation_* entries record how the recording was kept apart from the
 # operator's settings, CLAUDE.md, memory, agents, skills, MCP servers and
 # plugins; repeat_check points to the event kinds of a second recording.
@@ -29,13 +30,13 @@ effort = { flag = "--effort", listed = true, confirmed = true, evidence = "liste
 max_turns = { flag = "--max-turns", listed = false, confirmed = true, evidence = "listed in --help: no; max-turns (limit 1, two reads asked for) exited 1, result subtype = error_max_turns, terminal_reason = max_turns, num_turns = 2, Read calls = 1; complete (limit 1) num_turns = 1; options (limit 2) num_turns = 2" }
 allowed_tools = { flag = "--allowedTools", listed = true, confirmed = true, evidence = "listed in --help: yes; without the flag (permission-denied, exit 0) Write was called: yes, denied: yes, the file was written: no; with --allowedTools Write (permission-allowed, exit 0) Write was called: yes, its tool_result has no error: yes, denied: no, the file was written: yes; options: Read ran without error: yes, its tool_result holds the note: yes; with --tools Read the init tool list is [\"Read\"]" }
 resume = { flag = "--resume", listed = true, confirmed = true, evidence = "listed in --help: yes; corrective exited 0; its session id equals missing-result's: yes; its reply has the msw-result block: yes" }
-isolation_settings = { flag = "--setting-sources project,local --safe-mode", confirmed = false, evidence = "--setting-sources listed in --help: yes, the user source left out: yes; --safe-mode listed in --help: yes, passed: yes; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: 0; memory paths reported by system/init: not reported; user-scope agents reported by system/init: 0 of 0 in the user configuration directory; user-scope skills: 0 of 1" }
-isolation_mcp = { flag = "--strict-mcp-config --mcp-config (an empty mcpServers object)", confirmed = true, evidence = "--strict-mcp-config and --mcp-config listed in --help: yes; MCP servers reported by system/init: the highest count is 0 over 9 scenarios" }
-isolation_plugins = { flag = "--safe-mode", confirmed = false, evidence = "--safe-mode listed in --help: yes, passed: yes; plugins reported by system/init: the highest count is 4 over 9 scenarios; plugin entries loaded from the user configuration directory over all scenarios: 0" }
+isolation_settings = { flag = "--setting-sources project,local --safe-mode", confirmed = true, evidence = "--setting-sources listed in --help: yes, the user source left out: yes; --safe-mode listed in --help: yes, passed: yes; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: 0; memory paths reported by system/init: not reported; scenarios with a project memory directory under the user configuration directory: 0 of 10; memory judged by the user configuration directory, as system/init reports no memory_paths; user-scope agents reported by system/init: 0 of 0 in the user configuration directory; user-scope skills: 0 of 1" }
+isolation_mcp = { flag = "--strict-mcp-config --mcp-config (an empty mcpServers object)", confirmed = true, evidence = "--strict-mcp-config and --mcp-config listed in --help: yes; MCP servers reported by system/init: the highest count is 0 over 10 scenarios" }
+isolation_plugins = { flag = "--safe-mode", confirmed = true, evidence = "--safe-mode listed in --help: yes, passed: yes; plugins reported by system/init: the highest count is 4 over 10 scenarios; built-in plugins (path builtin, source builtin or <name>@builtin): the highest count is 4 over 10 scenarios; other plugin entries over all scenarios: 0, of them loaded from the user configuration directory: 0" }
 isolation_workdir = { flag = "", confirmed = true, evidence = "every scenario ran in a fresh directory under TMPDIR; inside a git work tree: no" }
 restrict_tools = { flag = "--tools", listed = true }
 permission_mode = { flag = "--permission-mode", listed = true, value = "default" }
-interrupt = { signal = "SIGINT", exit_status = 130, result_event = false }
+interrupt = { signal = "SIGINT", exit_status = 0, result_event = true, confirmed = true, evidence = "system/init line seen before the signal: yes; complete lines at the signal: 1, bytes: 3193; seconds from the start to the signal: 1 (waited up to 300); events in the transcript: 3, system/init among them: yes" }
 rate_limit_event = ["fixtures/complete.jsonl", "fixtures/needs-input.jsonl", "fixtures/missing-result.jsonl", "fixtures/corrective.jsonl", "fixtures/options.jsonl", "fixtures/effort-low.jsonl", "fixtures/max-turns.jsonl", "fixtures/permission-denied.jsonl", "fixtures/permission-allowed.jsonl"]
 credential_mode = { value = "subscription", source = "inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed" }
-repeat_check = { same = false, file = "fixtures/repeat-check.txt" }
+repeat_check = { same = true, file = "fixtures/repeat-check.txt" }

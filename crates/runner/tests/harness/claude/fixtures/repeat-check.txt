@@ -9,4 +9,4 @@ effort-low: same: system/init assistant result/success
 max-turns: same: system/init assistant user result/error_max_turns
 permission-denied: same: system/init assistant user assistant result/success
 permission-allowed: same: system/init assistant user assistant result/success
-interrupt: missing in first
+interrupt: same: system/init user result/error_during_execution
