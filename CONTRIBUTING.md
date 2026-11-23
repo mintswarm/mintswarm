@@ -76,7 +76,7 @@ The repository Admin role may bypass the ruleset for pull requests only; nothing
 
 The repository settings, outside the ruleset, allow squash merge only and delete head branches after merge.
 
-The `gates` workflow (`.github/workflows/gates.yml`) reports one status check per `gates.run` entry, named after the gate: `whitespace`, `agents-drift`, `packs-check`, `packs-selftest`, `python-format`, `shell-lint`, `save-output-selftest`, `plan-approval-selftest`, `landing-floor-selftest`, `landing-facts-selftest`, `github-selftest`, `readiness-selftest`, `rust-format`, `rust-lint`, `rust-test`, `dependencies-selftest`, `dependencies-prefetch-selftest`, `typescript-typecheck`, `typescript-lint`, `typescript-format` and `typescript-test`. The ruleset does not require them yet, nor the branch being up to date with `master`.
+The `gates` workflow (`.github/workflows/gates.yml`) reports one status check per `gates.run` entry, named after the gate: `whitespace`, `agents-drift`, `packs-check`, `packs-selftest`, `python-format`, `shell-lint`, `save-output-selftest`, `plan-approval-selftest`, `landing-floor-selftest`, `landing-facts-selftest`, `github-selftest`, `readiness-selftest`, `rust-format`, `rust-lint`, `rust-test`, `dependencies-selftest`, `dependencies-prefetch-selftest`, `typescript-typecheck`, `typescript-lint`, `typescript-format` and `typescript-test`. Before any of them runs, the workflow's `gates-matrix` job reads `gates.run` and reports its own check; if it fails, for example on a malformed `gates.run`, no gate runs. The ruleset does not require them yet, nor the branch being up to date with `master`.
 
 ## Releases
 
@@ -87,7 +87,7 @@ The `gates` workflow (`.github/workflows/gates.yml`) reports one status check pe
 
 ## Local checks
 
-CI runs each entry of `gates.run` in `.mintswarm/config.yaml` as its own check, and before pushing you run the same commands from the repository root:
+CI runs each entry of `gates.run` in `.mintswarm/config.yaml` as its own check, and before pushing you run the same commands. Run each line on its own from the repository root, for example in a subshell `( … )`: some lines `cd` into `web/`, and the next line expects the root again.
 
 ```
 git diff --check origin/master...HEAD
