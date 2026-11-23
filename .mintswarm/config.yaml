@@ -12,6 +12,13 @@ tracker:
   components:
     source: labels                   # labels (per repository) | field (account-wide select or free text)
     label: "component:{name}"        # implementation issues carry exactly one; design and plan issues may carry several
+  # Read from the base ref, never the worktree, by .mintswarm/dogfood/github/msw-state.py.
+  state:
+    source: field                    # field (organisation issue field, single select) | labels
+    field: msw-state
+    field_id: 50325307               # recorded here: listing the organisation's fields needs read:org, which the bot lacks
+    label: "msw-state:{value}"       # labels mode: exactly one per issue the session has touched
+    status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
   ingest:
     trusted:
       labels: [mintswarm]            # maintainer-only; never applied by an issue template

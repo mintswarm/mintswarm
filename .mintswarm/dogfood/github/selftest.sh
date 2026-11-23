@@ -22,7 +22,12 @@
 # refusals, rotate and jwt through each); the bot identity include; push.sh
 # pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
 # resolution; assignment and release of approvers; re-classification of a split
-# issue and the parent check before children are filed. Secrets and the manifest
+# issue and the parent check before children are filed; msw-state.py in field
+# and labels mode (exact bodies, no-op re-runs, a foreign field id, unavailable
+# fields, ignored writes, a single label swapped in one PUT) and the issue
+# status it maps to (reset after GitHub moves it, none and status: off leave it
+# alone), and the README's msw-state tables against the script's VALUES and
+# STATUS. Secrets and the manifest
 # code must appear in no recorded argv, nothing may be left in TMPDIR, each
 # create adds only its own App's config to HOME, and .git/config stays
 # byte-identical across pushes. Every background process runs in its own
@@ -368,10 +373,24 @@ cat > "$stubs/gh" <<'EOF'
 # untypeable; a comment POST fails while comment_failures is above 0, counting
 # it down; a PR's reviews,
 # served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
+# For msw-state.py an issue also keeps "fields" (its issue-field values, served
+# and POSTed at issues/<n>/issue-field-values; a POST replaces the value of each
+# field id given, named msw-state, unless "field_ignores_post"; with
+# "fields_unavailable" both answer HTTP 404), "labels" (names, served and PUT at
+# issues/<n>/labels) and "status" (a status name or null; the issue GET returns
+# it with node_id I_<n>). The repository's labels are in labels.json (served and
+# POSTed at repos/.../labels) and its issue statuses in statuses.json
+# ([{"id", "name", "category"}], four by default); api graphql answers the
+# planningStatuses query from them and applies setIssueStatus to the issue whose
+# node id is I_<n>, unless that issue has "status_ignores_set".
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
 
+STATUSES = [{"id": "S_todo", "name": "Todo", "category": "TODO"},
+            {"id": "S_progress", "name": "In progress", "category": "IN_PROGRESS"},
+            {"id": "S_review", "name": "In review", "category": "IN_PROGRESS"},
+            {"id": "S_done", "name": "Done", "category": "DONE"}]
 argv = sys.argv[1:]
 record("gh", argv)
 names = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
@@ -389,6 +408,64 @@ if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/review
 elif argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
     print(json.dumps({"number": 7, "requested_reviewers": [{"login": r} for r in reviewers]}))
+elif argv[:2] == ["api", "graphql"]:
+    store = os.path.join(STATE, "issues.json")
+    issues = json.load(open(store)) if os.path.exists(store) else {}
+    spath = os.path.join(STATE, "statuses.json")
+    statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
+    req = json.loads(data)
+    if "planningStatuses" in req["query"]:
+        print(json.dumps({"data": {"node": {"repository": {"planningStatuses": {"nodes": statuses}}}}}))
+    elif "setIssueStatus" in req["query"]:
+        n = req["variables"]["issue"][len("I_"):]
+        item = issues.setdefault(n, {})
+        match = [s for s in statuses if s["id"] == req["variables"]["status"]]
+        if not match:
+            print(json.dumps({"data": None, "errors": [{"message": "no such status"}]}))
+            sys.exit(1)
+        if not item.get("status_ignores_set"):
+            item["status"] = match[0]["name"]
+        json.dump(issues, open(store, "w"))
+        print(json.dumps({"data": {"setIssueStatus": {"clientMutationId": None}}}))
+    else:
+        sys.exit(1)
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/(issue-field-values|labels)", a) for a in argv):
+    path = next(a for a in argv if a.startswith("repos/"))
+    n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)/(.*)", path).groups()
+    method = opt(argv, "--method") or "GET"
+    store = os.path.join(STATE, "issues.json")
+    issues = json.load(open(store)) if os.path.exists(store) else {}
+    item = issues.setdefault(n, {})
+    if tail == "issue-field-values":
+        if item.get("fields_unavailable"):
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
+            sys.exit(1)
+        fields = item.setdefault("fields", [])
+        if method == "POST" and not item.get("field_ignores_post"):
+            for fv in json.loads(data)["issue_field_values"]:
+                fields[:] = [f for f in fields if f["issue_field_id"] != fv["field_id"]]
+                fields.append({"issue_field_id": fv["field_id"], "node_id": "IFV_%d" % fv["field_id"],
+                               "data_type": "single_select", "issue_field_name": "msw-state", "value": fv["value"],
+                               "single_select_option": {"id": 1, "name": fv["value"], "color": "GRAY"}})
+        out = fields
+    else:
+        if method == "PUT":
+            item["labels"] = list(json.loads(data)["labels"])
+        out = [{"name": name} for name in item.setdefault("labels", [])]
+        if "--slurp" in argv:
+            out = [out]
+    json.dump(issues, open(store, "w"))
+    print(json.dumps(out))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/labels", a) for a in argv):
+    store = os.path.join(STATE, "labels.json")
+    labels = json.load(open(store)) if os.path.exists(store) else []
+    if opt(argv, "--method") == "POST":
+        label = json.loads(data)
+        labels.append(label)
+        json.dump(labels, open(store, "w"))
+        print(json.dumps(label))
+    else:
+        print(json.dumps([labels] if "--slurp" in argv else labels))
 elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments)?", a) for a in argv):
     path = next(a for a in argv if a.startswith("repos/"))
     n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
@@ -432,8 +509,13 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
     elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
     else:
-        out = {"number": int(n), "assignees": [{"login": a} for a in item["assignees"]],
-               "type": {"name": item["type"]} if item["type"] else None}
+        spath = os.path.join(STATE, "statuses.json")
+        statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
+        status = next((s for s in statuses if s["name"] == item.get("status")), None)
+        out = {"number": int(n), "node_id": "I_%s" % n, "assignees": [{"login": a} for a in item["assignees"]],
+               "type": {"name": item["type"]} if item["type"] else None,
+               "status": {"category": status["category"], "id": status["id"], "name": status["name"]}
+               if status else None}
     print(json.dumps(out))
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
@@ -2147,6 +2229,202 @@ check "check-parent refuses an untyped parent" fails_saying \
 refused_with_1() { local rc=0; rc check-parent 33 --base "$real_base" >/dev/null 2>&1 || rc=$?; eq "$rc" 1; }
 check "the refusal exits 1" refused_with_1
 check "check-parent with a bad number exits 2" exits_2 rc check-parent 0 --base "$real_base"
+
+# --- msw-state.py ------------------------------------------------------------
+
+MS="$here/msw-state.py"
+check "msw-state.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$MS" "$sandbox/msw-state.pyc"
+ms() { python3 -I "$MS" "$@"; }
+field_posts() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST")) | select(any(.[]; endswith("/issue-field-values")))' "$argv_log" | wc -l | tr -d ' '; }
+label_writes() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST") or index("PUT")) | select(any(.[]; endswith("/labels")))' "$argv_log" | wc -l | tr -d ' '; }
+graphql_calls() { jq -c 'select(.cmd == "gh") | .argv | select(.[1] == "graphql")' "$argv_log" | wc -l | tr -d ' '; }
+mutations() { grep -c setIssueStatus "$MSW_STUB_STATE/stdin-gh.log" || true; }
+field_of() { jq -r --arg n "$1" '[.[$n].fields // [] | .[] | select(.issue_field_id == 50325307) | .value] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+status_of() { jq -r --arg n "$1" '.[$n].status // "unset"' "$MSW_STUB_STATE/issues.json"; }
+labels_of() { jq -r --arg n "$1" '.[$n].labels // [] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+repo_label_count() { jq -r --arg l "$1" '[.[] | select(.name == $l)] | length' "$MSW_STUB_STATE/labels.json"; }
+ms_rc() {  # ms_rc RC ARGS...: msw-state.py exits RC
+  local want="$1" rc=0; shift
+  ms "$@" >"$sandbox/ms.out" 2>&1 || rc=$?
+  cat "$sandbox/ms.out"
+  eq "$rc" "$want"
+}
+state_cfg() {  # state_cfg SOURCE STATUS: a config with tracker.state only
+  printf 'tracker: {state: {source: %s, field: msw-state, field_id: 50325307, label: "msw-state:{value}", status: %s}}' "$1" "$2"
+}
+bad_source_base="$(commit_config "$(state_cfg other issue_status)")"
+bad_status_base="$(commit_config "$(state_cfg field on)")"
+bad_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
+bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, field_id: 50325307, label: "msw-state", status: off}}')"
+off_base="$(commit_config "$(state_cfg field off)")"
+labels_base="$(commit_config "$(state_cfg labels off)")"
+labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
+
+check "an unknown value exits 2" exits_2 ms set 41 bogus --base "$real_base"
+check "a source other than field or labels exits 2" exits_2 ms set 41 queued --base "$bad_source_base"
+check "a status other than issue_status or off exits 2" exits_2 ms set 41 queued --base "$bad_status_base"
+check "a field_id that is not an integer exits 2" exits_2 ms set 41 queued --base "$bad_id_base"
+check "a label without {value} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
+check "number 0 exits 2" exits_2 ms set 0 queued --base "$real_base"
+
+seed 41 '{"status": "Todo"}'
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "set on an unset issue sets the field and the mapped status" eq "$out" "set #41 msw-state to implementing (was none)
+set #41 status to In progress (was Todo)"
+check "it POSTs the issue's field values through bot-gh.sh" \
+  gh_argv_seen '["api","--method","POST","repos/{owner}/{repo}/issues/41/issue-field-values","--input","-"]'
+check "with exactly the field id and the value on stdin" \
+  present '{"issue_field_values": [{"field_id": 50325307, "value": "implementing"}]}' "$MSW_STUB_STATE/stdin-gh.log"
+check "one field POST and one setIssueStatus with the In progress id" \
+  eq "$(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before )) $(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1 | jq -r .variables.status)" \
+  "1 1 S_progress"
+check "issue 41 now has implementing and In progress" eq "$(field_of 41) $(status_of 41)" "implementing In progress"
+out="$(ms get 41 --base "$real_base" 2>&1)" || out="(failed) $out"
+check "get prints the value and the status" eq "$out" "msw-state: implementing
+status: In progress"
+
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "the same value again writes nothing" eq "$out $(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before ))" \
+  "#41 msw-state is already implementing
+#41 status is already In progress 0 0"
+seed 41 "$(jq -c '.["41"] | .status = "In review"' "$MSW_STUB_STATE/issues.json")"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a status moved by GitHub is reset with no field POST" \
+  eq "$out $(( $(field_posts) - posts_before )) $(status_of 41)" "#41 msw-state is already implementing
+set #41 status to In progress (was In review) 0 In progress"
+
+seed 47 '{"status": "In progress"}'
+mut_before="$(mutations)"
+out="$(ms set 47 analysing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a status that already matches makes no mutation" eq "$out $(( $(mutations) - mut_before ))" \
+  "set #47 msw-state to analysing (was none)
+#47 status is already In progress 0"
+
+seed 48 '{"status": "Todo", "fields": [{"issue_field_id": 50325307, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+gql_before="$(graphql_calls)"
+check "none sets the field" eq "$(ms set 48 none --base "$real_base" 2>&1)" "set #48 msw-state to none (was queued)"
+check "and makes no GraphQL call, leaving the status alone" eq "$(( $(graphql_calls) - gql_before )) $(status_of 48)" "0 Todo"
+
+seed 42 '{"fields": [{"issue_field_id": 999, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+posts_before="$(field_posts)"
+check "a msw-state field with another id exits 1" ms_rc 1 set 42 implementing --base "$real_base"
+check "and names the id and writes nothing" \
+  eq "$(grep -c 'with id 999, not 50325307' "$sandbox/ms.out") $(( $(field_posts) - posts_before ))" "1 0"
+
+seed 43 '{"fields_unavailable": true}'
+check "unavailable issue fields exit 1" ms_rc 1 set 43 implementing --base "$real_base"
+check "and point to the labels fallback" present "tracker.state.source: labels" "$sandbox/ms.out"
+seed 44 '{"field_ignores_post": true, "status": "Todo"}'
+mut_before="$(mutations)"
+check "a POST that GitHub ignores exits 1" ms_rc 1 set 44 implementing --base "$real_base"
+check "before any status write" eq "$(( $(mutations) - mut_before )) $(status_of 44)" "0 Todo"
+
+seed 45 '{"status": "Todo"}'
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 45 planning --base "$real_base" --dry-run 2>&1)" || out="(failed) $out"
+check "set --dry-run prints both lines" eq "$out" "set #45 msw-state to planning (was none)
+set #45 status to In progress (was Todo)"
+check "and writes nothing" \
+  eq "$(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before )) $(field_of 45)/$(status_of 45)" "0 0 /Todo"
+
+state_cfg labels off > .mintswarm/config.yaml
+seed 46 '{}'
+ms set 46 queued --base "$real_base" >/dev/null 2>&1 || true
+check "an uncommitted config edit changes nothing" eq "$(field_of 46) $(labels_of 46)" "queued "
+git checkout -q -- .mintswarm/config.yaml
+
+printf '%s\n' '[{"id": "S_todo", "name": "Todo", "category": "TODO"}]' > "$MSW_STUB_STATE/statuses.json"
+seed 49 '{"status": "Todo"}'
+check "a status name the repository lacks exits 1" ms_rc 1 set 49 "done" --base "$real_base"
+check "and points to tracker.state.status: off" present "tracker.state.status: off" "$sandbox/ms.out"
+rm -f "$MSW_STUB_STATE/statuses.json"
+seed 50 '{"status": "Todo", "status_ignores_set": true}'
+check "a setIssueStatus that GitHub ignores exits 1" ms_rc 1 set 50 implementing --base "$real_base"
+check "and says so" present "did not set #50's status to In progress (it reports Todo)" "$sandbox/ms.out"
+seed 51 '{"status": "Todo"}'
+gql_before="$(graphql_calls)"
+check "with status: off committed, set prints only the field line" \
+  eq "$(ms set 51 implementing --base "$off_base" 2>&1)" "set #51 msw-state to implementing (was none)"
+check "and makes no GraphQL call" eq "$(( $(graphql_calls) - gql_before )) $(status_of 51)" "0 Todo"
+check "get with status: off prints only the value" eq "$(ms get 51 --base "$off_base" 2>&1)" "msw-state: implementing"
+
+seed 61 '{"labels": ["bug"]}'
+out="$(ms set 61 implementing --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "labels mode: set on an issue with no msw-state label" eq "$out" "set #61 msw-state to implementing (was none)"
+check "creates the missing label once, colour ededed" \
+  eq "$(repo_label_count msw-state:implementing) $(jq -r '.[0].color + " " + .[0].description' "$MSW_STUB_STATE/labels.json")" \
+  "1 ededed mintswarm state"
+check "and PUTs the issue's labels in one request, keeping the unrelated one" \
+  gh_argv_seen '["api","--method","PUT","repos/{owner}/{repo}/issues/61/labels","--input","-"]'
+check "the issue has bug and exactly one msw-state label" eq "$(labels_of 61)" "bug,msw-state:implementing"
+out="$(ms set 61 'in review' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "a new value swaps the label" eq "$out $(labels_of 61)" "set #61 msw-state to in review (was implementing) bug,msw-state:in review"
+writes_before="$(label_writes)"
+out="$(ms set 61 'in review' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "the same value writes nothing" eq "$out $(( $(label_writes) - writes_before ))" "#61 msw-state is already in review 0"
+check "get reads the value from the label" eq "$(ms get 61 --base "$labels_base" 2>&1)" "msw-state: in review"
+seed 62 '{"labels": ["msw-state:queued", "msw-state:planning", "docs"]}'
+out="$(ms set 62 "done" --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "an issue with two msw-state labels ends with one" eq "$out $(labels_of 62)" \
+  "set #62 msw-state to done (was queued, planning) docs,msw-state:done"
+seed 63 '{"labels": []}'
+check "none sets msw-state:none" eq "$(ms set 63 none --base "$labels_base" 2>&1) $(labels_of 63)" \
+  "set #63 msw-state to none (was none) msw-state:none"
+seed 64 '{"labels": []}'
+ms set 64 implementing --base "$labels_base" >/dev/null 2>&1 || true
+check "an existing label is not created again" eq "$(repo_label_count msw-state:implementing) $(labels_of 64)" "1 msw-state:implementing"
+seed 65 '{"labels": [], "status": "Todo"}'
+check "labels mode sets the status too" eq "$(ms set 65 analysing --base "$labels_status_base" 2>&1) $(status_of 65)" \
+  "set #65 msw-state to analysing (was none)
+set #65 status to In progress (was Todo) In progress"
+
+cat > "$sandbox/mscheck.py" <<'PY'
+# mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
+import importlib.util, re, sys
+
+sys.dont_write_bytecode = True  # no __pycache__ next to the script
+spec = importlib.util.spec_from_file_location("msw_state", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+text = open(sys.argv[1], encoding="utf-8").read()
+section = text.split("\n## msw-state\n", 1)[1].split("\n## ", 1)[0]
+tables, rows = {}, None
+for line in section.split("\n"):
+    if not line.startswith("|"):
+        rows = None
+        continue
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if rows is None:
+        rows = tables[tuple(cells)] = []
+    elif not set("".join(cells)) <= set("-: "):
+        rows.append(cells)
+errors = []
+ticked = lambda cell: re.findall(r"`([^`]*)`", cell)
+values = [ticked(r[0])[0] for r in tables.pop(("Value", "When it applies"))]
+if values != list(mod.VALUES):
+    errors.append("the Values table lists %s, not VALUES %s" % (values, list(mod.VALUES)))
+status = {ticked(r[0])[0]: r[1] for r in tables.pop(("msw-state", "Issue status"))}
+if status != dict(mod.STATUS, none="left alone"):
+    errors.append("the Issue status table %s differs from STATUS" % status)
+for head in (("Runner state", "msw-state"), ("Pipeline state", "msw-state")):
+    for r in tables.pop(head):
+        got = ticked(r[-1])
+        if got and not all(v in mod.VALUES for v in got) or not got and r[-1] != "the value of the state it pauses":
+            errors.append("%s row %s maps to no value in VALUES" % (head[0], r))
+if tables:
+    errors.append("unexpected tables: %s" % list(tables))
+print("\n".join(errors))
+sys.exit(1 if errors else 0)
+PY
+check "the README's msw-state tables match the script's VALUES and STATUS" python3 -I "$sandbox/mscheck.py" "$here/README.md" "$MS"
+sed 's/| `escalated` | In review |/| `escalated` | Done |/' "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and the cross-check catches a status that differs" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
+sed 's/| `ready`, `merging`, `releasing` | `awaiting merge` |/| `ready`, `merging`, `releasing` | `waiting` |/' "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and a runner state mapped to an unknown value" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
 
 # --- summary -----------------------------------------------------------------
 
