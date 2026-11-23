@@ -68,6 +68,7 @@ shared:                              # any component may touch these
   - .editorconfig
   - rustfmt.toml
   - clippy.toml
+  - .cargo/config.toml
   - pyproject.toml
   - .shellcheckrc
 
