@@ -20,7 +20,7 @@ You analyse one issue so that the next stage (decompose or plan) can work from f
 
 1. Restate what is asked in your own words, and what is explicitly not asked.
 2. Find what already exists: code, documents in `docs/architecture/`, conventions in `AGENTS.md` and `CONTRIBUTING.md`, earlier artefacts. Cite paths.
-3. Name the components the work touches. For an implementation issue that should be exactly one; say so if it is not.
+3. Name the components the work touches. For an implementation issue that should be exactly one; say so if it is not. Record the result in `## Split`: for an implementation issue that spans more than one component, or that should otherwise be split into one-component children, set `proposed` to `true`, `reason` to `components` or `other`, `components` to the components it spans and `finding` to the one-line finding that calls for the split. Otherwise set `proposed` to `false`, `reason` to `none` and `finding` to an empty string. The section is always there; `proposed` counts only for implementation issues.
 4. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
 5. List risks and unknowns.
 6. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`; a non-blocking question ends with `→` and the assumption. The Questions section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
@@ -29,7 +29,7 @@ You analyse one issue so that the next stage (decompose or plan) can work from f
 
 Return `analysis.md` as `.mintswarm/stages.md` describes:
 
-```markdown
+````markdown
 # Analysis: <issue title>
 
 <one line: the essence of the task and its main constraint>
@@ -38,12 +38,20 @@ Return `analysis.md` as `.mintswarm/stages.md` describes:
 ## What is not asked
 ## Existing context
 ## Components
+## Split
+
+```json
+{"split": {"proposed": false, "reason": "none", "components": ["…"], "finding": ""}}
+```
+
 ## Approaches
 ## Risks
 ## Questions
 - **Blocking:** …
 - **Non-blocking (assumed):** … → assumption
-```
+````
+
+`## Split` holds exactly one json fence with that object: `proposed` is a boolean, `reason` is `components`, `other` or `none`, `components` is a list of component names and `finding` is one line.
 
 Status: `needs_input` if there is any blocking question, otherwise `complete`.
 
