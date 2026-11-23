@@ -173,7 +173,7 @@ pub struct FetchReport {
 }
 
 /// A repository: the trusted store, the trees made from it, and pushes from it.
-pub trait Vcs {
+pub trait Vcs: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Fetch refs or commits into the trusted store.

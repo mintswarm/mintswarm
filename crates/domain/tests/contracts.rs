@@ -285,9 +285,10 @@ fn code_host_declares_no_merge() {
     let rest = &source[start..];
     let end = rest.find("\n}").expect("the CodeHost block ends");
     let block = &rest[..end];
+    // Only lines that start with `fn ` declare a method; doc comments and bodies do not count.
     let names: Vec<&str> = block
-        .split("fn ")
-        .skip(1)
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("fn "))
         .map(|s| s.split(['(', '<']).next().unwrap_or_default().trim())
         .collect();
     assert_eq!(

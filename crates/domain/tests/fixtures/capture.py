@@ -8,8 +8,20 @@ git-ignored `build/fixture-capture/tmp`. After each call of a record tool (`floo
 `keep-round.py`, `collect-facts.py`) it collects every JSON file under TMPDIR whose bytes changed
 during the call and whose `tool` and `version` name one of the five records. It keeps the first
 record of each (tool, structural shape), or every record with `--all`, and writes one per line to OUT.
+Absolute paths under the scratch directory are written relative to the self-test's own temporary
+directory, and timestamps taken during the capture are written as CAPTURED_AT, so a capture does not
+depend on the checkout's location, the temporary names or the clock.
 
 It reads `.mintswarm/dogfood/` and never modifies it. Run it with PYTHONDONTWRITEBYTECODE=1.
+
+No gate runs it, so the committed fixtures are refreshed by hand. Refresh them, and check the full
+capture, whenever a change touches a record tool, its self-test, or a record type in the domain crate:
+
+    PYTHONDONTWRITEBYTECODE=1 python3 crates/domain/tests/fixtures/capture.py \
+        crates/domain/tests/fixtures/records.jsonl
+    PYTHONDONTWRITEBYTECODE=1 python3 crates/domain/tests/fixtures/capture.py \
+        build/fixture-capture/all.jsonl --all
+    MSW_RECORD_FIXTURES=$PWD/build/fixture-capture/all.jsonl cargo test -p mintswarm-domain
 """
 
 import hashlib
@@ -20,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -39,6 +52,7 @@ RECORDS = {
     ("mintswarm-landing-floor", 1),
 }
 SCRATCH = ROOT / "build" / "fixture-capture" / "tmp"
+CAPTURED_AT = "2000-01-01T00:00:00Z"
 
 
 def signature(value):
@@ -56,6 +70,30 @@ def signature(value):
     if isinstance(value, float):
         return "float"
     return "str"
+
+
+def stable(value, started: datetime):
+    """value with paths and clock readings that differ between captures made stable.
+
+    An absolute path under SCRATCH becomes relative to its self-test's temporary directory, and a
+    timestamp taken during the capture (from `started` on) becomes CAPTURED_AT.
+    """
+    if isinstance(value, dict):
+        return {k: stable(v, started) for k, v in value.items()}
+    if isinstance(value, list):
+        return [stable(v, started) for v in value]
+    if isinstance(value, str):
+        prefix = str(SCRATCH) + os.sep
+        if value.startswith(prefix):
+            parts = value[len(prefix) :].split(os.sep, 1)
+            return parts[1] if len(parts) == 2 else parts[0]
+        try:
+            when = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return value
+        if when >= started:
+            return CAPTURED_AT
+    return value
 
 
 def scan(top: Path) -> dict:
@@ -93,13 +131,14 @@ class Collector:
         self.seen = set()
         self.records = []
         self.tools = set()
+        self.started = datetime.now(timezone.utc).replace(microsecond=0)
 
     def add(self, record: dict) -> None:
         self.tools.add(record["tool"])
         key = (record["tool"], signature(record))
         if self.keep_all or key not in self.seen:
             self.seen.add(key)
-            self.records.append(record)
+            self.records.append(stable(record, self.started))
 
     def wrap(self, run):
         def wrapped(*args, **kwargs):
