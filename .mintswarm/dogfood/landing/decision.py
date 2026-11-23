@@ -2,15 +2,15 @@
 """Decide whether a finished change needs a human, from the landing floor and the landing stage.
 
     decision.py --pr N --component NAME --plan PATH --base REF --head REF
-                --facts PATH --landing PATH
+                --facts PATH --landing PATH [--landing-model MODEL]
 
 Dogfooding stand-in for the control plane's landing decision, which combines
 the two layers of landing in code: the deterministic landing floor
 (landing/floor.py) and the judgement of the landing stage (landing/
 judgement.py). Paths are relative to the working directory, which is the
-root of a checkout holding both commits. Every argument is required, each
-once, as `--name value`; anything else, an empty value or a value that is an
-argument name is unusable input. N is a positive decimal integer, the PR's
+root of a checkout holding both commits. Every argument but --landing-model
+is required; each is given at most once, as `--name value`; anything else,
+an empty value or a value that is an argument name is unusable input. N is a positive decimal integer, the PR's
 number, and neither REF may start with `-`. The first action is to delete
 any stale .mintswarm/job/outputs/landing.json; when that fails, the input is
 unusable.
@@ -36,7 +36,8 @@ as they are:
 4. delete any earlier landing.md, then run the landing stage
    (.mintswarm/stages/landing.md), which writes a fresh landing.md; except
    under `never`, whose judge is skipped;
-5. run this script from the same base-ref copy, in the worktree;
+5. run this script from the same base-ref copy, in the worktree, with
+   --landing-model set to the model the landing stage was dispatched with;
 6. publish landing.md and .mintswarm/job/outputs/landing.json as issue
    artifacts, and post this script's stdout on the PR as mintswarm-dev[bot]
    through .mintswarm/dogfood/github/bot-gh.sh (`-F body=@<file>`), with
@@ -60,6 +61,9 @@ Inputs
   --component must be a defined component. The harness, model and effort of
   implement, review and landing are `agents.stages.<stage>` over
   `agents.default` there; a value that is absent or not a string is null.
+- MODEL given to --landing-model, the model the landing stage ran on. When
+  it is given, the landing entry's `model` is MODEL; otherwise it is the
+  configured model. Implement and review always record the configured one.
 - REF given to --head, the head of the change. Both refs are resolved and
   read through the plan floor's job_object_store, from a fresh object store
   in the system temp directory, as the landing floor reads them; the merge
@@ -124,7 +128,7 @@ record's, with its `judged_decision` and `decision` named `would_be` and
 `effective`, and `acts`, `inputs` and `agents` added:
 
   tool             `mintswarm-landing-decision`
-  version          1
+  version          2
   approval         `landing`
   subject          {`pr`, `issue` (from the facts, null when they are
                    unusable), `component`, `plan` {`path`, `sha256`}, `base`
@@ -149,7 +153,12 @@ record's, with its `judged_decision` and `decision` named `would_be` and
                    `kickoff_floor` and `assessment`}, null or [] when the
                    facts are unusable
   agents           {`implement`, `review`, `landing`}, each {`harness`,
-                   `model`, `effort`}
+                   `model`, `effort`, `configured_model`, `model_given`,
+                   `model_differs`}: `model` is the model that ran,
+                   `configured_model` the base config's, `model_given`
+                   whether --landing-model stated it and `model_differs`
+                   whether a stated model is not the configured one; both
+                   flags are false for implement and review
 
 A field that cannot be filled is null, or [] for a list.
 
@@ -165,9 +174,10 @@ commits; the floor (clean with its rule count, each hit rule with its
 reasons, the rules not evaluated, or unusable with its problems); the
 judgement rows of plan-approval/decision.py (Confidence as the band's name
 and score with min_confidence and the decisive reason, Hard triggers and
-Doubts); the would-be and the effective decision; the approver and the
-approval time, as inputs, not gates; and the harness, model and effort of
-implement, review and landing. Model, facts and session text is flattened
+Doubts); the would-be and the effective decision; the plan approver and
+the plan approval time, as inputs, not gates; and the harness, model and
+effort of implement, review and landing, with the configured model after
+the one that ran when they differ. Model, facts and session text is flattened
 to one line, its backticks replaced, cut to 200 characters and set in a
 code span (decision.py's span), so no line of the comment can be a steer
 marker. One status line goes to stderr.
@@ -200,7 +210,7 @@ LANDING_FLOOR = HERE / "floor.py"
 JUDGEMENT = HERE / "judgement.py"
 RECORD = Path(".mintswarm/job/outputs/landing.json")
 TOOL = "mintswarm-landing-decision"
-VERSION = 1
+VERSION = 2
 STAGE = "landing"
 CONFIG = ".mintswarm/config.yaml"
 FLOOR_TOOL = "mintswarm-landing-floor"
@@ -226,7 +236,12 @@ KICKOFF_KINDS = ("decision", "kickoff_floor", "assessment")
 AGENT_STAGES = ("implement", "review", "landing")
 AGENT_KEYS = ("harness", "model", "effort")
 ARGS = ("--pr", "--component", "--plan", "--base", "--head", "--facts", "--landing")
-USAGE = "usage: decision.py --pr N --component NAME --plan PATH --base REF --head REF " "--facts PATH --landing PATH"
+OPTIONAL = ("--landing-model",)
+NAMES = ARGS + OPTIONAL
+USAGE = (
+    "usage: decision.py --pr N --component NAME --plan PATH --base REF --head REF "
+    "--facts PATH --landing PATH [--landing-model MODEL]"
+)
 UNCHANGED = "This decision changes nothing: the maintainer approves this PR and the bot merges it as before."
 MODE_REASONS = {
     "always": "mode always: every change goes to a human; neither the floor nor the judge is required",
@@ -286,14 +301,14 @@ def parse_args(argv: list) -> dict:
     i = 0
     while i < len(argv):
         name = argv[i]
-        if name not in ARGS:
+        if name not in NAMES:
             raise InputError(f"unknown argument {name!r}; {USAGE}")
         if name in args:
             raise InputError(f"{name} given twice; {USAGE}")
         if i + 1 >= len(argv):
             raise InputError(f"{name} needs a value; {USAGE}")
         value = argv[i + 1]
-        if value == "" or value in ARGS:
+        if value == "" or value in NAMES:
             raise InputError(f"{name} needs a value; {USAGE}")
         args[name] = value
         i += 2
@@ -313,6 +328,7 @@ def parse_args(argv: list) -> dict:
         "head": args["--head"],
         "facts": args["--facts"],
         "landing": args["--landing"],
+        "landing_model": args.get("--landing-model"),
     }
 
 
@@ -333,6 +349,22 @@ def configured_agents(config: dict) -> dict:
             value = own[key] if key in own else default.get(key)
             entry[key] = value if isinstance(value, str) else None
         result[stage] = entry
+    return result
+
+
+def agents(config: dict, landing_model) -> dict:
+    """The configured agents, with the landing model that ran when the caller states it."""
+    result = {}
+    for stage, entry in configured_agents(config).items():
+        given = stage == STAGE and landing_model is not None
+        model = landing_model if given else entry["model"]
+        result[stage] = {
+            **entry,
+            "model": model,
+            "configured_model": entry["model"],
+            "model_given": given,
+            "model_differs": given and model != entry["model"],
+        }
     return result
 
 
@@ -584,6 +616,13 @@ def floor_rows(layer: dict) -> list:
     return rows
 
 
+def agent_row(entry: dict) -> str:
+    model = maybe(entry["model"])
+    if entry["model_differs"]:
+        model += f" (configured {maybe(entry['configured_model'])})"
+    return f"{maybe(entry['harness'])} {model} {maybe(entry['effort'])}"
+
+
 def comment(record: dict) -> str:
     subject = record["subject"]
     floor_ = record["layers"]["floor"]
@@ -592,10 +631,7 @@ def comment(record: dict) -> str:
     mode = record["mode"]
     heading = "### Shadow record: landing" if mode == "shadow" else "### Landing decision"
     suffix = f": {'; '.join(judged['problems'])}" if judged["status"] != "usable" else ""
-    agents = "; ".join(
-        f"{stage} {maybe(entry['harness'])} {maybe(entry['model'])} {maybe(entry['effort'])}"
-        for stage, entry in record["agents"].items()
-    )
+    agents = "; ".join(f"{stage} {agent_row(entry)}" for stage, entry in record["agents"].items())
     lines = [
         heading,
         "",
@@ -607,7 +643,7 @@ def comment(record: dict) -> str:
         *judgement.decision.judgement_rows(judged, record["min_confidence"], suffix),
         f"- **Would-be decision:** `{record['would_be']}`",
         f"- **Effective decision:** `{record['effective']}`",
-        f"- **Approval (inputs, not gates):** approver {maybe(approval['approver'])}, "
+        f"- **Plan approval (inputs, not gates):** approver {maybe(approval['approver'])}, "
         f"approved at {maybe(approval['approved_at'])}",
         f"- **Agents (harness, model, effort):** {agents}",
     ]
@@ -715,7 +751,7 @@ def run(argv: list) -> int:
             "facts": {"path": args["facts"], "sha256": facts_sha},
             "approval": approval_inputs(facts),
         },
-        "agents": configured_agents(config),
+        "agents": agents(config, args["landing_model"]),
     }
     text = comment(record) if mode != "always" else None
     write_record(record)
