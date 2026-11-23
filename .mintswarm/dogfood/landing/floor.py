@@ -105,6 +105,10 @@ is unusable input:
                    a defined component) and `paths` (globs)
   footprint        required mapping with exactly `lines_factor`, an integer
                    or a finite number, never a boolean, of 1 or more
+  min_confidence   optional integer, never a boolean, from 90 to 100; 95
+                   when absent. The landing decision reads it (see
+                   landing/judgement.py); no rule here does, and the
+                   verdict (still version 1) does not record it
 
 Globs follow the plan floor: a glob matches the whole path, `**` matches
 anything including `/`, `**/` zero or more directories, `*` anything within
@@ -233,6 +237,8 @@ CONFIG = ".mintswarm/config.yaml"
 TOOL = "mintswarm-landing-floor"
 VERSION = 1
 MODES = ("always", "shadow", "judged", "never")
+MIN_CONFIDENCE = 90  # the lowest pipeline.landing.min_confidence allowed
+DEFAULT_MIN_CONFIDENCE = 95  # pipeline.landing.min_confidence when absent
 RULES = (
     "footprint",
     "undeclared-files",
@@ -371,7 +377,7 @@ def validate_landing(config: dict, components: dict) -> dict:
     landing = pipeline["landing"]
     if not isinstance(landing, dict):
         raise InputError("config: pipeline.landing must be a mapping")
-    unknown = sorted(set(landing) - {"mode", "require_human", "footprint"})
+    unknown = sorted(set(landing) - {"mode", "require_human", "footprint", "min_confidence"})
     if unknown:
         raise InputError(f"config: unknown keys in pipeline.landing: {', '.join(unknown)}")
     mode = landing.get("mode")
@@ -407,7 +413,19 @@ def validate_landing(config: dict, components: dict) -> dict:
         raise InputError(
             f"config: pipeline.landing.footprint.lines_factor must be a number of 1 or more, not {factor!r}"
         )
-    return {"mode": mode, "rh_components": rh_components, "rh_paths": rh_paths, "lines_factor": factor}
+    threshold = landing.get("min_confidence", DEFAULT_MIN_CONFIDENCE)
+    if type(threshold) is not int or not MIN_CONFIDENCE <= threshold <= 100:
+        raise InputError(
+            f"config: pipeline.landing.min_confidence must be an integer from {MIN_CONFIDENCE} to 100, "
+            f"not {threshold!r}"
+        )
+    return {
+        "mode": mode,
+        "rh_components": rh_components,
+        "rh_paths": rh_paths,
+        "lines_factor": factor,
+        "min_confidence": threshold,
+    }
 
 
 def line_limit(estimated_lines: int, factor) -> int:

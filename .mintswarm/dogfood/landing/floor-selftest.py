@@ -716,6 +716,14 @@ def check_clean(r: Runner) -> None:
         {},
         config="shadow",
     )
+    for config in ("min-confidence-90", "min-confidence-100"):
+        r.expect(
+            f"pipeline.landing.min_confidence {config.rsplit('-', 1)[1]}",
+            footprint(["docs/guide.md"], estimated_lines=4),
+            appended("docs/guide.md", 2),
+            {},
+            config=config,
+        )
 
 
 def check_single_rules(r: Runner) -> None:
@@ -1366,6 +1374,11 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
         "footprint-missing",
         "undefined-component",
         "plan-approval-invalid",
+        "min-confidence-89",
+        "min-confidence-101",
+        "min-confidence-true",
+        "min-confidence-string",
+        "min-confidence-float",
     ):
         base = commits[variant]
         # a value yq cannot convert (.inf) fails in yq, before the config is checked
@@ -1373,7 +1386,11 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             (
                 f"config {variant}",
                 args(base=base, head_=sb.child(base, appended("docs/guide.md", 1))),
-                ("config", "yq -p=yaml failed"),
+                (
+                    ("pipeline.landing.min_confidence must be an integer from 90 to 100, not",)
+                    if variant.startswith("min-confidence-")
+                    else ("config", "yq -p=yaml failed")
+                ),
             )
         )
     for name, argv, fragment in cases:
@@ -1824,6 +1841,39 @@ def check_facts_contract() -> None:
     )
 
 
+def check_min_confidence() -> None:
+    """validate_landing, called directly: the default and a given value."""
+    floor = load_module("msw_landing_floor_for_selftest", FLOOR)
+    floor.P = floor.load_plan_floor()
+    config = yq_json(CONFIG)
+    components = config["components"]
+    got = floor.validate_landing(copy.deepcopy(config), components)["min_confidence"]
+    T.check(
+        "min_confidence: absent gives the default 95",
+        "min_confidence" not in config["pipeline"]["landing"] and got == floor.DEFAULT_MIN_CONFIDENCE == 95,
+        f"got {got!r}, DEFAULT_MIN_CONFIDENCE {floor.DEFAULT_MIN_CONFIDENCE!r}",
+    )
+    T.check("min_confidence: the lowest allowed is 90", floor.MIN_CONFIDENCE == 90, repr(floor.MIN_CONFIDENCE))
+    for value in (90, 97, 100):
+        given = copy.deepcopy(config)
+        given["pipeline"]["landing"]["min_confidence"] = value
+        got = floor.validate_landing(given, components)["min_confidence"]
+        T.check(f"min_confidence: {value} is returned as given", got == value and type(got) is int, repr(got))
+    for value in (89, 101, True, "95", 95.0, None):
+        given = copy.deepcopy(config)
+        given["pipeline"]["landing"]["min_confidence"] = value
+        try:
+            floor.validate_landing(given, components)
+            message = None
+        except floor.InputError as exc:
+            message = str(exc)
+        T.check(
+            f"min_confidence: {value!r} is refused",
+            message == f"config: pipeline.landing.min_confidence must be an integer from 90 to 100, not {value!r}",
+            repr(message),
+        )
+
+
 def check_isolation(r: Runner, sb: Sandbox) -> None:
     sentinel = b'{"sentinel": "the plan floor\'s verdict"}\n'
     target = sb.repo / PLAN_VERDICT
@@ -2059,6 +2109,16 @@ def build_commits(sb: Sandbox) -> tuple:
     variant("footprint-missing", lambda c: landing(c).pop("footprint"))
     variant("undefined-component", lambda c: landing(c).update(require_human={"components": ["nowhere"]}))
     variant("plan-approval-invalid", lambda c: c["pipeline"]["plan_approval"].update(mode="sometimes"))
+    for name, value in (
+        ("90", 90),
+        ("100", 100),
+        ("89", 89),
+        ("101", 101),
+        ("true", True),
+        ("string", "95"),
+        ("float", 95.5),  # yq reads 95.0 as 95, so the end-to-end float is not integral; check_min_confidence has 95.0
+    ):
+        variant(f"min-confidence-{name}", lambda c, value=value: landing(c).update(min_confidence=value))
     modes = {name: (config.get("pipeline", {}).get("landing") or {}).get("mode") for name, config in configs.items()}
     return commits, configs, modes
 
@@ -2089,6 +2149,7 @@ def main() -> int:
         check_historic(runner, sb)
         check_globs(runner, sb)
     check_facts_contract()
+    check_min_confidence()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1

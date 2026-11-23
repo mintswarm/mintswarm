@@ -1448,6 +1448,12 @@ GAP_CASES = [
         {"landing-config": "lines_factor"},
     ),
     (
+        "landing min_confidence below 90",
+        m_set("pipeline", "landing", "min_confidence", 89),
+        {"landing-config"},
+        {"landing-config": "min_confidence"},
+    ),
+    (
         "an agent outside landing require_human",
         m_rh_landing,
         {"require-human-landing"},
