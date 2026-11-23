@@ -13,7 +13,7 @@ You split one design or plan issue into child issues the tracker will hold. Foll
 
 - `.mintswarm/job/inputs/issue.md`: the design or plan issue.
 - `.mintswarm/job/inputs/artefacts/analysis.md`: the analysis of this issue.
-- `.mintswarm/job/inputs/parent/`: artefacts of parent issues, including the approved design document (`design.md`, the revision the maintainer approved); for a design issue this is the issue's own design, placed there by the runner.
+- `.mintswarm/job/inputs/parent/`: artefacts of parent issues, including the approved design document (`design.md`, the revision the maintainer approved; the approval adopts each open question's recommendation unless the approval answered that question otherwise); for a design issue this is the issue's own design, placed there by the runner.
 - `.mintswarm/config.yaml`: the project's components.
 
 ## Kinds of child
