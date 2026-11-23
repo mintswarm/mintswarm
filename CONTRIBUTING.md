@@ -115,3 +115,5 @@ bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bi
 ```
 
 `whitespace` needs `origin/master` fetched, and `python-format` needs `black`.
+
+The listed commands write their build output only under the git-ignored `build/` at the repository root, never next to sources. The dependency install (`web-install.sh`) writes `node_modules/` under `web/`, which is a dependency install, not build output.
