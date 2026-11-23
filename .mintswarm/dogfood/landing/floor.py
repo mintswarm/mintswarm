@@ -155,12 +155,11 @@ footprint's `files` plus each new dependency's `manifest`.
                              the plan was approved by a human, the
                              footprint is usable and every changed path in
                              NAME's paths is covered; or a changed path
-                             that is not covered is in
-                             the paths of one of them, compared
-                             case-insensitively
+                             that is not covered is in the paths of one of
+                             them, compared case-insensitively
   protected                  a changed path that is not covered is
-                             .mintswarm/config.yaml, a
-                             word of a gates.run command at the base
+                             .mintswarm/config.yaml, a word of a gates.run
+                             command at the base
                              (without a leading `./`), CODEOWNERS,
                              .github/CODEOWNERS or docs/CODEOWNERS, is
                              .github/workflows or under it, or is a
@@ -203,13 +202,15 @@ The three rules above `gates` ask a human only about what the approved
 plan did not cover. A changed path is covered when all of these hold:
 
 - the plan was approved by a human: the facts' `approval` is an object
-  whose `approver` is a non-empty string not ending in `[bot]` (compared
-  case-insensitively) and, when it has a `decision`, that decision's
-  `record.decision` is `human` and its `record.subject.plan.sha256` is the
-  sha256 of the --plan bytes. A missing or malformed `approval`, a
-  malformed decision record, a decision `auto` or any other value, or a
-  record for another plan is no human approval: a hit, never unusable
-  input;
+  whose `approver` is a login by collect-facts.py's pattern
+  (`[A-Za-z0-9-]+`, optionally followed by `[bot]`) not ending in `[bot]`,
+  and whose `decision` holds a decision record (collect-facts.py adds it
+  only when given --decision) whose `record.decision` is `human` and whose
+  `record.subject.plan.sha256` is the sha256 of the --plan bytes, so the
+  approval is tied to the plan given here. A missing or malformed
+  `approval`, an approver that is no such login, a missing or malformed
+  decision record, a decision `auto` or any other value, or a record for
+  another plan is no human approval: a hit, never unusable input;
 - the footprint is usable and declares the exact path (compared exactly,
   as `undeclared-files` compares it), in `files` or as a new dependency's
   `manifest`;
@@ -218,8 +219,8 @@ plan did not cover. A changed path is covered when all of these hold:
   directory, and a footprint lists files, never directories;
 - when the path is .mintswarm/config.yaml or a word of a base gates.run
   command (compared case-insensitively), a `gate_changes` entry, stripped
-  and lowercased, starts with the lowercased path followed by `:`, the
-  form the plan stage writes.
+  and lowercased, starts with the lowercased path followed by `:`; an
+  entry that names the path in any other form covers nothing.
 
 A covered path gives no reason in any of the three rules; every other
 matching path gives the same reasons as when no plan covers anything. A
@@ -348,7 +349,8 @@ DROPPED_ENV = (
 BINARY_PROBE = 8000  # bytes git looks at for a NUL when it decides a blob is binary
 BLOB_MODES = ("100644", "100755", "120000")
 DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
-BOT_SUFFIX = "[bot]"  # an approver login ending in this, compared case-insensitively, is no human
+LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")  # collect-facts.py's approver pattern
+BOT_SUFFIX = "[bot]"  # an approver login ending in this is no human
 
 P = None  # the plan floor's module, once loaded
 
@@ -882,26 +884,27 @@ def plan_approval(facts: dict, plan_sha: str):
     if not isinstance(approval, dict):
         return "the approval is not an object"
     approver = approval.get("approver")
-    if not isinstance(approver, str) or approver == "":
+    if not isinstance(approver, str) or not LOGIN.fullmatch(approver):
         return "the approver is not a login"
-    if approver.lower().endswith(BOT_SUFFIX):
+    if approver.endswith(BOT_SUFFIX):
         return f"the approver {approver} is a bot"
-    if "decision" in approval:
-        decision = approval["decision"]
-        record = decision.get("record") if isinstance(decision, dict) else None
-        if not isinstance(record, dict):
-            return "the decision record is malformed"
-        value = record.get("decision")
-        if value == "auto":
-            return "the plan's decision was auto"
-        if value != "human":
-            return f"the plan's decision is {brief(value)}, not 'human'"
-        subject = record.get("subject")
-        plan = subject.get("plan") if isinstance(subject, dict) else None
-        recorded = plan.get("sha256") if isinstance(plan, dict) else None
-        if recorded != plan_sha:
-            shown = recorded if is_hash(recorded) else brief(recorded)
-            return f"the decision record is for plan sha256 {shown}, not this plan's {plan_sha}"
+    if "decision" not in approval:
+        return "no decision record ties the approval to this plan"
+    decision = approval["decision"]
+    record = decision.get("record") if isinstance(decision, dict) else None
+    if not isinstance(record, dict):
+        return "the decision record is malformed"
+    value = record.get("decision")
+    if value == "auto":
+        return "the plan's decision was auto"
+    if value != "human":
+        return f"the plan's decision is {brief(value)}, not 'human'"
+    subject = record.get("subject")
+    plan = subject.get("plan") if isinstance(subject, dict) else None
+    recorded = plan.get("sha256") if isinstance(plan, dict) else None
+    if recorded != plan_sha:
+        shown = recorded if is_hash(recorded) else brief(recorded)
+        return f"the decision record is for plan sha256 {shown}, not this plan's {plan_sha}"
     return None
 
 

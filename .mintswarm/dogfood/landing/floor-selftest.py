@@ -38,18 +38,21 @@ Checks:
   reason;
 - single-rule hits: each diff rule, `size` at and one over its limit, and
   the require_human rules with case variants;
-- coverage, with a human-approved plan, with and without a matching `human`
+- coverage, with a plan approved by a human login and a matching `human`
   decision record: declared CLAUDE.md and .claude/agents/x.md, the config
   and a gate word each with its `<path>:` gate_changes entry, CODEOWNERS
   and .github/workflows/ci.yml, and web/index.html in the issue's own
   require-human component are clean; an undeclared CLAUDE.md, a declared
-  config change with no entry, an entry naming another file or holding the
-  path but not as its prefix, and `claude.md` declared while CLAUDE.md
-  changed still hit; a bot approver (in any case), a decision `auto`, a
-  `human` decision for another plan, a malformed decision record, no
-  approval and an approval that is a string each exit 1 with the
-  not-approved reason; an unusable footprint gives only the path's own
-  reason; a declared symlink at .github/workflows still hits `protected`;
+  config or gate word with no entry, an entry naming another file or
+  holding the path but not as its prefix, and `claude.md` declared while
+  CLAUDE.md changed still hit; a bot approver, an approver that is no
+  login (empty, `[Bot]` in another case, a trailing space), a human login
+  with no decision record, a decision `auto`, `Human` or `always`, a
+  `human` decision for another plan, a decision record that is not an
+  object, a decision that is not an object, no approval and an approval
+  that is a string each exit 1 with the not-approved reason; an unusable
+  footprint gives only the path's own reason; a declared symlink at
+  .github/workflows still hits `protected`;
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
   evaluates the other eight;
@@ -1445,30 +1448,33 @@ def check_coverage(r: Runner, commits: dict) -> None:
     ]
     for label, fp, changes, kwargs in covered:
         plan = plan_text(fp).encode("utf-8")
-        for record in (None, "human"):
-            with_record = " and a human decision record" if record else ""
-            r.expect(
-                f"coverage: {label}, human-approved{with_record}",
-                fp,
-                changes,
-                {},
-                facts={"approval": human_approval(plan, record)},
-                **kwargs,
-            )
+        r.expect(
+            f"coverage: {label}, human-approved with a human decision record",
+            fp,
+            changes,
+            {},
+            facts={"approval": human_approval(plan, "human")},
+            **kwargs,
+        )
 
     claude = footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=2)
     claude_plan = plan_text(claude).encode("utf-8")
-    human = {"approval": human_approval(claude_plan)}
-    r.expect(
+    guide = footprint(["docs/guide.md"], estimated_lines=4)
+    _, verdict = r.expect(
         "coverage: an undeclared CLAUDE.md next to a declared file",
-        footprint(["docs/guide.md"], estimated_lines=4),
+        guide,
         {**appended("docs/guide.md", 1), "CLAUDE.md": text(1)},
         {
             "undeclared-files": "CLAUDE.md is changed but is neither in files nor a new dependency's manifest",
             "undeclared-new-files": "CLAUDE.md is added but is not in new_files",
             "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md",
         },
-        facts=human,
+        facts={"approval": human_approval(plan_text(guide).encode("utf-8"), "human")},
+    )
+    T.check(
+        "coverage: an undeclared CLAUDE.md under a matching decision record gives only its own reason",
+        reasons_of(verdict, "require-human-paths") == ["CLAUDE.md matches require_human.paths CLAUDE.md"],
+        str(reasons_of(verdict, "require-human-paths")),
     )
     missing = f"{CONFIG_PATH} is declared, but no gate_changes entry starts with '{CONFIG_PATH}:'"
     for label, entries in (
@@ -1476,23 +1482,37 @@ def check_coverage(r: Runner, commits: dict) -> None:
         ("an entry naming another file", ["docs/guide.md: a gate reads it"]),
         ("an entry holding the path but not as its prefix", [f"the gate config {CONFIG_PATH}: a blank line"]),
     ):
+        fp = footprint([CONFIG_PATH], estimated_lines=5, gate_changes=entries)
         r.expect(
             f"coverage: a declared config change with {label}",
-            footprint([CONFIG_PATH], estimated_lines=5, gate_changes=entries),
+            fp,
             {CONFIG_PATH: config + b"\n"},
             {"protected": missing, "require-human-paths": missing},
-            facts=human,
+            facts={"approval": human_approval(plan_text(fp).encode("utf-8"), "human")},
         )
+    agents = ".mintswarm/dogfood/render-agents.py"
+    word = footprint([agents], [agents], estimated_lines=5)
+    r.expect(
+        "coverage: a declared gate word with no gate_changes entry",
+        word,
+        {agents: text(1)},
+        {
+            "protected": f"{agents} is declared, but no gate_changes entry starts with '{agents}:'",
+            "require-human-paths": f"{agents} is declared, but no gate_changes entry starts with '{agents}:'",
+        },
+        facts={"approval": human_approval(plan_text(word).encode("utf-8"), "human")},
+    )
+    lower_fp = footprint(["claude.md"], ["claude.md"], estimated_lines=2)
     r.expect(
         "coverage: claude.md declared while CLAUDE.md changed",
-        footprint(["claude.md"], ["claude.md"], estimated_lines=2),
+        lower_fp,
         {"CLAUDE.md": text(1)},
         {
             "undeclared-files": "CLAUDE.md is changed but is neither in files nor a new dependency's manifest",
             "undeclared-new-files": "CLAUDE.md is added but is not in new_files",
             "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md",
         },
-        facts=human,
+        facts={"approval": human_approval(plan_text(lower_fp).encode("utf-8"), "human")},
     )
 
     def without_approval(content: dict) -> dict:
@@ -1500,14 +1520,41 @@ def check_coverage(r: Runner, commits: dict) -> None:
         return content
 
     other = "f" * 64
+    recorded = human_approval(claude_plan, "human")
     for label, facts, cause in (
         ("a bot approver", None, BOT_CAUSE),
         (
+            "an App's bot login with a human decision record",
+            {"approval": {**recorded, "approver": "renovate[bot]"}},
+            "the approver renovate[bot] is a bot",
+        ),
+        ("an empty approver", {"approval": {**recorded, "approver": ""}}, "the approver is not a login"),
+        (
             "an App's bot login in another case",
-            {"approval": {**human_approval(), "approver": "Renovate[Bot]"}},
-            "the approver Renovate[Bot] is a bot",
+            {"approval": {**recorded, "approver": "Renovate[Bot]"}},
+            "the approver is not a login",
+        ),
+        (
+            "a bot login with a trailing space",
+            {"approval": {**recorded, "approver": "x[bot] "}},
+            "the approver is not a login",
+        ),
+        (
+            "a human login with no decision record",
+            {"approval": human_approval()},
+            "no decision record ties the approval to this plan",
         ),
         ("a decision auto", {"approval": human_approval(claude_plan, "auto")}, "the plan's decision was auto"),
+        (
+            "a decision Human",
+            {"approval": human_approval(claude_plan, "Human")},
+            "the plan's decision is \"Human\", not 'human'",
+        ),
+        (
+            "a decision always",
+            {"approval": human_approval(claude_plan, "always")},
+            "the plan's decision is \"always\", not 'human'",
+        ),
         (
             "a human decision for another plan",
             {"approval": human_approval(decision="human", plan_sha=other)},
@@ -1517,6 +1564,11 @@ def check_coverage(r: Runner, commits: dict) -> None:
         (
             "a decision record that is not an object",
             {"approval": {**human_approval(), "decision": {"record": "human"}}},
+            "the decision record is malformed",
+        ),
+        (
+            "a decision that is not an object",
+            {"approval": {**human_approval(), "decision": "human"}},
             "the decision record is malformed",
         ),
         ("no approval", without_approval, "no approval is recorded"),
@@ -1536,7 +1588,7 @@ def check_coverage(r: Runner, commits: dict) -> None:
         plan_text(None),
         {"CLAUDE.md": text(1)},
         {"footprint": None, "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
-        facts={"approval": human_approval()},
+        facts={"approval": human_approval(plan_text(None).encode("utf-8"), "human")},
     )
     T.check(
         "coverage: an unusable footprint gives only the path's own reason",
