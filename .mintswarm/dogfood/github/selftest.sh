@@ -363,8 +363,10 @@ cat > "$stubs/gh" <<'EOF'
 # Stub of gh: records argv, the environment it was given and stdin for --input -.
 # Issues, their assignees, events, type and comments are kept in issues.json in
 # the stub state: {"<n>": {"assignees": [...], "events": [...], "unassignable":
-# [...], "type": "<name>" or null, "comments": [...], "untypeable": bool}}; a
-# PATCH of the issue sets its type unless it is untypeable; a PR's reviews,
+# [...], "type": "<name>" or null, "comments": [...], "untypeable": bool,
+# "comment_failures": n}}; a PATCH of the issue sets its type unless it is
+# untypeable; a comment POST fails while comment_failures is above 0, counting
+# it down; a PR's reviews,
 # served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -414,6 +416,11 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         if not item.get("untypeable"):
             item["type"] = json.loads(data)["type"]
         json.dump(issues, open(store, "w"))
+    if tail == "/comments" and method == "POST" and item.get("comment_failures", 0) > 0:
+        item["comment_failures"] -= 1
+        json.dump(issues, open(store, "w"))
+        print("gh: HTTP 502: Bad Gateway", file=sys.stderr)
+        sys.exit(1)
     if tail == "/comments" and method == "POST":
         url = "https://github.com/mintswarm/mintswarm/issues/%s#issuecomment-%d" % (n, 100 + len(item["comments"]))
         comment = {"body": json.loads(data)["body"], "html_url": url}
@@ -421,7 +428,7 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         json.dump(issues, open(store, "w"))
         out = comment
     elif tail == "/comments":
-        out = item["comments"]
+        out = [item["comments"]] if "--slurp" in argv else item["comments"]
     elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
     else:
@@ -1997,6 +2004,37 @@ analysis "$sandbox/split.md" '{"split": {"proposed": true, "reason": "components
 analysis "$sandbox/nosplit.md" '{"split": {"proposed": false, "reason": "none", "components": ["agents"], "finding": ""}}'
 analysis "$sandbox/broken.md" '{"split": {"proposed": true,'
 printf '# Analysis: x\n\n## Components\n\nagents\n' > "$sandbox/missing.md"
+cat > "$sandbox/decoy.md" <<'MD'
+# Analysis: x
+
+## Existing context
+
+The analyse template ends with:
+
+````markdown
+## Split
+
+```json
+{"split": {"proposed": true, "reason": "other", "components": [], "finding": "decoy"}}
+```
+````
+
+~~~
+## Split
+~~~
+
+## Split
+
+```json
+{"split": {"proposed": false, "reason": "none", "components": ["agents"], "finding": ""}}
+```
+
+## Approaches
+
+```json
+{"not": "this"}
+```
+MD
 epic_base="$(commit_config 'tracker: {kinds: {design: {issue_type: Design}, plan: {issue_type: Epic}, implementation: {issue_type: Task}}}')"
 
 seed 21 '{"assignees": [], "events": [], "type": "Task"}'
@@ -2019,8 +2057,38 @@ check "the comment names the components" present '`agents`, `docs`' <(comment_bo
 
 before="$(writes)"
 out="$(rc split 21 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
-check "a re-run on the Plan issue prints only kind: plan" eq "$out" "kind: plan"
+check "a re-run on the Plan issue prints the four lines with the existing comment's URL" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+comment: https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100
+package: Re-classified from Task to Plan: $FINDING (https://github.com/mintswarm/mintswarm/issues/21#issuecomment-100)"
 check "and sends no PATCH and no second comment" eq "$(( $(writes) - before )) $(comments 21)" "0 1"
+check "it lists the issue's comments, all pages" \
+  gh_argv_seen '["api","--paginate","--slurp","repos/{owner}/{repo}/issues/21/comments"]'
+
+seed 27 '{"assignees": [], "events": [], "type": "Task", "comment_failures": 1}'
+comment_fails() {  # exit 1 when the comment POST fails, after the type has changed
+  local rc=0
+  rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" >"$sandbox/rc.out" 2>&1 || rc=$?
+  cat "$sandbox/rc.out"
+  eq "$rc" 1
+}
+check "a failed comment POST fails split with 1" comment_fails
+check "and leaves the issue a Plan with no comment" eq "$(issue_type 27) $(comments 27)" "Plan 0"
+before="$(writes)"
+out="$(rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "a re-run posts the missing comment and prints all four lines" eq "$out" "kind: plan
+state: Decomposing (re-classified as plan)
+comment: https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100
+package: Re-classified from Task to Plan: $FINDING (https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100)"
+check "with exactly one comment, one write and no PATCH" eq "$(comments 27) $(( $(writes) - before ))" "1 1"
+check "the late comment holds the marker and names Task to Plan" \
+  present 'from `Task` to `Plan`' <(comment_body 27)
+check "and the marker" present "<!-- mintswarm: reclassified -->" <(comment_body 27)
+before="$(writes)"
+out="$(rc split 27 --analysis "$sandbox/split.md" --analysis-url "$URL" --base "$real_base" 2>/dev/null)" || out="(failed)"
+check "a further re-run writes nothing and reuses the comment" \
+  eq "$(comments 27) $(( $(writes) - before )) $(sed -n 3p <<<"$out")" \
+  "1 0 comment: https://github.com/mintswarm/mintswarm/issues/27#issuecomment-100"
 
 seed 22 '{"assignees": [], "events": [], "type": "Task"}'
 before="$(writes)"
@@ -2029,6 +2097,8 @@ check "no proposed split prints kind: implementation" eq "$out" "kind: implement
 check "and writes nothing" eq "$(( $(writes) - before ))" "0"
 check "issue 22 stays a Task" eq "$(issue_type 22)" "Task"
 
+out="$(rc split 22 --analysis "$sandbox/decoy.md" --analysis-url "$URL" --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a fenced ## Split decoy is ignored" eq "$out" "kind: implementation"
 check "a missing ## Split section exits 2" exits_2 rc split 22 --analysis "$sandbox/missing.md" --analysis-url "$URL" --base "$real_base"
 check "broken json in ## Split exits 2" exits_2 rc split 22 --analysis "$sandbox/broken.md" --analysis-url "$URL" --base "$real_base"
 check "an analysis URL not on github.com exits 2" \

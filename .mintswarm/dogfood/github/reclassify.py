@@ -24,13 +24,23 @@ with exactly one json fence:
     {"split": {"proposed": true, "reason": "components",
                "components": ["agents", "docs"], "finding": "one line"}}
 
+Headings and fences are found as the plan-approval floor finds them: a fence
+opens on a line whose first non-space characters are 3 or more backticks or
+tildes and closes on a line holding only a run of the same character at least
+as long; headings inside a fence do not count. The section runs to the next
+`# ` or `## ` heading, and its json fence is a fence at its top level whose
+opening line is exactly ```json.
+
 reason is components, other or none; with proposed true it is not none and
 finding is not empty. URL is the analysis artifact's html_url and must start
 with https://github.com/. With proposed false split prints
 `kind: implementation` and writes nothing. Otherwise it reads the issue:
 
-- typed as the plan type already: it prints `kind: plan` and changes nothing,
-  so a re-run is a no-op;
+- typed as the plan type already: it lists the issue's comments and, when none
+  holds the marker `<!-- mintswarm: reclassified -->`, posts the comment
+  below with the implementation type as the old type; either way it prints the
+  four lines below with that comment's URL, so a re-run after a failed comment
+  finishes the re-classification and a later re-run writes nothing;
 - typed as anything but the implementation type (or not typed): exit 2;
 - typed as the implementation type: it PATCHes the issue with
   {"type": "<plan type>"} on stdin and checks that the response's type.name
@@ -71,7 +81,7 @@ MARKER = "<!-- mintswarm: reclassified -->"
 STATE = "Decomposing (re-classified as plan)"
 REASONS = ("components", "other", "none")
 KINDS = ("implementation", "plan", "design")
-FENCE = re.compile(r"^```json[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
+FENCE_RUN = re.compile(r"`{3,}|~{3,}")
 
 
 class UsageError(Exception):
@@ -115,23 +125,21 @@ def read_split(path: str) -> dict:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise UsageError(f"cannot read the analysis: {exc}") from exc
-    lines = text.splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if line.rstrip() == "## Split"]
+    lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+    marks, blocks = scan(lines)
+    starts = [i for i in marks if lines[i].rstrip() == "## Split"]
     if len(starts) != 1:
         raise UsageError(f"the analysis must have exactly one '## Split' section, not {len(starts)}")
-    body = []
-    fenced = False
-    for line in lines[starts[0] + 1 :]:
-        if line.startswith("```"):
-            fenced = not fenced
-        elif not fenced and line.startswith("## "):
-            break
-        body.append(line)
-    fences = FENCE.findall("".join(body))
+    start = starts[0]
+    end = next((i for i in marks if i > start), len(lines))
+    fences = [(o, c) for o, c in blocks if start < o < end and lines[o].rstrip(" \t") == "```json"]
     if len(fences) != 1:
         raise UsageError(f"'## Split' must hold exactly one json fence, not {len(fences)}")
+    opening, closing = fences[0]
+    if closing is None or closing > end:
+        raise UsageError("the json fence in '## Split' is not closed")
     try:
-        doc = json.loads(fences[0])
+        doc = json.loads("\n".join(lines[opening + 1 : closing]))
     except json.JSONDecodeError as exc:
         raise UsageError(f"'## Split' is not valid json: {exc}") from exc
     split = doc.get("split") if isinstance(doc, dict) else None
@@ -150,6 +158,34 @@ def read_split(path: str) -> dict:
     if proposed and (reason == "none" or not finding.strip()):
         raise UsageError("a proposed split needs a reason other than none and a finding")
     return split
+
+
+def scan(lines: list) -> tuple:
+    """Indices of `# ` and `## ` headings outside fences, and (opening, closing) of each top-level fence.
+
+    closing is None for a fence left open at the end."""
+    marks, blocks = [], []
+    fence = None  # (character, length, opening index) of the open fence
+    for i, line in enumerate(lines):
+        stripped = line.lstrip(" \t")
+        run = FENCE_RUN.match(stripped)
+        if fence is not None:
+            if (
+                run
+                and run.group()[0] == fence[0]
+                and len(run.group()) >= fence[1]
+                and not stripped[len(run.group()) :].strip()
+            ):
+                blocks.append((fence[2], i))
+                fence = None
+            continue
+        if run:
+            fence = (run.group()[0], len(run.group()), i)
+        elif line.startswith("## ") or line.startswith("# "):
+            marks.append(i)
+    if fence is not None:
+        blocks.append((fence[2], None))
+    return marks, blocks
 
 
 def gh(args: list, body: dict = None):
@@ -194,7 +230,14 @@ def split_issue(number: int, analysis: str, url: str, base: str, dry_run: bool) 
     current = type_of(gh([f"repos/{{owner}}/{{repo}}/issues/{number}"]))
     if current == types["plan"]:
         print(f"reclassify.py: #{number} is already a {types['plan']} issue", file=sys.stderr)
-        print("kind: plan")
+        old, new = types["implementation"], types["plan"]
+        link = marked_comment(number)
+        if link is None and dry_run:
+            report(old, new, split, None)
+            return 0
+        if link is None:
+            link = post_comment(number, old, new, split, url)
+        report(old, new, split, link)
         return 0
     if current != types["implementation"]:
         raise UsageError(
@@ -203,9 +246,7 @@ def split_issue(number: int, analysis: str, url: str, base: str, dry_run: bool) 
         )
     old, new = current, types["plan"]
     if dry_run:
-        print("kind: plan")
-        print(f"state: {STATE}")
-        print(f"package: Re-classified from {old} to {new}: {split['finding']}")
+        report(old, new, split, None)
         return 0
     patched = gh(["--method", "PATCH", f"repos/{{owner}}/{{repo}}/issues/{number}"], {"type": new})
     if type_of(patched) != new:
@@ -215,18 +256,46 @@ def split_issue(number: int, analysis: str, url: str, base: str, dry_run: bool) 
             file=sys.stderr,
         )
         return 1
+    report(old, new, split, post_comment(number, old, new, split, url))
+    return 0
+
+
+def comment_url(comment, number: int) -> str:
+    link = comment.get("html_url") if isinstance(comment, dict) else None
+    if not isinstance(link, str) or not link.startswith("https://github.com/"):
+        raise RuntimeError(f"GitHub returned no comment URL for #{number}")
+    return link
+
+
+def marked_comment(number: int):
+    """The html_url of the first comment on the issue holding the marker, or None."""
+    pages = gh(["--paginate", "--slurp", f"repos/{{owner}}/{{repo}}/issues/{number}/comments"]) or []
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise RuntimeError(f"GitHub returned no comment list for #{number}")
+    for comment in (c for page in pages for c in page):
+        body = comment.get("body") if isinstance(comment, dict) else None
+        if isinstance(body, str) and MARKER in body:
+            return comment_url(comment, number)
+    return None
+
+
+def post_comment(number: int, old: str, new: str, split: dict, url: str) -> str:
     posted = gh(
         ["--method", "POST", f"repos/{{owner}}/{{repo}}/issues/{number}/comments"],
         {"body": comment_body(old, new, split, url)},
     )
-    link = posted.get("html_url") if isinstance(posted, dict) else None
-    if not isinstance(link, str) or not link.startswith("https://github.com/"):
-        raise RuntimeError(f"GitHub returned no comment URL for #{number}")
+    return comment_url(posted, number)
+
+
+def report(old: str, new: str, split: dict, link) -> None:
+    """Print the kind, state, comment and package lines; without a link, no comment line."""
     print("kind: plan")
     print(f"state: {STATE}")
+    if link is None:
+        print(f"package: Re-classified from {old} to {new}: {split['finding']}")
+        return
     print(f"comment: {link}")
     print(f"package: Re-classified from {old} to {new}: {split['finding']} ({link})")
-    return 0
 
 
 def check_parent(number: int, base: str) -> int:
