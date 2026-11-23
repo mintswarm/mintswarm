@@ -159,7 +159,9 @@ VERDICT_KEYS = [
 ]
 EXPECTED_LANDING = {
     "mode": "always",
-    "require_human": {"paths": [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md"]},
+    "require_human": {
+        "paths": [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
+    },
     "footprint": {"lines_factor": 1.5},
 }
 HISTORIC = {

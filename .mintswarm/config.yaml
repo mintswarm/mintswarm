@@ -91,7 +91,7 @@ pipeline:
   landing:
     mode: always                     # always | shadow | judged | never; every finished change goes to the maintainer
     require_human:                   # any changed path that matches sends the change to a human
-      paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md"]
+      paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # the diff may count up to estimated_lines × lines_factor, rounded down
   # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
   dependencies:
