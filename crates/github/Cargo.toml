@@ -1,0 +1,22 @@
+[package]
+name = "mintswarm-github"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "time", "io-util", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
+
+[lints]
+workspace = true
