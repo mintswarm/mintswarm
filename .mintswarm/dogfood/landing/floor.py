@@ -50,7 +50,7 @@ Inputs:
   is refused; symbolic links among the directories above it are followed. It is read after the merge base is found and
   before the plan, and must be strict UTF-8 JSON (no duplicate keys, no
   NaN or Infinity) holding an object with `tool`
-  `mintswarm-landing-facts`, `version` 2, and `head` and `base` full
+  `mintswarm-landing-facts`, `version` 3, and `head` and `base` full
   hashes equal to the commits resolved from --head and --base. Only the
   fields the rules read are checked, by type: `checks` a list of objects
   with `name` and `source` strings and `conclusion` and `app` a string or
@@ -60,7 +60,7 @@ Inputs:
   such as a CTRF test without a name, is an unnamed failed test);
   `review_rounds` with `round` an integer, `commit` a full hash, `current`
   a boolean and `verdict` a string; `steers` with `kind`, `author`, `time`
-  and `url` strings. Round numbers are positive and strictly increasing,
+  and `url` strings; `review_requests` a list of login strings. Round numbers are positive and strictly increasing,
   so the last entry is the latest round. A round whose `current` is not
   whether its `commit` is the head is unusable input; the rules recompute
   staleness from `commit` and never read `current`. A verdict or
@@ -160,6 +160,11 @@ footprint's `files` plus each new dependency's `manifest`.
                              the head
   steers                     a steer is listed, each named with its kind,
                              author, time and URL
+  review-requests            a review is re-requested and not yet given:
+                             `review_requests` (pending reviewers who have
+                             already approved or requested changes; a first
+                             request is not listed) is not empty, each login
+                             named; their earlier review is not current
 
 When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff or the facts
@@ -240,6 +245,7 @@ RULES = (
     "checks",
     "review",
     "steers",
+    "review-requests",
 )
 DIFF_RULES = ("undeclared-files", "undeclared-new-files", "size")
 CODEOWNERS = ("codeowners", ".github/codeowners", "docs/codeowners")
@@ -248,7 +254,7 @@ PROTECTED_GLOBS = (".github/workflows/**",)
 ARGS = ("--plan", "--component", "--base", "--head", "--facts")
 USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF --facts PATH"
 FACTS_TOOL = "mintswarm-landing-facts"  # collect-facts.py's TOOL and VERSION; floor-selftest.py checks both
-FACTS_VERSION = 2
+FACTS_VERSION = 3
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 DIFF_OPTIONS = (
     "--no-renames",
@@ -712,6 +718,14 @@ def read_facts(path: str, base: str, head: str) -> tuple:
                 raise InputError(
                     f"{where}: {key} round numbers must be positive and strictly increasing, " f"not {brief(numbers)}"
                 )
+    if "review_requests" not in facts:
+        raise InputError(f"{where} has no review_requests")
+    requests = facts["review_requests"]
+    if not isinstance(requests, list):
+        raise InputError(f"{where}: review_requests must be a list, not {brief(requests)}")
+    for i, login in enumerate(requests):
+        if not isinstance(login, str):
+            raise InputError(f"{where}: review_requests[{i}] must be a string, not {brief(login)}")
     return data, facts
 
 
@@ -887,6 +901,14 @@ def facts_rules(facts: dict, base: str, head: str) -> list:
         [
             f"{steer['kind']} by {steer['author']} at {steer['time']} is a steer: {steer['url']}"
             for steer in facts["steers"]
+        ],
+    )
+
+    rule(
+        "review-requests",
+        [
+            f"review re-requested from {login} is pending; their earlier review is not current"
+            for login in facts["review_requests"]
         ],
     )
     return results

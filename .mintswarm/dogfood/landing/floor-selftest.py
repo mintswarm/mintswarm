@@ -15,7 +15,8 @@ committed as JSON text at the same path. floor.py runs as
 `sys.executable -I floor.py ...` with that repository as its working
 directory and plans and facts files written under `cases/`. Every run gets
 a facts file for its own base and head: clean (no checks, a passed gate
-round, a review `pass`, both judging the head, no steers) unless the case
+round, a review `pass`, both judging the head, no steers, no pending
+review request) unless the case
 changes it.
 
 Checks:
@@ -23,7 +24,7 @@ Checks:
 - config: the checkout's pipeline.landing has the expected values, and
   plan-approval/floor.py accepts the real config (exit 0 or 1, a verdict);
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
-  order, the 11 rule identifiers in order across `rules` and
+  order, the 12 rule identifiers in order across `rules` and
   `not_evaluated`, results and reasons, `verdict` against the rules and the
   exit code, the plan's sha256, `facts` (path, the sha256 of the facts
   file and the checks it lists), the full `base`, `head` and `merge_base`
@@ -35,7 +36,7 @@ Checks:
   the require_human rules with case variants;
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
-  evaluates the other seven;
+  evaluates the other eight;
 - facts rules, each clean and hit: `gates` (failed then passed is clean; no
   round, a last round failed, passed with a failed test, an unknown
   verdict, failed tests without a string name, a passed last round from
@@ -48,8 +49,9 @@ Checks:
   then changes required, a passing last round from another commit),
   stale earlier rounds followed by current passing ones are clean, `steers`
   (none is clean; one and two steers,
-  named by author and URL), and all four at once, also with an unusable
-  footprint;
+  named by author and URL), `review-requests` (none is clean; one and two
+  re-requested, one reason per login), and all four of gates, checks, review and
+  steers at once, also with an unusable footprint;
 - submodules: a gitlink hidden by a worktree `.gitmodules` `ignore = all` is
   still a changed and added path, and every gitlink is unmeasurable for
   `size`; with hostile system, global, environment and repository config,
@@ -70,19 +72,21 @@ Checks:
   directory, a symlink, not UTF-8, not JSON, has a duplicate key or NaN, is
   not an object, has the wrong tool or version (1 included), a short head,
   the head or base of another commit, mistyped or missing fields, a round
-  `commit` that is not a hash, a `current` that is a string, `current` true
+  `commit` that is not a hash, a `current` that is a string, a
+  `review_requests` that is missing, not a list or holds a non-string, `current` true
   on a stale round or false on a current one, or rounds out of order, a
   missing `yq` and a missing plan-approval/floor.py exit 2 with a
   one-line message naming the cause and leave no verdict file, even a
   stale one; every case but those without it passes --facts for its own
   base and head, so it fails for its own reason;
-- facts contract: collect-facts.py's TOOL and VERSION (2) are the ones
+- facts contract: collect-facts.py's TOOL and VERSION (3) are the ones
   floor.py reads, and facts written by the real `collect-facts.py
   assemble`, from saved responses and version 2 kept rounds made here, in a
   runner-state directory outside the repository, are read by
-  the floor: clean ones are clean, and a CTRF test without a name, a
-  failed check run and a human comment after the approval give `gates`
-  (an unnamed gate), `checks` and `steers` hits;
+  the floor: clean ones, with a first review request pending, are clean,
+  and a CTRF test without a name, a failed check run, a human comment
+  after the approval and a request re-made after a change request give
+  `gates` (an unnamed gate), `checks`, `steers` and `review-requests` hits;
 - the plan floor's own verdict is left alone, and a copy of both scripts
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
@@ -139,9 +143,10 @@ RULES = [
     "checks",
     "review",
     "steers",
+    "review-requests",
 ]
 DIFF_RULES = ["undeclared-files", "undeclared-new-files", "size"]
-FACTS_RULES = ["gates", "checks", "review", "steers"]
+FACTS_RULES = ["gates", "checks", "review", "steers", "review-requests"]
 VERDICT_KEYS = [
     "tool",
     "version",
@@ -479,7 +484,7 @@ def clean_facts(base: str, head: str) -> dict:
     return fill_rounds(
         {
             "tool": "mintswarm-landing-facts",
-            "version": 2,
+            "version": 3,
             "pr": 1,
             "issue": 1,
             "head": head,
@@ -489,6 +494,7 @@ def clean_facts(base: str, head: str) -> dict:
             "gate_rounds": [gate_round(1)],
             "review_rounds": [review_round(1)],
             "steers": [],
+            "review_requests": [],
             "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
         }
     )
@@ -865,7 +871,7 @@ def check_footprint_hit(r: Runner) -> None:
         and "no '## Footprint' section" in reasons_of(verdict, "footprint")
     )
     T.check(
-        "no footprint: diff rules not evaluated, the other seven are",
+        "no footprint: diff rules not evaluated, the other eight are",
         ok,
         f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}",
     )
@@ -1254,8 +1260,9 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             args(facts=edited(lambda c: c.update(tool="mintswarm-plan-floor"))),
             "tool must be 'mintswarm-landing-facts'",
         ),
-        ("facts wrong version", args(facts=edited(lambda c: c.update(version=3))), "version must be 2, not 3"),
-        ("facts of version 1", args(facts=edited(lambda c: c.update(version=1))), "version must be 2, not 1"),
+        ("facts wrong version", args(facts=edited(lambda c: c.update(version=4))), "version must be 3, not 4"),
+        ("facts of version 2", args(facts=edited(lambda c: c.update(version=2))), "version must be 3, not 2"),
+        ("facts of version 1", args(facts=edited(lambda c: c.update(version=1))), "version must be 3, not 1"),
         (
             "facts current true on a stale round",
             args(facts=edited(lambda c: c["gate_rounds"][0].update(commit=other, current=True))),
@@ -1320,6 +1327,21 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
                 )
             ),
             "steers[0] has no url",
+        ),
+        (
+            "facts review_requests missing",
+            args(facts=edited(lambda c: c.pop("review_requests"))),
+            "has no review_requests",
+        ),
+        (
+            "facts review_requests not a list",
+            args(facts=edited(lambda c: c.update(review_requests="zmij"))),
+            'review_requests must be a list, not "zmij"',
+        ),
+        (
+            "facts review_requests with a non-string entry",
+            args(facts=edited(lambda c: c.update(review_requests=[{"login": "zmij"}]))),
+            "review_requests[0] must be a string",
         ),
         (
             "facts rounds out of order",
@@ -1578,6 +1600,21 @@ def check_facts_rules(r: Runner) -> None:
         str(reasons_of(verdict, "steers")),
     )
 
+    # review-requests
+    expect("review-requests: none", {"review_requests": []}, {})
+    pending = "review re-requested from {} is pending; their earlier review is not current"
+    expect("review-requests: one pending", {"review_requests": ["zmij"]}, {"review-requests": pending.format("zmij")})
+    _, verdict = expect(
+        "review-requests: two pending",
+        {"review_requests": ["alice", "zmij"]},
+        {"review-requests": pending.format("zmij")},
+    )
+    T.check(
+        "facts review-requests: two pending give one reason per login",
+        reasons_of(verdict, "review-requests") == [pending.format("alice"), pending.format("zmij")],
+        str(reasons_of(verdict, "review-requests")),
+    )
+
     # all four together, also with an unusable footprint
     def all_hit(c: dict) -> dict:
         c.update(gate_rounds=[], checks=[check_entry("build", "failure")], review_rounds=[], steers=[one])
@@ -1659,16 +1696,20 @@ def collected_facts(
     sb: Sandbox, name: str, base: str, head: str, tests: list, check_runs: list, pr_comments: list, kept_at: str
 ) -> tuple:
     """Run collect-facts.py assemble on saved responses and rounds kept at `kept_at` in runner state outside
-    the repository; return (exit, facts bytes or None)."""
+    the repository; return (exit, facts bytes or None). The PR has a pending review request from zmij, who has
+    already requested changes only in the `hits` case."""
     responses = sb.tmp / f"collected-{name}" / "responses"
     rounds = sb.tmp / "runner-state" / f"collected-{name}" / "rounds"
     write_json(responses / "request.json", {"pr": 1, "issue": 2, "head": head, "fetched_at": "2026-01-03T00:00:00Z"})
-    write_json(responses / "pull.1.json", {"number": 1, "head": {"sha": head}, "base": {"sha": base}})
+    pull = {"number": 1, "head": {"sha": head}, "base": {"sha": base}, "requested_reviewers": [{"login": "zmij"}]}
+    write_json(responses / "pull.1.json", pull)
+    zmij = {"user": {"login": "zmij"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-01-01T00:00:00Z"}
+    zmij["html_url"] = "https://github.com/o/r/pull/1#pullrequestreview-1"
     write_json(responses / "check-runs.1.json", {"total_count": len(check_runs), "check_runs": check_runs})
     write_json(responses / "status.1.json", {"statuses": []})
     for listing, items in (
         ("pr-comments", pr_comments),
-        ("reviews", []),
+        ("reviews", [zmij] if name == "hits" else []),
         ("review-comments", []),
         ("issue-comments", []),
     ):
@@ -1752,6 +1793,7 @@ def check_collected_facts(r: Runner, sb: Sandbox) -> None:
                 "checks": "check build (check-run, app ci) has conclusion 'failure', not 'success'",
                 "steers": "pr-comment by alice at 2026-01-02T00:00:00Z is a steer: "
                 "https://github.com/o/r/pull/1#issuecomment-9",
+                "review-requests": "review re-requested from zmij is pending; their earlier review is not current",
             },
         ),
     ]
@@ -1776,7 +1818,7 @@ def check_facts_contract() -> None:
     T.check(
         "facts contract: collect-facts.py writes the tool and version the floor reads",
         (collector.TOOL, collector.VERSION)
-        == ("mintswarm-landing-facts", 2)
+        == ("mintswarm-landing-facts", 3)
         == (floor.FACTS_TOOL, floor.FACTS_VERSION),
         f"collector {collector.TOOL!r} {collector.VERSION!r}, floor {floor.FACTS_TOOL!r} {floor.FACTS_VERSION!r}",
     )

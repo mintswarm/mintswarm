@@ -361,7 +361,8 @@ cat > "$stubs/gh" <<'EOF'
 #!/usr/bin/env python3
 # Stub of gh: records argv, the environment it was given and stdin for --input -.
 # Issues, their assignees and events are kept in issues.json in the stub state:
-# {"<n>": {"assignees": [...], "events": [...], "unassignable": [...]}}.
+# {"<n>": {"assignees": [...], "events": [...], "unassignable": [...]}}; a PR's
+# reviews, served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
@@ -376,7 +377,11 @@ data = ""
 if any(argv[i] == "--input" and argv[i + 1] == "-" for i in range(len(argv) - 1)):
     data = sys.stdin.read()
     record_stdin("gh", data)
-if argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
+if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/reviews", a) for a in argv):
+    store = os.path.join(STATE, "reviews.json")
+    n = re.search(r"/pulls/(\d+)/", next(a for a in argv if a.startswith("repos/"))).group(1)
+    print(json.dumps((json.load(open(store)) if os.path.exists(store) else {}).get(n, [])))
+elif argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
     print(json.dumps({"number": 7, "requested_reviewers": [{"login": r} for r in reviewers]}))
 elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events)?", a) for a in argv):
@@ -1830,6 +1835,17 @@ last_gh_argv() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | tail -n 1; }
 check "request-review.py posts to requested_reviewers through bot-gh.sh" \
   eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/pulls/7/requested_reviewers","--input","-"]'
 check "request-review.py sends the reviewers on stdin" present '{"reviewers": ["zmij"]}' "$MSW_STUB_STATE/stdin-gh.log"
+printf '{"7": [{"id": 1, "user": {"login": "zmij", "type": "User"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-23T10:00:00Z"}]}\n' \
+  > "$MSW_STUB_STATE/reviews.json"
+rereview_calls_before="$(gh_calls)"
+rerequested="$(env MSW_TOKEN="$DUMMY" "$R" 7 --files crates/core/x.rs)" || rerequested="(failed)"
+rerequests_once() {  # exactly one new gh call, the POST to requested_reviewers, naming zmij on stdin
+  eq "$(( $(gh_calls) - rereview_calls_before ))" 1 &&
+    eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/pulls/7/requested_reviewers","--input","-"]' &&
+    eq "$(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1)" '{"reviewers": ["zmij"]}' &&
+    eq "$rerequested" "zmij"
+}
+check "re-requests a reviewer who has already reviewed" rerequests_once
 
 # --- assign-approvers.py -----------------------------------------------------
 

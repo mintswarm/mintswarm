@@ -94,7 +94,7 @@ facts.json holds, with keys in this order (written with indent 2,
 ensure_ascii off):
 
   tool           "mintswarm-landing-facts"
-  version        2
+  version        3
   pr, issue      the numbers given
   head, base     full commit hashes
   fetched_at     when GitHub was read, from request.json: checks, steers
@@ -138,6 +138,16 @@ ensure_ascii off):
                  the title must be `# Review round <n>:`
   steers         sorted by time, kind and url, {kind, author, time,
                  edited_at, url, via}; see below
+  review_requests
+                 the logins in the saved pull's `requested_reviewers`
+                 that also have an APPROVED or CHANGES_REQUESTED review
+                 in `reviews`, deduplicated and sorted, [] when there
+                 are none: review re-requested and not yet given, so
+                 their earlier review is not current (GitHub drops a
+                 user from the list when they submit a review); a first
+                 request is not listed. Team requests are not read. A
+                 missing field, one that is not a list, or an entry
+                 without a string `login` is unusable input
   approval       {approver, approved_at, approval_ref (the URL, else the
                  id, else null)}, then `decision` {path, sha256, record}
                  only when --decision is given (the record is decision.py's
@@ -196,7 +206,8 @@ BOT_GH = HERE.parent / "github" / "bot-gh.sh"
 FACTS = Path(".mintswarm/job/inputs/landing/facts.json")
 RESPONSES = Path(".mintswarm/job/landing/responses")
 TOOL = "mintswarm-landing-facts"
-VERSION = 2
+VERSION = 3
+REVIEWED = ("APPROVED", "CHANGES_REQUESTED")  # review states a re-request makes not current
 KEEP_TOOL = "mintswarm-keep-round"
 KEEP_VERSION = 2
 FLOOR_TOOL = "mintswarm-plan-floor"
@@ -505,6 +516,19 @@ def check_request(responses: Responses, pr: int, issue: int, head: str) -> str:
     fetched_at = request.get("fetched_at")
     parse_time(fetched_at, "request.json's fetched_at")
     return fetched_at
+
+
+def collect_review_requests(responses: Responses) -> list:
+    requested = responses.load("pull.1.json").get("requested_reviewers")
+    if not isinstance(requested, list):
+        raise InputError(f"the saved pull's requested_reviewers is not a list: {requested!r}")
+    found = set()
+    for reviewer in requested:
+        if not isinstance(reviewer, dict) or not isinstance(reviewer.get("login"), str):
+            raise InputError(f"a requested reviewer without a login: {reviewer!r}")
+        found.add(reviewer["login"])
+    reviewed = {author(r)[0] for r in responses.listing("reviews", None) if r.get("state") in REVIEWED}
+    return sorted(found & reviewed)
 
 
 def collect_checks(responses: Responses) -> list:
@@ -983,6 +1007,7 @@ def assemble(argv: list) -> int:
         for n in sorted(kept["review"])
     ]
     steers = collect_steers(responses, approved_at, opts.get("--approval-url"), opts.get("--approval-id"))
+    review_requests = collect_review_requests(responses)
     facts = {
         "tool": TOOL,
         "version": VERSION,
@@ -995,12 +1020,14 @@ def assemble(argv: list) -> int:
         "gate_rounds": gate_rounds,
         "review_rounds": review_rounds,
         "steers": steers,
+        "review_requests": review_requests,
         "approval": approval,
     }
     write_facts(facts)
     print(
         f"facts: {len(checks)} checks, {len(gate_rounds)} gate rounds, "
-        f"{len(review_rounds)} review rounds, {len(steers)} steers in {FACTS}"
+        f"{len(review_rounds)} review rounds, {len(steers)} steers, "
+        f"{len(review_requests)} pending review requests in {FACTS}"
     )
     return 0
 
