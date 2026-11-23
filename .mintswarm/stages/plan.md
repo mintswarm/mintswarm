@@ -36,6 +36,10 @@ You plan one implementation issue so that the implement stage can carry it out w
     - that the files it covers, plus the configuration file, are every path in the footprint's `files`.
 
     The section opens no `json` fence. It is the only part of the plan the review stage sees: the session copies it, unchanged, into the review job.
+11. Open the plan with a `## TL;DR` section, right after the summary line and before `## Approach`, for the maintainer who reviews it:
+    - It holds three to six `- ` bullets and nothing else. Together they name what changes (files or areas), the approach in one line, what the plan deliberately leaves out, and what the maintainer must do or decide. The maintainer bullet is always there; when nothing but approval is needed, it says approval only.
+    - It restates the plan: it adds no step, file or decision that the rest of the plan does not hold.
+    - The session posts it unchanged as a comment on the issue, so it holds no `@` mention, URL, Markdown link, HTML, heading or fenced block. Write names, paths and issue numbers in backticks.
 
 ## Footprint
 
@@ -73,6 +77,11 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 
 <one line: the approach and its size>
 
+## TL;DR
+- Changes: <files or areas>
+- Approach: <one line>
+- Left out: <what the plan deliberately does not do>
+- Maintainer: <what they must do or decide, or approval only>
 ## Approach
 ## Steps
 1. **<goal>** — files: `<path>`, `<path>`; done when: …

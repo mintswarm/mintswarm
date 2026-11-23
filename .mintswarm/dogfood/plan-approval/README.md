@@ -15,8 +15,9 @@ Both layers run in every mode, so a disagreement between them, or with the maint
 
 After the plan stage returns a plan, in this order:
 
-1. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md` and `.mintswarm/job/inputs/artefacts/analysis.md`. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
-2. **Run the floor** in that job's worktree, on that file and the job's issue document and analysis, with `--base` at the job's base commit:
+1. **Post the TL;DR.** Once the plan artifact is published, post one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). This is done in every mode and for every published plan, revisions included. The comment holds a heading line naming the plan's TL;DR, the bullets of the plan's `## TL;DR` section unchanged, and the full `html_url` GitHub returned for the plan artifact. If the section is missing, or holds an `@` mention, URL, Markdown link, HTML, heading or fenced block (rule 11 of `.mintswarm/stages/plan.md`), the comment says instead that the plan has no usable TL;DR and links only the plan artifact; the plan's text is then not posted.
+2. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md` and `.mintswarm/job/inputs/artefacts/analysis.md`. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
+3. **Run the floor** in that job's worktree, on that file and the job's issue document and analysis, with `--base` at the job's base commit:
 
    ```
    python3 -I .mintswarm/dogfood/plan-approval/floor.py --plan .mintswarm/job/inputs/artefacts/plan.md \
@@ -25,10 +26,10 @@ After the plan stage returns a plan, in this order:
    ```
 
    It writes `.mintswarm/job/outputs/floor.json`. Besides the footprint, it checks for blocking questions in the analysis and the plan, for a Verification table that does not quote the issue's acceptance criteria, and for the first job of its kind (no earlier commit scoped `(<component>)` on the base). A blocking question stops being a hit only when the analysis is rerun with the answer applied to the issue.
-3. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md` and `plan.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
-4. **Save the assessment** from the subagent's reply with `.mintswarm/dogfood/save-output.py` to `.mintswarm/job/outputs/assessment.md`.
-5. **Publish the assessment as an issue artifact named exactly `Plan assessment`** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`). This is done on every plan, whatever `pipeline.plan_approval.mode` is, for traceability.
-6. **Run the decision** with the same plan file, issue document and analysis, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
+4. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md` and `plan.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
+5. **Save the assessment** from the subagent's reply with `.mintswarm/dogfood/save-output.py` to `.mintswarm/job/outputs/assessment.md`.
+6. **Publish the assessment as an issue artifact named exactly `Plan assessment`** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`). This is done on every plan, whatever `pipeline.plan_approval.mode` is, for traceability.
+7. **Run the decision** with the same plan file, issue document and analysis, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
 
    ```
    python3 -I .mintswarm/dogfood/plan-approval/decision.py --issue <number> --component <component> \
@@ -39,8 +40,8 @@ After the plan stage returns a plan, in this order:
    ```
 
    It writes `.mintswarm/job/outputs/decision.json` and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Keep stdout in a file for the comment.
-7. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
-8. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the risk and its reason, and links to the assessment and decision artifacts.
+8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
+9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the risk and its reason, and links to the assessment and decision artifacts.
 
 ## Outcomes
 
@@ -58,7 +59,7 @@ After the plan stage returns a plan, in this order:
 
 ## The approval package
 
-For every plan that goes to the maintainer, the session posts the approval package as one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). It gives the full URLs GitHub returned (`html_url`) of the plan artifact, the `Plan assessment` artifact, the decision artifact and, in `shadow` mode, the shadow-record comment, and holds:
+For every plan that goes to the maintainer, the session posts the approval package as one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). It gives the full URLs GitHub returned (`html_url`) of the plan artifact, the TL;DR comment for that plan (step 1), the `Plan assessment` artifact, the decision artifact and, in `shadow` mode, the shadow-record comment, and holds:
 
 - the plan artifact, with its approach and footprint in brief;
 - the floor verdict: hit rules with their reasons, or clean;
@@ -87,7 +88,7 @@ A maintainer decision taken while a job is in flight, for example one that chang
 1. Apply it to the issue itself: amend the acceptance criteria or the body, with a note that points to the decision.
 2. The decision comment carries the line `<!-- mintswarm: steer -->`.
 3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue before the next stage runs.
-4. If the plan was already through the floor, rerun the floor (step 2) and the decision (step 6) on the refreshed `issue.md`: both bind the documents they read, so a verdict from before the refresh no longer counts. A `floor.json` of version 1, from before the floor read the issue document and the analysis, also counts as `human` until the floor reruns.
+4. If the plan was already through the floor, rerun the floor (step 3) and the decision (step 7) on the refreshed `issue.md`: both bind the documents they read, so a verdict from before the refresh no longer counts. A `floor.json` of version 1, from before the floor read the issue document and the analysis, also counts as `human` until the floor reruns.
 
 ## The review job's mechanical check
 
