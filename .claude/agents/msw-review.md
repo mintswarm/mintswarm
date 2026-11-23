@@ -31,7 +31,7 @@ You do not get the analysis, the plan beyond its mechanical check, or the handof
 6. The mechanical check, when `mechanical-check.md` is present. This is the one command from an artefact that review runs:
    - Read the check before running it. Run it only if it only reads, keeps temporary files outside the repository, needs no network or credential, and calls no git command that writes (such as `checkout`, `stash`, `worktree` or `config`).
    - Confirm against `diff.patch` that the check executes no file the diff changes: a script is written out in the section, and any repository file it runs is absent from the diff.
-   - Before and after the run, record `git status --porcelain --ignored`, `git rev-parse HEAD` and `git stash list`, and confirm that all three are unchanged.
+   - You do not check the worktree yourself: after the stage, the runner (and, while mintswarm is dogfooded, the dispatching session) confirms that the worktree, `HEAD` and the stash are unchanged.
    - Run it at the head, from the worktree root, with the commit on the `Base:` line as its base, with `PYTHONDONTWRITEBYTECODE=1` set and with `-B` added to any `python3 -I` call, since `-I` ignores `PYTHON*` variables.
    - Compare the files the check enumerates, plus the configuration file the section names, with the files `diff.patch` changes.
    - Check that the configuration file's diff is exactly the change the section states.

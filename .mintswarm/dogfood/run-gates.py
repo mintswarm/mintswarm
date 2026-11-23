@@ -24,8 +24,12 @@ command, exit code (null on timeout), timeout flag and timeout in
 or `timed out after N s`) and `trace` (the same tail as one string); a
 timeout also has `rawStatus` `timeout`. Each gate runs in its own session,
 and on timeout its whole process group is killed. One line per gate is
-printed. Exits 0 when every gate passed, 1 when any failed or timed out, 2
-when the input is unusable.
+printed. Then, as the runner's own check of the tree, the tracked files that
+differ from HEAD (`git status --porcelain --untracked-files=no`) are printed
+after a `modified tracked files:` line, one path per line, when there are
+any; a failure to list them is printed as `modified tracked files: unknown
+(<reason>)`. Exits 0 when every gate passed, 1 when any failed or timed out,
+2 when the input is unusable, whatever the tree holds.
 
 --verdict exits 0 only when the report exists and parses, is CTRF, has no
 `results.errors`, is no older than inputs/gates.json, counts as many tests as
@@ -213,7 +217,44 @@ def run() -> int:
         else:
             state = "FAIL"
         print(f"{state:7} {t['name']} ({t['duration'] / 1000:.1f}s)")
+    report_modified_tracked_files()
     return 0 if passed == len(tests) else 1
+
+
+def modified_tracked_files() -> list:
+    """The tracked files that differ from HEAD; raises OSError or ValueError when git cannot list them."""
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no", "-z"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise ValueError(f"git status exited {proc.returncode}")
+    entries = proc.stdout.split(b"\0")
+    paths = []
+    at = 0
+    while at < len(entries):
+        entry = entries[at]
+        at += 1
+        if len(entry) < 4:
+            continue
+        paths.append(entry[3:].decode("utf-8", errors="replace"))
+        if entry[:1] in (b"R", b"C"):
+            at += 1  # -z gives a rename's or copy's original path as the next entry
+    return paths
+
+
+def report_modified_tracked_files() -> None:
+    try:
+        paths = modified_tracked_files()
+    except (OSError, ValueError) as exc:
+        print(f"modified tracked files: unknown ({exc})")
+        return
+    if paths:
+        print("modified tracked files:")
+        for path in paths:
+            print(path)
 
 
 def load_report():
