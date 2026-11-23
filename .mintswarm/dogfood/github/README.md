@@ -10,22 +10,23 @@ A second App, `mintswarm-dev-steward`, is the landing identity: it has its own k
 
 | Script | What it does | Secrets it touches |
 | --- | --- | --- |
-| `common.sh` | Sourced by the others. Holds the repository, bot identity and config paths; `msw_app_profile`, the per-App table of config file, key service, key label and confirmation; `msw_token`; `msw_recorded_key_store`; and `msw_git_net`, which runs git with only the repository's config and an inline credential helper fed from `$MSW_TOKEN` that answers only for `https://github.com`. | the token, from the environment |
-| `key-store.sh backend\|put\|get\|delete` | Keeps a value in a key store, with the value on stdin and stdout only (see [Key store](#key-store)). `backend` prints the store `put` would use; `put --confirm` makes every later read of a Keychain item ask for confirmation (see [Per-use confirmation](#per-use-confirmation)). `get` refuses to write to a terminal; never run `get` for the App's key in the session, not even into `cat` or a pager: it prints the private key into the transcript. | the key, on stdin or stdout, to and from the store |
+| `common.sh` | Sourced by the others. Holds the repository, bot identity and config paths; `msw_app_profile`, the per-App table of config file, key service and key label; `msw_token`; `msw_recorded_key_store`; and `msw_git_net`, which runs git with only the repository's config and an inline credential helper fed from `$MSW_TOKEN` that answers only for `https://github.com`. | the token, from the environment |
+| `key-store.sh backend\|put\|get\|delete` | Keeps a value in a key store, with the value on stdin and stdout only (see [Key store](#key-store)). `backend` prints the store `put` would use; `put --confirm` makes every later read of a Keychain item ask for confirmation, a capability no App uses (see [Per-use confirmation](#per-use-confirmation)). `get` refuses to write to a terminal; never run `get` for the App's key in the session, not even into `cat` or a pager: it prints the private key into the transcript. | the key, on stdin or stdout, to and from the store |
 | `mint-token.sh` | `jwt` prints an App JWT; `token [PERMS_JSON]` prints an installation token for `mintswarm/mintswarm`, optionally with narrower permissions. Reads the key only from the key store recorded in `dev-app.json`. Used by the other scripts; do not run `token` bare in the session. | the key (key store to `openssl` on a pipe), the JWT (to `curl` on stdin), the token (stdout) |
 | `push.sh BRANCH [--force-with-lease=SHA]` | Pushes a `mintswarm/*` branch to `https://github.com/mintswarm/mintswarm.git` as the bot, after checking every commit in `origin/master..BRANCH` is the bot's. | the token, unless `MSW_TOKEN` is set: minted with `contents: write`, plus `workflows: write` when `.github/workflows/` changes from the merge base with `origin/master` to `BRANCH` or, with a lease, from the lease commit to `BRANCH` (a rebase onto a master that gained a workflow change); with a lease, the lease commit must be present locally. A branch that differs from master under `.github/workflows/` asks for it on every push, for as long as it differs |
 | `bot-gh.sh ARGS…` | Runs `gh` with a fresh installation token as `GH_TOKEN`, `GH_REPO=mintswarm/mintswarm` and the maintainer's tokens removed from the environment; does not run `gh` at all if minting fails. | the token, as `GH_TOKEN` |
+| `land.py PR --sha SHA` | The only script that acts as `mintswarm-dev-steward`: mints one steward token from `steward-app.json`, checks the PR with it (open, not a draft, a `mintswarm/*` head in `mintswarm/mintswarm` at `SHA`, into `master`; every check run, with `gates-matrix` among them, and every status successful; no unresolved review thread; mergeable with no conflict; no `hold` label; an approval steer naming `SHA`) and squash-merges at `SHA`, printing the merge commit and `merged_by`. Any failed check refuses, merging nothing, exit 1. `--dry-run` only checks. Needs no GUI session. | the steward's token, as `MSW_TOKEN` in `bot-gh.sh`'s environment only |
 | `request-review.py PR --branch B` | Resolves reviewers for the PR's changed paths from `.mintswarm/config.yaml` and requests them through `bot-gh.sh`. `--dry-run` only prints them. | none directly |
 | `assign-approvers.py assign\|release NUMBER REASON` | Assigns an issue or PR to `pipeline.review.reviewers` from `.mintswarm/config.yaml` at `--base` (default `origin/master`) while a human is waited on, and `release` removes only the assignments the bot made, judged from the item's events. Never assigns a `[bot]` login, posts only approvers not already assigned, and exits 2 when no human approver is resolved; REASON is `plan`, `needs_input`, `pr` or `external_steps`. `--dry-run` only prints the logins. | none directly |
 | `reclassify.py split\|check-parent` | `split ISSUE --analysis PATH --analysis-url URL` reads the `## Split` json of an implementation issue's analysis and, when it proposes a split, sets the issue's type to the plan type of `tracker.kinds` in `.mintswarm/config.yaml` at `--base` (default `origin/master`), checks that GitHub took it, posts one comment (`<!-- mintswarm: reclassified -->`) naming the finding and the analysis URL, and prints the job kind, the pipeline-state text, the comment URL and the decomposition approval package line; on an issue already of the plan type it changes no type, posts the comment only if no comment holds the marker yet (so a re-run after a failed comment finishes the job), and prints the same lines. The `## Split` heading and its json fence are found outside fenced blocks, as the plan-approval floor finds sections. `check-parent PARENT` exits 1 unless the parent's type is the plan or the design type. `split --dry-run` changes nothing. | none directly |
 | `bot-identity.sh install\|status\|uninstall` | Makes every commit on a `mintswarm/*` branch authored and committed by `mintswarm-dev[bot]`, through a conditional include in the repository's shared git config. | none |
-| `store-credentials.sh create\|rotate` | `create MANIFEST [--unconfirmed-key]` runs the whole manifest flow: it writes a page that posts the manifest to GitHub, catches the redirect on `127.0.0.1` with `manifest-listener.py`, converts the code and stores the key and the identifiers in that App's own key-store item and config. `rotate PEM_PATH [--keep]` stores a new key for the App whose config `MSW_APP_CONFIG` names. | the code, from the listener to `curl` on stdin; the key, from GitHub or the downloaded PEM to `key-store.sh` on stdin |
+| `store-credentials.sh create\|rotate` | `create MANIFEST` runs the whole manifest flow: it writes a page that posts the manifest to GitHub, catches the redirect on `127.0.0.1` with `manifest-listener.py`, converts the code and stores the key and the identifiers in that App's own key-store item and config. `rotate PEM_PATH [--keep]` stores a new key for the App whose config `MSW_APP_CONFIG` names. | the code, from the listener to `curl` on stdin; the key, from GitHub or the downloaded PEM to `key-store.sh` on stdin |
 | `manifests/*.json` | One manifest per App. `mintswarm-dev.json`: `contents`, `pull_requests`, `issues` and `workflows` write; `checks`, `statuses` and `metadata` read. `workflows` is there because agents author the CI files and GitHub refuses a whole push from an App that adds, edits or deletes a file under `.github/workflows/` without it; once it is accepted (Setup, step 2), `bot-gh.sh`'s unnarrowed tokens carry `workflows: write` too. `mintswarm-dev-steward.json`: the same without `issues` and `workflows` (it never pushes). Both private, with no events and no webhook, redirecting to `http://127.0.0.1:8765/`. | none |
 | `manifest-listener.py PORT TIMEOUT_SECS PAGE` | Run by `create`. Listens on `127.0.0.1:PORT` only, accepts the first redirect whose `state` (given on stdin) matches, rejects every other request, prints the code on stdout and exits; gives up after the timeout, an absolute bound that no slow client can stretch (each connection gets at most 10 seconds). Logs no request. | the code, on stdout to `create` |
 | `selftest.sh` | Offline test of all of the above against stubs of `security`, `secret-tool`, `pass`, `systemd-creds`, `uname`, `curl` and `gh` in a temporary sandbox; the file backend is tested for real inside the sandbox. Reaches no real key store and not GitHub. | throwaway keys and dummy tokens only |
 | `linux-check.sh` | Runs `selftest.sh` and the real Linux backends in a throwaway Debian container (see [Linux check](#linux-check)). `linux/` holds its image and in-container script. | throwaway keys generated in the container only |
 
-The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `assign-approvers.py` and `reclassify.py`, `python3` and `yq`. `selftest.sh` also needs `shellcheck`, which it runs at severity `warning`: info and style notes differ between shellcheck versions (0.10 on Debian, 0.11 on Homebrew), so they do not fail it. Each key store needs its own tool:
+The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `assign-approvers.py`, `reclassify.py` and `land.py`, `python3`, with `yq` for all but `land.py`. `selftest.sh` also needs `shellcheck`, which it runs at severity `warning`: info and style notes differ between shellcheck versions (0.10 on Debian, 0.11 on Homebrew), so they do not fail it. Each key store needs its own tool:
 
 | Key store | Needs |
 | --- | --- |
@@ -43,7 +44,7 @@ The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and,
 
 | `MSW_KEY_STORE` | Where the key is kept | Chosen |
 | --- | --- | --- |
-| `keychain` | the login Keychain: a generic password with service `mintswarm-dev-private-key`, the client id as account and the label `mintswarm-dev GitHub App private key`, base64-encoded (the steward's: its own service and label, and no trusted application, see [Per-use confirmation](#per-use-confirmation)) | automatically on macOS |
+| `keychain` | the login Keychain: a generic password with service `mintswarm-dev-private-key`, the client id as account and the label `mintswarm-dev GitHub App private key`, base64-encoded (the steward's: its own service and label) | automatically on macOS |
 | `secret-service` | the default Secret Service collection: an item with attributes `service` and `account` | automatically when `secret-tool` is on `PATH` and there is a session bus (`DBUS_SESSION_BUS_ADDRESS`, or a socket at `$XDG_RUNTIME_DIR/bus`) |
 | `pass` | the entry `mintswarm/mintswarm-dev-private-key/<client id>` in the password store | automatically when `pass` is on `PATH` and `${PASSWORD_STORE_DIR:-~/.password-store}/.gpg-id` exists |
 | `systemd-creds` | `~/.config/mintswarm/credstore/mintswarm-dev-private-key@<client id>.cred`, encrypted with the host key (and the TPM2 when there is one; `--user` for a non-root user); read from `$CREDENTIALS_DIRECTORY/mintswarm-dev-private-key@<client id>` first | only when set explicitly, or when `$CREDENTIALS_DIRECTORY` already holds the credential |
@@ -75,23 +76,16 @@ A locked collection is checked against a stub `secret-tool` that never answers (
 
 ### Per-use confirmation
 
-An App's config records `key_confirm`: `keychain-acl` when every use of its key needs the user's confirmation, `none` otherwise. A config without it means `none`, which only `mintswarm-dev` may have; `rotate` refuses a steward config without it.
+No App's key needs per-use confirmation: the steward, like `mintswarm-dev`, runs on a remote runner where nobody is at a dialogue to answer it. `create` and `rotate` store every key with plain `put`, without `--confirm`, and record `key_confirm` `none` in the App's config, on every platform and in every key store. A config without `key_confirm` means `none`; `rotate` refuses any other value, such as `keychain-acl`, storing nothing: delete the key-store item and set `key_confirm` to `none`, then rotate again.
 
-- `key-store.sh put --confirm SERVICE ACCOUNT [LABEL]` creates the Keychain item with no trusted application (`-T ""` on the stdin of `security -i`, and no `-U`). Not even `security` itself is trusted, so every read of the value asks for confirmation in a dialogue, and a read with no GUI session, such as over SSH, fails. It refuses an item that exists already, rather than update it with an access list it cannot see: delete the item first. The check reads attributes only, so it never asks.
-- **Answer "Allow", never "Always Allow".** "Always Allow" adds `security` to the item's trusted applications, after which reads stop asking, silently: nothing here can tell. To undo it, delete the item and store the key again (see [Steward](#steward), Rotation).
-- Only the `keychain` store has this. Every other store refuses `put --confirm`. Where the keychain store is available, as on a Mac, the key of an App whose profile asks for confirmation (the steward) always goes there with confirmation: `create` and `rotate` refuse any other `MSW_KEY_STORE`, and `create` refuses `--unconfirmed-key`.
-- Where there is no keychain store, as on Linux, `create` refuses such an App unless `--unconfirmed-key` is given, which records `key_confirm` `none`. That is the only way to create the steward there; its key is then as well protected as the store makes it, and no more.
-- `rotate` keeps the confirmation: for `keychain-acl` it stores the new key with `put --confirm`, in the keychain only. Where the keychain store is available it does so for the steward even when its config says `none`, and records `keychain-acl`.
-
-Before the first `put --confirm` on a Mac, check once, with a dummy item, that it behaves as described:
+`key-store.sh put --confirm SERVICE ACCOUNT [LABEL]` remains a capability of the keychain store that no App uses. It creates the Keychain item with no trusted application (`-T ""` on the stdin of `security -i`, and no `-U`), so every read of the value asks for confirmation in a dialogue, and a read with no GUI session, such as over SSH, fails. It refuses an item that exists already, rather than update it with an access list it cannot see; the check reads attributes only, so it never asks. Every other store refuses `put --confirm`. Answer such a dialogue with "Allow", never "Always Allow", which silently adds `security` to the item's trusted applications. Anyone who relies on it can check once, with a dummy item, that the real `security` behaves as described; `selftest.sh` checks it only against a stub:
 
 ```
 printf 'abc\n' | key-store.sh put --confirm msw-selftest t
 key-store.sh get msw-selftest t | cat          # asks; answer Allow; prints abc
 key-store.sh get msw-selftest t | cat          # asks again; answer Deny; get fails
+key-store.sh delete msw-selftest t
 ```
-
-Then check that a `get` from an SSH session to the Mac fails, and that Keychain Access lists no application under the item's Access Control. Delete it with `key-store.sh delete msw-selftest t`. `selftest.sh` checks `put --confirm` only against a stub `security`, which records the line it gets; this check is what shows that the real one gives an item that asks.
 
 ## Setup
 
@@ -134,43 +128,41 @@ key-store.sh delete msw-selftest t
 
 ## Steward
 
-`mintswarm-dev-steward` is the landing identity of #29: the App that merges pull requests into `master`. It is a separate App so that its key, the only one allowed to bypass the `master` ruleset, is never the runner's. No script here uses it yet; `mint-token.sh` and `bot-gh.sh` can act as it with `MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json`.
+`mintswarm-dev-steward` is the landing identity of #29: the App that merges pull requests into `master`. It is a separate App so that its key, the only one allowed to bypass the `master` ruleset, is never the runner's. `land.py` is the only script that acts as it (Session procedure, step 12); `mint-token.sh` and `bot-gh.sh` can act as it with `MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json`.
 
 | | |
 | --- | --- |
 | Permissions | `contents` and `pull_requests` write; `checks`, `statuses` and `metadata` read; no `issues`; no events; no webhook; private (`manifests/mintswarm-dev-steward.json`) |
 | Config | `~/.config/mintswarm/steward-app.json` (`MSW_STEWARD_CONFIG`), never `dev-app.json` |
-| Key | service `mintswarm-dev-steward-private-key`, the client id as account, label `mintswarm-dev-steward GitHub App private key`; in the Keychain with no trusted application, so every use asks for confirmation ([Per-use confirmation](#per-use-confirmation)) |
+| Key | service `mintswarm-dev-steward-private-key`, the client id as account, label `mintswarm-dev-steward GitHub App private key`; stored without per-use confirmation (`key_confirm` `none`), in the same key stores as `mintswarm-dev`'s but under its own service, and never in `mintswarm-dev`'s item or config |
 
-**Creating it**, on the maintainer's Mac, after the dummy-item check under [Per-use confirmation](#per-use-confirmation):
+**Creating it**, on the maintainer's machine:
 
 ```
 .mintswarm/dogfood/github/store-credentials.sh create .mintswarm/dogfood/github/manifests/mintswarm-dev-steward.json
 ```
 
-It runs as for `mintswarm-dev` (Setup, step 1), with a browser signed in as an owner of the `mintswarm` organisation. It refuses to start when `steward-app.json` exists, when `MSW_STEWARD_CONFIG` points at a `mintswarm-dev` config, and when the key would not go to the Keychain with confirmation: on a Mac it refuses another `MSW_KEY_STORE` and `--unconfirmed-key` (on Linux, see `--unconfirmed-key` above). If GitHub answers for another App, nothing is stored. Whenever it fails after the code was used, the App exists on GitHub without a usable setup here: it prints the App's id and says to delete that App and run `create` again, and, when the key had been stored already (for example when Deny was answered at the read-back), the `key-store.sh delete` command for its item. Reading the key back after storing it asks for confirmation once: answer "Allow", never "Always Allow". Compare the printed fingerprint with the App's settings page.
+It runs as for `mintswarm-dev` (Setup, step 1), with a browser signed in as an owner of the `mintswarm` organisation, and stores the key in `MSW_KEY_STORE` when set, otherwise in the first available store. It refuses to start when `steward-app.json` exists and when `MSW_STEWARD_CONFIG` points at a `mintswarm-dev` config. If GitHub answers for another App, nothing is stored. Whenever it fails after the code was used, the App exists on GitHub without a usable setup here: it prints the App's id and says to delete that App and run `create` again, and, when the key had been stored already, the `key-store.sh delete` command for its item. Compare the printed fingerprint with the App's settings page.
 
-**Rotation:** generate a new key in the App's settings, delete the item, then rotate:
+**Rotation:** generate a new key in the App's settings, then rotate; the item is replaced in place:
 
 ```
-key-store.sh delete mintswarm-dev-steward-private-key <client id>
 MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json store-credentials.sh rotate ~/Downloads/mintswarm-dev-steward.<date>.private-key.pem
 ```
 
-`rotate` refuses while the item exists, and refuses any store other than the keychain for this App wherever the keychain store is available.
+**The maintainer's admin steps,** needed before the first landing in the session. They need the organisation's admin rights, so the scripts never run them:
 
-**The maintainer's admin steps.** They need the organisation's admin rights, so the scripts never run them:
-
-1. **Install** `mintswarm-dev-steward` on `mintswarm/mintswarm` only: organisation settings, GitHub Apps, `mintswarm-dev-steward`, Configure, "Only select repositories".
-2. **Allow it to bypass the ruleset on `master`, for pull requests only.** In the repository settings, Rules, Rulesets, the ruleset that targets `master`: under Bypass list, add `mintswarm-dev-steward` and set it to "For pull requests only". Through the API this is one entry in the ruleset's `bypass_actors`, with the steward's App id from `steward-app.json`:
+1. **Create** the App, as above.
+2. **Install** `mintswarm-dev-steward` on `mintswarm/mintswarm` only: organisation settings, GitHub Apps, `mintswarm-dev-steward`, Configure, "Only select repositories".
+3. **Allow it to bypass the ruleset on `master`, for pull requests only.** In the repository settings, Rules, Rulesets, the ruleset that targets `master`: under Bypass list, add `mintswarm-dev-steward` and set it to "For pull requests only". Through the API this is one entry in the ruleset's `bypass_actors`, with the steward's App id from `steward-app.json`:
 
    ```
    {"actor_type": "Integration", "actor_id": <app id>, "bypass_mode": "pull_request"}
    ```
 
-3. **Never add it to `mintswarm-factory-branches`**, the ruleset on `mintswarm/**`: the steward lands pull requests and never writes factory branches.
+**Never add it to `mintswarm-factory-branches`**, the ruleset on `mintswarm/**`: the steward lands pull requests and never writes factory branches.
 
-**Kill switch:** remove the steward from the `master` ruleset's bypass list to stop it landing anything at once; uninstall the App from `mintswarm/mintswarm` as the hard stop. Neither needs its key.
+**Kill switch:** remove the steward from the `master` ruleset's bypass list to stop it landing anything at once: GitHub then refuses `land.py`'s merge call, so it exits 1 and merges nothing. Uninstall the App from `mintswarm/mintswarm` as the hard stop. Neither needs its key.
 
 ## Session procedure
 
@@ -206,6 +198,12 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
     3. Dispatch decompose as a new job whose `issue.md` has the printed `kind:`. The analyse job's inputs are never edited.
     4. The comment that asks the maintainer to approve the decomposition (the decomposition approval package) starts with the printed `package:` line, when there is one.
     5. Before filing each child, run `reclassify.py check-parent <issue> --base <base commit>`. On a non-zero exit, file nothing more and stop the job for a human as in step 7: post the refusal and run `assign-approvers.py assign <issue> needs_input --base <base commit>`.
+
+12. **Approval in the session:** when the maintainer approves a PR in the session ("I approve PR #N"), land it with the steward. Approvals given on GitHub keep working as before, and this step is not needed for them.
+    1. Post the approval steer on the PR as `mintswarm-dev`, with `bot-gh.sh api repos/{owner}/{repo}/issues/<number>/comments -F body=@<file>`. The body has the marker line `<!-- mintswarm: steer -->`, the maintainer's words quoted, the time, and a line exactly `Approved head: <sha>`, the PR's head commit when they approved it.
+    2. Run `land.py <number> --sha <sha>`. It refuses, merging nothing, unless every check holds (Scripts); on a refusal, report the printed reasons to the maintainer.
+    3. Then follow step 6, and step 8 when external steps are pending.
+    4. Delete the head branch as `mintswarm-dev` if it is still there: `bot-gh.sh api --method DELETE repos/{owner}/{repo}/git/refs/heads/mintswarm/<id>-<slug>`.
 
 A full URL is the `https://github.com/…` URL GitHub returned for the artifact or comment (its `html_url`), never `#N` or a relative link. `<base commit>` is the job's base commit, the one plan approval reads the config at; without `--base`, `assign` reads the local `origin/master`, which the session does not fetch. `release` removes every assignment the bot made on the item, whatever its reason, and leaves those a person made.
 
@@ -250,4 +248,4 @@ It prints one `ok`, `FAIL` or `skip` line per check and the totals, and exits wi
 ## Not covered
 
 - Verified (signed) commits: bot commits are unsigned; squash merges are signed by GitHub.
-- The `master` and `mintswarm/*` rulesets: both exist on GitHub (#18) and are not managed by these scripts. Adding the steward to the `master` ruleset's bypass list, and installing it, are the maintainer's steps ([Steward](#steward)).
+- The `master` and `mintswarm/*` rulesets: both exist on GitHub (#18) and are not managed by these scripts. Creating the steward, installing it and adding it to the `master` ruleset's bypass list are the maintainer's steps ([Steward](#steward)).
