@@ -12,7 +12,9 @@ ancestor of base or head. `base` comes from .mintswarm/job/inputs/vcs.json
 at the top of the repository, `head` is the worktree's HEAD and `merge-base`
 their single merge base. Every argument is checked before git sees it. git
 runs with no system, global or environment configuration, no replace objects,
-grafts or attributes, and with the landing floor's diff options.
+grafts or attributes, and with the landing floor's diff options. git cannot be
+told to ignore the repository's own attributes file, $GIT_DIR/info/attributes,
+so diff fails with `vcs failure` when that file is not empty.
 
 Exits 0 on success, 2 for a usage error or a refused argument, 3 for an
 unknown or unreachable revision or a missing path, 4 for a job set-up error
@@ -23,6 +25,7 @@ stderr. Writes nothing. Standard library only.
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -64,6 +67,8 @@ CONFIG = (
     "core.fsmonitor=false",
     f"core.attributesFile={os.devnull}",
     "core.commitGraph=false",
+    "core.bigFileThreshold=8g",
+    "diff.suppressBlankEmpty=false",
     "advice.graftFileDeprecated=false",
 )
 DROPPED_ENV = (
@@ -274,6 +279,19 @@ class Git:
             raise Fail(5, b"vcs failure")
         return proc.returncode, proc.stdout
 
+    def refuse_repository_attributes(self) -> None:
+        """Fail unless $GIT_DIR/info/attributes is missing or empty: no option makes git ignore it."""
+        _, out = self.run(["rev-parse", "--git-path", "info/attributes"])
+        path = os.path.join(self.top, out.rstrip(b"\n"))
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise Fail(5, b"vcs failure")
+        if not stat.S_ISREG(st.st_mode) or st.st_size != 0:
+            raise Fail(5, b"vcs failure")
+
     def commit_id(self, rev: bytes):
         """The full id when rev names a commit, else None."""
         code, out = self.run(["rev-parse", "--verify", "--quiet", rev + b"^{commit}"], ok=(0, 1, 128))
@@ -406,6 +424,7 @@ def run_diff(git: Git, job: Job, request: dict) -> bytes:
         old, new = (job.resolve(rev, rev) for rev in request["revs"])
     else:
         old, new = job.names[b"merge-base"], job.names[b"head"]
+    git.refuse_repository_attributes()
     form = [request["form"]] if request["form"] else list(PATCH_OPTIONS)
     _, out = git.run(["diff", *DIFF_OPTIONS, *PINNED_OPTIONS, *form, old, new, "--", *request["paths"]])
     return out

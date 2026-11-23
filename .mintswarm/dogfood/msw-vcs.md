@@ -164,7 +164,7 @@ Example, `msw-vcs show head:docs`:
 
 ## diff
 
-Every form compares trees with no renames or copies (a moved file is a deletion and an addition), with gitlinks compared by the id they record, with no attributes, external diff drivers or text conversion, and with the landing floor's diff options (`DIFF_OPTIONS` in `.mintswarm/dogfood/landing/floor.py`, without `-z`). Files appear sorted by path bytes. A path that changes type, for example a file that became a symlink, is one entry with status `T` in `--raw`, and appears as a deletion followed by an addition in the patch and is one line in `--numstat` and `--name-only`. The output is empty when nothing differs.
+Every form compares trees with no renames or copies (a moved file is a deletion and an addition), with gitlinks compared by the id they record, with no attributes, external diff drivers or text conversion, and with the landing floor's diff options (`DIFF_OPTIONS` in `.mintswarm/dogfood/landing/floor.py`, without `-z`). No repository configuration changes the output: under git that includes `diff.suppressBlankEmpty` and `core.bigFileThreshold`. git cannot be told to ignore a repository's own attributes file (`info/attributes` in the git directory), so when that file exists and is not empty, `diff` fails with `vcs failure` (exit code 5) after its revisions and paths are checked, in every form; an empty one is allowed. The `msw-vcs` tool must do the same. Files appear sorted by path bytes. A path that changes type, for example a file that became a symlink, is one entry with status `T` in `--raw`, and appears as a deletion followed by an addition in the patch and is one line in `--numstat` and `--name-only`. The output is empty when nothing differs.
 
 ### The patch
 
@@ -271,6 +271,6 @@ On an error, stdout is empty and stderr is exactly one line, `msw-vcs: <message>
 | 4 | `base in .mintswarm/job/inputs/vcs.json is not a full commit id` | `base` is not a full lower-case id of a commit, for example a branch name |
 | 4 | `head is not a commit` | the worktree has no `HEAD` commit |
 | 4 | `base and head do not have exactly one merge base` | base and head share no history, or have several merge bases |
-| 5 | `vcs failure` | the VCS failed in a way none of the above covers |
+| 5 | `vcs failure` | `diff` in a repository whose `info/attributes` is not empty; the VCS failed in a way none of the above covers |
 
 The table's `\|` is a table escape; the message has a plain `|`. The messages that name `vcs.json` are the shim's alone: under the runner, which holds base and head itself, they do not occur.

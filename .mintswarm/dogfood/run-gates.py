@@ -26,9 +26,9 @@ timeout also has `rawStatus` `timeout`. Each gate runs in its own session,
 and on timeout its whole process group is killed. One line per gate is
 printed. Then, as the runner's own check of the tree, the tracked files that
 differ from HEAD (`git status --porcelain --untracked-files=no`) are printed
-after a `modified tracked files:` line, one path per line, when there are
-any; a failure to list them is printed as `modified tracked files: unknown
-(<reason>)`. Exits 0 when every gate passed, 1 when any failed or timed out,
+after a `modified tracked files:` line, one path per line (a rename or copy
+as its new path, then its original), when there are any; a failure to list
+them is printed as `modified tracked files: unknown (<reason>)`. Exits 0 when every gate passed, 1 when any failed or timed out,
 2 when the input is unusable, whatever the tree holds.
 
 --verdict exits 0 only when the report exists and parses, is CTRF, has no
@@ -240,8 +240,11 @@ def modified_tracked_files() -> list:
         if len(entry) < 4:
             continue
         paths.append(entry[3:].decode("utf-8", errors="replace"))
-        if entry[:1] in (b"R", b"C"):
-            at += 1  # -z gives a rename's or copy's original path as the next entry
+        if entry[:1] in (b"R", b"C") and at < len(entries):
+            # -z gives a rename's or copy's original path as the next entry: list it too
+            if entries[at]:
+                paths.append(entries[at].decode("utf-8", errors="replace"))
+            at += 1
     return paths
 
 

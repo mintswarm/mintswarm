@@ -120,6 +120,14 @@ class Fixture:
             UMLAUT_NAME,
         )
 
+        # Two commits after base on master, for the hostile-config cases: a change with a blank context line.
+        self.git("checkout", "-q", "master")
+        self.write("blank.txt", "first\n\nsecond\n")
+        self.commit("X1", "2026-01-07T00:00:00Z", "main: add blank.txt", "blank.txt")
+        self.write("blank.txt", "first\n\nthird\n")
+        self.commit("X2", "2026-01-08T00:00:00Z", "main: edit blank.txt", "blank.txt")
+        self.git("checkout", "-q", "job")
+
         self.git("branch", "topic", self.ids["B"])
         self.git("tag", "v1", self.ids["F"])
         self.git("update-ref", "refs/remotes/origin/master", self.ids["B"])
@@ -135,6 +143,8 @@ class Fixture:
             "kind1": "J2:kind",
             "guide": "F:docs/guide.md",
             "main": "B:main.txt",
+            "blank1": "X1:blank.txt",
+            "blank2": "X2:blank.txt",
             "bin": "J1:bin.dat",
             "link": "J2:link",
             "quoted": f"J2:{QUOTED_NAME}",
@@ -150,6 +160,7 @@ class Fixture:
         self.ids["zero"] = "0" * 40
         self.inputs = self.repo / ".mintswarm" / "job" / "inputs"
         self.inputs.mkdir(parents=True)
+        self.attributes = self.repo / ".git" / "info" / "attributes"
 
     def write(self, path: str, text: str) -> None:
         target = self.repo / path
@@ -173,6 +184,19 @@ class Fixture:
 
     def fill(self, text: str) -> str:
         return PLACEHOLDER.sub(lambda m: self.ids[m.group(1)], text)
+
+    def arrange(self, case: dict) -> None:
+        """Apply a case's repository attributes file and local configuration."""
+        if "attributes" in case:
+            self.attributes.parent.mkdir(exist_ok=True)
+            self.attributes.write_text(case["attributes"], encoding="utf-8")
+        for key, value in case.get("config", {}).items():
+            self.git("config", "--local", key, value)
+
+    def restore(self, case: dict) -> None:
+        self.attributes.unlink(missing_ok=True)
+        for key in case.get("config", {}):
+            self.git("config", "--local", "--unset-all", key)
 
     def tool(self, argv: list, vcs_json) -> tuple:
         target = self.inputs / "vcs.json"
@@ -537,10 +561,39 @@ CASES = [
         "argv": ["diff", "--job", "--numstat", "--", "README.md"],
         "stdout": "2\t1\tREADME.md\n",
     },
+    {
+        "name": "diff: an empty repository attributes file is allowed",
+        "argv": ["diff", "--numstat", "--job", "--", "README.md", "bin.dat"],
+        "attributes": "",
+        "stdout": "2\t1\tREADME.md\n-\t-\tbin.dat\n",
+    },
+    {
+        "name": "diff: hostile local configuration leaves the patch unchanged",
+        "argv": ["diff", "{=X1}", "base"],
+        "vcs_json": '{"base": "{=X2}"}',
+        "config": {"diff.suppressBlankEmpty": "true", "core.bigFileThreshold": "1"},
+        "stdout": (
+            "diff --git a/blank.txt b/blank.txt\n"
+            "index {=blank1}..{=blank2} 100644\n"
+            "--- a/blank.txt\n"
+            "+++ b/blank.txt\n"
+            "@@ -1,3 +1,3 @@\n"
+            " first\n"
+            " \n"
+            "-second\n"
+            "+third\n"
+        ),
+    },
+    {
+        "name": "diff: hostile local configuration leaves --numstat unchanged",
+        "argv": ["diff", "--numstat", "--job", "--", "README.md", "bin.dat"],
+        "config": {"diff.suppressBlankEmpty": "true", "core.bigFileThreshold": "1"},
+        "stdout": "2\t1\tREADME.md\n-\t-\tbin.dat\n",
+    },
 ]
 
-# The error cases: name, argv, exit code, the stderr message after `msw-vcs: `, and the vcs.json when it is not
-# the default.
+# The error cases: name, argv, exit code, the stderr message after `msw-vcs: `, the vcs.json when it is not
+# the default, and the repository attributes file when there is one.
 ERRORS = [
     ("refused: a branch", ["log", "topic"], 2, "refused revision: topic"),
     ("refused: a tag", ["show", "v1"], 2, "refused revision: v1"),
@@ -613,6 +666,22 @@ ERRORS = [
         "not json",
     ),
     (
+        "vcs failure: a repository attributes file that makes a binary file text",
+        ["diff", "--numstat", "--job", "--", "bin.dat"],
+        5,
+        "vcs failure",
+        DEFAULT_VCS_JSON,
+        "* diff\n",
+    ),
+    (
+        "vcs failure: a repository attributes file that makes every file binary",
+        ["diff", "--job", "--", "README.md"],
+        5,
+        "vcs failure",
+        DEFAULT_VCS_JSON,
+        "* -diff\n",
+    ),
+    (
         "set-up: vcs.json has no base",
         ["show", "head"],
         4,
@@ -643,7 +712,12 @@ ERRORS = [
 ]
 CASES += [
     dict(
-        name=e[0], argv=e[1], exit=e[2], stderr=f"msw-vcs: {e[3]}\n", vcs_json=e[4] if len(e) > 4 else DEFAULT_VCS_JSON
+        name=e[0],
+        argv=e[1],
+        exit=e[2],
+        stderr=f"msw-vcs: {e[3]}\n",
+        vcs_json=e[4] if len(e) > 4 else DEFAULT_VCS_JSON,
+        **({"attributes": e[5]} if len(e) > 5 else {}),
     )
     for e in ERRORS
 ]
@@ -673,7 +747,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="msw-vcs-selftest.") as tmp:
         fixture = Fixture(Path(tmp))
         for case in CASES:
-            out, err, code = fixture.tool(case["argv"], case.get("vcs_json", DEFAULT_VCS_JSON))
+            fixture.arrange(case)
+            try:
+                out, err, code = fixture.tool(case["argv"], case.get("vcs_json", DEFAULT_VCS_JSON))
+            finally:
+                fixture.restore(case)
             want_out = fixture.fill(case.get("stdout", "")).encode("utf-8")
             want_err = fixture.fill(case.get("stderr", "")).encode("utf-8")
             want_code = case.get("exit", 0)
