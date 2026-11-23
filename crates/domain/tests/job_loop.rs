@@ -7,6 +7,10 @@ use mintswarm_domain::job::{
 };
 use std::collections::{BTreeSet, VecDeque};
 
+fn targets(row: &Row) -> Vec<JobState> {
+    row.targets()
+}
+
 const MAX_ROUNDS: u32 = 3;
 
 /// A job and facts in `row.from` under which `row.guard` holds.
@@ -31,6 +35,7 @@ fn setup(row: &Row) -> (Job, Facts) {
         Guard::AnalysisNoSplit => {}
         Guard::KindDesign => job.kind = JobKind::Design,
         Guard::KindPlan => job.kind = JobKind::Plan,
+        Guard::KindImplementation => {}
         Guard::ArtefactApproved => facts.approval_matches = true,
         Guard::PlanApproved => {
             facts.approval_matches = true;
@@ -63,6 +68,7 @@ fn setup(row: &Row) -> (Job, Facts) {
         Guard::NoBlockingFindings => {}
         Guard::MergeReady => facts.merge_ready = true,
         Guard::MergedHeadMatches => facts.merged_head_matches = true,
+        Guard::MergedHeadDiffers => {}
         Guard::NoExternalSteps => {}
         Guard::ExternalSteps => facts.external_steps = true,
         Guard::EscalatedByReviewCap => {
@@ -113,7 +119,7 @@ fn unknown_pairs_are_rejected() {
             }
         }
     }
-    assert_eq!(accepted, 121);
+    assert_eq!(accepted, 145);
     for state in [JobState::Done, JobState::Rejected, JobState::Cancelled] {
         assert!(
             table().iter().all(|r| r.from != state),
@@ -136,22 +142,6 @@ fn every_row_is_exercised() {
         hit[t.row] = true;
     }
     assert!(hit.iter().all(|h| *h));
-}
-
-/// The states a row may lead to, with its dynamic targets expanded.
-fn targets(row: &Row) -> Vec<JobState> {
-    match row.target {
-        Target::Fixed(to) => vec![to],
-        Target::CurrentStep => vec![JobState::Implementing, JobState::Addressing],
-        Target::Resume if row.from == JobState::AwaitingInput => JobState::STAGES.to_vec(),
-        Target::Resume => {
-            let mut all: BTreeSet<_> = JobState::STAGES.iter().copied().collect();
-            for cause in EscalationCause::ALL {
-                all.extend(cause.resume_candidates());
-            }
-            all.into_iter().collect()
-        }
-    }
 }
 
 fn reachable(from: JobState) -> BTreeSet<JobState> {
@@ -192,6 +182,8 @@ fn every_state_reaches_terminal_or_human_wait() {
     }
 }
 
+// Criterion 4's "fourth gate round": the failure that ends round GATE_ROUND_CAP (the third)
+// escalates, so a fourth round never starts.
 #[test]
 fn fourth_gate_round_escalates() {
     let facts = Facts::new(MAX_ROUNDS);
@@ -227,6 +219,8 @@ fn fourth_gate_round_escalates() {
     assert_eq!(job.state, JobState::Addressing);
 }
 
+// Criterion 4's "fourth failed attempt": the failure that ends attempt ATTEMPT_CAP (the third)
+// escalates, so a fourth attempt never starts.
 #[test]
 fn fourth_failed_attempt_escalates() {
     let facts = Facts::new(MAX_ROUNDS);
@@ -445,4 +439,87 @@ fn accept_refused_outside_review_cap() {
         );
         assert_eq!(job.state, JobState::Escalated);
     }
+}
+
+#[test]
+fn replan_ends_a_human_round() {
+    let mut facts = Facts::new(MAX_ROUNDS);
+    facts.pushed_before = true;
+    let job = job_in(JobState::Ready);
+    let mut job = step(&job, Event::ReviewChangesRequested, &facts);
+    assert_eq!(job.state, JobState::Addressing);
+    assert!(job.counters.human_round);
+    for _ in 0..ATTEMPT_CAP {
+        job = step(&job, Event::AttemptFailed, &facts);
+    }
+    assert_eq!(job.state, JobState::Escalated);
+    job = step(&job, Event::Replan, &facts);
+    assert!(!job.counters.human_round);
+    for event in [
+        Event::StageComplete,
+        Event::FloorRecorded,
+        Event::StageComplete,
+        Event::Decided,
+    ] {
+        job = step(&job, event, &facts);
+    }
+    assert_eq!(job.state, JobState::AwaitingPlanApproval);
+    facts.approval_matches = true;
+    facts.base_current = true;
+    job = step(&job, Event::Approved, &facts);
+    let job = to_next_review(&job, &facts);
+    assert_eq!(job.counters.review_round, 1);
+}
+
+#[test]
+fn replan_refused_for_design_and_plan_jobs() {
+    let facts = Facts::new(MAX_ROUNDS);
+    for kind in [JobKind::Design, JobKind::Plan] {
+        let mut job = Job::new(kind);
+        job.state = JobState::Escalated;
+        job.counters.escalation = Some(Escalation {
+            cause: EscalationCause::AttemptsExhausted,
+            resume: JobState::Decomposing,
+        });
+        assert_eq!(
+            transition(&job, Event::Replan, &facts).err(),
+            Some(TransitionError::GuardRefused {
+                state: JobState::Escalated,
+                event: Event::Replan
+            }),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn cancel_ends_every_live_state() {
+    let facts = Facts::new(MAX_ROUNDS);
+    for &state in JobState::ALL {
+        if state.is_terminal() {
+            continue;
+        }
+        let mut job = job_in(state);
+        job.counters.escalation = Some(Escalation {
+            cause: EscalationCause::GateCap,
+            resume: JobState::Implementing,
+        });
+        let t = transition(&job, Event::Cancel, &facts).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(t.job.state, JobState::Cancelled, "{state}");
+        assert!(t.actions.contains(&Action::ClosePrKeepBranch), "{state}");
+    }
+}
+
+#[test]
+fn merged_at_another_head_escalates() {
+    let facts = Facts::new(MAX_ROUNDS);
+    let job = step(&job_in(JobState::Merging), Event::Merged, &facts);
+    assert_eq!(job.state, JobState::Escalated);
+    let escalation = job.counters.escalation.map(|e| (e.cause, e.resume));
+    assert_eq!(
+        escalation,
+        Some((EscalationCause::MergedHeadMismatch, JobState::Releasing))
+    );
+    let job = step(&job, Event::Continue, &facts);
+    assert_eq!(job.state, JobState::Releasing);
 }

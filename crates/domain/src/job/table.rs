@@ -22,6 +22,8 @@ named_enum! {
         KindDesign => "kind_design",
         /// Kind `plan`.
         KindPlan => "kind_plan",
+        /// Kind `implementation`; only implementation jobs plan.
+        KindImplementation => "kind_implementation",
         /// The approval refers to the current artefact's sha256.
         ArtefactApproved => "artefact_approved",
         /// The approval refers to the current plan's sha256, and the base has not moved or the
@@ -63,6 +65,8 @@ named_enum! {
         MergeReady => "merge_ready",
         /// The merged PR's head equals the recorded head.
         MergedHeadMatches => "merged_head_matches",
+        /// The merged PR's head differs from the recorded head.
+        MergedHeadDiffers => "merged_head_differs",
         /// The PR's `external_steps` are empty.
         NoExternalSteps => "no_external_steps",
         /// The PR's `external_steps` are not empty.
@@ -90,6 +94,7 @@ impl Guard {
             Self::AnalysisNoSplit => implementation && !facts.split_proposed,
             Self::KindDesign => job.kind == JobKind::Design,
             Self::KindPlan => job.kind == JobKind::Plan,
+            Self::KindImplementation => implementation,
             Self::ArtefactApproved => facts.approval_matches,
             Self::PlanApproved => facts.approval_matches && facts.base_current,
             Self::DecisionAuto => auto,
@@ -110,6 +115,7 @@ impl Guard {
             Self::NoBlockingFindings => !facts.blocking_findings_open,
             Self::MergeReady => facts.merge_ready,
             Self::MergedHeadMatches => facts.merged_head_matches,
+            Self::MergedHeadDiffers => !facts.merged_head_matches,
             Self::NoExternalSteps => !facts.external_steps,
             Self::ExternalSteps => facts.external_steps,
             Self::EscalatedByReviewCap => by_review_cap == Some(true),
@@ -334,6 +340,30 @@ pub struct Row {
     pub actions: Vec<Action>,
 }
 
+impl Row {
+    /// The states the row may lead to, with its dynamic targets expanded: `CurrentStep` to
+    /// `implementing` and `addressing`; `Resume` to the stages from `awaiting_input`, and from
+    /// `escalated` to the stages and every cause's [`EscalationCause::resume_candidates`].
+    pub fn targets(&self) -> Vec<JobState> {
+        match self.target {
+            Target::Fixed(to) => vec![to],
+            Target::CurrentStep => vec![JobState::Implementing, JobState::Addressing],
+            Target::Resume if self.from == JobState::AwaitingInput => JobState::STAGES.to_vec(),
+            Target::Resume => {
+                let mut all = JobState::STAGES.to_vec();
+                for cause in EscalationCause::ALL {
+                    for &state in cause.resume_candidates() {
+                        if !all.contains(&state) {
+                            all.push(state);
+                        }
+                    }
+                }
+                all
+            }
+        }
+    }
+}
+
 /// The result of a transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
@@ -484,6 +514,8 @@ fn build() -> Vec<Row> {
         A::ResetGateRounds,
     ];
     let hand_over = [A::ClosePrKeepBranch, A::ReleaseIssue];
+    // A plan's implement step starts a new change, so it ends any human-requested round.
+    let plan_implement = [&[A::ClearHumanRound][..], &new_implement].concat();
 
     // §6 "Failure, retry, cap and escalation": the attempt outcomes of every stage, and "any
     // stage | stage_needs_input".
@@ -536,6 +568,9 @@ fn build() -> Vec<Row> {
             Fixed(stage),
             &[],
         );
+        // `cancel` ends the job whether or not an attempt is in flight.
+        let cancel = [&[A::CancelAttempt][..], &hand_over].concat();
+        row(stage, E::Cancel, G::Always, Fixed(S::Cancelled), &cancel);
         let needs_input = [A::RecordResume, A::Assign(AssignReason::NeedsInput)];
         row(
             stage,
@@ -555,6 +590,12 @@ fn build() -> Vec<Row> {
             Fixed(S::Escalated),
             &unusable,
         );
+        let cancel = [&[A::CancelAttempt][..], &hand_over].concat();
+        row(step, E::Cancel, G::Always, Fixed(S::Cancelled), &cancel);
+    }
+    // `cancel` in the deterministic waits; there is no step to stop.
+    for wait in [S::Queued, S::AwaitingChildren, S::Merging] {
+        row(wait, E::Cancel, G::Always, Fixed(S::Cancelled), &hand_over);
     }
 
     // Queue and preparation: "`queued` → `preparing` → first stage".
@@ -757,7 +798,7 @@ fn build() -> Vec<Row> {
         Fixed(S::Deciding),
         &[A::PublishArtefact],
     );
-    let auto = [&[A::PostAutoComment][..], &new_implement].concat();
+    let auto = [&[A::PostAutoComment][..], &plan_implement].concat();
     row(
         S::Deciding,
         E::Decided,
@@ -782,7 +823,7 @@ fn build() -> Vec<Row> {
             A::ClearForcedPlanApproval,
             A::ReleaseIssue,
         ][..],
-        &new_implement,
+        &plan_implement,
     ]
     .concat();
     row(
@@ -1018,6 +1059,16 @@ fn build() -> Vec<Row> {
         Fixed(S::Releasing),
         &[],
     );
+    // A PR merged at another head than the recorded one: the merge cannot be undone, so a
+    // person checks it and `continue` resumes `releasing`.
+    let mismatch = escalate(EscalationCause::MergedHeadMismatch);
+    row(
+        S::Merging,
+        E::Merged,
+        G::MergedHeadDiffers,
+        Fixed(S::Escalated),
+        &mismatch,
+    );
     row(S::Merging, E::HeadMoved, G::Always, Fixed(S::Ready), &[]);
     let merge_refused = escalate(EscalationCause::MergeRefused);
     row(
@@ -1105,6 +1156,7 @@ fn build() -> Vec<Row> {
     let replan = [
         &[
             A::ResetReviewRounds,
+            A::ClearHumanRound,
             A::ForcePlanApproval,
             A::PrToDraft,
             A::AddFindingsInput,
@@ -1113,7 +1165,14 @@ fn build() -> Vec<Row> {
         &[A::ResetAttempts],
     ]
     .concat();
-    row(esc, E::Replan, G::Always, Fixed(S::Planning), &replan);
+    // Only implementation jobs plan, so `replan` is refused for the other kinds.
+    row(
+        esc,
+        E::Replan,
+        G::KindImplementation,
+        Fixed(S::Planning),
+        &replan,
+    );
     row(
         esc,
         E::Cancel,
@@ -1127,7 +1186,7 @@ fn build() -> Vec<Row> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Guard, Target, table};
+    use super::{Action, Guard, table};
     use crate::job::{Counters, Escalation, EscalationCause, Facts, Job, JobKind, JobState, Step};
 
     /// A small deterministic generator, so the overlap check samples the same inputs every run.
@@ -1234,15 +1293,6 @@ mod tests {
         }
     }
 
-    /// The states a row may lead to, with its dynamic targets expanded.
-    fn targets(row: &super::Row) -> Vec<JobState> {
-        match row.target {
-            Target::Fixed(to) => vec![to],
-            Target::CurrentStep => vec![JobState::Implementing, JobState::Addressing],
-            Target::Resume => JobState::STAGES.to_vec(),
-        }
-    }
-
     #[test]
     fn entering_a_stage_resets_attempts() {
         for row in table() {
@@ -1250,7 +1300,7 @@ mod tests {
                 // Resumes the same stage: the answer is not an attempt, and the count stands.
                 continue;
             }
-            for to in targets(row) {
+            for to in row.targets() {
                 if to.is_stage() && to != row.from {
                     assert!(row.actions.contains(&Action::ResetAttempts), "{row:?}");
                 }
@@ -1269,7 +1319,7 @@ mod tests {
             if gate_loop.contains(&row.from) {
                 continue;
             }
-            for to in targets(row) {
+            for to in row.targets() {
                 if matches!(to, JobState::Implementing | JobState::Addressing) && to != row.from {
                     assert!(row.actions.contains(&Action::ResetGateRounds), "{row:?}");
                 }

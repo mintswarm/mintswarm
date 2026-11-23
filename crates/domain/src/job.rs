@@ -289,7 +289,7 @@ named_enum! {
         Accept => "accept",
         /// The `replan` command in `escalated`.
         Replan => "replan",
-        /// The `cancel` command.
+        /// The `cancel` command; every state but the terminal ones takes it.
         Cancel => "cancel",
     }
 }
@@ -341,8 +341,9 @@ impl AttemptOutcome {
         )
     }
 
-    /// Whether the stage runs again after this outcome: the counted failures while attempts
-    /// remain, `throttled` after the pause, and `cancelled` unless the job itself was cancelled.
+    /// Whether the outcome is retryable in principle: every outcome but `succeeded` and
+    /// `model_unavailable`. Whether the stage actually runs again is the table's call, through
+    /// the guards `attempts_left` (counted failures) and `job_not_cancelled` (`cancelled`).
     pub const fn retries(self) -> bool {
         !matches!(self, Self::Succeeded | Self::ModelUnavailable)
     }
@@ -367,6 +368,8 @@ named_enum! {
         MergeRefused => "merge_refused",
         /// `file_children` refused the parent's issue type.
         ParentTypeRefused => "parent_type_refused",
+        /// The PR was merged at a head other than the recorded one.
+        MergedHeadMismatch => "merged_head_mismatch",
     }
 }
 
@@ -380,11 +383,13 @@ impl EscalationCause {
             Self::InputUnusable => JobState::STEPS,
             Self::MergeRefused => &[JobState::Ready],
             Self::ParentTypeRefused => &[JobState::FilingChildren],
+            Self::MergedHeadMismatch => &[JobState::Releasing],
         }
     }
 
     /// The state to resume, for an escalation raised in `from` during `step`: the failed stage or
-    /// step, the step that produced the change, or `ready` after a refused merge.
+    /// step, the step that produced the change, `ready` after a refused merge, or `releasing`
+    /// after a merge at another head.
     pub const fn resume_state(self, from: JobState, step: Step) -> JobState {
         match self {
             Self::ReviewCap => JobState::Addressing,
@@ -394,6 +399,7 @@ impl EscalationCause {
             | Self::ParentTypeRefused => from,
             Self::GateCap | Self::OutOfFootprint => step.state(),
             Self::MergeRefused => JobState::Ready,
+            Self::MergedHeadMismatch => JobState::Releasing,
         }
     }
 }
@@ -662,7 +668,9 @@ mod tests {
                 EscalationCause::GateCap => &[JobState::Gating],
                 EscalationCause::OutOfFootprint => &[JobState::Committing],
                 EscalationCause::InputUnusable => JobState::STEPS,
-                EscalationCause::MergeRefused => &[JobState::Merging],
+                EscalationCause::MergeRefused | EscalationCause::MergedHeadMismatch => {
+                    &[JobState::Merging]
+                }
                 EscalationCause::ParentTypeRefused => &[JobState::FilingChildren],
             };
             for from in raised_in {
