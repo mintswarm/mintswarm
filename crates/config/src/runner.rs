@@ -67,7 +67,8 @@ impl Stage {
         }
     }
 
-    fn from_name(name: &str) -> Option<Stage> {
+    /// The stage named `name` in the config, if there is one.
+    pub(crate) fn from_name(name: &str) -> Option<Stage> {
         Stage::ALL.into_iter().find(|stage| stage.name() == name)
     }
 }
@@ -144,14 +145,15 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
 
     let workers = match map.get("workers") {
         None => 1,
-        Some(value) => whole(value).filter(|&n| n >= 1).ok_or_else(|| {
+        Some(value) => value.as_u64().filter(|&n| n >= 1).ok_or_else(|| {
             Error::schema(&root.key("workers"), "must be an integer of 1 or more")
         })?,
     };
 
     let poll_interval = match map.get("poll_interval") {
         None => DEFAULT_POLL_INTERVAL,
-        Some(value) => whole(value)
+        Some(value) => value
+            .as_u64()
             .filter(|n| (POLL_INTERVAL.0..=POLL_INTERVAL.1).contains(n))
             .ok_or_else(|| {
                 Error::schema(
@@ -178,6 +180,8 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
                 .as_f64()
                 .filter(|s| s.is_finite() && *s > 0.0)
                 .and_then(|s| Duration::try_from_secs_f64(s).ok())
+                // A value too small for a nanosecond converts to zero, which is not positive.
+                .filter(|limit| !limit.is_zero())
                 .ok_or_else(|| {
                     Error::schema(&stage_path, "must be a positive number of seconds")
                 })?;
@@ -191,9 +195,4 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
         poll_interval: Duration::from_secs(poll_interval),
         wall_clock,
     })
-}
-
-/// A non-negative integer that is not a bool.
-fn whole(value: &Value) -> Option<u64> {
-    value.as_u64()
 }

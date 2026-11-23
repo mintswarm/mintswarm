@@ -72,6 +72,10 @@ fn runner_values_rejected() {
         ("state_dir: s\nworkers: true\n", "workers"),
         ("state_dir: s\nwall_clock: {plan: 0}\n", "wall_clock.plan"),
         (
+            "state_dir: s\nwall_clock: {plan: 1e-300}\n",
+            "wall_clock.plan",
+        ),
+        (
             "state_dir: s\nwall_clock: {plan: '60'}\n",
             "wall_clock.plan",
         ),

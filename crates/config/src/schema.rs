@@ -5,12 +5,22 @@
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
 //! `dependencies/new-packages.py` `review_mode` and `report-gates.py` `resolve`. A change to any
 //! of those, or to the config's keys, changes this module in the same change.
+//!
+//! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
+//! some mismatched types; this module checks every key and rejects each mismatch instead. A
+//! config the tools accept can therefore fail here, for example:
+//!
+//! - a non-string `agents.stages.<stage>.effort`, which `landing/decision.py` reads as none;
+//! - a stage name under `agents.stages` that is not a stage, which the tools never look up;
+//! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
+//! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
+//! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
-use crate::{Error, Path, parse_yaml};
+use crate::{Error, Path, Stage, parse_yaml};
 
 /// The plan-approval and landing modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,7 +426,11 @@ fn check_agents(value: &Value, path: &Path) -> Result<(), Error> {
     if let Some(stages) = agents.get("stages") {
         let stages_path = path.key("stages");
         for (stage, value) in mapping(stages, &stages_path)? {
-            strings_only(value, &stages_path.key(stage), &choice, &[])?;
+            let stage_path = stages_path.key(stage);
+            if Stage::from_name(stage).is_none() {
+                return Err(Error::schema(&stage_path, "unknown key"));
+            }
+            strings_only(value, &stage_path, &choice, &[])?;
         }
     }
     Ok(())
@@ -687,7 +701,7 @@ fn check_gates(value: Option<&Value>, path: &Path) -> Result<GatesSummary, Error
         check_report(report, &path.key("report"))?;
     }
     match gates.get("summary") {
-        None => Ok(GatesSummary::Off),
+        None | Some(Value::Null) => Ok(GatesSummary::Off),
         Some(Value::String(value)) if value == "off" => Ok(GatesSummary::Off),
         Some(Value::String(value)) if value == "agent" => Ok(GatesSummary::Agent),
         Some(value) => Err(Error::schema(

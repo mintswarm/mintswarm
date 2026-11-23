@@ -17,11 +17,17 @@ use crate::{Error, Path};
 /// The handle yaml-rust2 resolves `!!` to.
 const CORE_HANDLE: &str = "tag:yaml.org,2002:";
 
+/// The most nodes a document may hold once its aliases are expanded. A config holds a few
+/// hundred; the bound stops a document whose nested aliases grow exponentially ("billion laughs")
+/// before it exhausts memory, as yaml.v3's "excessive aliasing" check does.
+const MAX_NODES: usize = 100_000;
+
 /// Parse one YAML document into the JSON value `yq -p=yaml -o=json .` gives for it.
 ///
 /// Rejected, with the key path where there is one: YAML syntax errors, zero or several documents,
 /// duplicate keys, `<<` merge keys, keys that are not scalars, tags other than `!!str`, `!!map`
-/// and `!!seq`, and scalars yq cannot marshal (`.inf`, `.nan`, `0b…`, integers beyond i64).
+/// and `!!seq`, scalars yq cannot marshal (`.inf`, `.nan`, `0b…`, integers beyond i64), and
+/// documents of more than [`MAX_NODES`] nodes once their aliases are expanded.
 pub fn parse_yaml(text: &str) -> Result<Value, Error> {
     let mut builder = Builder::default();
     let mut parser = Parser::new_from_str(text);
@@ -72,6 +78,20 @@ impl Node {
             | Node::Mapping { mark, .. } => *mark,
         }
     }
+
+    /// The number of nodes in this subtree, this one included.
+    fn size(&self) -> usize {
+        match self {
+            Node::Scalar { .. } => 1,
+            Node::Sequence { items, .. } => 1 + items.iter().map(Node::size).sum::<usize>(),
+            Node::Mapping { entries, .. } => {
+                1 + entries
+                    .iter()
+                    .map(|(key, value)| key.size() + value.size())
+                    .sum::<usize>()
+            }
+        }
+    }
 }
 
 /// A collection being built, with its anchor.
@@ -87,10 +107,23 @@ struct Builder {
     anchors: HashMap<usize, Node>,
     documents: Vec<Node>,
     count: usize,
+    /// The nodes built so far, each alias counting as the nodes it expands to.
+    nodes: usize,
     error: Option<Error>,
 }
 
 impl Builder {
+    /// Counts `added` nodes, and fails once the document holds more than [`MAX_NODES`].
+    fn grow(&mut self, added: usize, mark: Marker) -> bool {
+        self.nodes = self.nodes.saturating_add(added);
+        if self.nodes > MAX_NODES {
+            let message = format!("the document expands to more than {MAX_NODES} nodes");
+            self.error = Some(Error::yaml(&Path::root(), at(&message, mark)));
+            return false;
+        }
+        true
+    }
+
     fn finish(&mut self, anchor: usize, node: Node) {
         if anchor != 0 {
             self.anchors.insert(anchor, node.clone());
@@ -112,6 +145,9 @@ impl MarkedEventReceiver for Builder {
         match event {
             Event::DocumentStart => self.count += 1,
             Event::Scalar(value, style, anchor, tag) => {
+                if !self.grow(1, mark) {
+                    return;
+                }
                 let node = Node::Scalar {
                     value,
                     style,
@@ -120,18 +156,27 @@ impl MarkedEventReceiver for Builder {
                 };
                 self.finish(anchor, node);
             }
-            Event::Alias(anchor) => match self.anchors.get(&anchor) {
-                Some(node) => {
-                    let node = node.clone();
-                    self.finish(0, node);
+            Event::Alias(anchor) => match self.anchors.get(&anchor).map(Node::size) {
+                Some(size) => {
+                    // Counted before the clone, so an oversized expansion is never built.
+                    if self.grow(size, mark) {
+                        let node = self.anchors[&anchor].clone();
+                        self.finish(0, node);
+                    }
                 }
                 None => self.error = Some(Error::yaml(&Path::root(), at("unknown alias", mark))),
             },
             Event::SequenceStart(anchor, tag) => {
+                if !self.grow(1, mark) {
+                    return;
+                }
                 self.stack
                     .push(Open::Sequence(anchor, Vec::new(), tag, mark));
             }
             Event::MappingStart(anchor, tag) => {
+                if !self.grow(1, mark) {
+                    return;
+                }
                 self.stack
                     .push(Open::Mapping(anchor, Vec::new(), tag, mark));
             }
@@ -438,7 +483,7 @@ fn float_value(float: f64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{float_form, go_int_base0, resolve_plain, underscores_ok};
+    use super::{MAX_NODES, float_form, go_int_base0, parse_yaml, resolve_plain, underscores_ok};
     use serde_json::{Value, json};
 
     #[test]
@@ -481,6 +526,27 @@ mod tests {
             resolve_plain("-9223372036854775809"),
             Ok(Value::Number(_))
         ));
+    }
+
+    #[test]
+    fn alias_expansion_is_bounded() {
+        // Nine levels of nine aliases each: 9^9 scalars once expanded.
+        let mut text = String::from("l0: &l0 x\n");
+        for level in 1..=9 {
+            let aliases = vec![format!("*l{}", level - 1); 9].join(", ");
+            text.push_str(&format!("l{level}: &l{level} [{aliases}]\n"));
+        }
+        let error = parse_yaml(&text).expect_err("an exponential expansion");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("more than {MAX_NODES} nodes")),
+            "{error}"
+        );
+        assert_eq!(
+            parse_yaml("a: &a [1, 2]\nb: [*a, *a]\n"),
+            Ok(json!({"a": [1, 2], "b": [[1, 2], [1, 2]]}))
+        );
     }
 
     #[test]

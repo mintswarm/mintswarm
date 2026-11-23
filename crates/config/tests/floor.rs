@@ -60,6 +60,8 @@ fn factor(value: Value) -> Change {
     Box::new(move |c| set(c, &format!("{LANDING}/footprint"), "lines_factor", value))
 }
 
+/// The `config` variants `plan-approval/selftest.py` `build_commits` builds and the floor rejects:
+/// those `check_unusable_input` lists, with `MIN_CONFIDENCE_INVALID` and `SIZE_INVALID`.
 fn plan_approval_rejected() -> Vec<(&'static str, Change)> {
     vec![
         (
@@ -134,6 +136,8 @@ fn plan_approval_rejected() -> Vec<(&'static str, Change)> {
 #[test]
 fn plan_approval_selftest_variants_rejected() {
     let variants = plan_approval_rejected();
+    // Seven named in `check_unusable_input`, the four of `MIN_CONFIDENCE_INVALID` and the eight of
+    // `SIZE_INVALID`; `variant_names_match_selftests` checks the names.
     assert_eq!(variants.len(), 19);
     for (name, change) in variants {
         let text = variant(change);
@@ -142,10 +146,10 @@ fn plan_approval_selftest_variants_rejected() {
     }
 }
 
-#[test]
-fn landing_selftest_variants_rejected() {
+/// The `config` variants `landing/floor-selftest.py` `build_commits` builds and the floor rejects.
+fn landing_rejected() -> Vec<(&'static str, Change)> {
     let footprint = || format!("{LANDING}/footprint");
-    let variants: Vec<(&str, Change)> = vec![
+    vec![
         (
             "no-landing",
             Box::new(|c| remove(c, "/pipeline", "landing")),
@@ -209,7 +213,14 @@ fn landing_selftest_variants_rejected() {
             "min-confidence-float",
             landing_update("min_confidence", json!(95.5)),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn landing_selftest_variants_rejected() {
+    let variants = landing_rejected();
+    // The 21 rejected `variant(...)` calls of `landing/floor-selftest.py` `build_commits`;
+    // `variant_names_match_selftests` checks the names.
     assert_eq!(variants.len(), 21);
     for (name, change) in variants {
         let mut text = variant(change);
@@ -234,9 +245,9 @@ fn unusable_input_rejected() {
     }
 }
 
-#[test]
-fn selftest_accepted_variants_load() {
-    let variants: Vec<(&str, Change)> = vec![
+/// The variants `plan-approval/selftest.py` `build_commits` builds and the floor accepts.
+fn plan_approval_accepted() -> Vec<(&'static str, Change)> {
+    vec![
         ("always", approval_update("mode", json!("always"))),
         ("judged", approval_update("mode", json!("judged"))),
         ("never", approval_update("mode", json!("never"))),
@@ -283,6 +294,12 @@ fn selftest_accepted_variants_load() {
                     .retain(|path| path != ".mintswarm/dogfood/github/**");
             }),
         ),
+    ]
+}
+
+/// The variants `landing/floor-selftest.py` `build_commits` builds and the floor accepts.
+fn landing_accepted() -> Vec<(&'static str, Change)> {
+    vec![
         ("shadow", landing_update("mode", json!("shadow"))),
         ("factor-1.15", factor(json!(1.15))),
         ("factor-1", factor(json!(1))),
@@ -299,7 +316,14 @@ fn selftest_accepted_variants_load() {
             "min-confidence-100",
             landing_update("min_confidence", json!(100)),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn selftest_accepted_variants_load() {
+    let variants = plan_approval_accepted()
+        .into_iter()
+        .chain(landing_accepted());
     for (name, change) in variants {
         let text = variant(change);
         if let Err(error) = load_repo_config(&text) {
@@ -344,6 +368,10 @@ fn unknown_key_names_path() {
             Box::new(|c| set(c, &format!("{LANDING}/footprint"), "files_factor", json!(2))),
         ),
         (
+            "agents.stages.implment",
+            Box::new(|c| set(c, "/agents/stages", "implment", json!({"model": "sonnet"}))),
+        ),
+        (
             "gates.run[0].nme",
             Box::new(|c| set(c, "/gates/run/0", "nme", json!("x"))),
         ),
@@ -381,6 +409,11 @@ fn gates_summary_values() {
     assert_eq!(agent.gates_summary(), GatesSummary::Agent);
     let off = summary(Some(json!("off"))).expect("off loads");
     assert_eq!(off.gates_summary(), GatesSummary::Off);
+    let null = summary(Some(Value::Null)).expect("null loads as absent");
+    assert_eq!(null.gates_summary(), GatesSummary::Off);
+    let text = SUMMARY_ON.replace("summary: on", "summary:");
+    let empty = load_repo_config(&text).expect("summary with no value loads");
+    assert_eq!(empty.gates_summary(), GatesSummary::Off);
     for value in [json!("on"), json!(true), json!("Agent"), json!(1)] {
         let error = summary(Some(value.clone())).expect_err("rejected");
         assert_eq!(error.path(), "gates.summary", "{value}: {error}");
@@ -458,4 +491,133 @@ fn live_repository_config_loads() {
     if let Err(error) = load_repo_config(&text) {
         panic!("{}: {error}", path.display());
     }
+}
+
+/// The variant names a dogfood self-test's `build_commits` builds, read from its source.
+///
+/// A name is a string literal passed to `variant`, a key of the dict constant that a
+/// `for name, … in CONST.items():` loop passes, or an f-string over a `for name, value in (…):`
+/// tuple list. Any other form of call fails, so a new form is noticed rather than skipped.
+fn selftest_variants(relative: &str) -> std::collections::BTreeSet<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.mintswarm/dogfood")
+        .join(relative);
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let start = source
+        .find("\ndef build_commits(")
+        .unwrap_or_else(|| panic!("{relative}: no build_commits"));
+    let end = source[start + 1..]
+        .find("\ndef ")
+        .map_or(source.len(), |end| start + 1 + end);
+    let body = &source[start..end];
+
+    let mut names = std::collections::BTreeSet::new();
+    let mut from = 0;
+    while let Some(found) = body[from..].find("variant(") {
+        let at = from + found;
+        from = at + "variant(".len();
+        let before = body[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') || body[..at].ends_with("def ") {
+            continue;
+        }
+        let call = body[from..].trim_start();
+        let loop_line = || {
+            body[..at]
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| line.starts_with("for name, "))
+                .unwrap_or_else(|| panic!("{relative}: a variant call outside a name loop"))
+        };
+        if let Some(rest) = call.strip_prefix('"') {
+            names.insert(rest[..rest.find('"').expect("a closed string")].to_owned());
+        } else if call.starts_with("name,") {
+            let line = loop_line();
+            let constant = line
+                .split(" in ")
+                .nth(1)
+                .and_then(|rest| rest.strip_suffix(".items():"))
+                .unwrap_or_else(|| panic!("{relative}: an unknown loop: {line}"));
+            names.extend(dict_keys(&source, constant, relative));
+        } else if let Some(rest) = call.strip_prefix("f\"") {
+            let pattern = &rest[..rest.find('"').expect("a closed string")];
+            assert!(pattern.contains("{name}"), "{relative}: f\"{pattern}\"");
+            let line = loop_line();
+            assert!(
+                line.ends_with(" in ("),
+                "{relative}: an unknown loop: {line}"
+            );
+            let loop_at = body[..at].rfind(line).expect("the loop line");
+            let items = body[loop_at + line.len()..at]
+                .lines()
+                .map(str::trim)
+                .take_while(|line| !line.starts_with("):"))
+                .filter_map(|line| line.strip_prefix("(\""))
+                .map(|rest| rest[..rest.find('"').expect("a closed string")].to_owned());
+            names.extend(items.map(|item| pattern.replace("{name}", &item)));
+        } else {
+            panic!(
+                "{relative}: an unknown variant call: {}",
+                call.lines().next().unwrap_or("")
+            );
+        }
+    }
+    assert!(!names.is_empty(), "{relative}: no variants found");
+    names
+}
+
+/// The keys of the top-level dict constant `name` in a Python source.
+fn dict_keys(source: &str, name: &str, relative: &str) -> Vec<String> {
+    let start = source
+        .find(&format!("\n{name} = {{"))
+        .unwrap_or_else(|| panic!("{relative}: no {name}"));
+    let text = &source[start + name.len() + 4..];
+    let mut keys = Vec::new();
+    let mut depth = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        match c {
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return keys;
+                }
+            }
+            '"' => {
+                let close = text[index + 1..].find('"').expect("a closed string") + index + 1;
+                while chars.peek().is_some_and(|&(i, _)| i <= close) {
+                    chars.next();
+                }
+                if depth == 1 && text[close + 1..].trim_start().starts_with(':') {
+                    keys.push(text[index + 1..close].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{relative}: {name} is not closed");
+}
+
+/// The Rust variant lists name exactly the variants the self-tests build, so a variant added to
+/// either self-test, or to `MIN_CONFIDENCE_INVALID` or `SIZE_INVALID`, fails here until it is
+/// added to a list above.
+#[test]
+fn variant_names_match_selftests() {
+    let names = |lists: Vec<Vec<(&'static str, Change)>>| -> std::collections::BTreeSet<String> {
+        lists
+            .into_iter()
+            .flatten()
+            .map(|(name, _)| name.to_owned())
+            .collect()
+    };
+    let plan = names(vec![plan_approval_rejected(), plan_approval_accepted()]);
+    assert_eq!(plan, selftest_variants("plan-approval/selftest.py"));
+
+    let landing = names(vec![landing_rejected(), landing_accepted()]);
+    let mut built = selftest_variants("landing/floor-selftest.py");
+    // `globs` varies the tree to exercise the floor's glob matcher, not the config's schema.
+    assert!(built.remove("globs"), "landing: no globs variant");
+    assert_eq!(landing, built);
 }
