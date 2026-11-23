@@ -26,6 +26,10 @@ selected files only and the npm version-document fallback; single-package failur
 (stale output, no packages.json, malformed input, bad arguments); Python
 3.9 syntax and standard-library imports only.
 
+After its own cases it runs screen-selftest.py, the offline self-test of the
+plan-time dependency screen, as `sys.executable -I -B`, prints its output,
+and counts a non-zero exit as one failure.
+
 Prints one `ok` or `FAIL` line per check, then a count, and exits 0 only
 when all passed.
 """
@@ -40,6 +44,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -912,6 +917,16 @@ def source_rules():
         T.check(f"{path.name}: standard library only", modules <= STDLIB, str(sorted(modules - STDLIB)))
 
 
+def screen_selftest():
+    """Run screen-selftest.py in a fresh interpreter, isolated and with no bytecode written."""
+    proc = subprocess.run(
+        [sys.executable, "-I", "-B", str(HERE / "screen-selftest.py")], capture_output=True, text=True, timeout=600
+    )
+    print(proc.stdout, end="")
+    print(proc.stderr, end="", file=sys.stderr)
+    T.check("screen-selftest.py passes", proc.returncode == 0, f"exit {proc.returncode}")
+
+
 def main() -> int:
     if shutil.which("yq") is None:
         print("FAIL yq is not on PATH")
@@ -933,6 +948,7 @@ def main() -> int:
     finally:
         P.fetch = REAL_FETCH
         shutil.rmtree(tmp, ignore_errors=True)
+    screen_selftest()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
 
