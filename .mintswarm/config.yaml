@@ -98,7 +98,7 @@ pipeline:
     reviewers: [zmij]                # default reviewers of a PR; see components above
 
 gates:
-  tests: none                        # no code yet; forces plan approval
+  tests: selftests                   # only none forces plan approval
   run:
     - name: whitespace
       command: "git diff --check origin/master...HEAD"
@@ -108,6 +108,22 @@ gates:
       command: "python3 .mintswarm/dogfood/packs/pack.py check --base origin/master"
     - name: packs-selftest
       command: "python3 .mintswarm/dogfood/packs/selftest.py"
+    - name: python-format
+      command: "black --check . .mintswarm/dogfood/github/linux/yq"
+    - name: shell-lint
+      command: "bash .mintswarm/dogfood/shell-lint.sh"
+    - name: save-output-selftest
+      command: "python3 .mintswarm/dogfood/save-output-selftest.py"
+    - name: plan-approval-selftest
+      command: "python3 .mintswarm/dogfood/plan-approval/selftest.py"
+    - name: landing-floor-selftest
+      command: "python3 .mintswarm/dogfood/landing/floor-selftest.py"
+    - name: landing-facts-selftest
+      command: "python3 .mintswarm/dogfood/landing/facts-selftest.py"
+    - name: github-selftest
+      command: "bash .mintswarm/dogfood/github/selftest.sh"
+    - name: readiness-selftest
+      command: "python3 .mintswarm/dogfood/readiness/selftest.py"
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
