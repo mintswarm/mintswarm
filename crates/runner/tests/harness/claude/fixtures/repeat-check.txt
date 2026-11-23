@@ -1,0 +1,7 @@
+complete: same: system/init assistant result/success
+corrective: same: system/init assistant result/success
+effort-low: same: system/init assistant result/success
+interrupt: same: system/init user result/error_during_execution
+missing-result: same: system/init assistant result/success
+needs-input: same: system/init assistant result/success
+options: same: system/init assistant user assistant result/success

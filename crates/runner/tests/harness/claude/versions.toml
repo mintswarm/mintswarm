@@ -1,0 +1,37 @@
+# Claude Code versions validated for the runner's claude adapter, written by
+# record.sh from a recording; re-run it rather than editing by hand.
+#
+# Each requirement is { flag, confirmed, evidence }. confirmed means the flag is
+# listed in claude --help, the scenarios that use it exited 0 and, where the
+# stream shows the setting, the stream agrees. effort may be "unsupported".
+# The isolation_* entries record how the recording was kept apart from the
+# operator's settings, CLAUDE.md, memory, MCP servers and plugins.
+#
+# Event-kind comparison rule (record.sh compare): an event's kind is its type,
+# or type/subtype when it has a subtype; kinds containing rate_limit and system
+# kinds other than system/init are dropped, and consecutive repeats of a kind
+# collapse into one. Two recordings agree when every scenario has the same
+# sequence of kinds.
+#
+# fixtures/ holds only content-free files derived from the recording: free
+# text is replaced by its length, ids and times are normalised, the init event
+# keeps counts only. Raw recordings are never committed.
+
+[claude."2.1.330"]
+recorded_on = "2026-11-23"
+stream_json = { flag = "-p --output-format stream-json --verbose", confirmed = true, evidence = "--output-format, stream-json and --verbose listed in --help: yes; complete exited 0 with system/init: yes, result: yes" }
+append_system_prompt = { flag = "--append-system-prompt", confirmed = true, evidence = "listed in --help: yes; options exited 0; its reply starts with the marker the appended prompt asks for: yes" }
+model = { flag = "--model", confirmed = true, evidence = "listed in --help: yes; system/init model for complete (haiku) = claude-haiku-5-5, exit 0, options (opus) = claude-opus-5-5, exit 0, effort-low (sonnet) = claude-sonnet-5-5, exit 0" }
+effort = { flag = "--effort", confirmed = true, evidence = "listed in --help: yes; options (high) exited 0, effort-low (low) exited 0; the stream mentions effort" }
+max_turns = { flag = "--max-turns", confirmed = false, evidence = "listed in --help: no; complete (limit 1) num_turns = 1; options (limit 2) num_turns = 2" }
+allowed_tools = { flag = "--allowedTools", confirmed = false, evidence = "listed in --help: yes; options exited 0; Read ran without error: yes; the reply quotes the file: no; with --tools Read the init tool list is [\"Read\"]" }
+resume = { flag = "--resume", confirmed = true, evidence = "listed in --help: yes; corrective exited 0; its session id equals missing-result's: yes; its reply has the msw-result block: yes" }
+isolation_settings = { flag = "--setting-sources project,local", confirmed = true, evidence = "listed in --help: yes; the user source, which holds the user settings, CLAUDE.md and memory, is left out: yes; CLAUDE.md, CLAUDE.local.md or .claude/CLAUDE.md in the working directories or their parents: 0" }
+isolation_mcp = { flag = "--strict-mcp-config --mcp-config (an empty mcpServers object)", confirmed = true, evidence = "--strict-mcp-config and --mcp-config listed in --help: yes; MCP servers reported by system/init: the highest count is 0 over 7 scenarios" }
+isolation_plugins = { flag = "--setting-sources project,local", confirmed = false, evidence = "plugins are enabled only from settings, and the user source is left out: yes; plugins reported by system/init: the highest count is 5 over 7 scenarios" }
+isolation_workdir = { flag = "", confirmed = true, evidence = "every scenario ran in a fresh directory under TMPDIR; inside a git work tree: no" }
+restrict_tools = { flag = "--tools", listed = true }
+permission_mode = { flag = "--permission-mode", listed = true, value = "default" }
+interrupt = { signal = "SIGINT", exit_status = 0, result_event = true }
+rate_limit_event = ["fixtures/complete.jsonl", "fixtures/needs-input.jsonl", "fixtures/missing-result.jsonl", "fixtures/corrective.jsonl", "fixtures/options.jsonl", "fixtures/effort-low.jsonl"]
+credential_mode = { value = "subscription", source = "inferred from apiKeySource and whether ANTHROPIC_API_KEY was passed" }
