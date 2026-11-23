@@ -506,6 +506,63 @@ def m_gate(command, name="unit"):
     return mutate
 
 
+def m_web(*paths):
+    """Track each path, with web/** in component code and in pipeline.plan_approval.require_human."""
+
+    def mutate(config, files):
+        config["components"]["code"]["paths"].append("web/**")
+        config["pipeline"]["plan_approval"]["require_human"]["paths"].append("web/**")
+        for path in paths:
+            files[path] = b"x\n"
+
+    return mutate
+
+
+def m_web_gate(command, *paths):
+    """The shell gate runs command, with web/index.ts and each path tracked."""
+    return m_all(m_web("web/index.ts", *paths), m_gate(command, name="shell"))
+
+
+def cd_gap(name, command, fragment, *paths):
+    """A gap case for a command the reader cannot read because of how it runs cd."""
+    return (
+        name,
+        m_web_gate(command, *paths),
+        ["gate-scripts-named", "gate-tools"],
+        {
+            "gate-scripts-named": f"gate shell: {fragment}",
+            "gate-tools": f"gate shell: {fragment}",
+        },
+        (),
+    )
+
+
+def script_gap(name, command, fragment, *paths, needs=()):
+    """A gap case for a readable command that runs code no tracked regular file holds."""
+    return (
+        name,
+        m_web_gate(command, *paths),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": f"gate shell: {fragment}"},
+        needs,
+    )
+
+
+# The repository's own TypeScript gates, verbatim from .mintswarm/config.yaml.
+TYPESCRIPT_GATES = {
+    "typescript-typecheck": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/tsc --noEmit",
+    "typescript-lint": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/eslint .",
+    "typescript-format": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check .",
+    "typescript-test": "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run",
+}
+
+
+def m_typescript_gates(config, files):
+    m_web("web/pnpm-lock.yaml", "web/apps/ui/index.ts")(config, files)
+    files[".mintswarm/dogfood/web-install.sh"] = b"exit 0\n"
+    config["gates"]["run"] += [{"name": name, "command": command} for name, command in TYPESCRIPT_GATES.items()]
+
+
 def m_all(*mutations):
     def mutate(config, files):
         for mutation in mutations:
@@ -869,14 +926,91 @@ GAP_CASES = [
         (),
     ),
     (
-        "cd",
+        "cd to an absolute path",
         m_gate("cd /tmp && true", name="shell"),
         ["gate-scripts-named", "gate-tools"],
         {
-            "gate-scripts-named": "gate shell: it runs cd, a builtin the check does not read",
-            "gate-tools": "gate shell: it runs cd, a builtin the check does not read, so its tools are unknown",
+            "gate-scripts-named": "gate shell: it runs cd /tmp, which does not start with ./, so CDPATH can change",
+            "gate-tools": "gate shell: it runs cd /tmp, which does not start with ./, so CDPATH can change where it "
+            "goes, so its tools are unknown",
         },
         (),
+    ),
+    cd_gap("bare cd web", "cd web && true", "it runs cd web, which does not start with ./, so CDPATH can change"),
+    cd_gap("cd before ||", "cd ./web || true", "it runs cd in a command not joined by && alone"),
+    cd_gap("cd before ;", "cd ./web; true", "it runs cd in a command not joined by && alone"),
+    cd_gap("cd with && in a word", "cd ./web&&true", "it runs cd in a command not joined by && alone"),
+    cd_gap("cd on two lines", "cd ./web &&\ntrue", "it runs cd in a command not joined by && alone"),
+    cd_gap("cd inside if", "if true; then cd ./web; fi", "it runs cd in a command not joined by && alone"),
+    cd_gap("cd after while", "while cd ./web && true", "it runs cd in a command with while"),
+    cd_gap("cd through ..", "cd ./web/../src && true", "it runs cd ./web/../src, which has an empty or .. segment"),
+    cd_gap("cd with an empty segment", "cd ./web/ && true", "it runs cd ./web/, which has an empty or .. segment"),
+    cd_gap("cd to a missing directory", "cd ./missing && true", "it runs cd ./missing, which is not a tracked"),
+    cd_gap(
+        "cd to a missing directory below another",
+        "cd ./web && cd ./missing && true",
+        "it runs cd ./missing (as web/missing), which is not a tracked directory",
+    ),
+    (
+        "cd into a tracked symbolic link",
+        m_all(m_web_gate("cd ./web/link && true"), m_file("web/link", (SYMLINK, b"."))),
+        ["gate-scripts-named", "gate-tools"],
+        {"gate-scripts-named": "gate shell: it runs cd ./web/link, which is not a tracked directory"},
+        (),
+    ),
+    (
+        "node_modules/.bin as a tracked symbolic link",
+        m_all(
+            m_web_gate("cd ./web && ./node_modules/.bin/tsc", "web/pnpm-lock.yaml"),
+            m_file("web/node_modules/.bin/tsc", (SYMLINK, b"../../index.ts")),
+        ),
+        {"gate-scripts-named"},
+        {"gate-scripts-named": "it runs web/node_modules/.bin/tsc, which is a tracked symbolic link"},
+        (),
+    ),
+    cd_gap("cd with an option", "cd -P ./web && true", "it runs cd with 2 arguments, but the check reads cd"),
+    cd_gap("cd with no argument", "cd && true", "it runs cd with 0 arguments, but the check reads cd"),
+    cd_gap("cd with a redirection", "cd >/dev/null ./web && true", "it runs cd with a redirection"),
+    script_gap(
+        "an untracked script after cd",
+        "cd ./web && bash x.sh",
+        "bash runs web/x.sh, which is not a tracked file",
+    ),
+    script_gap(
+        "node_modules/.bin with no lockfile",
+        "./node_modules/.bin/tsc --noEmit",
+        "it runs ./node_modules/.bin/tsc, which is not a tracked file",
+    ),
+    script_gap(
+        "node_modules/.bin with a lockfile in another directory",
+        "cd ./web && ./node_modules/.bin/tsc --noEmit",
+        "it runs web/node_modules/.bin/tsc, which is not a tracked file",
+        "src/pnpm-lock.yaml",
+    ),
+    script_gap(
+        "node_modules/.bin climbing out",
+        "cd ./web && ./node_modules/.bin/../../evil",
+        "it runs web/node_modules/.bin/../../evil, which is not a tracked file",
+        "web/pnpm-lock.yaml",
+    ),
+    script_gap(
+        "nested node_modules",
+        "cd ./web && a/node_modules/b/node_modules/.bin/x",
+        "it runs web/a/node_modules/b/node_modules/.bin/x, which is not a tracked file",
+        "web/pnpm-lock.yaml",
+    ),
+    script_gap(
+        "node_modules/.bin under a yarn lockfile",
+        "cd ./web && ./node_modules/.bin/tsc",
+        "it runs web/node_modules/.bin/tsc, which is not a tracked file",
+        "web/yarn.lock",
+    ),
+    script_gap(
+        "pnpm install",
+        "pnpm --dir web install --frozen-lockfile",
+        "it runs pnpm, which runs what an untracked recipe says",
+        "web/pnpm-lock.yaml",
+        needs=("pnpm",),
     ),
     (
         "timeout",
@@ -1470,6 +1604,20 @@ READY_CASES = [
         m_gate("git diff --check origin/master...HEAD; python3 .mintswarm/dogfood/render-agents.py --check", "shell"),
         {},
     ),
+    ("cd into a tracked directory", m_web_gate("cd ./web && bash x.sh", "web/x.sh"), {}),
+    ("cd ./. and a nested cd", m_web_gate("cd ./. && cd ./web && cd ./. && bash x.sh", "web/x.sh"), {}),
+    (
+        "node_modules/.bin under a pnpm lockfile",
+        m_web_gate("cd ./web && ./node_modules/.bin/tsc --noEmit", "web/pnpm-lock.yaml"),
+        {},
+    ),
+    (
+        "node_modules/.bin under an npm lockfile above",
+        m_web_gate("cd ./web/apps/ui && ./node_modules/.bin/vitest run", "web/package-lock.json", "web/apps/ui/a.ts"),
+        {},
+    ),
+    ("the repository's TypeScript gates", m_typescript_gates, {}),
+    ("a test named after cd", m_web_gate("cd ./web && python3 tests/test_x.py", "web/tests/test_x.py"), {}),
     ("a ref without render-agents.py", m_no_renderer, {"agents-drift": "not applicable: the ref has no"}),
     (
         "a ref whose renderer differs",

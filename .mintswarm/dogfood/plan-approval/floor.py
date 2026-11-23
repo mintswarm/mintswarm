@@ -90,7 +90,10 @@ new dependency's `manifest`.
   external-steps             external_steps is not empty
   gate-changes               gate_changes is not empty, or a declared path is
                              .mintswarm/config.yaml or a word of a gates.run
-                             command (without a leading `./`), compared
+                             command (without a leading `./`, and also joined
+                             to the directory of every earlier `cd ARG` in
+                             the same command, the ARG's leading `./`, `.`
+                             and empty segments dropped), compared
                              case-insensitively
   tests-none                 gates.tests is `none` and a declared path is
                              outside the `docs` component's paths
@@ -453,10 +456,15 @@ def validate_config(config: dict, component: str) -> dict:
             words = shlex.split(gate["command"])
         except ValueError as exc:
             raise InputError(f"config: gate {name}: command does not split: {exc}") from exc
-        for word in words:
+        directory = []
+        for index, word in enumerate(words):
             while word.startswith("./"):
                 word = word[2:]
             gate_words.append((name, word))
+            if directory:
+                gate_words.append((name, "/".join([*directory, word])))
+            if index > 0 and words[index - 1] == "cd":
+                directory += [segment for segment in word.split("/") if segment not in ("", ".")]
 
     if component not in components:
         raise InputError(f"--component {component!r} is not a component in the config")
