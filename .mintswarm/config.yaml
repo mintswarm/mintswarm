@@ -113,7 +113,7 @@ pipeline:
   dependencies:
     review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
   review:
-    max_rounds: 3
+    max_rounds: 5
     reviewers: [zmij]                # default reviewers of a PR; see components above
 
 gates:
