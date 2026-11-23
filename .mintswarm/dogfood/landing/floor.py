@@ -66,24 +66,41 @@ Inputs:
   staleness from `commit` and never read `current`. A verdict or
   conclusion value the rules do not know is a hit, not unusable input.
 
-Every git command, the plan floor's included, runs with a neutral
-configuration set in this process's environment:
+The base, the head, the merge base, the diff, the blobs and the config at
+the base are read from an object store made for this run, through the plan
+floor's job_object_store (see plan-approval/floor.py), never from the job
+repository's own objects:
 
-- the system and global config files are not read (GIT_CONFIG_NOSYSTEM=1,
-  GIT_CONFIG_GLOBAL set to the null device, GIT_ATTR_NOSYSTEM=1);
-- config, external-diff and diff-option settings passed through the
-  environment (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT with its
-  GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, GIT_EXTERNAL_DIFF,
-  GIT_DIFF_OPTS) are dropped;
-- replace objects and grafts are off (GIT_NO_REPLACE_OBJECTS=1,
-  GIT_GRAFT_FILE set to the null device, GIT_REPLACE_REF_BASE dropped), so
-  neither refs/replace/ (`git replace`, `git replace --graft`) nor
-  info/grafts, which every worktree of the repository shares, can swap the
-  content of the base or the head, the config read at the base, or the
-  history the merge base is found in.
+- every git command, the plan floor's included, runs with the plan floor's
+  neutral environment, set in this process's environment: the system and
+  global config files are not read (GIT_CONFIG_NOSYSTEM=1,
+  GIT_CONFIG_GLOBAL set to the null device, GIT_ATTR_NOSYSTEM=1); config,
+  external-diff and diff-option settings passed through the environment
+  (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_n and
+  GIT_CONFIG_VALUE_n, GIT_EXTERNAL_DIFF, GIT_DIFF_OPTS) and the variables
+  that point git at another repository or object directory (GIT_DIR,
+  GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and the rest) are
+  dropped; replace objects, grafts and the commit-graph are off
+  (GIT_NO_REPLACE_OBJECTS=1, GIT_GRAFT_FILE set to the null device,
+  GIT_REPLACE_REF_BASE dropped, core.commitGraph=false), and lazy fetches
+  too;
+- a repository whose config makes it a partial clone is refused;
+- --base and --head are resolved in the job repository without peeling,
+  and both ids are fetched, by protocol v2 over `file://` with an
+  upload-pack that ignores replace objects, grafts and the commit-graph,
+  into a fresh bare store in the system temp directory (prefix
+  `msw-floor-objects-`). The receiving side hashes every object and checks
+  that the history is complete, so a forged or missing object fails the
+  fetch; a shallow result is refused;
+- both ids are peeled to their commits in the store, every later read runs
+  as `git --git-dir=<store>`, and the store is deleted when the run ends.
 
-The repository's own config is still read, as git needs it; the options
-above override the settings in it that could hide or reshape entries.
+So neither refs/replace/ (`git replace`, `git replace --graft`), nor
+info/grafts, nor a commit-graph, nor a forged loose object or pack in the
+job repository can swap the content of the base or the head, the config
+read at the base, or the history the merge base is found in. The store's
+config is git's default; the job repository's config is read only by the
+upload-pack that serves the fetch.
 
 Binary entries are found from their content, not from attributes: an entry
 is binary when either side's blob holds a NUL byte in its first 8000 bytes,
@@ -178,10 +195,14 @@ stand for a later head. That is no defence against an edit: a round's
 whoever can edit the kept rounds can set to the head. The boundary that
 remains: the kept rounds the facts are built from sit outside every
 repository by convention only (on one account any process can write
-them); facts.json and this verdict stay in job paths a stage can write; and
-the base, the head, the merge base, the diff and the config at the base
-are still read from the job repository's shared object store, which every
-job's stages can write. `fetched_at` and `approval` are not judged here.
+them); facts.json and this verdict stay in job paths a stage can write; the
+ref names given to --base and --head, and any revision syntax in them, are
+resolved in the job repository, whose refs the stages can write; the
+object store sits in the system temp directory under the same account, so
+the stages cannot write it by convention only (and a killed run leaves it
+behind); and a stage that forges any object in the fetched history makes
+every run exit 2, which counts as a human decision. `fetched_at` and
+`approval` are not judged here.
 Running the floor from trusted state is the landing decision's concern, not
 this script's.
 
@@ -201,10 +222,11 @@ separators in that reason are printed as JSON escapes (`\\n`, `\\u2028`), so
 a reason cannot add a line. Then `floor: hit` or `floor: clean`.
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
-missing or broken plan-approval/floor.py, an unresolvable base or head, no
-merge base, a head the base already contains, no config at the base, an
-invalid config, a missing, unreadable, malformed or mismatched facts
-file, an unreadable plan, a diff that does not parse, git or yq missing or
+missing or broken plan-approval/floor.py, an unresolvable base or head, a
+partial clone, a failed fetch into the object store (a forged or missing
+object), a shallow result, no merge base, a head the base already
+contains, no config at the base, an invalid config, a missing,
+unreadable, malformed or mismatched facts file, an unreadable plan, a diff that does not parse, git or yq missing or
 failing, a stale verdict that cannot be deleted, or any unexpected error.
 Unusable input leaves no verdict file, unless a stale one could not be
 deleted. The interpreter itself exits 1 when it crashes outside main(), for
@@ -302,7 +324,9 @@ def remove_stale_verdict() -> None:
 
 
 def neutral_git_config() -> None:
-    """Keep system, global and environment config away from every git command run here."""
+    """Keep system, global and environment config away from git, for readiness/check.py only.
+
+    The landing floor itself uses the plan floor's stricter neutral_git_env(), through job_object_store()."""
     for name in list(os.environ):
         if name in DROPPED_ENV or name.startswith(DROPPED_ENV_PREFIXES):
             del os.environ[name]
@@ -419,18 +443,9 @@ def line_limit(estimated_lines: int, factor) -> int:
 # --- the diff ------------------------------------------------------------
 
 
-def resolve_head(ref: str) -> str:
+def merge_base(base: str, head: str, git_dir=None) -> str:
     try:
-        return P.resolve_base(ref)
-    except P.InputError as exc:
-        if "does not resolve" in str(exc):
-            raise InputError(f"head ref {ref!r} does not resolve to a commit") from exc
-        raise
-
-
-def merge_base(base: str, head: str) -> str:
-    try:
-        proc = subprocess.run(["git", "merge-base", base, head], capture_output=True)
+        proc = subprocess.run(P.git_argv(git_dir, "merge-base", base, head), capture_output=True)
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
     commit = proc.stdout.decode("ascii", errors="replace").strip()
@@ -455,9 +470,9 @@ def split_z(data: bytes, what: str) -> list:
     return records
 
 
-def read_modes(span: str) -> tuple:
+def read_modes(span: str, git_dir=None) -> tuple:
     """Return ({path: (old mode, new mode, old blob, new blob)}, [added path]) from `git diff --raw`."""
-    records = split_z(P.run(["git", "diff", "--raw", "--no-abbrev", *DIFF_OPTIONS, span]), "git diff --raw")
+    records = split_z(P.run(P.git_argv(git_dir, "diff", "--raw", "--no-abbrev", *DIFF_OPTIONS, span)), "git diff --raw")
     if len(records) % 2:
         raise InputError("git diff --raw: a header without a path")
     modes, added = {}, []
@@ -471,14 +486,17 @@ def read_modes(span: str) -> tuple:
     return modes, added
 
 
-def binary_blobs(blobs: set) -> set:
+def binary_blobs(blobs: set, git_dir=None) -> set:
     """Return the blobs that hold a NUL in their first BINARY_PROBE bytes."""
     blobs = sorted(b for b in blobs if b.strip("0"))
     if not blobs:
         return set()
     try:
         proc = subprocess.Popen(
-            ["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            P.git_argv(git_dir, "cat-file", "--batch"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
         raise InputError(f"cannot run git: {exc}") from exc
@@ -512,14 +530,15 @@ def binary_blobs(blobs: set) -> set:
     return binary
 
 
-def read_diff(base: str, head: str) -> tuple:
+def read_diff(base: str, head: str, git_dir=None) -> tuple:
     """Return ([(path, added, deleted)], [added path], {gitlink path}).
 
     Counts are None when unmeasurable: binary, or a gitlink on either side.
     """
     span = f"{base}...{head}"
     entries = []
-    for record in split_z(P.run(["git", "diff", "--numstat", *DIFF_OPTIONS, span]), "git diff --numstat"):
+    numstat = P.run(P.git_argv(git_dir, "diff", "--numstat", *DIFF_OPTIONS, span))
+    for record in split_z(numstat, "git diff --numstat"):
         parts = record.split("\t", 2)
         if len(parts) != 3 or parts[2] == "":
             raise InputError(f"git diff --numstat: unexpected record {record!r}")
@@ -534,17 +553,18 @@ def read_diff(base: str, head: str) -> tuple:
     if len(set(changed)) != len(changed):
         raise InputError("git diff --numstat: a path appears twice")
     new = split_z(
-        P.run(["git", "diff", "--name-only", "--diff-filter=A", *DIFF_OPTIONS, span]), "git diff --diff-filter=A"
+        P.run(P.git_argv(git_dir, "diff", "--name-only", "--diff-filter=A", *DIFF_OPTIONS, span)),
+        "git diff --diff-filter=A",
     )
     stray = [path for path in new if path not in changed]
     if stray or any(path == "" for path in new):
         raise InputError(f"git diff --diff-filter=A: paths missing from --numstat: {stray}")
-    modes, raw_added = read_modes(span)
+    modes, raw_added = read_modes(span, git_dir)
     if sorted(modes) != sorted(changed) or sorted(raw_added) != sorted(new):
         raise InputError("git diff --raw and --numstat disagree on the changed or added paths")
     gitlinks = {path for path, (old, new_, _, _) in modes.items() if GITLINK in (old, new_)}
     blobs = {blob for old, new_, a, b in modes.values() for mode, blob in ((old, a), (new_, b)) if mode in BLOB_MODES}
-    binary = binary_blobs(blobs)
+    binary = binary_blobs(blobs, git_dir)
     unmeasurable = gitlinks | {path for path, (_, _, a, b) in modes.items() if a in binary or b in binary}
     entries = [(path, None, None) if path in unmeasurable else (path, a, d) for path, a, d in entries]
     return entries, new, gitlinks
@@ -729,10 +749,10 @@ def read_facts(path: str, base: str, head: str) -> tuple:
     return data, facts
 
 
-def ls_tree(treeish: str) -> list:
+def ls_tree(treeish: str, git_dir=None) -> list:
     """Return [(type, object, name)] for the entries of a tree, from `git ls-tree -z --full-tree`."""
     entries = []
-    for record in split_z(P.run(["git", "ls-tree", "-z", "--full-tree", treeish]), "git ls-tree"):
+    for record in split_z(P.run(P.git_argv(git_dir, "ls-tree", "-z", "--full-tree", treeish)), "git ls-tree"):
         header, tab, name = record.partition("\t")
         parts = header.split(" ")
         if not tab or name == "" or len(parts) != 3:
@@ -741,11 +761,11 @@ def ls_tree(treeish: str) -> list:
     return entries
 
 
-def has_workflows(base: str) -> bool:
+def has_workflows(base: str, git_dir=None) -> bool:
     """True when the base commit has a .github/workflows entry, names compared case-insensitively."""
-    for kind, obj, name in ls_tree(base):
+    for kind, obj, name in ls_tree(base, git_dir):
         if kind == "tree" and name.lower() == ".github":
-            if any(entry.lower() == "workflows" for _, _, entry in ls_tree(obj)):
+            if any(entry.lower() == "workflows" for _, _, entry in ls_tree(obj, git_dir)):
                 return True
     return False
 
@@ -844,7 +864,7 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
     return results
 
 
-def facts_rules(facts: dict, base: str, head: str) -> list:
+def facts_rules(facts: dict, base: str, head: str, git_dir=None) -> list:
     results = []
 
     def rule(name: str, reasons: list) -> None:
@@ -879,7 +899,7 @@ def facts_rules(facts: dict, base: str, head: str) -> list:
             reasons.append(f"{label} is not completed")
         else:
             reasons.append(f"{label} has conclusion {check['conclusion']!r}, not 'success'")
-    if not facts["checks"] and has_workflows(base):
+    if not facts["checks"] and has_workflows(base, git_dir):
         reasons.append("no check is reported on the head, but the base has .github/workflows")
     rule("checks", reasons)
 
@@ -941,18 +961,19 @@ def landing_floor(argv: list) -> int:
     global P
     remove_stale_verdict()
     args = parse_args(argv)
-    neutral_git_config()
     P = load_plan_floor()
+    with P.job_object_store({"base": args["base"], "head": args["head"]}) as (store, commits):
+        return judge(args, store, commits["base"], commits["head"])
 
-    base = P.resolve_base(args["base"])
-    config = P.load_config(base)
+
+def judge(args: dict, store: str, base: str, head: str) -> int:
+    config = P.load_config(base, git_dir=store)
     cfg = P.validate_config(config, args["component"])
     landing = validate_landing(config, cfg["paths"])
-    head = resolve_head(args["head"])
-    merge = merge_base(base, head)
+    merge = merge_base(base, head, store)
     facts_data, facts = read_facts(args["facts"], base, head)
     data = P.read_plan(args["plan"])
-    entries, new, gitlinks = read_diff(base, head)
+    entries, new, gitlinks = read_diff(base, head, store)
 
     try:
         footprint = P.parse_footprint(data.decode("utf-8"))
@@ -962,7 +983,7 @@ def landing_floor(argv: list) -> int:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
         results += footprint_rules(footprint, entries, new, gitlinks, landing)
     results += policy_rules(entries, args["component"], cfg, landing)
-    results += facts_rules(facts, base, head)
+    results += facts_rules(facts, base, head, store)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
     verdict = {
