@@ -50,6 +50,7 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 ## Build output
 
 - Build output goes under `{{ target_dir }}`, set by `target-dir` in `[build]` of `.cargo/config.toml`, never under Cargo's default `target/`.
+- `{{ target_dir }}` is git-ignored, by default through the root `build/` entry in `.gitignore`, so build output is never committed.
 - Where `.cargo/config.toml` already has a `[build]` header without `target-dir`, the setting is not applied there, so add `target-dir = "{{ target_dir }}"` to that section by hand.
 
 ## Local checks
