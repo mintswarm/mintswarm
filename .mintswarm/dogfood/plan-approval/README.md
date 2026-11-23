@@ -15,8 +15,9 @@ Both layers run in every mode, so a disagreement between them, or with the maint
 
 After the plan stage returns a plan, in this order:
 
-1. **Post the TL;DR.** Once the plan artifact is published, post one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). This is done in every mode and for every published plan, revisions included. The comment holds a heading line naming the plan's TL;DR, the section's bullets unchanged, and the full `html_url` GitHub returned for the plan artifact. The section is the lines after the plan's first `## TL;DR` line up to the next line starting with `## `; it must come right after the title and summary line (rule 11 of `.mintswarm/stages/plan.md`). Ignoring blank lines, it is usable only when all of these hold:
-   - it has three to six lines, and each starts with `- `; anything else, such as prose, an indented continuation line, a nested bullet, a heading or a fence line, makes it unusable, and nothing is dropped or repaired;
+1. **Post the TL;DR.** Once the plan artifact is published, post one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). This is done in every mode and for every published plan, revisions included. The comment holds a heading line naming the plan's TL;DR, the section's bullets unchanged, and the full `html_url` GitHub returned for the plan artifact. The section is the lines after the plan's first `## TL;DR` line up to the next line starting with `## `. It is usable only when all of these hold (rule 11 of `.mintswarm/stages/plan.md`):
+   - the `## TL;DR` line comes right after the title and summary line, before any other `## ` heading;
+   - ignoring blank lines, it has three to six lines, and each starts with `- `; anything else, such as prose, an indented continuation line, a nested bullet, a heading or a fence line, makes it unusable, and nothing is dropped or repaired;
    - every line has an even number of backticks, which pair up into inline code spans;
    - outside those code spans, no line holds `@`, `<`, `>`, `](`, a bare GitHub reference (`#` followed by a digit, `owner/repo#N`, `GH-` followed by a digit) or a run of 40 hexadecimal characters; text inside a code span is exempt from these checks;
    - no line holds a URL (`://` or `www.`), inside a code span or not.
