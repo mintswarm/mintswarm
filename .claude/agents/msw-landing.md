@@ -64,21 +64,32 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - new dependencies;
   - disabled checks: skip or ignore attributes, lint allowances, removed or loosened gates, `--no-verify`;
   - broad catch-alls: catch-everything handlers, swallowed errors, `|| true`;
-  - test changes that weaken assertions: deleted tests or asserts, loosened expected values.
+  - test changes that weaken assertions: deleted tests or asserts, loosened expected values;
+  - stray files: debug output, scratch or generated files, anything the plan's steps do not call for, and secrets;
+  - unexplained behaviour: anything the change does beyond the plan's steps and declared changes that neither the plan nor the code around it explains.
 - **Process:**
   - the review rounds, with their verdicts, finding counts and the address answers;
+  - in each address answer, every blocker or major finding that was disputed rather than fixed, and every fix that does not match what its finding asked, read against the diff;
   - the gate history, with the failed rounds and their failed tests;
   - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
   - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
-- **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present. It is reported only, and does not change the confidence except through the plan sha256 check, which is a consistency check.
+- **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present, and whether the plan was approved by a human, as Bands defines it. That bears on the bands, and the plan sha256 check is a consistency check.
 
 ## Bands
 
 The confidence is your estimate, from 0 to 100, that landing this change without a person is right: that a careful maintainer would approve the PR as it stands, that it does what the approved plan says and nothing else, and that nothing it does is outside what the landing floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it.
 
-A path under `pipeline.landing.require_human` is left to the landing floor, which sends such a change to a person whatever you rate; it is not a hard trigger, and you do not read that setting. Rate every change on its merits.
+Your confidence rests on three grounds:
+
+- **Plan compliance:** the change complies with the approved plan: its footprint, its steps and the changes it declares.
+- **Reviews passed:** the last review round is `pass` and `current`, no blocker or major finding is left open or was disputed in an address answer, and each fix matches what its finding asked.
+- **Care:** the change does nothing careless: no disabled or weakened checks or tests, no swallowed errors or catch-alls, no stray files or secrets, and no unexplained behaviour beyond the plan.
+
+What the plan declared and a human approved, such as gate changes, config edits, protected paths and a size within the footprint, is not a doubt in itself, and neither is the number of review rounds before a pass. The plan was approved by a human when `approval.approver` is a login that does not end in `[bot]`, compared case-insensitively, and, when `approval.decision` is present, its `record.decision` is `human` and its `record.subject.plan.sha256` is the sha256 of `artefacts/plan.md`. Without that, declared gate and config changes and more than one review round still count, as the bands below say.
+
+A path under `pipeline.landing.require_human` is left to the landing floor, which sends to a person only what the approved plan did not cover: a matching path the footprint does not declare, a gate change without its `gate_changes` entry, or any matching path when the plan was not approved by a human. It is not a hard trigger, and you do not read that setting. Rate every change on its merits.
 
 Pick exactly one band. Check them in this order and take the first whose conditions hold:
 
@@ -97,12 +108,12 @@ Pick exactly one band. Check them in this order and take the first whose conditi
    - a review is re-requested and not yet given: `review_requests` is not `[]`;
    - an unresolved doubt would change whether the change does what the plan says.
 3. `needs-review` (shown as Needs review), confidence 50 to 79, when none of the above holds and any of these holds:
-   - there is more than one review round;
+   - an earlier blocker or major finding was disputed, or its fix does not match what was asked;
    - an earlier gate round failed;
    - a steer is listed: `steers` is not `[]`;
    - a broad catch-all appears: a catch-everything handler, a swallowed error, `|| true`;
-   - `gate_changes` or `external_steps` is not empty;
-   - the diff makes a declared change to `.mintswarm/config.yaml` or to a gate-named file.
+   - `external_steps` is not empty;
+   - for a plan not approved by a human only: there is more than one review round, `gate_changes` is not empty, or the diff makes a declared change to `.mintswarm/config.yaml` or to a gate-named file.
 4. `likely-safe` (shown as Likely safe), confidence 80 to 94, when none of the above holds, every condition below holds, and you state at least one doubt.
 5. `safe` (shown as Safe), confidence 95 to 100, when none of the above holds, every condition below holds, and you have no doubt to state.
 
@@ -111,13 +122,13 @@ The conditions of `likely-safe` and `safe`:
 - every acceptance criterion is `yes`;
 - the diff is within the footprint;
 - no undeclared dependency, disabled check, broad catch-all or weakened assertion appears;
-- review passed in its first round: exactly one review round, verdict `pass`, and it is `current`;
+- review passed: the last review round is `pass` and `current`, and no blocker or major finding is left open or disputed; for a plan not approved by a human, also in its first round: exactly one review round;
 - every gate round passed, and the latest is `current`;
 - there is no steer: `steers` is `[]`;
 - no review is re-requested: `review_requests` is `[]`;
 - every consistency check holds;
 - every listed check concluded `success`;
-- `gate_changes` and `external_steps` are empty, and the diff changes no config or gate-named file.
+- `external_steps` is empty; for a plan not approved by a human, also `gate_changes` is empty and the diff changes no config or gate-named file.
 
 When none of the bands' conditions is met exactly, take `needs-review`.
 

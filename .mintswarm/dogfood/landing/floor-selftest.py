@@ -33,8 +33,23 @@ Checks:
 - clean cases, a dependency manifest declared only through
   new_dependencies, a path with a space and a non-ASCII character, and
   `mode: shadow`;
+- the default facts' approver is `mintswarm[bot]`, so no path is covered
+  and every require_human and protected hit ends with the not-approved
+  reason;
 - single-rule hits: each diff rule, `size` at and one over its limit, and
   the require_human rules with case variants;
+- coverage, with a human-approved plan, with and without a matching `human`
+  decision record: declared CLAUDE.md and .claude/agents/x.md, the config
+  and a gate word each with its `<path>:` gate_changes entry, CODEOWNERS
+  and .github/workflows/ci.yml, and web/index.html in the issue's own
+  require-human component are clean; an undeclared CLAUDE.md, a declared
+  config change with no entry, an entry naming another file or holding the
+  path but not as its prefix, and `claude.md` declared while CLAUDE.md
+  changed still hit; a bot approver (in any case), a decision `auto`, a
+  `human` decision for another plan, a malformed decision record, no
+  approval and an approval that is a string each exit 1 with the
+  not-approved reason; an unusable footprint gives only the path's own
+  reason; a declared symlink at .github/workflows still hits `protected`;
 - protected: each fixed path, also under a config without require_human;
 - footprint: an unusable footprint skips the three diff rules and still
   evaluates the other eight;
@@ -95,9 +110,9 @@ Checks:
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
   checkout's objects, against plan-approval/fixtures/plan-{20,19}.md give
-  their recorded verdicts;
-- glob semantics: require-human-paths reasons agree with
-  plan-approval/floor.py's matching;
+  their recorded verdicts, and are clean under a human approval;
+- glob semantics: require-human-paths reasons, the not-approved reason
+  aside, agree with plan-approval/floor.py's matching;
 - object store, with every run's TMPDIR an empty sandbox directory: GIT_DIR
   and GIT_OBJECT_DIRECTORY at a decoy repository, where a plain git cannot
   see the base, leave the hits in place; a loose blob only the head adds,
@@ -145,6 +160,10 @@ GITLINK = "160000"
 SYMLINK = "120000"
 SUBMODULE = (GITLINK, "1234567890abcdef1234567890abcdef12345678")
 GITMODULES_HIDDEN = b'[submodule "x"]\n\tpath = docs/sub\n\turl = ./nowhere\n\tignore = all\n'
+BOT = "mintswarm[bot]"  # the default facts' approver: no human, so no path is covered
+HUMAN = "maintainer"
+BOT_CAUSE = f"the approver {BOT} is a bot"
+NOT_APPROVED = "the plan was not approved by a human ({}), so the footprint covers none of these paths"
 
 RULES = [
     "footprint",
@@ -190,8 +209,11 @@ HISTORIC = {
         "plan-19.md",
         "tooling",
         {
-            "require-human-paths": [".github/CODEOWNERS matches require_human.paths .github/**"],
-            "protected": [".github/CODEOWNERS is a CODEOWNERS location"],
+            "require-human-paths": [
+                ".github/CODEOWNERS matches require_human.paths .github/**",
+                NOT_APPROVED.format(BOT_CAUSE),
+            ],
+            "protected": [".github/CODEOWNERS is a CODEOWNERS location", NOT_APPROVED.format(BOT_CAUSE)],
         },
     ),
 }
@@ -431,14 +453,16 @@ def load_module(name: str, path: Path):
 # --- plans ----------------------------------------------------------------
 
 
-def footprint(files: list, new_files: list = (), estimated_lines: int = 50, new_dependencies: list = ()) -> dict:
+def footprint(
+    files: list, new_files: list = (), estimated_lines: int = 50, new_dependencies: list = (), gate_changes: list = ()
+) -> dict:
     return {
         "files": list(files),
         "new_files": list(new_files),
         "estimated_lines": estimated_lines,
         "new_dependencies": list(new_dependencies),
         "external_steps": [],
-        "gate_changes": [],
+        "gate_changes": list(gate_changes),
         "overridden_assumptions": [],
     }
 
@@ -522,9 +546,30 @@ def clean_facts(base: str, head: str) -> dict:
             "review_rounds": [review_round(1)],
             "steers": [],
             "review_requests": [],
-            "approval": {"approver": "maintainer", "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
+            "approval": {"approver": BOT, "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None},
         }
     )
+
+
+def human_approval(plan_bytes: bytes = None, decision: str = None, plan_sha: str = None) -> dict:
+    """The facts' approval by a human login; with `decision`, a decision record for `plan_bytes` (or for
+    `plan_sha`, when given)."""
+    approval = {"approver": HUMAN, "approved_at": "2026-01-01T00:00:00Z", "approval_ref": None}
+    if decision is not None:
+        sha = plan_sha or hashlib.sha256(plan_bytes).hexdigest()
+        record = {
+            "tool": "mintswarm-approval-decision",
+            "version": 1,
+            "subject": {"issue": 1, "component": "docs", "plan": {"path": "plan.md", "sha256": sha}},
+            "decision": decision,
+        }
+        approval["decision"] = {"path": "decision.json", "sha256": "0" * 64, "record": record}
+    return approval
+
+
+def not_approved(cause: str) -> str:
+    """The reason a require-human or protected hit ends with when the plan was not approved by a human."""
+    return NOT_APPROVED.format(cause)
 
 
 def facts_bytes(facts) -> bytes:
@@ -1354,6 +1399,161 @@ def check_protected_entries(r: Runner) -> None:
         )
 
 
+def check_coverage(r: Runner, commits: dict) -> None:
+    """With a human-approved plan, declared require-human and protected paths are covered; nothing else is."""
+    config = r.sb.trees[commits["real"]][CONFIG_PATH]
+    covered = [
+        (
+            "CLAUDE.md and .claude/agents/x.md",
+            footprint(["CLAUDE.md", ".claude/agents/x.md"], ["CLAUDE.md", ".claude/agents/x.md"], estimated_lines=4),
+            {"CLAUDE.md": text(1), ".claude/agents/x.md": text(1)},
+            {},
+        ),
+        (
+            "the config with its gate_changes entry",
+            footprint([CONFIG_PATH], estimated_lines=5, gate_changes=[f"{CONFIG_PATH}: a blank line at the end"]),
+            {CONFIG_PATH: config + b"\n"},
+            {},
+        ),
+        (
+            "a gate word with its gate_changes entry",
+            footprint(
+                [".mintswarm/dogfood/render-agents.py"],
+                [".mintswarm/dogfood/render-agents.py"],
+                estimated_lines=5,
+                gate_changes=["  .MintSwarm/dogfood/render-agents.py: the script the agents-drift gate runs"],
+            ),
+            {".mintswarm/dogfood/render-agents.py": text(1)},
+            {},
+        ),
+        (
+            "CODEOWNERS and .github/workflows/ci.yml",
+            footprint(
+                ["CODEOWNERS", ".github/workflows/ci.yml"],
+                ["CODEOWNERS", ".github/workflows/ci.yml"],
+                estimated_lines=4,
+            ),
+            {"CODEOWNERS": text(1), ".github/workflows/ci.yml": text(1)},
+            {},
+        ),
+        (
+            "web/index.html in the issue's own require-human component",
+            footprint(["web/index.html"], ["web/index.html"], estimated_lines=2),
+            {"web/index.html": text(1)},
+            {"component": "web", "config": "rh-web"},
+        ),
+    ]
+    for label, fp, changes, kwargs in covered:
+        plan = plan_text(fp).encode("utf-8")
+        for record in (None, "human"):
+            with_record = " and a human decision record" if record else ""
+            r.expect(
+                f"coverage: {label}, human-approved{with_record}",
+                fp,
+                changes,
+                {},
+                facts={"approval": human_approval(plan, record)},
+                **kwargs,
+            )
+
+    claude = footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=2)
+    claude_plan = plan_text(claude).encode("utf-8")
+    human = {"approval": human_approval(claude_plan)}
+    r.expect(
+        "coverage: an undeclared CLAUDE.md next to a declared file",
+        footprint(["docs/guide.md"], estimated_lines=4),
+        {**appended("docs/guide.md", 1), "CLAUDE.md": text(1)},
+        {
+            "undeclared-files": "CLAUDE.md is changed but is neither in files nor a new dependency's manifest",
+            "undeclared-new-files": "CLAUDE.md is added but is not in new_files",
+            "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md",
+        },
+        facts=human,
+    )
+    missing = f"{CONFIG_PATH} is declared, but no gate_changes entry starts with '{CONFIG_PATH}:'"
+    for label, entries in (
+        ("no gate_changes entry", []),
+        ("an entry naming another file", ["docs/guide.md: a gate reads it"]),
+        ("an entry holding the path but not as its prefix", [f"the gate config {CONFIG_PATH}: a blank line"]),
+    ):
+        r.expect(
+            f"coverage: a declared config change with {label}",
+            footprint([CONFIG_PATH], estimated_lines=5, gate_changes=entries),
+            {CONFIG_PATH: config + b"\n"},
+            {"protected": missing, "require-human-paths": missing},
+            facts=human,
+        )
+    r.expect(
+        "coverage: claude.md declared while CLAUDE.md changed",
+        footprint(["claude.md"], ["claude.md"], estimated_lines=2),
+        {"CLAUDE.md": text(1)},
+        {
+            "undeclared-files": "CLAUDE.md is changed but is neither in files nor a new dependency's manifest",
+            "undeclared-new-files": "CLAUDE.md is added but is not in new_files",
+            "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md",
+        },
+        facts=human,
+    )
+
+    def without_approval(content: dict) -> dict:
+        content.pop("approval")
+        return content
+
+    other = "f" * 64
+    for label, facts, cause in (
+        ("a bot approver", None, BOT_CAUSE),
+        (
+            "an App's bot login in another case",
+            {"approval": {**human_approval(), "approver": "Renovate[Bot]"}},
+            "the approver Renovate[Bot] is a bot",
+        ),
+        ("a decision auto", {"approval": human_approval(claude_plan, "auto")}, "the plan's decision was auto"),
+        (
+            "a human decision for another plan",
+            {"approval": human_approval(decision="human", plan_sha=other)},
+            f"the decision record is for plan sha256 {other}, not this plan's "
+            f"{hashlib.sha256(claude_plan).hexdigest()}",
+        ),
+        (
+            "a decision record that is not an object",
+            {"approval": {**human_approval(), "decision": {"record": "human"}}},
+            "the decision record is malformed",
+        ),
+        ("no approval", without_approval, "no approval is recorded"),
+        ("an approval that is a string", {"approval": HUMAN}, "the approval is not an object"),
+    ):
+        proc, verdict = r.expect(
+            f"coverage: declared CLAUDE.md with {label}",
+            claude,
+            {"CLAUDE.md": text(1)},
+            {"require-human-paths": not_approved(cause)},
+            facts=facts,
+        )
+        T.check(f"coverage: {label} exits 1, never 2", proc.returncode == 1, proc.stderr.strip())
+
+    _, verdict = r.expect(
+        "coverage: an unusable footprint with a human approval",
+        plan_text(None),
+        {"CLAUDE.md": text(1)},
+        {"footprint": None, "require-human-paths": "CLAUDE.md matches require_human.paths CLAUDE.md"},
+        facts={"approval": human_approval()},
+    )
+    T.check(
+        "coverage: an unusable footprint gives only the path's own reason",
+        reasons_of(verdict, "require-human-paths") == ["CLAUDE.md matches require_human.paths CLAUDE.md"],
+        str(reasons_of(verdict, "require-human-paths")),
+    )
+    workflows = footprint([".github/workflows"], [".github/workflows"], estimated_lines=2)
+    r.expect(
+        "coverage: a declared symlink at .github/workflows, human-approved",
+        workflows,
+        {".github/workflows": (SYMLINK, b"../elsewhere")},
+        {"protected": ".github/workflows is the protected directory itself, changed as a single entry"},
+        config="no-rh",
+        facts={"approval": human_approval(plan_text(workflows).encode("utf-8"), "human")},
+    )
+
+
 def check_unusable(sb: Sandbox, commits: dict) -> None:
     good = sb.write_plan("good", plan_text(footprint(["docs/guide.md"], estimated_lines=10)))
     not_utf8 = sb.write_plan("not utf-8", b"# Plan\n\n\xff\xfe\n")
@@ -2155,6 +2355,20 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
             got == expected and verdict.get("not_evaluated") == [] and proc.returncode == (1 if hits else 0),
             f"exit {proc.returncode}, rules {json.dumps(got)}",
         )
+        plan = (FIXTURES / fixture).read_bytes()
+        proc, verdict = r.run(
+            f"{name} under a human approval",
+            plan,
+            component=component,
+            base=base,
+            head=head,
+            facts={"approval": human_approval(plan, "human")},
+        )
+        T.check(
+            f"{name} under a human approval: clean",
+            proc.returncode == 0 and hits_of(verdict) == [],
+            f"exit {proc.returncode}, hits {hits_of(verdict)}",
+        )
 
 
 def partition(paths: list) -> list:
@@ -2183,7 +2397,7 @@ def check_globs(r: Runner, sb: Sandbox) -> None:
             for g in GLOB_PATTERNS
             if plan_floor.matching([g], p, ci=True)
         ]
-        got += reasons_of(verdict, "require-human-paths")
+        got += [x for x in reasons_of(verdict, "require-human-paths") if x != not_approved(BOT_CAUSE)]
     pairs = len(GLOB_PATTERNS) * len(paths)
     T.check(
         f"glob semantics: require-human-paths agrees with plan-approval/floor.py on {pairs} pairs",
@@ -2301,6 +2515,7 @@ def main() -> int:
         check_footprint_hit(runner)
         check_submodules(runner, sb)
         check_protected_entries(runner)
+        check_coverage(runner, commits)
         check_history_tampering(runner, sb)
         check_binary_content(runner, sb)
         check_base_ref(runner, sb, configs)

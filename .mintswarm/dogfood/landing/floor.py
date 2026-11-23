@@ -148,12 +148,18 @@ footprint's `files` plus each new dependency's `manifest`.
                              computed exactly, or an entry is binary
                              (see above) or a submodule (gitlink) on
                              either side
-  require-human-paths        a changed path matches require_human.paths,
-                             compared case-insensitively
-  require-human-components   NAME is in require_human.components, or a
-                             changed path is in the paths of one of them,
-                             compared case-insensitively
-  protected                  a changed path is .mintswarm/config.yaml, a
+  require-human-paths        a changed path that is not covered (see
+                             below) matches require_human.paths, compared
+                             case-insensitively
+  require-human-components   NAME is in require_human.components, unless
+                             the plan was approved by a human, the
+                             footprint is usable and every changed path in
+                             NAME's paths is covered; or a changed path
+                             that is not covered is in
+                             the paths of one of them, compared
+                             case-insensitively
+  protected                  a changed path that is not covered is
+                             .mintswarm/config.yaml, a
                              word of a gates.run command at the base
                              (without a leading `./`), CODEOWNERS,
                              .github/CODEOWNERS or docs/CODEOWNERS, is
@@ -193,6 +199,38 @@ When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff or the facts
 and are.
 
+The three rules above `gates` ask a human only about what the approved
+plan did not cover. A changed path is covered when all of these hold:
+
+- the plan was approved by a human: the facts' `approval` is an object
+  whose `approver` is a non-empty string not ending in `[bot]` (compared
+  case-insensitively) and, when it has a `decision`, that decision's
+  `record.decision` is `human` and its `record.subject.plan.sha256` is the
+  sha256 of the --plan bytes. A missing or malformed `approval`, a
+  malformed decision record, a decision `auto` or any other value, or a
+  record for another plan is no human approval: a hit, never unusable
+  input;
+- the footprint is usable and declares the exact path (compared exactly,
+  as `undeclared-files` compares it), in `files` or as a new dependency's
+  `manifest`;
+- the path is not .github/workflows itself, nor a directory above a
+  protected target: such a path is a single entry standing in for a
+  directory, and a footprint lists files, never directories;
+- when the path is .mintswarm/config.yaml or a word of a base gates.run
+  command (compared case-insensitively), a `gate_changes` entry, stripped
+  and lowercased, starts with the lowercased path followed by `:`, the
+  form the plan stage writes.
+
+A covered path gives no reason in any of the three rules; every other
+matching path gives the same reasons as when no plan covers anything. A
+rule that hits then also says why: a declared gate path without its entry
+adds `<path> is declared, but no gate_changes entry starts with '<path>:'`,
+and with no human approval the rule ends with `the plan was not approved
+by a human (<cause>), so the footprint covers none of these paths`. The
+approver is the one the session gave collect-facts.py, trusted by
+convention like the rest of the facts, so under a `judged` mode the
+protected targets rest on that convention too.
+
 The facts rules trust what the facts file says, apart from staleness: a
 last gate or review round that judged another commit is a hit whatever its
 verdict, so an old green round kept honestly at an earlier commit cannot
@@ -207,8 +245,10 @@ resolved in the job repository, whose refs the stages can write; the
 object store sits in the system temp directory under the same account, so
 the stages cannot write it by convention only (and a killed run leaves it
 behind); and a stage that forges any object in the fetched history makes
-every run exit 2, which counts as a human decision. `fetched_at` and
-`approval` are not judged here.
+every run exit 2, which counts as a human decision. `fetched_at` is not
+judged here, and `approval` is read only to decide which paths are covered
+(see above); its approver is trusted by convention, as the session
+supplies it.
 Running the floor from trusted state is the landing decision's concern, not
 this script's.
 
@@ -308,6 +348,7 @@ DROPPED_ENV = (
 BINARY_PROBE = 8000  # bytes git looks at for a NUL when it decides a blob is binary
 BLOB_MODES = ("100644", "100755", "120000")
 DROPPED_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+BOT_SUFFIX = "[bot]"  # an approver login ending in this, compared case-insensitively, is no human
 
 P = None  # the plan floor's module, once loaded
 
@@ -833,28 +874,72 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
     return results
 
 
-def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> list:
+def plan_approval(facts: dict, plan_sha: str):
+    """None when the facts show a human approval of this plan, otherwise a short cause."""
+    if "approval" not in facts:
+        return "no approval is recorded"
+    approval = facts["approval"]
+    if not isinstance(approval, dict):
+        return "the approval is not an object"
+    approver = approval.get("approver")
+    if not isinstance(approver, str) or approver == "":
+        return "the approver is not a login"
+    if approver.lower().endswith(BOT_SUFFIX):
+        return f"the approver {approver} is a bot"
+    if "decision" in approval:
+        decision = approval["decision"]
+        record = decision.get("record") if isinstance(decision, dict) else None
+        if not isinstance(record, dict):
+            return "the decision record is malformed"
+        value = record.get("decision")
+        if value == "auto":
+            return "the plan's decision was auto"
+        if value != "human":
+            return f"the plan's decision is {brief(value)}, not 'human'"
+        subject = record.get("subject")
+        plan = subject.get("plan") if isinstance(subject, dict) else None
+        recorded = plan.get("sha256") if isinstance(plan, dict) else None
+        if recorded != plan_sha:
+            shown = recorded if is_hash(recorded) else brief(recorded)
+            return f"the decision record is for plan sha256 {shown}, not this plan's {plan_sha}"
+    return None
+
+
+def gate_paths(cfg: dict) -> set:
+    """The lowercased paths whose change is a gate change: the config and the words of base gates.run commands."""
+    return {CONFIG.lower(), *(word.lower() for _, word in cfg["gate_words"])}
+
+
+def coverage(changed: list, footprint, cause, cfg: dict, above: dict) -> tuple:
+    """Return ({covered path}, {path: why a declared path is still not covered}).
+
+    A path is covered when the plan was approved by a human (cause is None), the usable footprint declares
+    the exact path, the path is no single entry for a protected directory or one above a protected target,
+    and a gate path has a gate_changes entry starting with `<path>:`.
+    """
+    if cause is not None or footprint is None:
+        return set(), {}
+    declared = set(footprint["files"]) | {dep["manifest"] for dep in footprint["new_dependencies"]}
+    entries = [entry.strip().lower() for entry in footprint["gate_changes"]]
+    gates = gate_paths(cfg)
+    covered, missing = set(), {}
+    for path in changed:
+        lower = path.lower()
+        if path not in declared or lower in PROTECTED_DIRS or lower in above:
+            continue
+        if lower in gates and not any(entry.startswith(lower + ":") for entry in entries):
+            missing[path] = f"{path} is declared, but no gate_changes entry starts with '{path}:'"
+            continue
+        covered.add(path)
+    return covered, missing
+
+
+def policy_rules(entries: list, component: str, cfg: dict, landing: dict, footprint=None, cause=None) -> list:
+    """The require-human and protected rules; `footprint` is the usable footprint or None, `cause` is
+    plan_approval()'s result. A covered path gives no reason in any of the three."""
     changed = [path for path, _, _ in entries]
     paths = cfg["paths"]
     results = []
-
-    def rule(name: str, reasons: list) -> None:
-        results.append({"rule": name, "result": "hit" if reasons else "clean", "reasons": reasons})
-
-    reasons = []
-    for path in changed:
-        for glob in P.matching(landing["rh_paths"], path, ci=True):
-            reasons.append(f"{path} matches require_human.paths {glob}")
-    rule("require-human-paths", reasons)
-
-    reasons = []
-    if component in landing["rh_components"]:
-        reasons.append(f"the issue's component {component} is in require_human.components")
-    for path in changed:
-        for name in landing["rh_components"]:
-            for glob in P.matching(paths[name], path, ci=True):
-                reasons.append(f"{path} is in component {name} ({glob}), which requires a human")
-    rule("require-human-components", reasons)
 
     targets = [CONFIG, *CODEOWNERS, *PROTECTED_DIRS, *(word for _, word in cfg["gate_words"])]
     above = {}
@@ -864,8 +949,45 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
             directory = "/".join(segments[:i])
             if directory and all(segments[:i]):
                 above.setdefault(directory, target)
-    reasons = []
+    covered, missing = coverage(changed, footprint, cause, cfg, above)
+
+    def rule(name: str, reasons: list, matched: list) -> None:
+        if reasons:
+            reasons += [missing[path] for path in dict.fromkeys(matched) if path in missing]
+            if cause is not None:
+                reasons.append(
+                    f"the plan was not approved by a human ({cause}), so the footprint covers none of these paths"
+                )
+        results.append({"rule": name, "result": "hit" if reasons else "clean", "reasons": reasons})
+
+    reasons, matched = [], []
     for path in changed:
+        if path in covered:
+            continue
+        for glob in P.matching(landing["rh_paths"], path, ci=True):
+            reasons.append(f"{path} matches require_human.paths {glob}")
+            matched.append(path)
+    rule("require-human-paths", reasons, matched)
+
+    reasons, matched = [], []
+    if component in landing["rh_components"]:
+        own = [path for path in changed if P.matching(paths[component], path, ci=True)]
+        if cause is not None or footprint is None or not all(path in covered for path in own):
+            reasons.append(f"the issue's component {component} is in require_human.components")
+    for path in changed:
+        if path in covered:
+            continue
+        for name in landing["rh_components"]:
+            for glob in P.matching(paths[name], path, ci=True):
+                reasons.append(f"{path} is in component {name} ({glob}), which requires a human")
+                matched.append(path)
+    rule("require-human-components", reasons, matched)
+
+    reasons, matched = [], []
+    for path in changed:
+        if path in covered:
+            continue
+        before = len(reasons)
         lower = path.lower()
         if lower == CONFIG.lower():
             reasons.append(f"{path} holds the gates and the landing policy")
@@ -880,7 +1002,9 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict) -> lis
             reasons.append(f"{path} is the protected directory itself, changed as a single entry")
         if lower in above:
             reasons.append(f"{path} is a single entry standing in for a directory above the protected {above[lower]}")
-    rule("protected", reasons)
+        if len(reasons) > before:
+            matched.append(path)
+    rule("protected", reasons, matched)
     return results
 
 
@@ -998,11 +1122,13 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
     try:
         footprint = P.parse_footprint(data.decode("utf-8"))
     except P.FootprintError as exc:
+        footprint = None
         results = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
     else:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
         results += footprint_rules(footprint, entries, new, gitlinks, landing)
-    results += policy_rules(entries, args["component"], cfg, landing)
+    cause = plan_approval(facts, hashlib.sha256(data).hexdigest())
+    results += policy_rules(entries, args["component"], cfg, landing, footprint, cause)
     results += facts_rules(facts, base, head, store)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
