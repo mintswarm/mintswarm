@@ -401,7 +401,10 @@ def read_facts(path: str, pr: int, base: str, head: str) -> tuple:
 
 
 def approval_inputs(facts) -> dict:
-    """The approval the facts record, as an input: no branch here decides on it; the landing floor uses it for coverage."""
+    """The approval the facts record, as an input.
+
+    No branch here decides on it; the landing floor uses it for coverage.
+    """
     approval = facts.get("approval") if isinstance(facts, dict) else None
     if not isinstance(approval, dict):
         return {"approver": None, "approved_at": None, "approval_ref": None, "kickoff_records": []}
