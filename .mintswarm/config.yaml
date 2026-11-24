@@ -137,7 +137,7 @@ gates:
     - name: packs-selftest
       command: "python3 .mintswarm/dogfood/packs/selftest.py"
     - name: python-format
-      command: "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs"
+      command: "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit"
     - name: shell-lint
       command: "bash .mintswarm/dogfood/shell-lint.sh"
     - name: save-output-selftest
@@ -182,6 +182,23 @@ gates:
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check ."
     - name: typescript-test
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run"
+    - name: commit-selftest
+      command: "python3 .mintswarm/dogfood/commit-selftest.py"
+  # Formatters that rewrite files, run on the paths a commit stages by .mintswarm/dogfood/commit.py
+  # and its pre-commit hook; gate names the gates.run entry that checks the same formatting.
+  format:
+    - name: rust-format
+      command: "cargo fmt --all"
+      paths: ["**/*.rs"]
+      gate: rust-format
+    - name: python-format
+      command: "black . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit"
+      paths: ["**/*.py", ".mintswarm/dogfood/github/linux/yq", ".mintswarm/dogfood/msw-vcs", ".mintswarm/dogfood/hooks/pre-commit"]
+      gate: python-format
+    - name: typescript-format
+      command: "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --write ."
+      paths: ["web/**"]
+      gate: typescript-format
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
