@@ -1,0 +1,10 @@
+{
+  "number": 7,
+  "title": "Two effort labels",
+  "state": "open",
+  "labels": [
+    { "id": 11, "name": "effort:S", "color": "c2e0c6" },
+    { "id": 12, "name": "mintswarm", "color": "5319e7" },
+    { "id": 13, "name": "effort:L", "color": "fbca04" }
+  ]
+}
