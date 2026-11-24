@@ -27,7 +27,7 @@ A second App, `mintswarm-dev-steward`, is the landing identity: it has its own k
 | `selftest.sh` | Offline test of all of the above against stubs of `security`, `secret-tool`, `pass`, `systemd-creds`, `uname`, `curl` and `gh` in a temporary sandbox; the file backend is tested for real inside the sandbox. Reaches no real key store and not GitHub. | throwaway keys and dummy tokens only |
 | `linux-check.sh` | Runs `selftest.sh` and the real Linux backends in a throwaway Debian container (see [Linux check](#linux-check)). `linux/` holds its image and in-container script. | throwaway keys generated in the container only |
 
-The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `assign-approvers.py`, `reclassify.py` and `land.py`, `python3`, with `yq` for all but `land.py`. `selftest.sh` also needs `shellcheck`, which it runs at severity `warning`: info and style notes differ between shellcheck versions (0.10 on Debian, 0.11 on Homebrew), so they do not fail it. Each key store needs its own tool:
+The scripts need bash (3.2 is enough), `jq`, `openssl`, `curl`, `git`, `gh` and, for `request-review.py`, `assign-approvers.py`, `reclassify.py`, `msw-state.py` and `land.py`, `python3`, with `yq` for all but `land.py`. `selftest.sh` also needs `shellcheck`, which it runs at severity `warning`: info and style notes differ between shellcheck versions (0.10 on Debian, 0.11 on Homebrew), so they do not fail it. Each key store needs its own tool:
 
 | Key store | Needs |
 | --- | --- |

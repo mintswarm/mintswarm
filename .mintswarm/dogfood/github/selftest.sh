@@ -390,7 +390,7 @@ cat > "$stubs/gh" <<'EOF'
 # {"<sha>": {"reads": [{...}, ...]}}, one per read of each of check-runs,
 # check-suites and status, the last repeating, counted per "<sha>/<kind>" in
 # commits-reads.json, check runs and suites two to a page; review threads for
-# "api graphql" without --input - in threads.json,
+# "api graphql" with no body on stdin in threads.json,
 # {"<n>": [isResolved, ...]} or {"<n>": {"reads": [[isResolved, ...], ...]}},
 # one list per read of the first page, the last repeating, counted in
 # threads-reads.json, two to a page with the index as cursor; and PUT
