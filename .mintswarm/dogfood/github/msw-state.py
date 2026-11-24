@@ -60,9 +60,10 @@ Field ids are resolved per account, never configured, in this order:
 When no step yields an id, set exits 1 and writes nothing, naming the operator
 step: set the field to any option on one issue in GitHub, then run
 `fields resolve ISSUE`. A recreated field gets a new id, so the id is resolved
-again when GitHub refuses a POST with a cached id: the cache entry is dropped,
-the organisation's fields are read, and the POST is retried once with a
-different id found there (exit 1 when none is). When GitHub's answer lists the
+again when GitHub refuses a POST with a cached id (HTTP 422 or 404): the cache
+entry is dropped, the organisation's fields are read, and the POST is retried
+once with a different id found there (exit 1 when none is). Any other failure
+exits 1 and keeps the cache. When GitHub's answer lists the
 POSTed id under another name, the field was renamed: the entry is dropped and
 set exits 1. Notes about learnt and dropped ids go to stderr.
 
@@ -116,6 +117,7 @@ configuration. Standard library only.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -409,6 +411,11 @@ def resolve(name: str, entry_id, number: int, fields: Fields, config: dict) -> t
     raise RuntimeError(unresolved(config, number))
 
 
+def refuses_id(exc: RuntimeError) -> bool:
+    """Whether GitHub refused a field POST over its field id (HTTP 422 or 404), not for another reason."""
+    return re.search(r"\bHTTP (?:404|422)\b", str(exc)) is not None
+
+
 def post_field(number: int, value: str, config: dict, field_id: int) -> object:
     path = f"repos/{{owner}}/{{repo}}/issues/{number}/issue-field-values"
     body = {"issue_field_values": [{"field_id": field_id, "value": value}]}
@@ -427,7 +434,7 @@ def set_field(number: int, value: str, config: dict, dry_run: bool) -> None:
         try:
             got = post_field(number, value, config, field_id)
         except RuntimeError as exc:
-            if how != "cache":
+            if how != "cache" or not refuses_id(exc):
                 raise
             fields.forget(name)
             again = fields.organisation().get(name)

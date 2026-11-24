@@ -29,14 +29,13 @@
 # names in any case) and the issue status it maps to (reset after GitHub moves
 # it, none and status: off leave it alone); field ids resolved by name into the
 # per-account cache (learnt from an issue, a recreated field, a refused stale id,
-# a renamed field, fields resolve, the account key); its verdict mode for plan,
-# decomp and pr; and the README's msw-state tables against the script's VALUES
-# and STATUS. Secrets and the
-# manifest code must appear in no recorded argv, nothing may be left in TMPDIR,
-# each create adds only its own App's config to HOME, and .git/config stays
-# byte-identical across pushes. Every background process runs in its own
-# process group, every wait is bounded, and any group still there is killed on
-# exit.
+# a renamed field, a failure that keeps the cache, fields resolve, the account
+# key); its verdict mode for plan, decomp and pr; and the README's msw-state
+# tables against the script's VALUES and STATUS. Secrets and the manifest code
+# must appear in no recorded argv, nothing may be left in TMPDIR, each create
+# adds only its own App's config to HOME, and .git/config stays byte-identical
+# across pushes. Every background process runs in its own process group, every
+# wait is bounded, and any group still there is killed on exit.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
@@ -412,7 +411,8 @@ cat > "$stubs/gh" <<'EOF'
 # and POSTed at issues/<n>/issue-field-values; a POST replaces the value of each
 # field id given, named as the organisation's field table names it, unless
 # "field_ignores_post", and is refused with HTTP 422 for an id the table lacks;
-# with "fields_unavailable" both answer HTTP 404), "labels" (names, served and PUT at
+# with "field_post_fails" a POST answers HTTP 502, and with "fields_unavailable"
+# both answer HTTP 404), "labels" (names, served and PUT at
 # issues/<n>/labels) and "status" (a status name or null; the issue GET returns
 # it with node_id I_<n>). The repository's labels are in labels.json (served and
 # POSTed at repos/.../labels) and its issue statuses in statuses.json
@@ -564,6 +564,9 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/(is
         fields = item.setdefault("fields", [])
         opath = os.path.join(STATE, "org-fields.json")
         table = {f["id"]: f["name"] for f in (json.load(open(opath)) if os.path.exists(opath) else ORG_FIELDS)}
+        if method == "POST" and item.get("field_post_fails"):
+            print("gh: HTTP 502: Bad Gateway", file=sys.stderr)
+            sys.exit(1)
         if method == "POST" and any(fv["field_id"] not in table for fv in json.loads(data)["issue_field_values"]):
             print("gh: Validation Failed (HTTP 422)", file=sys.stderr)
             sys.exit(1)
@@ -3024,6 +3027,13 @@ seed 56 '{}'
 check "the cache is keyed by account: another owner's id is not used" ms_rc 1 set 56 implementing --base "$off_base"
 check "and nothing is written" eq "$(field_of 56) $(jq -c 'keys' "$MSW_FIELD_CACHE")" ' ["mintswarm"]'
 rm -f "$MSW_STUB_STATE/repo-owner"
+seed 57 '{"field_post_fails": true}'
+touch "$MSW_STUB_STATE/org-fields-readable"
+check "a POST failure other than an id refusal exits 1" ms_rc 1 set 57 implementing --base "$off_base"
+check "keeping the cached id, with no retry and nothing written" \
+  eq "$(grep -c 'dropped' "$sandbox/ms.out") $(grep -c 'HTTP 502' "$sandbox/ms.out") $(jq -c '.mintswarm."msw-state"' "$MSW_FIELD_CACHE") $(field_of 57)" \
+  '0 1 50325307 '
+rm -f "$MSW_STUB_STATE/org-fields-readable"
 
 seed 43 '{"fields_unavailable": true}'
 check "unavailable issue fields exit 1" ms_rc 1 set 43 implementing --base "$real_base"
