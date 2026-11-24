@@ -510,6 +510,7 @@ mod tests {
             status: StatusCode::from_u16(status).unwrap(),
             etag: None,
             rate_limited,
+            retry_after: None,
             body: body.as_bytes().to_vec(),
         }
     }
