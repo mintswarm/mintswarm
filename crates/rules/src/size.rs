@@ -52,7 +52,7 @@ pub struct Judged {
 pub enum SizeSource {
     /// The analyse stage's size.
     Analyse,
-    /// The plan stage's size, raised by the lines floor.
+    /// The plan stage's size, raised to the lines floor when that is larger.
     Plan,
     /// A person's choice on the tracker.
     Person,
