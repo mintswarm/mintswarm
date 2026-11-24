@@ -95,6 +95,7 @@ def read_size(lines: list, after: str, floor) -> str:
     body = [(i, lines[i]) for i in range(start + 1, end) if lines[i].strip()]
     if not body:
         raise SizeError("'## Size' is empty")
+    body = [(i, line.rstrip(" \t")) for i, line in body]
     i, first = body[0]
     if not first.startswith("size: ") or first[len("size: ") :] not in SIZES:
         raise SizeError(f"line {i + 1}: the first line must be exactly 'size: <{'|'.join(SIZES)}>'")

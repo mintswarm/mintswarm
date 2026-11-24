@@ -58,7 +58,7 @@ size: M
 
 `## Split` holds exactly one json fence with that object: `proposed` is a boolean, `reason` is `components`, `other` or `none`, `components` is a list of component names and `finding` is one line.
 
-`## Size` comes right after `## Split` and opens no fence. Ignoring blank lines, its first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text); then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence. A missing or malformed section makes the analysis unusable, as a malformed `## Split` does.
+`## Size` comes right after `## Split` and opens no fence. Ignoring blank lines, its first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text; trailing spaces and tabs on any line of the section are ignored); then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence. A missing or malformed section makes the analysis unusable, as a malformed `## Split` does.
 
 Status: `needs_input` if there is any blocking question, otherwise `complete`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline self-test of floor.py and decision.py, the two scripts of plan approval, and of size.py.
+"""Offline self-test of floor.py, decision.py and size.py, the scripts of plan approval.
 
     selftest.py
 
@@ -176,8 +176,9 @@ Checks:
   a nested bullet, a fence) prints the lines floor and the no-usable-size
   line; in `analysis` mode the same sections exit 1, and so do a json
   fence in the section and a plan's Size after `## Footprint`; blank lines
-  between reasons, CRLF, one or three reasons and a section ended right by
-  the next heading are usable in both; bad arguments, an unknown mode, a
+  between reasons, CRLF, one or three reasons, trailing spaces and tabs on
+  the heading, size line and reasons, and a section ended right by the next
+  heading are usable in both; bad arguments, an unknown mode, a
   missing or non-UTF-8 file, an unusable footprint and a json fence in a
   plan's Size exit 2 with nothing on stdout; and the clean base with a
   `## Size` section after the footprint is clean on every floor rule;
@@ -3293,6 +3294,7 @@ def valid_sizes() -> list:
         ("one reason", "## Size\n\nsize: XL\n- one\n", "XL"),
         ("three reasons", "## Size\n\nsize: XL\n- one\n- two\n- three\n", "XL"),
         ("ended by the next heading", "## Size\n\nsize: 2XL\n- one", "2XL"),
+        ("trailing spaces and tabs", "## Size \n\nsize: XL \t\n- one\t\n- two \n", "XL"),
     ]
 
 
