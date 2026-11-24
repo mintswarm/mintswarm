@@ -225,6 +225,33 @@ def case_hook_partial(f: Fixture) -> None:
     expect(f.head() == head, "a commit was made")
 
 
+def case_hook_pathspec(f: Fixture) -> None:
+    f.write("r.py", UNFORMATTED)
+    f.git("add", "r.py")
+    head = f.head()
+    proc = f.run(["git", "-c", f"core.hooksPath={HOOKS}", "commit", "-q", "-m", "hook", "--", "r.py"])
+    expect(proc.returncode != 0, "git commit with paths succeeded")
+    expect("git commit <paths>" in proc.stderr, f"stderr does not explain the refusal: {proc.stderr}")
+    expect(f.head() == head, "a commit was made")
+    expect(f.git("status", "--porcelain") == "A  r.py\n", "the index or the work tree changed")
+
+
+def case_literal_paths(f: Fixture) -> None:
+    # git reads an existing file's name literally even as a glob; a deleted one it does not
+    f.write("app/[id].txt", "named\n")
+    f.git("add", "app/[id].txt")
+    f.git("commit", "-q", "--no-verify", "-m", "bracketed")
+    (f.repo / "app" / "[id].txt").unlink()
+    f.write("app/i.txt", "glob match\n")
+    f.write("app/d.txt", "glob match\n")
+    proc = f.helper("-m", "remove bracketed", "--", "app/[id].txt")
+    expect(proc.returncode == 0, f"exit {proc.returncode}: {proc.stderr}")
+    committed = f.git("show", "--name-only", "--format=", "HEAD")
+    expect(committed == "app/[id].txt\n", f"the commit holds {committed!r}")
+    status = f.git("status", "--porcelain", "--untracked-files=all")
+    expect(status == "?? app/d.txt\n?? app/i.txt\n", f"git status is {status!r}")
+
+
 def load_helper():
     sys.dont_write_bytecode = True  # leave no __pycache__ next to the helpers
     spec = importlib.util.spec_from_file_location("msw_commit_helper", HELPER)
@@ -267,6 +294,8 @@ CASES = [
     ("merge", case_merge),
     ("hook-formats", case_hook_formats),
     ("hook-partial", case_hook_partial),
+    ("hook-pathspec", case_hook_pathspec),
+    ("literal-paths", case_literal_paths),
     ("live-config", case_live_config),
     ("live-selection", case_live_selection),
 ]

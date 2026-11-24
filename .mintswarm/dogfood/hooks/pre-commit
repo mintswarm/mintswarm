@@ -5,7 +5,8 @@ Install it with `git config core.hooksPath .mintswarm/dogfood/hooks`. It runs
 .mintswarm/dogfood/commit.py --hook from its own resolved location, which
 refuses partially staged and unmerged paths, runs the declared formatters
 whose paths match a staged path, re-stages the staged paths and puts back
-any other file a formatter changed. Its exit status is commit.py's: 0 lets
+any other file a formatter changed. It refuses `git commit <paths>`: stage
+the paths and run plain `git commit`. Its exit status is commit.py's: 0 lets
 git commit, anything else stops the commit.
 """
 

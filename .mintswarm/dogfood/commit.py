@@ -6,12 +6,15 @@
 The commit helper of the dogfooding session, and, in --hook mode, the body
 of the pre-commit hook in .mintswarm/dogfood/hooks/. Run from anywhere in a
 work tree; every git command inherits the environment, so under a hook it
-uses the index git chose (GIT_INDEX_FILE).
+uses the index git chose (GIT_INDEX_FILE). In --hook mode it refuses a
+commit with paths (`git commit <paths>`, `--only`), whose temporary index
+would take the formatted files while the index kept them unformatted.
 
 1. Stages PATHS with `git add -A -- PATHS`, relative to the working
-   directory (not in --hook mode). The staged set is then every path the
-   index adds or modifies against HEAD (against the empty tree before the
-   first commit); deletions are not part of it.
+   directory and read literally, not as globs (not in --hook mode). The
+   staged set is then every path the index adds or modifies against HEAD
+   (against the empty tree before the first commit); deletions are not
+   part of it.
 2. Refuses, naming each path and committing nothing, an unmerged path and a
    staged path that also has unstaged changes.
 3. Reads the formatters from `gates.format` in HEAD:.mintswarm/config.yaml,
@@ -314,13 +317,31 @@ def git_path(root: Path, name: str) -> Path:
     return root / run(["git", "rev-parse", "--git-path", name], cwd=root).stdout.decode().strip()
 
 
+def temporary_index(root: Path) -> bool:
+    """Whether git runs the hook on a temporary index: `git commit <paths>`.
+
+    A plain commit uses the index and `git commit -a` or `-i` its lock, both
+    of which become the index; a commit with pathspecs uses a separate
+    next-index-*.lock and leaves the paths unformatted in the index.
+    """
+    chosen = os.environ.get("GIT_INDEX_FILE")
+    if not chosen:
+        return False
+    env = {k: v for k, v in os.environ.items() if k != "GIT_INDEX_FILE"}
+    real = run(["git", "rev-parse", "--git-path", "index"], cwd=root, env=env).stdout.decode().strip()
+    real = os.path.realpath(root / real)
+    return os.path.realpath(root / chosen) not in (real, real + ".lock")
+
+
 def helper(args: dict) -> int:
     root = Path(run(["git", "rev-parse", "--show-toplevel"]).stdout.decode().strip())
+    if args["hook"] and temporary_index(root):
+        raise Refusal("cannot format a commit with paths (git commit <paths>); stage the paths and run git commit")
     merging = git_path(root, "MERGE_HEAD").exists()
     if not args["hook"] and not args["messages"] and not merging:
         raise UsageError(f"-m is required outside a merge; {USAGE}")
     if args["paths"]:
-        run(["git", "add", "-A", "--"] + args["paths"])
+        run(["git", "add", "-A", "--"] + args["paths"], env=literal_env())
     unmerged = unmerged_paths(root)
     if unmerged:
         raise Refusal("resolve and stage these unmerged paths first: " + ", ".join(unmerged))
