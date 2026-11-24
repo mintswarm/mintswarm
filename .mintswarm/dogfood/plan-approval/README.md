@@ -13,7 +13,7 @@ The threshold is `pipeline.plan_approval.min_confidence` at the same base commit
 
 The size limits are `pipeline.plan_approval.limits` at the same base commit, with `files`, `lines` and `new_files`. `pipeline.plan_approval.limits_by_component` may give a component some of those keys, which replace the flat value key by key for plans of that component; a component without an entry uses `limits`. `pipeline.plan_approval.non_production` lists the globs of paths whose lines are not production lines (tests, fixtures, lockfiles and generated files); when it is absent the floor uses its own generic defaults. The `lines` limit counts the footprint's `production_lines` when a path in `files` matches one of those globs, and `estimated_lines` otherwise, and the landing floor checks the diff's production lines against `production_lines` with the same globs. No limit counts the plan's packages: the floor judges each declared package by its screen (see "The plan's dependency screen").
 
-Assess rates each plan by an auto-approval confidence from 0 to 100 in one of five named bands, defined in `.mintswarm/stages/assess.md`: `blocked` (Blocked, 0, a hard trigger), `uncertain` (Uncertain, 1 to 49), `needs-review` (Needs review, 50 to 79), `likely-safe` (Likely safe, 80 to 94) and `safe` (Safe, 95 to 100). It returns them in one JSON envelope with the hard triggers, the decisive reason and its doubts; an envelope that breaks the stage's rules makes the judgement unusable, so a human decides.
+Assess rates each plan by an auto-approval confidence from 0 to 100 in one of five named bands, defined in `.mintswarm/stages/assess.md`: `blocked` (Blocked, 0, an unusable hard trigger), `uncertain` (Uncertain, 1 to 49), `needs-review` (Needs review, 50 to 79), `likely-safe` (Likely safe, 80 to 94) and `safe` (Safe, 95 to 100). An authority trigger (`not-revertible`, `credentials`, `weakens-safeguard`, `undeclared-high`) keeps the band and the confidence the judge gives and only sends the plan to the maintainer, so no plan that lists one is ever approved without a human. It returns them in one JSON envelope with the hard triggers of both kinds, the decisive reason and its doubts; an envelope that breaks the stage's rules makes the judgement unusable, so a human decides.
 
 Both layers run in every mode, so a disagreement between them, or with the maintainer, is always visible.
 
@@ -83,7 +83,7 @@ The record goes to the floor (step 3) and the decision (step 7) as `--screen`. T
 - **Exit 2 or no record** counts as `human`. Exit 0 counts as `auto` only together with a `decision.json` whose `decision` is `auto`.
 - **`shadow`:** post the shadow-record comment that `decision.py` printed on the issue, through `bot-gh.sh` (`-F body=@<file>`), unchanged except for one line the session appends with the URLs GitHub returned for the plan, `Plan assessment` and decision artifacts. Never write the body by hand: the script sets model and session text (the reason, the doubts, the harness, model, artifact, paths and ref) on one line, without backticks, at most 200 characters, in code spans, so mentions, links and Markdown in it do nothing. The body carries what shadow records 1 to 3 carried by hand:
   - the plan: its path, sha256 and the footprint in brief;
-  - assess: the stage, the harness and model, whether they are as configured, the band's name and the confidence (for example `Likely safe · 92`) with the threshold, the decisive reason, the hard triggers, one row per doubt and the artifact;
+  - assess: the stage, the harness and model, whether they are as configured, the band's name and the confidence (for example `Likely safe · 92`), followed by "requires the maintainer" and the authority triggers listed, with the threshold, the decisive reason, the unusable hard triggers, one row per doubt and the artifact;
   - the floor: the base commit, `--base`, the result, the exit code, and the hit and clean rules;
   - the would-be decision, `judged_decision`, and the decision;
   - the maintainer decision, pending.
@@ -100,7 +100,7 @@ For every plan that goes to the maintainer, the session posts the approval packa
 - the size: the lines `size.py plan` printed, unchanged, or, when it exits 2, a line saying the size could not be read;
 - the floor verdict: hit rules with their reasons, or clean;
 - the dependency screen of every declared package: the `Package` rows that `decision.py` prints (in `shadow` mode, copied from the shadow-record comment), or in other modes the same fields read from `screen.json`: the name and manifest, the version, the status and its reason, the disqualifiers with the advisory ids and the name a typosquat imitates, the direct and transitive dependencies, the publisher and whether it changed, and the age and number of releases;
-- the band and confidence with the threshold, the hard triggers, the reason and the doubts, and the `Plan assessment` artifact;
+- the band and confidence, then "requires the maintainer" and the authority triggers listed (for example `Needs review · 62` · requires the maintainer: `weakens-safeguard`), with the threshold, the unusable hard triggers, the reason and the doubts, and the `Plan assessment` artifact;
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
 
