@@ -112,16 +112,18 @@ pipeline:
   landing:
     mode: shadow                     # always | shadow | judged | never
                                      # shadow: floor, landing stage and landing/decision.py run and are recorded on every PR, while a human decides
-    require_human:                   # any changed path that matches sends the change to a human
+    require_human:                   # a matching changed path that the human-approved plan does not cover sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # rounded down: the diff's production lines (paths matching no plan_approval.non_production glob)
                                      # up to production_lines × lines_factor, and all its lines up to estimated_lines × lines_factor
   # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
   dependencies:
     review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
+  # clear is read from the base ref, never the worktree, by the review, implement (address rounds) and landing stages.
   review:
     max_rounds: 5
     reviewers: [zmij]                # default reviewers of a PR; see components above
+    clear: nit                       # blocker | major | minor | nit; findings at or above it must be cleared before the PR is ready; absent: major
 
 gates:
   tests: selftests                   # only none forces plan approval
@@ -161,7 +163,7 @@ gates:
     - name: rust-lint
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
-      command: "cargo test --workspace"
+      command: "cargo nextest run --workspace && cargo test --doc --workspace"
     - name: proto-lint
       command: "buf lint api/proto"
     - name: proto-breaking

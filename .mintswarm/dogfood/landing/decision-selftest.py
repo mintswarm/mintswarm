@@ -61,9 +61,10 @@ Checks:
   `model_differs` false; without the option, both are false;
 - the comment: its heading, the PR and commits, the would-be and effective
   decisions, one row per floor hit, the Confidence row with the band's
-  name, score and decisive reason, the plan approval as inputs, not gates,
-  and the agents, from the real config; a differing landing model shows
-  the configured one after it, and the configured model shows today's row;
+  name, score and decisive reason, the plan approval as an input the
+  landing floor uses for coverage, and the agents, from the real config; a
+  differing landing model shows the configured one after it, and the
+  configured model shows today's row;
   hostile text with backticks, newlines, an at-sign and the steer marker
   in the reason, a doubt, a floor reason, the approver and the landing
   model stays in code spans, and no line is the steer marker;
@@ -790,9 +791,12 @@ def check_approval(r: Runner) -> None:
         T.check(f"approval: {name}: approver and time are inputs", ok, json.dumps(inputs))
         if mode_line := [line for line in proc.stdout.splitlines() if line.startswith("- **Plan approval")]:
             T.check(
-                f"approval: {name}: in the comment as inputs, not gates",
+                f"approval: {name}: in the comment as an input the floor uses for coverage",
                 mode_line[0]
-                == "- **Plan approval (inputs, not gates):** approver `zmij`, approved at `2026-11-20T10:00:00Z`",
+                == (
+                    "- **Plan approval (input; the landing floor uses it for coverage):** "
+                    "approver `zmij`, approved at `2026-11-20T10:00:00Z`"
+                ),
                 mode_line[0],
             )
     a, b = results["human, no kickoff record"], results["with kickoff records"]
@@ -922,7 +926,10 @@ def check_comment(r: Runner, real: dict) -> None:
         "- **Hard triggers:** none",
         "- **Would-be decision:** `human`",
         "- **Effective decision:** `human`",
-        "- **Plan approval (inputs, not gates):** approver `maintainer`, approved at `2026-01-01T00:00:00Z`",
+        (
+            "- **Plan approval (input; the landing floor uses it for coverage):** "
+            "approver `maintainer`, approved at `2026-01-01T00:00:00Z`"
+        ),
         "- **Agents (harness, model, effort):** "
         + "; ".join(
             f"{stage} `{a['harness']}` `{a['model']}` `{a['effort']}`" for stage, a in expected_agents(real).items()
@@ -991,7 +998,10 @@ def check_comment(r: Runner, real: dict) -> None:
         and f"- **Doubt:** {inert}; if wrong: {inert}; resolved by: {inert}" in lines
         and f"- **Floor hit `steers`:** {inert}" in lines
         and any(
-            line.startswith(f"- **Plan approval (inputs, not gates):** approver `{STEER} @zmij`") for line in lines
+            line.startswith(
+                f"- **Plan approval (input; the landing floor uses it for coverage):** approver `{STEER} @zmij`"
+            )
+            for line in lines
         ),
         proc.stdout,
     )
