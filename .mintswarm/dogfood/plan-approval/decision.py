@@ -3,13 +3,13 @@
 
     decision.py --issue N --component NAME --plan PATH --issue-document PATH
                 --analysis PATH --assessment PATH --assessment-artifact REF
-                --base REF --harness NAME --model NAME
+                --base REF --harness NAME --model NAME [--screen PATH]
 
 Dogfooding stand-in for the control plane's plan-approval decision, which
 combines the two layers of plan approval in code: the deterministic floor
 (floor.py) and the judgement of the assess stage. Paths are relative to the
-working directory, which is the worktree root. Every argument is required,
-each once, as `--name value`; anything else, an empty value or a value that
+working directory, which is the worktree root. Every argument but --screen
+is required; each is given at most once, as `--name value`; anything else, an empty value or a value that
 is an argument name is unusable input. N is a positive decimal integer, the
 issue's number, and REF given to --base must not start with `-`. The first
 action is to delete any stale .mintswarm/job/outputs/decision.json; when
@@ -21,12 +21,14 @@ Inputs:
   `pipeline.plan_approval.mode` and `pipeline.plan_approval.min_confidence`
   (an integer from 90 to 100, 90 when absent) of .mintswarm/config.yaml at
   the commit it resolves to, read and validated by floor.py's own code (loaded from the
-  file next to this one, its `prepare`, which also reads the packages present
-  at the base as the floor does), so the worktree's config is never opened. NAME
+  file next to this one, its `prepare`), so the worktree's config is never opened. NAME
   given to --component must be a defined component.
 - PATH given to --plan, the plan, and the PATHs given to --issue-document
   and --analysis, the issue document and the analysis the floor read, all
   read as UTF-8; an unreadable one is unusable input.
+- PATH given to --screen, the screen record the floor read (the session's
+  .mintswarm/job/outputs/screen.json), read as UTF-8 like the documents;
+  an unreadable one is unusable input.
 - The history of the base commit, read by floor.py's own code.
 
 The base commit, the config at it and the history are read as floor.py
@@ -47,18 +49,21 @@ history makes every run exit 2.
 
 The floor layer is usable only if the verdict is strict JSON (no duplicate
 keys, NaN or Infinity) and all of these hold: its keys are floor.py's, in
-order; `tool` is `mintswarm-plan-floor` and `version` is 2; `plan.sha256`
+order; `tool` is `mintswarm-plan-floor` and `version` is 3; `plan.sha256`
 is the sha256 of the plan's bytes; `issue_document.sha256` and
 `analysis.sha256` are those of the documents given here, so a verdict made
-without them or with other ones does not count; `base.commit` is the
+without them or with other ones does not count; `screen` is null when
+--screen is not given and otherwise has the sha256 of the record given, so
+a verdict made with another record, or with or without one when this run
+differs, does not count; `base.commit` is the
 resolved base; `component` is NAME; `mode` is the base config's mode; every
 rule is {`rule`, `result`, `reasons`} with `result` `hit` or `clean` and
 string reasons exactly when it is a hit; `rules` holds floor.py's rule
 identifiers in order, and `not_evaluated` is empty, or exactly the rules
 that read the footprint (floor.FOOTPRINT_RULES) after a `footprint` hit;
 `verdict` agrees with the rules; and `rules` and `not_evaluated` equal what
-floor.py's own conclude gives for the plan, the documents, the history and
-the validated base config, recomputed here, so an edited verdict that is
+floor.py's own conclude gives for the plan, the documents, the screen
+record, the history and the validated base config, recomputed here, so an edited verdict that is
 consistent in itself still does not count. A usable verdict is therefore
 clean only when all of floor.py's rules ran and are clean.
 
@@ -123,19 +128,31 @@ comment the session posts goes to stdout, in two cases only:
 
 - for `auto`, the auto-approval comment: it says the plan was approved
   without a human, the mode and base commit, the floor result, the
-  judgement rows, the assessment artifact and who judged, and how to veto;
+  Package rows, the judgement rows, the assessment artifact and who judged, and how to veto;
 - in `shadow` mode, the shadow-record comment: the plan's path, sha256 and
   footprint in brief, the assess harness, model and artifact and whether
   they are as configured, the judgement rows, the floor's base, result,
-  exit code and hit and clean rules, `judged_decision` and `decision`, and a
-  pending maintainer decision.
+  exit code and hit and clean rules, the Package rows, `judged_decision`
+  and `decision`, and a pending maintainer decision.
 
 The judgement rows are `Confidence` (the band's display name and the score
 as `<name> · <score>`, the threshold and the reason, or `unusable` with the
 problems), and for a usable judgement `Hard triggers` and one `Doubt` row
 per doubt (its statement, consequence if wrong and resolution).
 
-Model and session text in either is flattened to one line, stripped of
+The Package rows are one `Package` row per entry of the footprint's
+new_dependencies, none when the footprint is unreadable: its name and
+manifest, and the screen record's entry for that (name, manifest), each
+record entry used once: the version, the status (with its reason when
+`unscreened`), the disqualifiers with the advisory ids and the name a
+typosquat imitates, or `none`, and in brief the direct and transitive
+dependencies, the publisher and `publisher_changed`, and `age_days` and
+`releases`. A row says instead that there is no screen record, that the
+record is not usable (as floor.py's parse_screen reads it) or that the
+package is not in it. The record is not part of decision.json.
+
+Model and session text in either, the screen record's and the footprint's
+package text among it, is flattened to one line, stripped of
 control and format characters, its backticks replaced, cut to 200
 characters and set in a code span; layer problems are this script's fixed
 strings. Nothing else is ever printed to stdout.
@@ -143,8 +160,8 @@ strings. Nothing else is ever printed to stdout.
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
 record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, a partial
 clone, a failed fetch into the object store (a forged or missing object, a shallow history), no config at it, an invalid
-config, an unknown component, an unreadable plan, issue document or
-analysis, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
+config, an unknown component, an unreadable plan, issue document,
+analysis or screen record, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
 error. A missing or unusable verdict or assessment is not unusable input: it
 gives a record with that layer unusable. The interpreter itself exits 1 when
 it crashes outside main(), so exit 0 counts only together with a record
@@ -170,13 +187,14 @@ FLOOR = Path(__file__).resolve().parent / "floor.py"
 TOOL = "mintswarm-approval-decision"
 VERSION = 2
 FLOOR_TOOL = "mintswarm-plan-floor"
-FLOOR_VERSION = 2
+FLOOR_VERSION = 3
 FLOOR_KEYS = [
     "tool",
     "version",
     "plan",
     "issue_document",
     "analysis",
+    "screen",
     "component",
     "base",
     "config",
@@ -207,7 +225,7 @@ MAX_DOUBTS = 10
 FENCE_OPEN = "```json"
 FENCE_CLOSE = "```"
 SPAN_LIMIT = 200
-ARGS = (
+REQUIRED = (
     "--issue",
     "--component",
     "--plan",
@@ -219,10 +237,12 @@ ARGS = (
     "--harness",
     "--model",
 )
+OPTIONAL = ("--screen",)
+ARGS = REQUIRED + OPTIONAL
 USAGE = (
     "usage: decision.py --issue N --component NAME --plan PATH --issue-document PATH "
     "--analysis PATH --assessment PATH --assessment-artifact REF --base REF "
-    "--harness NAME --model NAME"
+    "--harness NAME --model NAME [--screen PATH]"
 )
 MODE_REASONS = {
     "always": "mode always: every plan goes to a human",
@@ -272,7 +292,7 @@ def parse_args(argv: list) -> dict:
             raise InputError(f"{name} needs a value; {USAGE}")
         args[name] = value
         i += 2
-    missing = [name for name in ARGS if name not in args]
+    missing = [name for name in REQUIRED if name not in args]
     if missing:
         raise InputError(f"missing {', '.join(missing)}; {USAGE}")
     if not re.fullmatch(r"[1-9][0-9]*", args["--issue"]):
@@ -290,6 +310,7 @@ def parse_args(argv: list) -> dict:
         "base": args["--base"],
         "harness": args["--harness"],
         "model": args["--model"],
+        "screen": args.get("--screen"),
     }
 
 
@@ -343,6 +364,9 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
         problems.append("the floor verdict's issue_document does not match --issue-document")
     if not bound(verdict["analysis"], documents["analysis"]):
         problems.append("the floor verdict's analysis does not match --analysis")
+    screen = verdict["screen"]
+    if not (screen is None if documents["screen"] is None else bound(screen, documents["screen"])):
+        problems.append("the floor verdict's screen does not match --screen")
     base = verdict["base"]
     if not isinstance(base, dict) or base.get("commit") != commit:
         problems.append("the floor verdict's base.commit does not match the base")
@@ -374,14 +398,21 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
 
 
 def floor_rules(
-    plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str, git_dir=None
+    plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str, git_dir=None, screen=None
 ) -> tuple:
     """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None).
 
-    The history is read from git_dir, the object store, when given."""
+    The history is read from git_dir, the object store, when given; screen is the screen record's bytes, or None
+    when --screen is not given."""
     subjects = floor.history(commit, git_dir=git_dir)
     return floor.conclude(
-        plan.decode("utf-8"), issue.decode("utf-8"), analysis.decode("utf-8"), component, cfg, subjects
+        plan.decode("utf-8"),
+        issue.decode("utf-8"),
+        analysis.decode("utf-8"),
+        component,
+        cfg,
+        subjects,
+        None if screen is None else screen.decode("utf-8"),
     )
 
 
@@ -641,7 +672,86 @@ def judgement_rows(layer: dict, min_confidence: int, suffix: str = "") -> list:
     return rows
 
 
-def comment(record: dict) -> str:
+def evidence(value) -> str:
+    """A value of the screen record as a code span: `unknown` when absent, JSON's words for booleans."""
+    if value is None:
+        return "`unknown`"
+    if isinstance(value, bool):
+        return "`true`" if value else "`false`"
+    return span(value)
+
+
+def field(container, key: str):
+    """container[key] when container is a mapping, else None."""
+    return container.get(key) if isinstance(container, dict) else None
+
+
+def disqualifier_text(package: dict) -> str:
+    """The package's disqualifiers, each with its advisory ids or the name it imitates, or `none`."""
+    problems = package.get("problems")
+    parts = []
+    for item in package["disqualifiers"]:
+        text = f"`{item}`"  # one of floor.DISQUALIFIERS, checked by floor.parse_screen
+        if item == "advisory":
+            advisories = field(problems, "advisories")
+            ids = [field(a, "id") for a in advisories] if isinstance(advisories, list) else []
+            ids = [i for i in ids if i is not None]
+            if ids:
+                text += " (" + ", ".join(span(i) for i in ids) + ")"
+        elif item == "typosquat" and field(problems, "typosquat_of") is not None:
+            text += f" of {span(field(problems, 'typosquat_of'))}"
+        parts.append(text)
+    return ", ".join(parts) or "none"
+
+
+def package_row(dep: dict, package) -> str:
+    """The Package row of one declared package: its screen results, or why there are none."""
+    head = f"- **Package:** {span(dep['name'])} in {span(dep['manifest'])}"
+    if isinstance(package, str):
+        return f"{head}: {package}"
+    status = f"`{package['status']}`"  # screened or unscreened, checked by floor.parse_screen
+    if package["status"] == "unscreened":
+        status += f" ({span(package['reason'])})"
+    dependencies = package.get("dependencies")
+    author = package.get("author")
+    establishment = package.get("establishment")
+    return (
+        f"{head}, version {evidence(package.get('version'))}; status {status}; "
+        f"disqualifiers: {disqualifier_text(package)}; "
+        f"dependencies {evidence(field(dependencies, 'direct'))} direct, "
+        f"{evidence(field(dependencies, 'transitive'))} transitive; "
+        f"publisher {evidence(field(author, 'publisher'))}, "
+        f"publisher_changed {evidence(field(author, 'publisher_changed'))}; "
+        f"age_days {evidence(field(establishment, 'age_days'))}, "
+        f"releases {evidence(field(establishment, 'releases'))}"
+    )
+
+
+def package_rows(screen, footprint) -> list:
+    """One Package row per declared package of the footprint (none when it is unreadable), from the screen
+    record's text, or None when --screen is not given."""
+    if footprint is None or not footprint["new_dependencies"]:
+        return []
+    declared = footprint["new_dependencies"]
+    if screen is None:
+        return [package_row(dep, "no screen record (`--screen`)") for dep in declared]
+    try:
+        record = floor.parse_screen(screen)
+    except floor.ScreenError:
+        return [package_row(dep, "the screen record is not usable") for dep in declared]
+    listed = list(record["packages"])
+    rows = []
+    for dep in declared:
+        package = next((p for p in listed if (p["name"], p["manifest"]) == (dep["name"], dep["manifest"])), None)
+        if package is None:
+            rows.append(package_row(dep, "not in the screen record"))
+            continue
+        listed.remove(package)
+        rows.append(package_row(dep, package))
+    return rows
+
+
+def comment(record: dict, packages: list = ()) -> str:
     floor_ = record["layers"]["floor"]
     judgement = record["layers"]["judgement"]
     lines = [
@@ -651,6 +761,7 @@ def comment(record: dict) -> str:
         "",
         f"- **Mode:** `{record['mode']}`, base commit `{record['subject']['base']['commit']}`",
         f"- **Floor:** {floor_line(floor_)}",
+        *packages,
         *judgement_rows(judgement, record["min_confidence"]),
         f"- **Assessment:** {span(judgement['artifact'])}, judged by "
         f"{span(judgement['harness'])} with {span(judgement['model'])}",
@@ -670,7 +781,7 @@ def footprint_brief(footprint) -> str:
     return (
         f"{len(footprint['files'])} files ({len(footprint['new_files'])} new), "
         f"about {footprint['estimated_lines']} lines, "
-        f"{len(footprint['new_dependencies'])} new dependencies"
+        f"{len(footprint['new_dependencies'])} declared packages"
     )
 
 
@@ -678,7 +789,7 @@ def problems_line(layer: dict) -> str:
     return "; ".join(layer["problems"])  # fixed strings from this script
 
 
-def shadow_comment(record: dict, footprint) -> str:
+def shadow_comment(record: dict, footprint, packages: list = ()) -> str:
     floor_ = record["layers"]["floor"]
     judgement = record["layers"]["judgement"]
     subject = record["subject"]
@@ -717,6 +828,7 @@ def shadow_comment(record: dict, footprint) -> str:
         *judgement_rows(judgement, record["min_confidence"], suffix),
         f"- **Floor:** at base commit `{subject['base']['commit']}` (`--base` {span(subject['base']['ref'])}): "
         f"{floor_detail}",
+        *packages,
         f"- **Would-be decision:** `{record['judged_decision']}` (`judged_decision`)",
         f"- **Decision:** `{record['decision']}`",
         "- **Maintainer decision:** pending",
@@ -768,12 +880,19 @@ def run(argv: list) -> int:
             config, cfg = floor.prepare(commit, args["component"], plan, git_dir=store)
             issue = floor.read_document(args["issue_document"], "issue document")
             analysis = floor.read_document(args["analysis"], "analysis")
-            rules, skipped, footprint = floor_rules(plan, issue, analysis, args["component"], cfg, commit, store)
+            screen = None if args["screen"] is None else floor.read_document(args["screen"], "screen record")
+            rules, skipped, footprint = floor_rules(
+                plan, issue, analysis, args["component"], cfg, commit, store, screen
+            )
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
     mode = cfg["mode"]
     plan_sha = sha256(plan)
-    documents = {"issue_document": sha256(issue), "analysis": sha256(analysis)}
+    documents = {
+        "issue_document": sha256(issue),
+        "analysis": sha256(analysis),
+        "screen": None if screen is None else sha256(screen),
+    }
 
     floor_ = floor_layer(plan_sha, commit, args["component"], mode, documents, (rules, skipped))
     judgement = judgement_layer(args, expected_judge(config))
@@ -795,10 +914,11 @@ def run(argv: list) -> int:
         "decision": decision,
         "reasons": reasons,
     }
+    packages = package_rows(None if screen is None else screen.decode("utf-8"), footprint)
     if decision == "auto":
-        text = comment(record)
+        text = comment(record, packages)
     elif mode == "shadow":
-        text = shadow_comment(record, footprint)
+        text = shadow_comment(record, footprint, packages)
     else:
         text = None
     write_record(record)

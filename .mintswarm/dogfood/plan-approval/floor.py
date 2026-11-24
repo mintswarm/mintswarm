@@ -2,14 +2,14 @@
 """Check a plan and its documents against the deterministic floor of plan approval.
 
     floor.py --plan PATH --component NAME --base REF
-             [--issue-document PATH] [--analysis PATH]
+             [--issue-document PATH] [--analysis PATH] [--screen PATH]
 
 Dogfooding stand-in for the control plane's plan-approval floor, the
 deterministic rules that run on a plan before the approval decision. Every
 hit sends the plan to a human; a clean verdict only means that no rule
 written here objects. Paths are relative to the working directory, which is
 the worktree root. --plan, --component and --base are required, and
---issue-document and --analysis optional; each is given at most once, as
+--issue-document, --analysis and --screen optional; each is given at most once, as
 `--name value`. Anything else, an empty value, a value that is an argument
 name or a REF starting with `-` is unusable input. A document that is not
 given is a hit of each rule that reads it. The first action is to delete any
@@ -31,17 +31,7 @@ Inputs:
   `yq -p=yaml -o=json`. The worktree's config is never opened, so a change
   to it in the branch under review cannot loosen the floor. The history is
   the subject of every commit reachable from that commit, read with
-  `git -c log.showSignature=false log -z --format=%s`. The packages present
-  at the base are read from that commit's tree (`git ls-tree -r -z
-  --full-tree`, regular-file blobs only, each read with `git cat-file blob`):
-  the `package` names of the root Cargo.lock and the
-  `workspace.dependencies` keys of the root Cargo.toml (both converted with
-  `yq -p=toml -o=json`), and for every pnpm-lock.yaml, keyed by its
-  directory, the dependency names of each importer's `dependencies`,
-  `devDependencies`, `optionalDependencies` and `peerDependencies` and the
-  names of its `packages` keys (a peer suffix `(…)` and a leading `/`
-  dropped, then the text from the last `@` not at position 0 cut off),
-  converted with `yq -p=yaml -o=json`. A missing file contributes nothing.
+  `git -c log.showSignature=false log -z --format=%s`.
 
 The base commit, the config at it and the history are read from an object
 store made for this run, never from the job repository's own objects:
@@ -83,6 +73,10 @@ run exit 2, which counts as a human decision.
   .mintswarm/job/inputs/issue.md), and the PATH given to --analysis, the
   analysis, both read as UTF-8. Only the issue document's lines before its
   first `## Comments` heading are read, so headings in comments do nothing.
+- The PATH given to --screen, the session's screen record of the plan's
+  declared packages (the assess job's .mintswarm/job/outputs/screen.json,
+  from .mintswarm/dogfood/dependencies/screen.py), read as UTF-8. The floor
+  stays offline: it only reads the record the session made.
 
 Sections of the documents and the plan are found outside fenced blocks: a
 fence opens on a line whose first non-space characters are 3 or more
@@ -95,7 +89,7 @@ The configuration is validated; any failure is unusable input:
 `components` maps names to mappings whose optional `paths` is a list of
 globs; `shared` is absent or a list of globs; `pipeline.plan_approval` has
 `mode` (`always`, `shadow`, `judged` or `never`), `limits` with exactly the
-non-negative integers `files`, `lines`, `new_files` and `new_dependencies`,
+non-negative integers `files`, `lines` and `new_files`,
 optionally `require_human`, with optional lists `components` (each
 defined) and `paths` (globs), and optionally `min_confidence`, an integer
 (not a boolean) from 90 to 100, the auto-approval confidence the decision
@@ -144,17 +138,18 @@ new dependency's `manifest`.
                              matches `non_production`, or else
                              estimated_lines is over limits.lines
   limit-new-files            len(new_files) is over limits.new_files
-  limit-new-dependencies     the number of distinct packages, by ecosystem
-                             and name, of new_dependencies that are not
-                             present at the base is over
-                             limits.new_dependencies (the reason names
-                             them): a Cargo.toml manifest is cargo, present
-                             when in the root Cargo.lock or
-                             [workspace.dependencies]; a package.json is
-                             npm, present when in the pnpm-lock.yaml of the
-                             nearest directory at or above the manifest's
-                             that has one; any other manifest basename is
-                             its own ecosystem, where nothing is present
+  dependency-screen          new_dependencies is not empty and no --screen
+                             is given; or the screen record is not usable
+                             (below), named by a fixed cause; or, matching
+                             the record's packages to new_dependencies by
+                             (name, manifest) as multisets, a declared
+                             package the record does not list, a record
+                             package the footprint does not declare
+                             (unbound), a package whose status is
+                             `unscreened` (its reason named) and each of a
+                             package's disqualifiers (the package, version
+                             and manifest named); nothing is counted, and
+                             no other field of the record is ever a hit
   external-steps             external_steps is not empty
   gate-changes               gate_changes is not empty, or a declared path is
                              .mintswarm/config.yaml or a word of a gates.run
@@ -194,17 +189,23 @@ new dependency's `manifest`.
 
 The limits of the limit-* rules are NAME's: limits with NAME's
 limits_by_component applied, a reason naming the override when it decides
-the limit. Of the base's pnpm-lock.yaml files, only those nearest a
-package.json in new_dependencies are read, so no other one can make the
-floor exit 2.
+the limit.
+
+A usable screen record is strict JSON, an object whose `tool` is
+`dependency-screen`, `version` the integer 1, `mode` `plan` and `packages`
+a list of objects, each with string `name`, `manifest` and `reason`,
+`status` `screened` or `unscreened`, and `disqualifiers` a list of unique
+values out of `advisory`, `yanked`, `deprecated` and `typosquat`; other
+keys are read by nobody here. With no new_dependencies, no --screen and a
+record with no packages are both clean.
 
 Issue criteria are the column-0 items of `## Acceptance criteria` marked
 `N.`, `N)`, `-`, `*` or `+`, with an optional `[ ]` or `[x]` after the
 marker; following non-blank lines that are not items belong to the item,
 and so do indented lines after a blank line, its later paragraphs; a line
 at column 0 after a blank line that is not an item ends it. Table rows are split on `|` not preceded by `\\`,
-and `\\|` then reads as `|`. Question and criterion text in reasons is put on
-one line and cut to 200 characters.
+and `\\|` then reads as `|`. Question and criterion text, and the screen
+record's text, in reasons is put on one line and cut to 200 characters.
 
 When `footprint` is a hit, the rules from require-human-paths to
 overridden-assumptions, which read the footprint, are not evaluated; the
@@ -212,9 +213,9 @@ three document rules always are.
 
 The verdict is .mintswarm/job/outputs/floor.json, written to a temporary
 file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-plan-floor`), `version` (2), `plan` ({`path`, `sha256` of its
-bytes}), `issue_document` and `analysis` (each {`path`, `sha256` of its
-bytes}, or null when not given), `component`, `base` ({`ref` as given,
+(`mintswarm-plan-floor`), `version` (3), `plan` ({`path`, `sha256` of its
+bytes}), `issue_document`, `analysis` and `screen` (each {`path`, `sha256`
+of its bytes}, or null when not given), `component`, `base` ({`ref` as given,
 `commit`, the full hash}), `config` (`.mintswarm/config.yaml`), `mode` (as
 read), `verdict` (`hit` or `clean`), `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in
 the order above, `reasons` empty when clean) and `not_evaluated` (the
@@ -224,10 +225,8 @@ identifiers skipped, in order). One line per evaluated rule is printed, then
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
 unresolvable base ref, a partial clone, a failed fetch into the object
 store (a forged or missing object, a shallow history), no config at the
-base, an invalid config, a root Cargo.lock or Cargo.toml or a
-pnpm-lock.yaml at the base that does not convert or is not of the shape
-read, an unreadable
-or non-UTF-8 plan, issue document or analysis, git or yq missing or
+base, an invalid config, an unreadable or non-UTF-8 plan, issue
+document, analysis or screen record, git or yq missing or
 failing (reading the history too), a stale verdict that cannot be deleted,
 or any unexpected error. Unusable input leaves no verdict file, unless a
 stale one could not be deleted. The interpreter itself exits 1 when it
@@ -254,10 +253,10 @@ from pathlib import Path
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 CONFIG = ".mintswarm/config.yaml"
 TOOL = "mintswarm-plan-floor"
-VERSION = 2
+VERSION = 3
 DOCS = "docs"
 MODES = ("always", "shadow", "judged", "never")
-LIMITS = ("files", "lines", "new_files", "new_dependencies")
+LIMITS = ("files", "lines", "new_files")
 MIN_CONFIDENCE = 90  # the default and lowest pipeline.plan_approval.min_confidence
 FOOTPRINT_KEYS = (
     "files",
@@ -282,10 +281,12 @@ NON_PRODUCTION = (
     "**/Cargo.lock",
     "**/pnpm-lock.yaml",
 )
-# The ecosystem of a new dependency, by its manifest's basename; any other basename is its own ecosystem.
-ECOSYSTEMS = {"Cargo.toml": "cargo", "package.json": "npm"}
-PNPM_LOCK = "pnpm-lock.yaml"
-PNPM_GROUPS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+# The screen record that dependencies/screen.py writes, as the dependency-screen rule reads it.
+SCREEN_TOOL = "dependency-screen"
+SCREEN_VERSION = 1
+SCREEN_MODE = "plan"
+SCREEN_STATUSES = ("screened", "unscreened")
+DISQUALIFIERS = ("advisory", "yanked", "deprecated", "typosquat")
 RULES = (
     "footprint",
     "require-human-paths",
@@ -295,7 +296,7 @@ RULES = (
     "limit-files",
     "limit-lines",
     "limit-new-files",
-    "limit-new-dependencies",
+    "dependency-screen",
     "external-steps",
     "gate-changes",
     "tests-none",
@@ -306,9 +307,12 @@ RULES = (
 )
 FOOTPRINT_RULES = RULES[1:13]  # the rules that read the footprint, skipped after a `footprint` hit
 REQUIRED = ("--plan", "--component", "--base")
-OPTIONAL = ("--issue-document", "--analysis")
+OPTIONAL = ("--issue-document", "--analysis", "--screen")
 ARGS = REQUIRED + OPTIONAL
-USAGE = "usage: floor.py --plan PATH --component NAME --base REF " "[--issue-document PATH] [--analysis PATH]"
+USAGE = (
+    "usage: floor.py --plan PATH --component NAME --base REF "
+    "[--issue-document PATH] [--analysis PATH] [--screen PATH]"
+)
 FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})json", re.IGNORECASE)
 REASON_LIMIT = 200
 BLOCKING = "- **Blocking:**"
@@ -369,6 +373,10 @@ class FootprintError(Exception):
 
 class DocumentError(Exception):
     """A document rule is a hit; the message is its reason."""
+
+
+class ScreenError(Exception):
+    """The screen record is not usable; the message is the dependency-screen rule's fixed reason."""
 
 
 # A copy of glob_to_regex in .mintswarm/dogfood/github/request-review.py;
@@ -458,6 +466,7 @@ def parse_args(argv: list) -> dict:
         "base": args["--base"],
         "issue_document": args.get("--issue-document"),
         "analysis": args.get("--analysis"),
+        "screen": args.get("--screen"),
     }
 
 
@@ -781,159 +790,15 @@ def validate_config(config: dict, component: str) -> dict:
         "limits": {key: overrides.get(key, limits[key]) for key in LIMITS},
         "limit_sources": {key: f"limits_by_component.{component}" for key in LIMITS if key in overrides},
         "non_production": list(non_production),
-        "base_packages": None,
         "tests": tests,
         "gate_words": gate_words,
     }
 
 
 def prepare(commit: str, component: str, plan: bytes, git_dir=None) -> tuple:
-    """(config, cfg): the config at commit, validated for component, and the packages present at commit that
-    the plan's new_dependencies manifests can use."""
+    """(config, cfg): the config at commit, validated for component. The plan is not read here."""
     config = load_config(commit, git_dir=git_dir)
-    cfg = validate_config(config, component)
-    cfg["base_packages"] = base_packages(commit, plan_manifests(plan), git_dir=git_dir)
-    return config, cfg
-
-
-def plan_manifests(plan: bytes) -> list:
-    """The manifests the plan's new_dependencies name, or none when its footprint is unusable (the footprint
-    rule reports that, and no limit is evaluated)."""
-    try:
-        footprint = parse_footprint(plan.decode("utf-8"))
-    except FootprintError:
-        return []
-    return [dep["manifest"] for dep in footprint["new_dependencies"]]
-
-
-# --- packages at the base ------------------------------------------------
-
-
-def base_blobs(commit: str, git_dir=None) -> dict:
-    """{path: blob id} of every regular file in the commit's tree."""
-    listing = run(git_argv(git_dir, "ls-tree", "-r", "-z", "--full-tree", commit))
-    blobs = {}
-    for entry in listing.decode("utf-8", errors="surrogateescape").split("\0"):
-        if not entry:
-            continue
-        meta, _, path = entry.partition("\t")
-        mode, kind, oid = meta.split(" ")
-        if kind == "blob" and mode in ("100644", "100755"):
-            blobs[path] = oid
-    return blobs
-
-
-def blob_document(oid: str, path: str, fmt: str, git_dir=None) -> dict:
-    """The blob converted by `yq -p=<fmt> -o=json`, which must be a mapping; an empty blob is {}."""
-    data = run(git_argv(git_dir, "cat-file", "blob", oid))
-    if not data.strip():
-        return {}
-    try:
-        converted = run(["yq", f"-p={fmt}", "-o=json", "."], data)
-        document = strict_json(converted.decode("utf-8"))
-    except (InputError, UnicodeDecodeError, ValueError) as exc:
-        raise InputError(f"{path} at the base does not convert to JSON: {exc}") from exc
-    if not isinstance(document, dict):
-        raise InputError(f"{path} at the base is not a mapping")
-    return document
-
-
-def mapping(value, where: str) -> dict:
-    """value when it is a mapping, {} when it is absent (None); anything else is unusable input."""
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise InputError(f"{where} at the base is not a mapping")
-    return value
-
-
-def pnpm_name(key: str, path: str) -> str:
-    """The package name of a pnpm `packages` key: a peer suffix `(…)` and a leading `/` dropped, then the text
-    from the last `@` that is not at position 0 cut off."""
-    bare = key.split("(", 1)[0]
-    if bare.startswith("/"):
-        bare = bare[1:]
-    at = bare.rfind("@")
-    name = bare[:at] if at > 0 else bare
-    if not name:
-        raise InputError(f"{path} at the base has an unrecognised package key {key!r}")
-    return name
-
-
-def nearest_lockfile(manifest: str, blobs: dict):
-    """The path of the pnpm-lock.yaml in blobs of the nearest directory at or above the manifest's, or None."""
-    directory = manifest.rpartition("/")[0]
-    while True:
-        path = f"{directory}/{PNPM_LOCK}" if directory else PNPM_LOCK
-        if path in blobs:
-            return path
-        if not directory:
-            return None
-        directory = directory.rpartition("/")[0]
-
-
-def base_packages(commit: str, manifests: list, git_dir=None) -> dict:
-    """The packages present at the base: {"cargo": names in the root Cargo.lock and the root Cargo.toml's
-    [workspace.dependencies], "npm": {directory of a pnpm-lock.yaml: names in it}}, for the pnpm-lock.yaml
-    nearest each package.json among manifests only, so that no other lockfile is read."""
-    blobs = base_blobs(commit, git_dir)
-    cargo = set()
-    if "Cargo.lock" in blobs:
-        lock = blob_document(blobs["Cargo.lock"], "Cargo.lock", "toml", git_dir)
-        packages = lock.get("package", [])
-        if not isinstance(packages, list):
-            raise InputError("Cargo.lock at the base: package is not a list")
-        for package in packages:
-            if not isinstance(package, dict) or not isinstance(package.get("name"), str):
-                raise InputError("Cargo.lock at the base: a package has no name")
-            cargo.add(package["name"])
-    if "Cargo.toml" in blobs:
-        manifest = blob_document(blobs["Cargo.toml"], "Cargo.toml", "toml", git_dir)
-        workspace = mapping(manifest.get("workspace"), "Cargo.toml: workspace")
-        cargo.update(mapping(workspace.get("dependencies"), "Cargo.toml: workspace.dependencies"))
-    npm = {}
-    npm_manifests = [m for m in manifests if ECOSYSTEMS.get(m.rsplit("/", 1)[-1]) == "npm"]
-    for path in sorted({nearest_lockfile(m, blobs) for m in npm_manifests} - {None}):
-        lock = blob_document(blobs[path], path, "yaml", git_dir)
-        names = set()
-        importers = lock["importers"] if "importers" in lock else {".": lock}
-        for importer, spec in mapping(importers, f"{path}: importers").items():
-            spec = mapping(spec, f"{path}: importers.{importer}")
-            for group in PNPM_GROUPS:
-                names.update(mapping(spec.get(group), f"{path}: importers.{importer}.{group}"))
-        for key in mapping(lock.get("packages"), f"{path}: packages"):
-            names.add(pnpm_name(key, path))
-        npm[path.rpartition("/")[0]] = names
-    return {"cargo": cargo, "npm": npm}
-
-
-def present_at_base(packages, ecosystem: str, dep: dict) -> bool:
-    """Whether the new dependency's package is already present at the base (packages from base_packages)."""
-    if packages is None:
-        return False
-    if ecosystem == "cargo":
-        return dep["name"] in packages["cargo"]
-    if ecosystem == "npm":
-        directory = dep["manifest"].rpartition("/")[0]
-        while True:
-            if directory in packages["npm"]:
-                return dep["name"] in packages["npm"][directory]
-            if not directory:
-                return False
-            directory = directory.rpartition("/")[0]
-    return False
-
-
-def new_packages(footprint: dict, packages) -> list:
-    """The distinct (ecosystem, name) of the new dependencies not present at the base, in order of first mention."""
-    counted = []
-    for dep in footprint["new_dependencies"]:
-        basename = dep["manifest"].rsplit("/", 1)[-1]
-        ecosystem = ECOSYSTEMS.get(basename, basename)
-        pair = (ecosystem, dep["name"])
-        if pair not in counted and not present_at_base(packages, ecosystem, dep):
-            counted.append(pair)
-    return counted
+    return config, validate_config(config, component)
 
 
 # --- footprint -----------------------------------------------------------
@@ -1080,7 +945,78 @@ def parse_footprint(text: str) -> dict:
 # --- rules ---------------------------------------------------------------
 
 
-def evaluate(footprint: dict, component: str, cfg: dict) -> list:
+def parse_screen(text: str) -> dict:
+    """The screen record in text; raises ScreenError with a fixed cause when it is not one this rule reads."""
+    try:
+        record = strict_json(text)
+    except (ValueError, RecursionError) as exc:
+        raise ScreenError("the screen record is not strict JSON") from exc
+    if not isinstance(record, dict):
+        raise ScreenError("the screen record is not a JSON object")
+    if record.get("tool") != SCREEN_TOOL:
+        raise ScreenError(f"the screen record's tool is not {SCREEN_TOOL}")
+    if type(record.get("version")) is not int or record["version"] != SCREEN_VERSION:
+        raise ScreenError(f"the screen record's version is not {SCREEN_VERSION}")
+    if record.get("mode") != SCREEN_MODE:
+        raise ScreenError(f"the screen record's mode is not {SCREEN_MODE}")
+    packages = record.get("packages")
+    if not isinstance(packages, list):
+        raise ScreenError("the screen record's packages is not a list")
+    for package in packages:
+        if not isinstance(package, dict) or not all(
+            isinstance(package.get(key), str) for key in ("name", "manifest", "reason")
+        ):
+            raise ScreenError("a package of the screen record has no string name, manifest or reason")
+        if package.get("status") not in SCREEN_STATUSES:
+            raise ScreenError("a package of the screen record has a status other than screened or unscreened")
+        found = package.get("disqualifiers")
+        if (
+            not isinstance(found, list)
+            or not all(isinstance(item, str) and item in DISQUALIFIERS for item in found)
+            or len(set(found)) != len(found)
+        ):
+            raise ScreenError(
+                "a package of the screen record has disqualifiers that are not unique values of "
+                + ", ".join(DISQUALIFIERS)
+            )
+    return record
+
+
+def screen_reasons(footprint: dict, text) -> list:
+    """The dependency-screen rule's reasons; text is the screen record's, or None when none is given."""
+    declared = [(dep["name"], dep["manifest"]) for dep in footprint["new_dependencies"]]
+    if text is None:
+        if not declared:
+            return []
+        count = len(declared)
+        return [f"{count} declared package{'' if count == 1 else 's'} and no screen record (--screen)"]
+    try:
+        record = parse_screen(text)
+    except ScreenError as exc:
+        return [str(exc)]
+    reasons = []
+    remaining = list(declared)
+    for package in record["packages"]:
+        pair = (package["name"], package["manifest"])
+        label = f"{flat(package['name'])} ({flat(package['manifest'])})"
+        if pair not in remaining:
+            reasons.append(f"the screen record lists {label}, which the footprint does not declare: unbound")
+            continue
+        remaining.remove(pair)
+        if package["status"] == "unscreened":
+            reasons.append(f"{label} is unscreened: {flat(package['reason']) or 'no reason given'}")
+        version = package.get("version")
+        version = flat(version) if isinstance(version, str) else "of an unknown version"
+        for disqualifier in package["disqualifiers"]:
+            reasons.append(
+                f"{flat(package['name'])} {version} ({flat(package['manifest'])}) is disqualified: {disqualifier}"
+            )
+    for name, manifest in remaining:
+        reasons.append(f"{name} ({manifest}) is declared but not screened: the screen record does not list it")
+    return reasons
+
+
+def evaluate(footprint: dict, component: str, cfg: dict, screen=None) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
         if dep["manifest"] not in declared:
@@ -1123,17 +1059,16 @@ def evaluate(footprint: dict, component: str, cfg: dict) -> list:
     sources = cfg.get("limit_sources", {})
     split = any(matching(cfg["non_production"], path) for path in footprint["files"])
     lines = ("production_lines", footprint["production_lines"]) if split else ("lines", footprint["estimated_lines"])
-    packages = new_packages(footprint, cfg.get("base_packages"))
-    named = ": " + ", ".join(f"{ecosystem} {name}" for ecosystem, name in packages) if packages else ""
-    for name, key, label, value, detail in (
-        ("limit-files", "files", "files", len(footprint["files"]), ""),
-        ("limit-lines", "lines", lines[0], lines[1], ""),
-        ("limit-new-files", "new_files", "new_files", len(footprint["new_files"]), ""),
-        ("limit-new-dependencies", "new_dependencies", "new_dependencies", len(packages), named),
+    for name, key, label, value in (
+        ("limit-files", "files", "files", len(footprint["files"])),
+        ("limit-lines", "lines", lines[0], lines[1]),
+        ("limit-new-files", "new_files", "new_files", len(footprint["new_files"])),
     ):
         source = f" ({sources[key]})" if key in sources else ""
         over = value > limits[key]
-        rule(name, [f"{label} is {value}, over the limit of {limits[key]}{source}{detail}"] if over else [])
+        rule(name, [f"{label} is {value}, over the limit of {limits[key]}{source}"] if over else [])
+
+    rule("dependency-screen", screen_reasons(footprint, screen))
 
     rule("external-steps", [f"external step: {step}" for step in footprint["external_steps"]])
 
@@ -1396,8 +1331,9 @@ def evaluate_documents(issue, analysis, plan_text: str, component: str, subjects
     return results
 
 
-def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subjects: list) -> tuple:
-    """What the floor concludes: (rules, not_evaluated, footprint or None)."""
+def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subjects: list, screen=None) -> tuple:
+    """What the floor concludes: (rules, not_evaluated, footprint or None); screen is the screen record's text,
+    or None when none is given."""
     try:
         footprint = parse_footprint(plan_text)
     except FootprintError as exc:
@@ -1405,7 +1341,7 @@ def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subject
         rules = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
     else:
         rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        rules += evaluate(footprint, component, cfg)
+        rules += evaluate(footprint, component, cfg, screen)
     rules += evaluate_documents(issue, analysis, plan_text, component, subjects)
     evaluated = [r["rule"] for r in rules]
     return rules, [name for name in RULES if name not in evaluated], footprint
@@ -1452,14 +1388,20 @@ def floor(argv: list) -> int:
         data = read_plan(args["plan"])
         _, cfg = prepare(commit, args["component"], data, git_dir=store)
         documents = {}
-        for key, what in (("issue_document", "issue document"), ("analysis", "analysis")):
+        for key, what in (("issue_document", "issue document"), ("analysis", "analysis"), ("screen", "screen record")):
             path = args[key]
             documents[key] = None if path is None else (path, read_document(path, what))
         subjects = history(commit, git_dir=store)
 
     texts = {key: None if doc is None else doc[1].decode("utf-8") for key, doc in documents.items()}
     results, skipped, _ = conclude(
-        data.decode("utf-8"), texts["issue_document"], texts["analysis"], args["component"], cfg, subjects
+        data.decode("utf-8"),
+        texts["issue_document"],
+        texts["analysis"],
+        args["component"],
+        cfg,
+        subjects,
+        texts["screen"],
     )
     hit = any(r["result"] == "hit" for r in results)
     bound = {
@@ -1472,6 +1414,7 @@ def floor(argv: list) -> int:
         "plan": {"path": args["plan"], "sha256": hashlib.sha256(data).hexdigest()},
         "issue_document": bound["issue_document"],
         "analysis": bound["analysis"],
+        "screen": bound["screen"],
         "component": args["component"],
         "base": {"ref": args["base"], "commit": commit},
         "config": CONFIG,

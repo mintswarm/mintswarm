@@ -11,7 +11,7 @@ The mode is `pipeline.plan_approval.mode` in `.mintswarm/config.yaml` at the job
 
 The threshold is `pipeline.plan_approval.min_confidence` at the same base commit: an integer from 90 to 100, 90 when absent. `floor.py` and `decision.py` reject any other value as unusable input. Like the rest of the config, it is changed only through a reviewed PR.
 
-The size limits are `pipeline.plan_approval.limits` at the same base commit, with `files`, `lines`, `new_files` and `new_dependencies`. `pipeline.plan_approval.limits_by_component` may give a component some of those keys, which replace the flat value key by key for plans of that component; a component without an entry uses `limits`. `pipeline.plan_approval.non_production` lists the globs of paths whose lines are not production lines (tests, fixtures, lockfiles and generated files); when it is absent the floor uses its own generic defaults. The `lines` limit counts the footprint's `production_lines` when a path in `files` matches one of those globs, and `estimated_lines` otherwise, and the landing floor checks the diff's production lines against `production_lines` with the same globs. The `new_dependencies` limit counts distinct packages per ecosystem, leaving out those already in the base's root `Cargo.lock`, its root `[workspace.dependencies]` or the nearest base `pnpm-lock.yaml`.
+The size limits are `pipeline.plan_approval.limits` at the same base commit, with `files`, `lines` and `new_files`. `pipeline.plan_approval.limits_by_component` may give a component some of those keys, which replace the flat value key by key for plans of that component; a component without an entry uses `limits`. `pipeline.plan_approval.non_production` lists the globs of paths whose lines are not production lines (tests, fixtures, lockfiles and generated files); when it is absent the floor uses its own generic defaults. The `lines` limit counts the footprint's `production_lines` when a path in `files` matches one of those globs, and `estimated_lines` otherwise, and the landing floor checks the diff's production lines against `production_lines` with the same globs. No limit counts the plan's packages: the floor judges each declared package by its screen (see "The plan's dependency screen").
 
 Assess rates each plan by an auto-approval confidence from 0 to 100 in one of five named bands, defined in `.mintswarm/stages/assess.md`: `blocked` (Blocked, 0, a hard trigger), `uncertain` (Uncertain, 1 to 49), `needs-review` (Needs review, 50 to 79), `likely-safe` (Likely safe, 80 to 94) and `safe` (Safe, 95 to 100). It returns them in one JSON envelope with the hard triggers, the decisive reason and its doubts; an envelope that breaks the stage's rules makes the judgement unusable, so a human decides.
 
@@ -30,29 +30,31 @@ After the plan stage returns a plan, in this order:
 
    Otherwise the comment says instead that the plan has no usable TL;DR and links only the plan artifact; the plan's text is then not posted.
 2. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md` and `.mintswarm/job/inputs/artefacts/analysis.md`. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
-3. **Run the floor** in that job's worktree, on that file and the job's issue document and analysis, with `--base` at the job's base commit:
+3. **Run the floor** in that job's worktree, on that file, the job's issue document and analysis, and the plan's screen record, with `--base` at the job's base commit:
 
    ```
    python3 -I .mintswarm/dogfood/plan-approval/floor.py --plan .mintswarm/job/inputs/artefacts/plan.md \
      --component <component> --base <base commit> \
-     --issue-document .mintswarm/job/inputs/issue.md --analysis .mintswarm/job/inputs/artefacts/analysis.md
+     --issue-document .mintswarm/job/inputs/issue.md --analysis .mintswarm/job/inputs/artefacts/analysis.md \
+     --screen .mintswarm/job/outputs/screen.json
    ```
 
    It writes `.mintswarm/job/outputs/floor.json`. Besides the footprint, it checks for blocking questions in the analysis and the plan, for a Verification table that does not quote the issue's acceptance criteria, and for the first job of its kind (no earlier commit scoped `(<component>)` on the base). A blocking question stops being a hit only when the analysis is rerun with the answer applied to the issue.
 4. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md` and `plan.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
 5. **Save the assessment** from the subagent's reply with `.mintswarm/dogfood/save-output.py` to `.mintswarm/job/outputs/assessment.md`.
 6. **Publish the assessment as an issue artifact named exactly `Plan assessment`** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`). This is done on every plan, whatever `pipeline.plan_approval.mode` is, for traceability.
-7. **Run the decision** with the same plan file, issue document and analysis, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
+7. **Run the decision** with the same plan file, issue document, analysis and screen record, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
 
    ```
    python3 -I .mintswarm/dogfood/plan-approval/decision.py --issue <number> --component <component> \
      --plan .mintswarm/job/inputs/artefacts/plan.md \
      --issue-document .mintswarm/job/inputs/issue.md --analysis .mintswarm/job/inputs/artefacts/analysis.md \
      --assessment .mintswarm/job/outputs/assessment.md \
-     --assessment-artifact <artifact URL> --base <base commit> --harness <harness> --model <model>
+     --assessment-artifact <artifact URL> --base <base commit> --harness <harness> --model <model> \
+     --screen .mintswarm/job/outputs/screen.json
    ```
 
-   It writes `.mintswarm/job/outputs/decision.json` (version 2: the threshold, and the judgement's confidence, band, hard triggers, doubts and reason) and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Keep stdout in a file for the comment.
+   It writes `.mintswarm/job/outputs/decision.json` (version 2: the threshold, and the judgement's confidence, band, hard triggers, doubts and reason) and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Both comments carry one `Package` row per declared package with its screen results. Keep stdout in a file for the comment.
 8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
 9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the band and confidence against `min_confidence`, any hard triggers, the reason, and links to the assessment and decision artifacts.
 
@@ -66,6 +68,8 @@ python3 -I .mintswarm/dogfood/dependencies/screen.py plan --plan .mintswarm/job/
 ```
 
 It runs with network access to `crates.io`, `index.crates.io`, `static.crates.io`, `registry.npmjs.org` and `api.osv.dev` only, over HTTPS, with no registry or other credential in its environment, and with the system CA bundle readable so that the default verified TLS context works. It reads the `new_dependencies` of the plan's `## Footprint` block (an empty list gives a record with no packages) and writes the versioned screen record to the assess job's `.mintswarm/job/outputs/screen.json`, which, like `floor.json`, is not committed. A package it cannot screen in full is recorded as `unscreened` with its reason, never as clean, and the script still exits 0. An exit of 2 (bad arguments, an unreadable plan or footprint, an unreadable `popular-names.json`, or a record it cannot write) means there is no usable record: the session stops the plan's approval until the cause is fixed and the screen reruns. Nothing in the assess job's `inputs/` gets the record.
+
+The record goes to the floor (step 3) and the decision (step 7) as `--screen`. The floor binds it by sha256 in `floor.json`, and the decision counts the verdict only when it was made with the same record. The floor's `dependency-screen` rule is a hit when a declared package has a disqualifier in the record (a known advisory for the version, a yanked or deprecated version, or a likely typosquat), is `unscreened`, or is missing from the record, when the record lists a package the footprint does not declare, when the record is not usable, and when packages are declared and no record is given. Nothing else in the record, such as the size, the dependencies, the author or the establishment, is a hit by itself; the maintainer reads it in the approval package. A plan that declares no packages is clean on the rule with or without a record.
 
 ## Outcomes
 
@@ -87,6 +91,7 @@ For every plan that goes to the maintainer, the session posts the approval packa
 
 - the plan artifact, with its approach and footprint in brief;
 - the floor verdict: hit rules with their reasons, or clean;
+- the dependency screen of every declared package: the `Package` rows that `decision.py` prints (in `shadow` mode, copied from the shadow-record comment), or in other modes the same fields read from `screen.json`: the name and manifest, the version, the status and its reason, the disqualifiers with the advisory ids and the name a typosquat imitates, the direct and transitive dependencies, the publisher and whether it changed, and the age and number of releases;
 - the band and confidence with the threshold, the hard triggers, the reason and the doubts, and the `Plan assessment` artifact;
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
@@ -112,7 +117,7 @@ A maintainer decision taken while a job is in flight, for example one that chang
 1. Apply it to the issue itself: amend the acceptance criteria or the body, with a note that points to the decision.
 2. The decision comment carries the line `<!-- mintswarm: steer -->`.
 3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue before the next stage runs.
-4. If the plan was already through the floor, rerun the floor (step 3) and the decision (step 7) on the refreshed `issue.md`: both bind the documents they read, so a verdict from before the refresh no longer counts. A `floor.json` of version 1, from before the floor read the issue document and the analysis, also counts as `human` until the floor reruns.
+4. If the plan was already through the floor, rerun the floor (step 3) and the decision (step 7) on the refreshed `issue.md`, with the same `screen.json`, or after a fresh screen: both bind the documents and the record they read, so a verdict from before the refresh, or from another record, no longer counts. A `floor.json` of version 1 or 2, from before the floor read the issue document and the analysis or the screen record, also counts as `human` until the floor reruns.
 
 ## The review job's mechanical check
 
