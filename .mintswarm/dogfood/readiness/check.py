@@ -62,6 +62,9 @@ Globs match as in the plan floor; tracked paths are every ls-tree entry.
                                             pipeline.review.reviewers, as
                                             github/request-review.py resolves
                                             them
+  review              review-config *       pipeline.review.clear is present
+                                            and is not blocker, major, minor
+                                            or nit
   agent-instructions  agents-md             AGENTS.md is not a regular file
   agent-instructions  claude-md             CLAUDE.md is neither a symbolic
                                             link to AGENTS.md nor a regular
@@ -414,6 +417,7 @@ SIGNALS = (
     ("components", "components-cover", True),
     ("review", "codeowners", False),
     ("review", "reviewers", True),
+    ("review", "review-config", True),
     ("agent-instructions", "agents-md", False),
     ("agent-instructions", "claude-md", False),
     ("agent-instructions", "contributing", False),
@@ -1091,6 +1095,21 @@ def reviewers(ref: Ref) -> tuple:
     return outcome(reasons)
 
 
+CLEAR_SEVERITIES = ("blocker", "major", "minor", "nit")
+
+
+def review_config(ref: Ref) -> tuple:
+    clear = dig(ref.config, "pipeline", "review", "clear")
+    if clear is None or (isinstance(clear, str) and clear in CLEAR_SEVERITIES):
+        return outcome([])
+    return outcome(
+        [
+            f"pipeline.review.clear: {brief(clear)} is not blocker, major, minor or nit, so the review stages "
+            "read it as nit"
+        ]
+    )
+
+
 # --- signals: agent instructions ---------------------------------------------
 
 
@@ -1411,6 +1430,7 @@ CHECKS = {
     "components-cover": components_cover,
     "codeowners": codeowners,
     "reviewers": reviewers,
+    "review-config": review_config,
     "agents-md": agents_md,
     "claude-md": claude_md,
     "contributing": contributing,

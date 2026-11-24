@@ -116,6 +116,7 @@ SIGNALS = [
     ("components", "components-cover"),
     ("review", "codeowners"),
     ("review", "reviewers"),
+    ("review", "review-config"),
     ("agent-instructions", "agents-md"),
     ("agent-instructions", "claude-md"),
     ("agent-instructions", "contributing"),
@@ -238,7 +239,7 @@ def ready_config() -> dict:
                 "require_human": {"paths": [".mintswarm/**", ".claude/**", "AGENTS.md", "CLAUDE.md"]},
                 "footprint": {"lines_factor": 1.5},
             },
-            "review": {"max_rounds": 3, "reviewers": ["owner"]},
+            "review": {"max_rounds": 3, "reviewers": ["owner"], "clear": "major"},
         },
         "gates": {
             "tests": "unit",
@@ -688,6 +689,15 @@ GAP_CASES = [
         {"reviewers"},
         {"reviewers": "is not a valid login"},
     ),
+    *[
+        (
+            f"pipeline.review.clear {value!r}",
+            m_set("pipeline", "review", "clear", value),
+            {"review-config"},
+            {"review-config": "is not blocker, major, minor or nit"},
+        )
+        for value in ("none", "Major", 3)
+    ],
     ("no AGENTS.md", m_file("AGENTS.md", None), {"agents-md"}, {"agents-md": "AGENTS.md is not a regular file"}),
     (
         "CLAUDE.md without the pointer",
@@ -1667,6 +1677,11 @@ GAP_CASES = [
 
 READY_CASES = [
     # (name, mutation, {signal: reason fragment of a pass})
+    *[
+        (f"pipeline.review.clear: {value}", m_set("pipeline", "review", "clear", value), {})
+        for value in ("blocker", "minor", "nit")
+    ],
+    ("no pipeline.review.clear", m_del("pipeline", "review", "clear"), {}),
     ("CODEOWNERS under docs/", m_move_codeowners, {}),
     ("CLAUDE.md as a symlink to AGENTS.md", m_file("CLAUDE.md", (SYMLINK, b"AGENTS.md")), {}),
     ("a gate with redirections and arguments after the script", m_gate(PASS_GATE), {}),

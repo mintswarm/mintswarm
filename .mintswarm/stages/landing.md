@@ -27,7 +27,7 @@ You judge a change you did not make, against the plan that was approved for it. 
   - `.mintswarm/job/inputs/rounds/gates-<n>/`: `round.json`, `gates.input.json`, and `gates.ctrf.json` and `gates.md` when the round produced them;
   - `.mintswarm/job/inputs/rounds/review-<n>/`: `round.json`, `review.md`, and `address.md` when the implementer answered that round.
 - The repository at the change's head, for the code around the diff.
-- `.mintswarm/config.yaml` at the base, read only with `msw-vcs show base:.mintswarm/config.yaml`, for `pipeline.landing.footprint.lines_factor`, `pipeline.plan_approval.non_production` and `gates.run`.
+- `.mintswarm/config.yaml` at the base, read only with `msw-vcs show base:.mintswarm/config.yaml`, for `pipeline.landing.footprint.lines_factor`, `pipeline.plan_approval.non_production`, `pipeline.review.clear` (`major` when absent, any other value read as `nit`) and `gates.run`.
 
 You do not get the analysis, the handoff, the implementer's reasoning or the landing floor's verdict (`landing-floor.json`), on purpose. The kickoff floor verdict and the decision record inside `facts.json` `approval` are facts about how the plan was approved, not the landing floor's verdict.
 
@@ -83,7 +83,7 @@ The confidence is your estimate, from 0 to 100, that landing this change without
 Your confidence rests on three grounds:
 
 - **Plan compliance:** the change complies with the approved plan: its footprint, its steps and the changes it declares.
-- **Reviews passed:** the last review round is `pass` and `current`, no blocker or major finding is left open or was disputed in an address answer, and each fix matches what its finding asked.
+- **Reviews passed:** the last review round is `pass` and `current`, it lists no finding at or above `pipeline.review.clear` and no blocker or major finding, no blocker or major finding was disputed in an address answer, and each fix matches what its finding asked.
 - **Care:** the change does nothing careless: no disabled or weakened checks or tests other than a removed or loosened gate that a plan approved by a human declared, no swallowed errors or catch-alls, no stray files or secrets, and no unexplained behaviour beyond the plan.
 
 What the plan declared and a human approved, such as gate changes, config edits, a loosened or raised floor limit or rule, protected paths and a size within the footprint, is not a doubt in itself, and neither is the number of review rounds before a pass. Such a declared safeguard change, a removed or loosened gate or a loosened or raised floor limit or rule, is not the `weakens-safeguard` trigger either: the maintainer approved it at plan approval and is not asked twice. Declared means a plan step that names the safeguard and states its removal or loosening, with the new limit or rule where there is one, and, for `.mintswarm/config.yaml` or a gate-named file, also its `gate_changes` entry; a step that names the file but not the weakening does not declare it. Of these, only a removed or loosened gate or floor limit or rule that the plan did not declare, or that goes beyond what it declared, is the trigger or a doubt; every other weakening the trigger names stays the trigger whether the plan declared it or not. The plan was approved by a human when `approval.approver` is a login that does not end in `[bot]`, and `approval.decision` is present, with a `record.tool` of `mintswarm-approval-decision`, a `record.approval` of `plan`, a `record.decision` of `human` and a `record.subject.plan.sha256` equal to the sha256 of `artefacts/plan.md`; with no decision record, the approval is not tied to this plan. Without that, declared gate and config changes and more than one review round still count, as the bands below say, and a declared weakening is still the `weakens-safeguard` trigger.
@@ -99,7 +99,7 @@ Pick exactly one band. Check them in this order and take the first whose conditi
    - `weakens-safeguard`: the diff disables a check (a skip or ignore attribute, a lint allowance, `--no-verify`), weakens an assertion (a deleted test or assert, a loosened expected value), removes or loosens a gate or a floor rule, or widens permissions or network or file access; or a gate failed and was then changed, read conservatively as Process says. The exception lifts only the clause on removing or loosening a gate or a floor rule: that is not this trigger when a plan approved by a human declared it, as the paragraph on what the plan declared says, and a gate that failed and was then changed stays this trigger even when the change was declared.
    - `credentials`: the diff reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
    - `not-revertible`: the change cannot be undone by a plain revert: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data), as the diff shows it or signs of it in the diff suggest.
-   - `process-not-passed`: there is no gate round, or the latest one is `failed` or not `current`; or there is no review round, or the latest one is `changes_required` or not `current`; or a check completed with a conclusion other than `success`.
+   - `process-not-passed`: there is no gate round, or the latest one is `failed` or not `current`; or there is no review round, or the latest one is `changes_required`, lists a finding at or above `pipeline.review.clear`, or is not `current`; or a check completed with a conclusion other than `success`.
    - `inconsistent-inputs`: a consistency check fails, or an input other than the four required ones is absent or cannot be read (a kept round, the base config).
 2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no hard trigger holds and any of these holds:
    - an acceptance criterion is `partly` met;
@@ -121,7 +121,7 @@ The conditions of `likely-safe` and `safe`:
 - every acceptance criterion is `yes`;
 - the diff is within the footprint;
 - no undeclared dependency, no disabled check or weakened assertion other than a removed or loosened gate that a plan approved by a human declared, and no broad catch-all appears;
-- review passed: the last review round is `pass` and `current`, and no blocker or major finding is left open or disputed; for a plan not approved by a human, also in its first round: exactly one review round;
+- review passed: the last review round is `pass` and `current`, it lists no finding at or above `pipeline.review.clear` and no blocker or major finding, and no blocker or major finding was disputed; for a plan not approved by a human, also in its first round: exactly one review round;
 - every gate round passed, and the latest is `current`;
 - there is no steer: `steers` is `[]`;
 - no review is re-requested: `review_requests` is `[]`;

@@ -119,9 +119,11 @@ pipeline:
   # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
   dependencies:
     review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
+  # clear is read from the base ref, never the worktree, by the review, implement (address rounds) and landing stages.
   review:
     max_rounds: 5
     reviewers: [zmij]                # default reviewers of a PR; see components above
+    clear: nit                       # blocker | major | minor | nit; findings at or above it must be cleared before the PR is ready; absent: major
 
 gates:
   tests: selftests                   # only none forces plan approval
