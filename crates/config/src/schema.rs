@@ -81,8 +81,6 @@ pub struct Limits {
     pub lines: u64,
     /// New files a plan may add.
     pub new_files: u64,
-    /// New dependencies a plan may add.
-    pub new_dependencies: u64,
 }
 
 /// One component's entry in `pipeline.plan_approval.limits_by_component`.
@@ -94,8 +92,6 @@ pub struct LimitOverrides {
     pub lines: Option<u64>,
     /// Overrides `limits.new_files`.
     pub new_files: Option<u64>,
-    /// Overrides `limits.new_dependencies`.
-    pub new_dependencies: Option<u64>,
 }
 
 /// `pipeline.plan_approval`.
@@ -144,7 +140,7 @@ const MIN_CONFIDENCE: u64 = 90;
 /// The default `pipeline.landing.min_confidence`.
 const LANDING_MIN_CONFIDENCE: u64 = 95;
 /// The limit names, in the floor's order.
-const LIMITS: [&str; 4] = ["files", "lines", "new_files", "new_dependencies"];
+const LIMITS: [&str; 3] = ["files", "lines", "new_files"];
 /// `pipeline.plan_approval.non_production` when absent.
 const NON_PRODUCTION: [&str; 9] = [
     "**/tests/**",
@@ -568,19 +564,18 @@ fn check_plan_approval(
         _ => return Err(Error::schema(&limits_path, "is missing or not a mapping")),
     };
     known(limits, &limits_path, &LIMITS)?;
-    let mut values = [0; 4];
+    let mut values = [0; 3];
     for (slot, key) in values.iter_mut().zip(LIMITS) {
         *slot = match limits.get(key) {
             Some(value) => bounded(value, &limits_path.key(key), 0, None)?,
             None => return Err(Error::schema(&limits_path.key(key), "is missing")),
         };
     }
-    let [files, lines, new_files, new_dependencies] = values;
+    let [files, lines, new_files] = values;
     let limits = Limits {
         files,
         lines,
         new_files,
-        new_dependencies,
     };
 
     let non_production = match approval.get("non_production") {
@@ -607,7 +602,6 @@ fn check_plan_approval(
                 files: get("files")?,
                 lines: get("lines")?,
                 new_files: get("new_files")?,
-                new_dependencies: get("new_dependencies")?,
             };
             limits_by_component.insert(name.clone(), entry);
         }
