@@ -525,9 +525,12 @@ pub struct LandingFloorRecord {
     pub verdict: Verdict,
     pub rules: Vec<RuleResult>,
     pub not_evaluated: Vec<String>,
+    /// The diff's overruns of the plan's line limits, total then production; a doubt for the
+    /// landing decision, never a rule hit. Empty when `footprint` is a hit.
+    pub evidence: Vec<String>,
 }
 
 impl LandingFloorRecord {
     pub const TOOL: &'static str = "mintswarm-landing-floor";
-    pub const VERSION: u32 = 1;
+    pub const VERSION: u32 = 2;
 }
