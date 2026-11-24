@@ -104,6 +104,13 @@ For every plan that goes to the maintainer, the session posts the approval packa
 - the mode and the decision, with `judged_decision` and the decision artifact;
 - the open questions of the plan, if any.
 
+The comment's first two lines are exactly these, the second naming the sha256 of the `plan.md` published as the plan artifact, so that an approval from the tracker can be bound to this package (see "Approval from the tracker"):
+
+```
+<!-- mintswarm: plan approval package -->
+Plan sha256: <sha256 of the published plan.md>
+```
+
 The maintainer approves, asks for changes or rejects; nothing starts implement until they approve. Whichever they decide, the session then releases the issue with `.mintswarm/dogfood/github/assign-approvers.py release <issue> plan`. A revised plan is assigned again when it is published, and so is a plan that a veto returns to awaiting plan approval.
 
 ## Veto
@@ -117,6 +124,27 @@ The session checks for one before implement starts, before it records implement 
 
 - **Until implement finishes**, a veto cancels the job and returns the item to awaiting plan approval: the plan goes to the maintainer with the approval package, as for `human`.
 - **After implement finishes**, a veto is a rejection at PR approval: the PR is not approved, and the item follows what the maintainer says there.
+
+## Approval from the tracker
+
+A trusted approver can approve a plan on the issue itself, in either of two ways:
+
+- **The command:** an issue comment whose first line, with CRLF normalised to LF and surrounding whitespace trimmed, is exactly `/approve-plan`. Any later lines are a note that goes with the approval. `/approve-plan` is the tracker's spelling of the runner's `approve` event on a plan approval.
+- **Setting the value by hand:** setting the issue's `msw-state` to `plan approved`.
+
+Either counts only when all of these hold:
+
+- it comes from a login in `pipeline.review.reviewers` of the config at the job's base commit, the people the issue is assigned to while the plan waits (`assign-approvers.py`), compared case-insensitively;
+- that login is not a bot: it does not end in `[bot]` and its account type is not `Bot`;
+- the issue's `msw-state` is `awaiting approval` (for the command);
+- it was posted or set after the latest approval package, the latest `mintswarm-dev[bot]` comment that opens with `<!-- mintswarm: plan approval package -->`; a replan moves the issue to `planning` and posts a new package, so an earlier command never approves a later plan;
+- a command was not edited after it was posted (its `updated_at` equals its `created_at`).
+
+`.mintswarm/dogfood/github/watch-plan-approvals.py` reports each command and each hand-set value with its verdict, and the session acts on it as Session procedure step 14 in `.mintswarm/dogfood/github/README.md` describes: it records an approval as one given in the session, and answers a refused command, or sets a refused value back to `awaiting approval`, with the reason. Nothing is approved otherwise. A command counts once: after it is answered it is not judged again, and only one answered with the approval record makes a later command already approved. The session watches the open issues it has given an `msw-state` other than `none`, each against the config at its job's base commit; a command on any other issue gets no answer until the control plane's webhook handler exists.
+
+In field mode (`tracker.state.source: field`), who set the field cannot be read, so a hand-set `plan approved` is always set back there, with a pointer to `/approve-plan`; in labels mode the actor of the latest `labeled` event for the `plan approved` label decides.
+
+A change of mind after an approval has been recorded, from the tracker or in the session, goes through "Decisions while a job is in flight".
 
 ## Decisions while a job is in flight
 
