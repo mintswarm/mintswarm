@@ -4,7 +4,8 @@
 //! validate are checked as they check them, one check for each of theirs:
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve`,
-//! `readiness/check.py` `review_config` and `github/msw-state.py` `settings`. A change to any of
+//! `readiness/check.py` `review_config` and `github/msw-state.py` `settings`, which covers
+//! `tracker.state`, `tracker.plan_verdict` and `tracker.decomp_verdict`. A change to any of
 //! those, or to the config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
@@ -15,7 +16,9 @@
 //! - a stage name under `agents.stages` that is not a stage, which the tools never look up;
 //! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
 //! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
-//! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores.
+//! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores;
+//! - a `field_id` under `tracker.state`, `tracker.plan_verdict` or `tracker.decomp_verdict`,
+//!   which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
 //!
 //! The `gates.format` check is the loader's own: no dogfood tool checks it.
 //!
@@ -435,7 +438,16 @@ fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> R
     known(
         tracker,
         path,
-        &["kind", "kinds", "components", "state", "fields", "ingest"],
+        &[
+            "kind",
+            "kinds",
+            "components",
+            "state",
+            "plan_verdict",
+            "decomp_verdict",
+            "fields",
+            "ingest",
+        ],
     )?;
     if let Some(kind) = tracker.get("kind") {
         string(kind, &path.key("kind"))?;
@@ -465,7 +477,12 @@ fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> R
         )?;
     }
     if let Some(state) = tracker.get("state") {
-        check_state(state, &path.key("state"))?;
+        check_tracker_value(state, &path.key("state"), true)?;
+    }
+    for key in ["plan_verdict", "decomp_verdict"] {
+        if let Some(verdict) = tracker.get(key) {
+            check_tracker_value(verdict, &path.key(key), false)?;
+        }
     }
     if let Some(fields) = tracker.get("fields") {
         check_fields(fields, &path.key("fields"), roles)?;
@@ -489,15 +506,18 @@ fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> R
     Ok(())
 }
 
-/// `tracker.state`, checked as `msw-state.py` `settings` checks it.
-fn check_state(value: &Value, path: &Path) -> Result<(), Error> {
-    let state = mapping(value, path)?;
-    known(
-        state,
-        path,
-        &["source", "field", "field_id", "label", "status"],
-    )?;
-    let one_of = |key: &str, allowed: [&str; 2]| match state.get(key) {
+/// `tracker.state` (`with_status`), `tracker.plan_verdict` or `tracker.decomp_verdict`, checked
+/// as `msw-state.py` `settings` checks it. Fields are named only: their ids are resolved per
+/// account, so a `field_id` key is unknown here.
+fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<(), Error> {
+    let block = mapping(value, path)?;
+    let keys: &[&str] = if with_status {
+        &["source", "field", "label", "status"]
+    } else {
+        &["source", "field", "label"]
+    };
+    known(block, path, keys)?;
+    let one_of = |key: &str, allowed: [&str; 2]| match block.get(key) {
         Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(value.as_str()),
         other => Err(Error::schema(
             &path.key(key),
@@ -510,22 +530,21 @@ fn check_state(value: &Value, path: &Path) -> Result<(), Error> {
         )),
     };
     if one_of("source", ["field", "labels"])? == "field" {
-        match state.get("field") {
+        match block.get("field") {
             Some(Value::String(field)) if !field.trim().is_empty() => {}
             _ => return Err(Error::schema(&path.key("field"), "must be a field name")),
         }
-        match state.get("field_id") {
-            Some(value) => bounded(value, &path.key("field_id"), 1, None).map(drop)?,
-            None => return Err(Error::schema(&path.key("field_id"), "is missing")),
-        }
     }
-    match state.get("label") {
+    match block.get("label") {
         Some(Value::String(label)) if label.matches("{value}").count() == 1 => {}
         _ => {
             return Err(Error::schema(&path.key("label"), "must hold {value} once"));
         }
     }
-    one_of("status", ["issue_status", "off"]).map(drop)
+    if with_status {
+        one_of("status", ["issue_status", "off"]).map(drop)?;
+    }
+    Ok(())
 }
 
 /// `tracker.fields`: each `<role>` entry is checked through the registered descriptor of that

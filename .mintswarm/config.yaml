@@ -12,13 +12,25 @@ tracker:
   components:
     source: labels                   # labels (per repository) | field (account-wide select or free text)
     label: "component:{name}"        # implementation issues carry exactly one; design and plan issues may carry several
-  # Read from the base ref, never the worktree, by .mintswarm/dogfood/github/msw-state.py.
+  # state, plan_verdict and decomp_verdict are read from the base ref, never the worktree, by
+  # .mintswarm/dogfood/github/msw-state.py. Fields are named, never given by id: msw-state.py
+  # resolves the ids per account into its cache outside the repository (see "Field ids" in
+  # .mintswarm/dogfood/github/README.md).
   state:
     source: field                    # field (organisation issue field, single select) | labels
     field: msw-state                 # field mode only
-    field_id: 50325307               # field mode only; recorded here: listing the organisation's fields needs read:org, which the bot lacks
     label: "msw-state:{value}"       # labels mode: exactly one per issue the session has touched
     status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
+  # The approval stages' verdicts; the values are the five band identifiers:
+  # blocked, uncertain, needs-review, likely-safe, safe.
+  plan_verdict:                      # the plan assessment's band
+    source: field                    # field | labels
+    field: msw-plan                  # field mode only
+    label: "msw-plan:{value}"        # labels mode: exactly one per issue
+  decomp_verdict:                    # the decomposition assessment's band
+    source: field                    # field | labels
+    field: msw-decomp                # field mode only
+    label: "msw-decomp:{value}"      # labels mode: exactly one per issue
   # Field mappings per role (size here); each role fixes its read point in code (size: the job's pinned base).
   # A field is named, never given by id: its id is resolved from the name and cached, never written here.
   fields:

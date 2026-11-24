@@ -449,7 +449,6 @@ fn tracker_state_values() {
         json!({
             "source": "field",
             "field": "msw-state",
-            "field_id": 50325307,
             "label": "msw-state:{value}",
             "status": "issue_status",
         })
@@ -459,25 +458,20 @@ fn tracker_state_values() {
         change(&mut state);
         load_repo_config(&variant(|c| set(c, "/tracker", "state", state)))
     };
-    state(&|_| {}).expect("the field block loads");
+    state(&|_| {}).expect("the field block, with no field_id, loads");
     state(&|s| {
         s["source"] = json!("labels");
         s["status"] = json!("off");
-        let map = s.as_object_mut().expect("a mapping");
-        map.remove("field");
-        map.remove("field_id");
+        s.as_object_mut().expect("a mapping").remove("field");
     })
-    .expect("labels mode needs neither field nor field_id");
-    let rejected: [(&str, &str, Option<Value>); 12] = [
+    .expect("labels mode needs no field");
+    let rejected: [(&str, &str, Option<Value>); 9] = [
         ("source", "source", Some(json!("project"))),
         ("source", "source", None),
         ("field", "field", Some(json!(""))),
         ("field", "field", Some(json!("  "))),
         ("field", "field", None),
-        ("field_id", "field_id", Some(json!(0))),
-        ("field_id", "field_id", Some(json!(true))),
-        ("field_id", "field_id", Some(json!("50325307"))),
-        ("field_id", "field_id", None),
+        ("field_id", "field_id", Some(json!(50325307))),
         ("label", "label", Some(json!("msw-state"))),
         ("label", "label", Some(json!("{value}:{value}"))),
         ("status", "status", Some(json!("on"))),
@@ -499,6 +493,63 @@ fn tracker_state_values() {
     let error = load_repo_config(&variant(|c| set(c, "/tracker", "state", json!("field"))))
         .expect_err("not a mapping");
     assert_eq!(error.path(), "tracker.state", "{error}");
+}
+
+/// `tracker.plan_verdict` and `tracker.decomp_verdict` as `msw-state.py` `settings` checks them:
+/// `tracker.state`'s rules without `status`, and no `field_id`.
+#[test]
+fn tracker_verdict_values() {
+    for (key, field) in [
+        ("plan_verdict", "msw-plan"),
+        ("decomp_verdict", "msw-decomp"),
+    ] {
+        let base = || {
+            json!({
+                "source": "field",
+                "field": field,
+                "label": format!("{field}:{{value}}"),
+            })
+        };
+        let block = |change: &dyn Fn(&mut Value)| {
+            let mut block = base();
+            change(&mut block);
+            load_repo_config(&variant(|c| set(c, "/tracker", key, block)))
+        };
+        block(&|_| {}).expect("the field block loads");
+        block(&|b| b["source"] = json!("labels")).expect("a labels block with a field loads");
+        block(&|b| {
+            b["source"] = json!("labels");
+            b.as_object_mut().expect("a mapping").remove("field");
+        })
+        .expect("labels mode needs no field");
+        let rejected: [(&str, Option<Value>); 10] = [
+            ("source", Some(json!("project"))),
+            ("source", None),
+            ("field", Some(json!(""))),
+            ("field", Some(json!("  "))),
+            ("field", None),
+            ("label", Some(json!("msw-plan"))),
+            ("label", Some(json!("{value}:{value}"))),
+            ("label", None),
+            ("status", Some(json!("off"))),
+            ("field_id", Some(json!(50375240))),
+        ];
+        for (name, value) in rejected {
+            let error = block(&|b| match &value {
+                Some(value) => b[name] = value.clone(),
+                None => drop(b.as_object_mut().expect("a mapping").remove(name)),
+            })
+            .expect_err("rejected");
+            assert_eq!(
+                error.path(),
+                format!("tracker.{key}.{name}"),
+                "{key} {name} {value:?}: {error}"
+            );
+        }
+        let error = load_repo_config(&variant(|c| set(c, "/tracker", key, json!("field"))))
+            .expect_err("not a mapping");
+        assert_eq!(error.path(), format!("tracker.{key}"), "{error}");
+    }
 }
 
 /// A config with `summary: on`, which yq reads as the string "on" (YAML 1.2), not a bool.
