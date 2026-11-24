@@ -180,6 +180,8 @@ gates:
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check ."
     - name: typescript-test
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run"
+    - name: commit-selftest
+      command: "python3 .mintswarm/dogfood/commit-selftest.py"
   # Formatters that rewrite files, run on the paths a commit stages by .mintswarm/dogfood/commit.py
   # and its pre-commit hook; gate names the gates.run entry that checks the same formatting.
   format:
