@@ -11,21 +11,24 @@ __pycache__ is left behind.
 
 The landing document (.mintswarm/stages/landing.md, "## Output") carries the
 same envelope as the assess stage's assessment, parsed by decision.py's own
-envelope_problems with the landing hard triggers and with the problems
-naming the `landing document`:
+envelope_problems with the landing hard and authority triggers and with the
+problems naming the `landing document`:
 
 - `confidence`, an integer from 0 to 100 equal to the summary line's;
 - `band`, one of BANDS: `blocked` (0), `uncertain` (1-49), `needs-review`
   (50-79), `likely-safe` (80-94, at least one doubt) or `safe` (95-100, no
   doubt);
-- `hard_triggers`, unique HARD_TRIGGERS identifiers, non-empty exactly when
-  the band is `blocked`;
+- `hard_triggers`, unique HARD_TRIGGERS identifiers; the band is `blocked`
+  exactly when it lists one outside AUTHORITY_TRIGGERS (an unusable
+  trigger), and an authority trigger may be listed in any band;
 - `reason`, the decisive reason;
 - `doubts`, at most 10 {`statement`, `consequence`, `resolution`}.
 
 The contract the landing decision consumes:
 
 - HARD_TRIGGERS: the landing trigger identifiers, stable, as recorded.
+- AUTHORITY_TRIGGERS: those of them that route the change to a person
+  without changing the confidence or the band.
 - judgement(data): the judgement layer's fields for the document's bytes,
   with the keys and order of decision.py's judgement layer that come from
   the document: `status` (`usable` or `unusable`), `problems` (fixed
@@ -36,7 +39,7 @@ The contract the landing decision consumes:
   line starting with `Risk:` and bytes that are not UTF-8 are all unusable.
 - judged_decision(floor_verdict, layer, min_confidence): `auto` only when
   the landing floor's verdict is `clean`, the layer is usable with no hard
-  trigger and its confidence is at least min_confidence
+  trigger of either kind and its confidence is at least min_confidence
   (pipeline.landing.min_confidence, validated by landing/floor.py's
   validate_landing); otherwise `human`. It does not rely on that
   validation: a min_confidence that is not an integer from floor.py's
@@ -63,6 +66,7 @@ HARD_TRIGGERS = (
     "process-not-passed",
     "inconsistent-inputs",
 )
+AUTHORITY_TRIGGERS = ("weakens-safeguard", "credentials", "not-revertible")
 LAYER_KEYS = ["status", "problems", "confidence", "band", "hard_triggers", "doubts", "reasons"]
 
 
@@ -98,7 +102,7 @@ DOUBT_KEYS = decision.DOUBT_KEYS
 
 def envelope_problems(text: str) -> tuple:
     """(problems, envelope) for a landing document's text; envelope is None when unusable."""
-    return decision.envelope_problems(text, triggers=HARD_TRIGGERS, noun=NOUN)
+    return decision.envelope_problems(text, triggers=HARD_TRIGGERS, noun=NOUN, authority=AUTHORITY_TRIGGERS)
 
 
 def judgement(data: bytes) -> dict:
@@ -133,7 +137,8 @@ def judgement(data: bytes) -> dict:
 
 
 def judged_decision(floor_verdict, layer: dict, min_confidence: int) -> str:
-    """`auto` for a clean floor and a usable, trigger-free judgement at or above min_confidence; else `human`.
+    """`auto` for a clean floor and a usable judgement with no hard trigger of either kind at or above
+    min_confidence; else `human`.
 
     A min_confidence that is not an integer from MIN_CONFIDENCE to 100 gives `human`.
     """

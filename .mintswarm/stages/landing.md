@@ -78,13 +78,13 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
 
 ## Bands
 
-The confidence is your estimate, from 0 to 100, that landing this change without a person is right: that a careful maintainer would approve the PR as it stands, that it does what the approved plan says and nothing else, and that nothing it does is outside what the landing floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it.
+The confidence is your estimate, from 0 to 100, that landing this change without a person is right: that a careful maintainer would approve the PR as it stands, that it does what the approved plan says and nothing else, and that nothing it does is outside what the landing floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it. An authority trigger (below) does not enter the confidence.
 
 Your confidence rests on three grounds:
 
 - **Plan compliance:** the change complies with the approved plan: its footprint, its steps and the changes it declares.
 - **Reviews passed:** the last review round is `pass` and `current`, it lists no finding at or above `pipeline.review.clear` and, whatever the setting, no blocker or major finding, no blocker or major finding was disputed in an address answer, and each fix matches what its finding asked.
-- **Care:** the change does nothing careless: no disabled or weakened checks or tests other than a removed or loosened gate that a plan approved by a human declared, no swallowed errors or catch-alls, no stray files or secrets, and no unexplained behaviour beyond the plan.
+- **Care:** the change does nothing careless: no disabled or weakened checks or tests other than a removed or loosened gate that a plan approved by a human declared, or a weakening a listed `weakens-safeguard` trigger names, no swallowed errors or catch-alls, no stray files or secrets, and no unexplained behaviour beyond the plan.
 
 What the plan declared and a human approved, such as gate changes, config edits, a loosened or raised floor limit or rule, protected paths and a size within the line limits, is not a doubt in itself, and neither is the number of review rounds before a pass. Such a declared safeguard change, a removed or loosened gate or a loosened or raised floor limit or rule, is not the `weakens-safeguard` trigger either: the maintainer approved it at plan approval and is not asked twice. Declared means a plan step that names the safeguard and states its removal or loosening, with the new limit or rule where there is one, and, for `.mintswarm/config.yaml` or a gate-named file, also its `gate_changes` entry; a step that names the file but not the weakening does not declare it. Of these, only a removed or loosened gate or floor limit or rule that the plan did not declare, or that goes beyond what it declared, is the trigger or a doubt; every other weakening the trigger names stays the trigger whether the plan declared it or not. The plan was approved by a human when `approval.approver` is a login that does not end in `[bot]`, and `approval.decision` is present, with a `record.tool` of `mintswarm-approval-decision`, a `record.approval` of `plan`, a `record.decision` of `human` and a `record.subject.plan.sha256` equal to the sha256 of `artefacts/plan.md`; with no decision record, the approval is not tied to this plan. Without that, declared gate and config changes and more than one review round still count, as the bands below say, and a declared weakening is still the `weakens-safeguard` trigger.
 
@@ -92,18 +92,23 @@ Going over either line limit, the numstat total over floor(`estimated_lines` × 
 
 A path under `pipeline.landing.require_human` is left to the landing floor, which sends to a person only what the approved plan did not cover: a matching path the footprint does not declare, a gate change without its `gate_changes` entry, or any matching path when the plan was not approved by a human. It is not a hard trigger, and you do not read that setting. Rate every change on its merits.
 
+Hard triggers are of two kinds. An authority trigger means only a person may approve the change: name it in `hard_triggers`, and the change goes to a person, but it does not change the confidence or the band. Rate everything else as the bands below say, setting aside only the fact the trigger names. An unusable trigger means the change is broken or cannot be judged: it forces `blocked`, as band 1 says. Neither kind is ever weighed against anything.
+
+The authority triggers:
+
+- `weakens-safeguard`: the diff disables a check (a skip or ignore attribute, a lint allowance, `--no-verify`), weakens an assertion (a deleted test or assert, a loosened expected value), removes or loosens a gate or a floor rule, or widens permissions or network or file access; or a gate failed and was then changed, read conservatively as Process says. The exception lifts only the clause on removing or loosening a gate or a floor rule: that is not this trigger when a plan approved by a human declared it, as the paragraph on what the plan declared says, and a gate that failed and was then changed stays this trigger even when the change was declared.
+- `credentials`: the diff reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
+- `not-revertible`: the change cannot be undone by a plain revert: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data), as the diff shows it or signs of it in the diff suggest.
+
 Pick exactly one band. Check them in this order and take the first whose conditions hold:
 
-1. `blocked` (shown as Blocked), confidence 0, when any hard trigger holds. Name every trigger that holds in `hard_triggers`. A trigger is never weighed against anything: it forces `confidence: 0`, whatever else the change does well. The hard triggers:
+1. `blocked` (shown as Blocked), confidence 0, when any unusable trigger holds. Name every trigger that holds in `hard_triggers`, of either kind. An unusable trigger is never weighed against anything: it forces `confidence: 0`, whatever else the change does well. The unusable triggers:
    - `criterion-not-met`: an acceptance criterion is `no`.
    - `outside-footprint`: a changed path is outside `files`, or an added path is outside `new_files`; or an entry cannot be measured (a binary file or a gitlink); or a dependency appears that `new_dependencies` does not declare; or `.mintswarm/config.yaml` or a gate-named file changed without a `gate_changes` entry for it.
    - `footprint-unusable`: the plan has no `## Footprint`, or it does not parse.
-   - `weakens-safeguard`: the diff disables a check (a skip or ignore attribute, a lint allowance, `--no-verify`), weakens an assertion (a deleted test or assert, a loosened expected value), removes or loosens a gate or a floor rule, or widens permissions or network or file access; or a gate failed and was then changed, read conservatively as Process says. The exception lifts only the clause on removing or loosening a gate or a floor rule: that is not this trigger when a plan approved by a human declared it, as the paragraph on what the plan declared says, and a gate that failed and was then changed stays this trigger even when the change was declared.
-   - `credentials`: the diff reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
-   - `not-revertible`: the change cannot be undone by a plain revert: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data), as the diff shows it or signs of it in the diff suggest.
    - `process-not-passed`: there is no gate round, or the latest one is `failed` or not `current`; or there is no review round, or the latest one is `changes_required`, lists a finding at or above `pipeline.review.clear`, or is not `current`; or a check completed with a conclusion other than `success`.
    - `inconsistent-inputs`: a consistency check fails, or an input other than the four required ones is absent or cannot be read (a kept round, the base config).
-2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no hard trigger holds and any of these holds:
+2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no unusable trigger holds and any of these holds:
    - an acceptance criterion is `partly` met;
    - a check is still running: a check run with a `null` conclusion or a commit status `pending`;
    - a review is re-requested and not yet given: `review_requests` is not `[]`;
@@ -122,7 +127,7 @@ The conditions of `likely-safe` and `safe`:
 
 - every acceptance criterion is `yes`;
 - the diff is within the footprint, apart from going over a line limit, which is a stated doubt;
-- no undeclared dependency, no disabled check or weakened assertion other than a removed or loosened gate that a plan approved by a human declared, and no broad catch-all appears;
+- no undeclared dependency, no disabled check or weakened assertion other than a removed or loosened gate that a plan approved by a human declared, or a weakening a listed `weakens-safeguard` trigger names, and no broad catch-all appears;
 - review passed: the last review round is `pass` and `current`, it lists no finding at or above `pipeline.review.clear` and, whatever the setting, no blocker or major finding, and no blocker or major finding was disputed; for a plan not approved by a human, also in its first round: exactly one review round;
 - every gate round passed, and the latest is `current`;
 - there is no steer: `steers` is `[]`;
@@ -180,7 +185,7 @@ The summary line and the envelope are what the runner reads:
 - The envelope is strict JSON: one object with exactly the keys `confidence`, `band`, `hard_triggers`, `reason` and `doubts`, in that order, with no duplicate keys, NaN or Infinity.
   - `confidence` is an integer within the band's range.
   - `band` is the band's identifier, never its display name or its range.
-  - `hard_triggers` lists each hard trigger that holds, each once, by the identifiers under Bands; it is non-empty exactly when the band is `blocked`.
+  - `hard_triggers` lists each hard trigger that holds, each once, of either kind, by the identifiers under Bands; the band is `blocked` exactly when it lists an unusable trigger, and an authority trigger may be listed in any band.
   - `reason` is the decisive reason, a non-empty string.
   - `doubts` is a list of at most 10 objects, each with exactly the non-empty strings `statement`, `consequence` and `resolution`, in that order. A `likely-safe` envelope has at least one doubt, and a `safe` envelope has none.
 - No line starts with `Risk:`; there is no risk level.

@@ -9,30 +9,40 @@ is loaded by its file path. The cases:
 
 - bands: each band at its lowest and highest value is usable, a value just
   outside each band is not, `likely-safe` needs a doubt and `safe` has none;
-- hard triggers: each landing trigger alone at `blocked` 0 is usable;
-  `blocked` without a trigger, a trigger outside `blocked`, a repeated
+- hard triggers: each unusable landing trigger alone at `blocked` 0 is
+  usable; each authority trigger is usable at the lowest and highest value
+  of every other band; `blocked` without a trigger, `blocked` with only
+  authority triggers, an unusable trigger outside `blocked`, a repeated
   trigger and the plan-only `outside-scope` and `undeclared-high`, and
-  `require-human`, are not;
+  `require-human`, are not; AUTHORITY_TRIGGERS are the landing triggers
+  that are decision.py's authority triggers, in order;
 - the threshold, through judged_decision: the confidence against
-  min_confidence at the edges, and a hard trigger, an unusable layer, a
-  `hit` floor and a missing floor; a min_confidence that floor.py would
-  refuse (None, 89, True, 101, 0) is `human`, and judgement.py's
-  MIN_CONFIDENCE, taken from floor.py, is 90;
+  min_confidence at the edges, and a hard trigger, each authority trigger
+  at `safe` 100, an unusable layer, a `hit` floor and a missing floor; a
+  min_confidence that floor.py would refuse (None, 89, True, 101, 0) is
+  `human`, and judgement.py's MIN_CONFIDENCE, taken from floor.py, is 90;
 - malformed and repeated envelopes, each unusable with a fixed problem that
   names the landing document;
 - consumable as is: judgement() gives the envelope's own values, with the
   keys of plan-approval/decision.py's judgement layer, in its order;
-- stage agreement: the hard triggers and band ranges under "## Bands" in
+- stage agreement: the band ranges under "## Bands" in
   .mintswarm/stages/landing.md are judgement.py's, its envelope template has
-  the envelope keys in order, and no line of it starts with `Risk:`; under
-  "## Bands" in both landing.md and assess.md the value starts at the
+  the envelope keys in order, and no line of it starts with `Risk:`; in
+  landing.md and assess.md the unusable triggers under band 1 and the
+  authority triggers listed before the bands are judgement.py's and
+  decision.py's respectively, in order, "## Bands" says an authority
+  trigger does not change the confidence or the band, and "## Output" says
+  the band is `blocked` exactly when an unusable trigger is listed, without
+  the old non-empty rule; under "## Bands" in both the value starts at the
   band's highest value and only goes down, with no reasons for raising it
   and none of the old "starts at the lowest value" wording, and only the
   landing `weakens-safeguard` trigger excepts a declared change; in landing.md
   that exception covers only a declared gate or floor change, never a gate
   that failed and was then changed, a step that only names the file does not
   declare it, and the Care ground and the likely-safe condition except a
-  declared gate;
+  declared gate and what a listed `weakens-safeguard` names; in assess.md
+  the likely-safe revert condition excepts what a listed `not-revertible`
+  names;
 - decomposition stage agreement: the band lines under "## Bands" in
   .mintswarm/stages/assess-decomposition.md (identifier, display name and
   range) are assess.md's, in order, with both start-at-top phrases; its
@@ -160,15 +170,49 @@ def check_bands() -> None:
     )
 
 
+UNUSABLE_TRIGGERS = tuple(t for t in J.HARD_TRIGGERS if t not in J.AUTHORITY_TRIGGERS)
+
+
 def check_triggers() -> None:
-    for trigger in J.HARD_TRIGGERS:
+    exactly = f"the {NOUN}'s band must be blocked exactly when hard_triggers lists an unusable trigger"
+    for trigger in UNUSABLE_TRIGGERS:
         layer = expect_usable(f"trigger {trigger} alone", document(envelope("blocked", 0, [trigger])))
         T.check(f"trigger {trigger}: recorded", layer["hard_triggers"] == [trigger], json.dumps(layer))
+        for band, value in (("uncertain", 30), ("needs-review", 60), ("likely-safe", 85), ("safe", 100)):
+            expect_unusable(
+                f"unusable trigger {trigger} in {band} {value}", document(envelope(band, value, [trigger])), exactly
+            )
+    for trigger in J.AUTHORITY_TRIGGERS:
+        for band, (_, low, high) in J.BANDS.items():
+            if band == "blocked":
+                continue
+            for value in sorted({low, high}):
+                layer = expect_usable(
+                    f"authority trigger {trigger} in {band} {value}", document(envelope(band, value, [trigger]))
+                )
+                T.check(
+                    f"authority trigger {trigger} in {band} {value}: recorded",
+                    layer["hard_triggers"] == [trigger] and layer["confidence"] == value,
+                    json.dumps(layer),
+                )
+        expect_unusable(
+            f"authority trigger {trigger} alone in blocked", document(envelope("blocked", 0, [trigger])), exactly
+        )
+    expect_unusable(
+        "blocked with only authority triggers",
+        document(envelope("blocked", 0, list(J.AUTHORITY_TRIGGERS))),
+        exactly,
+    )
     expect_usable("every landing trigger together", document(envelope("blocked", 0, list(J.HARD_TRIGGERS))))
-    exactly = f"the {NOUN}'s hard_triggers must be non-empty exactly when the band is blocked"
+    expect_usable("every authority trigger in safe 100", document(envelope("safe", 100, list(J.AUTHORITY_TRIGGERS))))
     expect_unusable("blocked without a trigger", document(envelope("blocked", 0, [])), exactly)
     expect_unusable(
         "a trigger in needs-review", document(envelope("needs-review", 60, ["process-not-passed"])), exactly
+    )
+    expect_unusable(
+        "an unusable and an authority trigger in safe",
+        document(envelope("safe", 100, ["credentials", "process-not-passed"])),
+        exactly,
     )
     expect_unusable(
         "a repeated trigger",
@@ -184,6 +228,18 @@ def check_triggers() -> None:
         "triggers: eight, unique",
         len(J.HARD_TRIGGERS) == 8 and len(set(J.HARD_TRIGGERS)) == 8,
         repr(J.HARD_TRIGGERS),
+    )
+    T.check(
+        "authority triggers: three, unique, all landing triggers",
+        len(J.AUTHORITY_TRIGGERS) == 3
+        and len(set(J.AUTHORITY_TRIGGERS)) == 3
+        and set(J.AUTHORITY_TRIGGERS) <= set(J.HARD_TRIGGERS),
+        repr(J.AUTHORITY_TRIGGERS),
+    )
+    T.check(
+        "authority triggers: the landing triggers that are decision.py's authority triggers, in order",
+        J.AUTHORITY_TRIGGERS == tuple(t for t in J.HARD_TRIGGERS if t in J.decision.AUTHORITY_TRIGGERS),
+        f"{J.AUTHORITY_TRIGGERS} against {J.decision.AUTHORITY_TRIGGERS}",
     )
 
 
@@ -212,6 +268,9 @@ def check_threshold() -> None:
         got = J.judged_decision(floor_verdict, judged, minimum)
         T.check(f"threshold {name}: {want}", got == want, f"got {got}")
     T.check("threshold: the lowest allowed is 90", J.MIN_CONFIDENCE == 90, repr(J.MIN_CONFIDENCE))
+    for trigger in J.AUTHORITY_TRIGGERS:
+        got = J.judged_decision("clean", layer("safe", 100, [trigger]), 90)
+        T.check(f"threshold: authority trigger {trigger} at safe 100 is human", got == "human", f"got {got}")
     forged = dict(layer("safe", 100), hard_triggers=["credentials"])
     T.check(
         "threshold: a usable layer that names a trigger is human",
@@ -333,6 +392,26 @@ def section(lines: list, title: str, until: str) -> list:
     return lines[start : lines.index(until, start)]
 
 
+def trigger_lists(path: Path) -> tuple:
+    """(band 1's unusable triggers, the authority triggers) as listed under "## Bands" in a stage."""
+    bands_section = section(path.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output")
+    start = next(i for i, line in enumerate(bands_section) if line.startswith("1. `blocked`"))
+    end = next(i for i, line in enumerate(bands_section) if line.startswith("2. "))
+    unusable = tuple(m.group(1) for line in bands_section[start:end] if (m := re.match(r"   - `([a-z-]+)`:", line)))
+    heads = [i for i, line in enumerate(bands_section) if line == "The authority triggers:"]
+    listed = ()
+    if len(heads) == 1:
+        rest = bands_section[heads[0] + 1 :]
+        items = []
+        for line in rest[1:] if rest and rest[0] == "" else rest:
+            m = re.match(r"- `([a-z-]+)`:", line)
+            if not m:
+                break
+            items.append(m.group(1))
+        listed = tuple(items)
+    return unusable, listed
+
+
 def check_stage() -> None:
     text = STAGE.read_text(encoding="utf-8")
     lines = text.split("\n")
@@ -355,16 +434,38 @@ def check_stage() -> None:
             high = int(match.group(4)) if match.group(4) else low
             bands[match.group(1)] = (match.group(2), low, high)
     T.check("stage: band ranges are judgement.py's", bands == J.BANDS, f"stage {bands}, BANDS {J.BANDS}")
-    start = next(i for i, line in enumerate(bands_section) if line.startswith("1. `blocked`"))
-    end = next(i for i, line in enumerate(bands_section) if line.startswith("2. "))
-    triggers = tuple(
-        re.match(r"   - `([a-z-]+)`:", line).group(1) for line in bands_section[start:end] if line.startswith("   - `")
-    )
-    T.check(
-        "stage: hard triggers are judgement.py's, in order",
-        triggers == J.HARD_TRIGGERS,
-        f"stage {triggers}, HARD_TRIGGERS {J.HARD_TRIGGERS}",
-    )
+    triggers = ()
+    for name, path, hard, authority in (
+        ("landing", STAGE, J.HARD_TRIGGERS, J.AUTHORITY_TRIGGERS),
+        ("assess", ASSESS, J.decision.HARD_TRIGGERS, J.decision.AUTHORITY_TRIGGERS),
+    ):
+        unusable, listed = trigger_lists(path)
+        triggers += unusable + listed
+        want = tuple(t for t in hard if t not in authority)
+        T.check(
+            f"stage: {name} band 1 lists the unusable triggers, in order",
+            unusable == want,
+            f"stage {unusable}, code {want}",
+        )
+        T.check(
+            f"stage: {name} lists the authority triggers, in order",
+            listed == authority,
+            f"stage {listed}, code {authority}",
+        )
+        stage_lines = path.read_text(encoding="utf-8").split("\n")
+        stage_bands = "\n".join(section(stage_lines, "## Bands", "## Output"))
+        T.check(
+            f"stage: {name} says an authority trigger does not change the confidence or the band",
+            "does not change the confidence or the band" in stage_bands,
+            "",
+        )
+        stage_output = "\n".join(section(stage_lines, "## Output", "## Status"))
+        T.check(
+            f"stage: {name} Output ties blocked to an unusable trigger",
+            "exactly when it lists an unusable trigger" in stage_output
+            and "non-empty exactly when the band is `blocked`" not in stage_output,
+            "",
+        )
     T.check(
         "stage: require_human is not a trigger",
         "require-human" not in triggers and "require_human" not in triggers,
@@ -393,13 +494,20 @@ def check_stage_rules() -> None:
             T.check(f"stage rules: {name} says {phrase!r}", phrase in text, "")
         for phrase in ("starts at the band's lowest value", "Raise it only"):
             T.check(f"stage rules: {name} no longer says {phrase!r}", phrase not in text, "")
-        trigger = [line for line in bands_section if line.startswith("   - `weakens-safeguard`:")]
+        trigger = [line for line in bands_section if line.startswith("- `weakens-safeguard`:")]
         declared = len(trigger) == 1 and "declared" in trigger[0]
         T.check(
             f"stage rules: {name} weakens-safeguard {'excepts' if name == 'landing' else 'keeps'} a declared change",
             len(trigger) == 1 and declared == (name == "landing"),
             repr(trigger),
         )
+    assess_bands = section(ASSESS.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output")
+    revert = [line for line in assess_bands if line.startswith("- a revert undoes the change")]
+    T.check(
+        "stage rules: assess likely-safe revert condition excepts a listed not-revertible",
+        len(revert) == 1 and "a listed `not-revertible` trigger" in revert[0],
+        repr(revert),
+    )
     bands_section = section(STAGE.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output")
     text = "\n".join(bands_section)
     exception = "other than a removed or loosened gate that a plan approved by a human declared"
@@ -411,6 +519,11 @@ def check_stage_rules() -> None:
         T.check(
             f"stage rules: landing {label} excepts a declared gate",
             len(lines) == 1 and exception in lines[0],
+            repr(lines),
+        )
+        T.check(
+            f"stage rules: landing {label} excepts a listed weakens-safeguard",
+            len(lines) == 1 and "a listed `weakens-safeguard` trigger" in lines[0],
             repr(lines),
         )
     for phrase in (
