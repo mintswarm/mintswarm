@@ -24,7 +24,8 @@ follow (`partial`); errors of any kind
 and non-regular members as `failed`, never a crash; the member cap on
 selected files only and the npm version-document fallback; the release before
 the locked one (`previous`) and the npm version's `time`, null for a first
-release and in the version-document fallback; single-package failures; the CLI
+release and in the version-document fallback, left out when the locked
+version's publish time is missing; single-package failures; the CLI
 (stale output, no packages.json, malformed input, bad arguments); Python
 3.9 syntax and standard-library imports only.
 
@@ -911,6 +912,47 @@ def first_release(box: Box):
     )
 
 
+def unknown_time(box: Box):
+    archive = Fixture.crate_archive("rc", "1.2.0", {"Cargo.toml": CARGO})
+    holder = Fixture.__new__(Fixture)
+    holder.routes = {}
+    Fixture.add_crate(holder, "rc", "1.2.0", archive)
+    api = "https://crates.io/api/v1/crates/rc"
+    meta = json.loads(holder.routes[api])
+    meta["versions"][1]["created_at"] = None
+    holder.routes[api] = json.dumps(meta).encode()
+    _, out, result, _ = box.run(
+        [entry("cargo", "rc", "1.2.0", digest=hashlib.sha256(archive).hexdigest())], holder.routes
+    )
+    record, metadata = outcome(out, result)
+    registry = (metadata or {}).get("registry", {})
+    T.check(
+        "unknown locked time: a crate leaves previous out, not null",
+        record.get("status") == "fetched" and registry != {} and "previous" not in registry,
+        str(registry),
+    )
+    archive = tgz([("package/package.json", b'{"name": "rp"}')])
+    holder = Fixture.__new__(Fixture)
+    holder.routes = {}
+    Fixture.add_npm(holder, "rp", "1.2.0", archive)
+    url = P.NPM_TARBALLS + "rp"
+    packument = json.loads(holder.routes[url])
+    del packument["time"]["1.2.0"]
+    holder.routes[url] = json.dumps(packument).encode()
+    _, out, result, _ = box.run([entry("npm", "rp", "1.2.0", digest=sha512(archive))], holder.routes)
+    record, metadata = outcome(out, result)
+    registry = (metadata or {}).get("registry", {})
+    T.check(
+        "unknown locked time: an npm package has no time and leaves previous out, not null",
+        record.get("status") == "fetched"
+        and registry.get("source") == "packument"
+        and "time" in registry
+        and registry["time"] is None
+        and "previous" not in registry,
+        str(registry),
+    )
+
+
 def cli(box: Box):
     box.counter += 1
     out = box.tmp / f"out-{box.counter}"
@@ -980,7 +1022,7 @@ def main() -> int:
         integrity(box, fx)
         archives(box, fx)
         failures(box, fx)
-        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps, first_release):
+        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps, first_release, unknown_time):
             case(box)
         hosts()
         cli(box)

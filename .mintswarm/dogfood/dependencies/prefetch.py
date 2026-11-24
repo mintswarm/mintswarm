@@ -43,7 +43,9 @@ can tell a change of publisher and the version's age: a crate's `previous`
 (`num`, `created_at` and the `published_by` login), and an npm package's
 `time` (the locked version's publish time) and `previous` (`version`,
 `time` and the `_npmUser` name). Each is null when there is no earlier
-release or, for npm, when only the version document was read.
+release or, for npm, when only the version document was read. When the
+locked version's own publish time is missing, `previous` is left out, so
+that an unknown earlier release is never read as a first release.
 
 Standard library only, apart from running yq. Exit 0 whatever happens to
 single packages; 2 on bad arguments, a malformed packages.json or an output
@@ -638,6 +640,8 @@ def crate(name: str, version: str, checksum: str) -> tuple:
             else None
         ),
     }
+    if not locked:
+        del trimmed["previous"]
     archive = fetch(
         f"https://static.crates.io/crates/{quoted}/{quoted}-{urllib.parse.quote(version, safe='')}.crate", ARCHIVE_CAP
     )
@@ -720,6 +724,8 @@ def npm(name: str, version: str, integrity: str) -> tuple:
         "hasInstallScript": scalar(release.get("hasInstallScript")),
         "downloads": "unavailable",
     }
+    if versions is not None and locked is None:
+        del trimmed["previous"]
     archive = fetch(tarball, ARCHIVE_CAP)
     if hashlib.sha512(archive).digest() not in digests:
         raise PackageError("failed", "the archive's SHA-512 differs from the lockfile integrity")

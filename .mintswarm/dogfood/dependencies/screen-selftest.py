@@ -1307,6 +1307,21 @@ def review_mode(fx: Fixture, tmp: Path):
         and record["flags"] == [],
         str(record),
     )
+    untimed_crate, untimed_npm = crate_meta(by="mallory"), npm_meta(by="mallory")
+    untimed_crate["version"]["created_at"], untimed_npm["time"] = None, None
+    for label, lock, meta in (
+        ("a crate", crate, untimed_crate),
+        ("an npm package", locked("npm", "untimed-npm"), untimed_npm),
+    ):
+        del meta["previous"]
+        record = screened(fx, box, [(lock, meta)])[0]
+        T.check(
+            f"review: {label} with no locked publish time, and so no previous, is unavailable, not a first release",
+            record["signals"]["previous_publisher"] == "unavailable"
+            and record["signals"]["publisher_changed"] == "unavailable"
+            and "publisher_changed" not in record["flags"],
+            str(record),
+        )
     T.check(
         "review: npm downloads never flag",
         screened(fx, box, [(locked("npm", "clean-npm"), dict(npm_meta(), downloads=0))])[0]["flags"] == [],
