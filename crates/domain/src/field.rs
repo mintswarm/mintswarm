@@ -32,6 +32,7 @@ pub enum FieldSource {
 /// The field a tracker reads or writes: its source and the option names the map knows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldRef {
+    /// Where the field lives on the tracker.
     pub source: FieldSource,
     /// The map's option names, in config order.
     pub options: Vec<String>,
@@ -40,8 +41,18 @@ pub struct FieldRef {
 /// A role's source as the config states it, before validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceSpec {
-    Field { name: String, field_id: i64 },
-    Labels { label: String },
+    /// An organisation issue field, single select.
+    Field {
+        /// The field's name.
+        name: String,
+        /// The field's id as the config states it; validation requires it to be positive.
+        field_id: i64,
+    },
+    /// One label per option.
+    Labels {
+        /// The label pattern, for example `effort:{option}`.
+        label: String,
+    },
 }
 
 /// One option entry as the config states it, before validation.
@@ -60,18 +71,24 @@ pub struct OptionSpec {
 /// A role's field mapping as the config states it, before validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldMapSpec {
+    /// Where the role's value lives on the tracker.
     pub source: SourceSpec,
     /// The role's default and fallback value, by name.
     pub default: String,
+    /// The option entries, in config order.
     pub options: Vec<OptionSpec>,
 }
 
 /// A validated option entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldOption<S: Scale> {
+    /// The tracker option's name.
     pub name: String,
+    /// The scale values this option stands for.
     pub range: ScaleRange<S>,
+    /// Whether the plane writes this option.
     pub write: bool,
+    /// The value a person's choice of this option stands for.
     pub reads_as: S,
 }
 
@@ -325,12 +342,19 @@ pub enum FieldRead {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldFinding {
+    /// The mapped field no longer exists on the tracker.
     FieldMissing,
+    /// A field of the mapped name exists, but under a different id than the one recorded.
     FieldRecreated,
+    /// A mapped option no longer exists on the field.
     OptionMissing,
+    /// A mapped option's id is still there, but under a different name.
     OptionRenamed,
+    /// The issue holds an option that the map does not list.
     OptionUnmapped,
+    /// The issue carries two or more of the role's labels (labels mode only).
     LabelsConflict,
+    /// The tracker refused a write of a mapped option.
     WriteRejected,
 }
 
@@ -377,6 +401,7 @@ impl std::error::Error for FieldError {}
 
 /// Lists a field's options. Only the operator's admin commands use it, never the plane.
 pub trait FieldCatalogue: Send + Sync {
+    /// Every option the tracker holds for this field, mapped or not.
     fn options(
         &self,
         field: &FieldRef,

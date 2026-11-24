@@ -13,6 +13,9 @@ pub trait Scale: Copy + Ord + 'static {
     const ALL: &'static [Self];
 
     /// The value's canonical name, as the config and serde spell it.
+    ///
+    /// A canonical name never contains `-`: [`ScaleRange::parse`] splits `lo-hi` on the
+    /// first `-`, so a name with one could not be used in a range.
     fn name(self) -> &'static str;
 
     /// The value with this canonical name, if any.
@@ -27,20 +30,28 @@ pub trait Scale: Copy + Ord + 'static {
 /// `StageJob.effort` already means reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Size {
+    /// `XS`.
     #[serde(rename = "XS")]
     Xs,
+    /// `S`.
     #[serde(rename = "S")]
     S,
+    /// `M`.
     #[serde(rename = "M")]
     M,
+    /// `L`.
     #[serde(rename = "L")]
     L,
+    /// `XL`.
     #[serde(rename = "XL")]
     Xl,
+    /// `2XL`.
     #[serde(rename = "2XL")]
     Xxl,
+    /// `3XL`.
     #[serde(rename = "3XL")]
     Xxxl,
+    /// `4XL`.
     #[serde(rename = "4XL")]
     Xxxxl,
 }
@@ -184,6 +195,11 @@ mod tests {
         let one = ScaleRange::<Size>::parse("2XL").unwrap();
         assert_eq!(one, ScaleRange::single(Size::Xxl));
         assert_eq!(one.to_string(), "2XL");
+    }
+
+    #[test]
+    fn size_names_contain_no_range_separator() {
+        assert!(Size::ALL.iter().all(|size| !size.name().contains('-')));
     }
 
     #[test]
