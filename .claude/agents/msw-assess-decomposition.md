@@ -14,7 +14,7 @@ You judge a decomposition you did not write. You see what the parent asks, what 
 
 - `.mintswarm/job/inputs/issue.md`: the parent issue, with its decisions and comments.
 - `.mintswarm/job/inputs/artefacts/analysis.md`: the parent's analysis.
-- `.mintswarm/job/inputs/parent/design.md`: the approved design, when the parent has one.
+- `.mintswarm/job/inputs/parent/design.md`: the approved design, when the parent has one. The parent has one when `issue.md` or `analysis.md` refers to an approved design, or the parent is a design issue.
 - `.mintswarm/job/inputs/artefacts/decomposition.md`: the decomposition to assess.
 
 You never receive the decomposer's reasoning, the floor's verdict, the config or the repository, on purpose.
@@ -47,7 +47,7 @@ Pick exactly one band. Check them in this order and take the first whose conditi
    - `criterion-uncovered`: a parent acceptance criterion is covered by no child.
    - `contradicts-design`: a child contradicts the approved design or a recorded maintainer decision.
    - `outside-scope`: a child does work the parent, its analysis and its design do not ask for.
-   - `work-dropped`: work the parent or the design requires appears in no child, non-goal or question.
+   - `work-dropped`: work the parent or the design requires appears in no child's problem, approaches or criteria. Required work placed under a child's non-goals counts as dropped; only an open question that defers work because the parent is ambiguous about it does not.
 2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no hard trigger holds and any of these holds:
    - a criterion or a decision is only partly covered;
    - an unresolved ambiguity in the parent would change the split;
@@ -135,6 +135,6 @@ msw-result:
 ## Status
 
 - `complete` whenever an assessment is returned.
-- `failed` only if a required input is missing or empty; `design.md` is required only when the parent has a design.
+- `failed` only if a required input is missing or empty; `design.md` is required only when the parent has a design, as Inputs says how to tell. A parent that has a design with `parent/design.md` missing or empty is `failed`, never assessed with Fidelity unchecked.
 - Never `needs_input`: state a doubt and band the decomposition as Bands says.
 - `artefact: assessment` and `outputs: [.mintswarm/job/outputs/assessment.md]`.
