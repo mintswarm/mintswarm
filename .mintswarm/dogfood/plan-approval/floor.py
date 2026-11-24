@@ -1012,7 +1012,9 @@ def screen_reasons(footprint: dict, text) -> list:
                 f"{flat(package['name'])} {version} ({flat(package['manifest'])}) is disqualified: {disqualifier}"
             )
     for name, manifest in remaining:
-        reasons.append(f"{flat(name)} ({flat(manifest)}) is declared but not screened: the screen record does not list it")
+        reasons.append(
+            f"{flat(name)} ({flat(manifest)}) is declared but not screened: the screen record does not list it"
+        )
     return reasons
 
 
