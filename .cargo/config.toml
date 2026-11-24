@@ -1,8 +1,3 @@
 # All build output goes under the git-ignored root build/; Cargo writes to build/target.
 [build]
 target-dir = "build/target"
-
-# Plain `cargo test` runs one test at a time per binary, so no test forks while another thread
-# holds a write descriptor (ETXTBSY). A default only: `--test-threads=N` or the environment win.
-[env]
-RUST_TEST_THREADS = "1"
