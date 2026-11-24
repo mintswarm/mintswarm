@@ -4,8 +4,8 @@
 //! validate are checked as they check them, one check for each of theirs:
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve`,
-//! `readiness/check.py` `review_config` and `github/msw-state.py` `settings`. A change to any of those, or to the config's keys, changes
-//! this module in the same change.
+//! `readiness/check.py` `review_config` and `github/msw-state.py` `settings`. A change to any of
+//! those, or to the config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
 //! some mismatched types; this module checks every key and rejects each mismatch instead. A
