@@ -112,7 +112,7 @@ pipeline:
   landing:
     mode: shadow                     # always | shadow | judged | never
                                      # shadow: floor, landing stage and landing/decision.py run and are recorded on every PR, while a human decides
-    require_human:                   # any changed path that matches sends the change to a human
+    require_human:                   # a matching changed path that the human-approved plan does not cover sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # rounded down: the diff's production lines (paths matching no plan_approval.non_production glob)
                                      # up to production_lines × lines_factor, and all its lines up to estimated_lines × lines_factor
