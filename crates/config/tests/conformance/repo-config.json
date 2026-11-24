@@ -20,7 +20,6 @@
     "state": {
       "source": "field",
       "field": "msw-state",
-      "field_id": 50325307,
       "label": "msw-state:{value}",
       "status": "issue_status"
     },
