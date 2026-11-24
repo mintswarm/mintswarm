@@ -3122,80 +3122,211 @@ check "issue 0 exits 2" exits_2 wpa 0 --base "$real_base"
 
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 check "a trusted /approve-plan after the package gives approve" eq "$(wpa_lines 81 --base "$real_base")" \
-  "approve #81 comment 11 by zmij $p81"
+  "react #81 comment 11
+approve #81 comment 11 by zmij $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 ZMIJ 05 "$(printf '/approve-plan \r\nlooks good')")"
 check "with a note, CRLF and the login in another case" eq "$(wpa_lines 81 --base "$real_base")" \
-  "approve #81 comment 11 by ZMIJ $p81"
+  "react #81 comment 11
+approve #81 comment 11 by ZMIJ $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 mallory 05 '/approve-plan')"
 check "an untrusted login is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by mallory: mallory is not a trusted approver"
+  "react #81 comment 11
+refuse #81 comment 11 by mallory: mallory is not a trusted approver"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 'helper[bot]' 05 '/approve-plan' 05 Bot)"
 check "a [bot] login is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by helper[bot]: helper[bot] is a bot"
+  "react #81 comment 11
+refuse #81 comment 11 by helper[bot]: helper[bot] is a bot"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan' 05 Bot)"
 check "an account of type Bot is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: zmij is a bot"
+  "react #81 comment 11
+refuse #81 comment 11 by zmij: zmij is a bot"
 wpa_seed 81 implementing "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 check "an issue not awaiting approval is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: #81 is not awaiting plan approval (msw-state implementing)"
+  "react #81 comment 11
+refuse #81 comment 11 by zmij: #81 is not awaiting plan approval (msw-state implementing)"
 wpa_seed 81 "awaiting approval" "$(wpa_comment 81 10 'mintswarm-dev[bot]' 00 'An unmarked package' 00 Bot)" \
   "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 check "an issue with no marked package is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: #81 has no current approval package"
+  "react #81 comment 11
+refuse #81 comment 11 by zmij: #81 has no current approval package"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" "$(wpa_package 81 12 10)"
 check "a command before the latest package is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: it predates the current approval package"
+  "react #81 comment 11
+refuse #81 comment 11 by zmij: it predates the current approval package"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan' 07)"
 check "an edited command is refused" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: it was edited after it was posted"
+  "react #81 comment 11
+refuse #81 comment 11 by zmij: it was edited after it was posted"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
   "$(wpa_comment 81 12 zmij 06 '/approve-plan')"
 check "a second valid command is already approved" eq "$(wpa_lines 81 --base "$real_base")" \
-  "approve #81 comment 11 by zmij $p81
+  "react #81 comment 11
+react #81 comment 12
+approve #81 comment 11 by zmij $p81
 refuse #81 comment 12 by zmij: the plan is already approved"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
   "$(wpa_comment 81 13 'mintswarm-dev[bot]' 06 "$(printf '<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->\n<!-- mintswarm: approve-plan 11 -->')" 06 Bot)" \
   "$(wpa_comment 81 14 zmij 07 '/approve-plan')"
 check "an answered command gives no line, and still makes a later one already approved" \
-  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 14 by zmij: the plan is already approved"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 14
+refuse #81 comment 14 by zmij: the plan is already approved"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
   "$(wpa_comment 81 13 'mintswarm-dev[bot]' 06 "$(printf '<!-- mintswarm: approve-plan 11 -->\n#81 is not awaiting plan approval (msw-state planning)')" 06 Bot)" \
   "$(wpa_comment 81 14 zmij 07 '/approve-plan')"
 check "a command answered with a refusal is not judged again, and a later valid one gives approve" \
-  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 14 by zmij $p81"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 14
+approve #81 comment 14 by zmij $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_comment 81 11 zmij 01 '/approve-plan')" \
   "$(wpa_comment 81 12 'mintswarm-dev[bot]' 02 "$(printf '<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->\n<!-- mintswarm: approve-plan 11 -->')" 02 Bot)" \
   "$(wpa_package 81 10 03)" "$(wpa_comment 81 14 zmij 05 '/approve-plan')"
 check "an approval of an earlier package does not make a command on the current one already approved" \
-  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 14 by zmij $p81"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 14
+approve #81 comment 14 by zmij $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 mallory 05 '/approve-plan')" \
   "$(wpa_comment 81 12 mallory 06 '<!-- mintswarm: approve-plan 11 -->')" \
   "$(wpa_comment 81 13 'mintswarm-dev[bot]' 07 '/approve-plan' 07 Bot)"
 check "an answer marker from anyone but the bot does not answer, and the bot's own command is skipped" \
-  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 11 by mallory: mallory is not a trusted approver"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 11
+refuse #81 comment 11 by mallory: mallory is not a trusted approver"
 check "the owner is read from the issue through bot-gh.sh" gh_argv_seen '["api","repos/{owner}/{repo}/issues/81"]'
+
+# Commands: the command-line rule, react, help and hint lines, and --commands.
+wpa_decomposition() {  # wpa_decomposition ISSUE ID MINUTE: a marked decomposition approval package by the bot
+  wpa_comment "$1" "$2" "mintswarm-dev[bot]" "$3" "$(printf '<!-- mintswarm: decomposition approval package -->\npackage: none\nPlease approve.')" "$3" Bot
+}
+wpa_one() {  # wpa_one VALUE BODY [LOGIN] [TYPE]: issue 81 with a plan package and one comment 11 holding BODY
+  wpa_seed 81 "$1" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 "${3:-zmij}" 05 "$2" 05 "${4:-User}")"
+}
+wpa_one "awaiting approval" "$(printf 'Looks good to me.\n/approve-plan')"
+check "/approve-plan on a later line gives react and approve" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+approve #81 comment 11 by zmij $p81"
+wpa_one "awaiting approval" "$(printf 'Should I post\n> /approve-plan\nhere?')"
+check "a quoted /approve-plan gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf 'Post this:\n```\n/approve-plan\n```')"
+check "a /approve-plan in a backtick fence gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf 'Post this:\n~~~text\n/approve-plan\n~~~')"
+check "a /approve-plan in a tilde fence gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf 'Post this:\n\n    /approve-plan')"
+check "an indented /approve-plan gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf '\t/approve-plan')"
+check "a tab-indented /approve-plan gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf '```\n/plan-approve\n```\n/approve-plan')"
+check "a command after a closed fence counts" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+approve #81 comment 11 by zmij $p81"
+wpa_one "awaiting approval" '/tmp/x'
+check "a path is not a command" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" '/approve-plan please'
+check "a command with more text on its line is not a command" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" '/plan-approve'
+check "/plan-approve gives a hint suggesting /approve-plan, with no reaction" eq "$(wpa_lines 81 --base "$real_base")" \
+  "hint #81 comment 11 by zmij command /plan-approve suggest /approve-plan commands plan"
+wpa_one "awaiting approval" '/Approve'
+check "/Approve gives a hint suggesting the closest command" eq "$(wpa_lines 81 --base "$real_base")" \
+  "hint #81 comment 11 by zmij command /Approve suggest /approve-plan commands plan"
+wpa_one "awaiting approval" '/lgtm' mallory
+check "/lgtm from anyone gives a hint suggesting none" eq "$(wpa_lines 81 --base "$real_base")" \
+  "hint #81 comment 11 by mallory command /lgtm suggest none commands plan"
+wpa_one "awaiting approval" '> /plan-approve'
+check "a quoted near-miss gives no hint" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf '/help\n/approve-plan')"
+check "/help awaiting approval with a plan package gives react and help, and only the first command counts" \
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 11
+help #81 comment 11 by zmij commands plan"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_decomposition 81 10 01)" "$(wpa_comment 81 11 zmij 05 '/help')"
+check "/help after a decomposition package gives commands decomposition" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+help #81 comment 11 by zmij commands decomposition"
+wpa_one implementing '/help'
+check "/help while implementing gives commands none" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+help #81 comment 11 by zmij commands none"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/help')" \
+  "$(wpa_comment 81 12 zmij 06 '/plan-approve')" \
+  "$(wpa_comment 81 13 'mintswarm-dev[bot]' 07 "$(printf '<!-- mintswarm: command-reply 11 -->\nCommands')" 07 Bot)" \
+  "$(wpa_comment 81 14 'mintswarm-dev[bot]' 08 "$(printf '<!-- mintswarm: command-reply 12 -->\nDid you mean')" 08 Bot)"
+check "a help and a hint answered by a command-reply marker give no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/help')" \
+  "$(wpa_comment 81 12 mallory 06 '<!-- mintswarm: command-reply 11 -->')"
+check "a command-reply marker from anyone but the bot does not answer" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+help #81 comment 11 by zmij commands plan"
+wpa_one "awaiting approval" '/help' 'helper[bot]' Bot
+check "a /help from another bot is skipped" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" '/plan-approve' 'helper[bot]' Bot
+check "a near-miss from another bot is skipped" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/plan-approve')" \
+  "$(wpa_comment 81 12 zmij 06 '/help')" "$(wpa_comment 81 13 zmij 07 '/approve-plan')"
+check "per issue: react lines, approve, then help and hint in comment order" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 12
+react #81 comment 13
+approve #81 comment 13 by zmij $p81
+hint #81 comment 11 by zmij command /plan-approve suggest /approve-plan commands plan
+help #81 comment 12 by zmij commands plan"
+
+wpa_argv_commands="$(wc -l < "$argv_log" | tr -d ' ')"
+check "--commands plan prints the plan's Commands section" eq "$(wpa_lines --commands plan)" \
+  '<details><summary>Commands</summary>
+
+- `/approve-plan`: approve the plan in the latest approval package; the comment'"'"'s other lines are a note.
+- `/help`: reply with the commands valid on this issue now.
+
+A `/` command counts only when it stands alone at the start of a line, outside quotes and code; only the first one in a comment counts.
+
+</details>'
+check "--commands decomposition prints the decomposition's Commands section" eq "$(wpa_lines --commands decomposition)" \
+  '<details><summary>Commands</summary>
+
+- `approve`: approve the decomposition, as the comment'"'"'s first line.
+- `changes`: ask for changes, as the comment'"'"'s first line, with what to change on the lines after it.
+- `reject`: reject the decomposition, as the comment'"'"'s first line.
+- `/help`: reply with the commands valid on this issue now.
+
+A `/` command counts only when it stands alone at the start of a line, outside quotes and code; only the first one in a comment counts.
+
+</details>'
+check "--commands none lists only /help" eq "$(wpa_lines --commands none)" \
+  '<details><summary>Commands</summary>
+
+- `/help`: reply with the commands valid on this issue now.
+
+A `/` command counts only when it stands alone at the start of a line, outside quotes and code; only the first one in a comment counts.
+
+</details>'
+check "--commands makes no GitHub call" eq "$(wc -l < "$argv_log" | tr -d ' ')" "$wpa_argv_commands"
+check "--commands with an unknown context exits 2" exits_2 wpa --commands bogus
+check "--commands with issues exits 2" exits_2 wpa --commands plan 81
 
 wpa_author='{"login": "alice", "type": "User"}'
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
   "$(wpa_comment 81 12 Alice 06 '/approve-plan')"
 check "only the issue's author is trusted, not another person" eq "$(wpa_lines 81 --base "$real_base")" \
-  "approve #81 comment 12 by Alice $p81
+  "react #81 comment 11
+react #81 comment 12
+approve #81 comment 12 by Alice $p81
 refuse #81 comment 11 by zmij: zmij is not a trusted approver"
 check "the owner's permission is read through bot-gh.sh" \
   gh_argv_seen '["api","repos/{owner}/{repo}/collaborators/alice/permission"]'
 printf '{"alice": "maintain"}' > "$MSW_STUB_STATE/permissions.json"
 check "an owner with maintain access is trusted" eq "$(wpa_lines 81 --base "$real_base")" \
-  "approve #81 comment 12 by Alice $p81
+  "react #81 comment 11
+react #81 comment 12
+approve #81 comment 12 by Alice $p81
 refuse #81 comment 11 by zmij: zmij is not a trusted approver"
 printf '{"alice": "triage"}' > "$MSW_STUB_STATE/permissions.json"
 check "an owner without write access is not trusted" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: zmij is not a trusted approver
+  "react #81 comment 11
+react #81 comment 12
+refuse #81 comment 11 by zmij: zmij is not a trusted approver
 refuse #81 comment 12 by Alice: Alice is not a trusted approver"
 check "and the watcher says why on stderr" \
   present "#81's owner alice has no write access to the repository; #81 has no trusted approver" "$sandbox/wpa.err"
 printf '{"alice": "404"}' > "$MSW_STUB_STATE/permissions.json"
 check "an owner who is not a collaborator is not trusted" eq "$(wpa_lines 81 --base "$real_base")" \
-  "refuse #81 comment 11 by zmij: zmij is not a trusted approver
+  "react #81 comment 11
+react #81 comment 12
+refuse #81 comment 11 by zmij: zmij is not a trusted approver
 refuse #81 comment 12 by Alice: Alice is not a trusted approver"
 rm -f "$MSW_STUB_STATE/permissions.json"
 wpa_author='{"login": "mintswarm-dev[bot]", "type": "Bot"}'
@@ -3203,10 +3334,12 @@ wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 z
 jq '.["81"].parent = 87' "$MSW_STUB_STATE/issues.json" > "$sandbox/issues.json" && mv "$sandbox/issues.json" "$MSW_STUB_STATE/issues.json"
 seed 87 '{"user": {"login": "zmij", "type": "User"}}'
 check "a bot-filed issue trusts the nearest person-filed ancestor's author" \
-  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 11 by zmij $p81"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 11
+approve #81 comment 11 by zmij $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 check "a bot-filed issue with no person-filed ancestor trusts nobody" \
-  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 11 by zmij: zmij is not a trusted approver"
+  eq "$(wpa_lines 81 --base "$real_base")" "react #81 comment 11
+refuse #81 comment 11 by zmij: zmij is not a trusted approver"
 check "and says why on stderr" present "#81 has no trusted approver" "$sandbox/wpa.err"
 wpa_author='{"login": "zmij", "type": "User"}'
 
@@ -3243,7 +3376,8 @@ check "labels mode: no labeled event, set-back as unknown" eq "$(wpa_lines 83 --
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 wpa_seed 84 "plan approved" "$(wpa_package 84 40 00)"
 check "one run over two issues reports a command on one and a hand-set on the other" \
-  eq "$(wpa_lines 81 84 --base "$real_base")" "approve #81 comment 11 by zmij $p81
+  eq "$(wpa_lines 81 84 --base "$real_base")" "react #81 comment 11
+approve #81 comment 11 by zmij $p81
 set-back #84 by unknown: who set it cannot be read; comment /approve-plan instead"
 seed 85 '{"fields_unavailable": true}'
 check "a failed request exits 1 and prints no finding" eq "$(wpa 81 85 --base "$real_base" 2>/dev/null; echo "rc=$?")" "rc=1"
