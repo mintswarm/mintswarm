@@ -11,6 +11,9 @@ env:
   # Must match the yq the dogfood scripts are developed and probed against.
   YQ_VERSION: v4.45.1
   YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
+  # The release's sha256.txt entry for buf-Linux-x86_64.
+  BUF_VERSION: v1.75.0
+  BUF_SHA256: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
 
 jobs:
   matrix:
@@ -80,6 +83,16 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/yq"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           "$RUNNER_TEMP/bin/yq" --version
+      - name: buf ${{ env.BUF_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/buf" \
+            "https://github.com/bufbuild/buf/releases/download/$BUF_VERSION/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $RUNNER_TEMP/bin/buf" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/buf"
+          test "$("$RUNNER_TEMP/bin/buf" --version)" = "${BUF_VERSION#v}"
       - name: Rust toolchain from rust-toolchain.toml
         if: hashFiles('rust-toolchain.toml') != ''
         run: |
