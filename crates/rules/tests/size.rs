@@ -20,7 +20,6 @@ fn preset() -> FieldMap<Size> {
     FieldMap::new(FieldMapSpec {
         source: SourceSpec::Field {
             name: "Effort".into(),
-            field_id: 7,
         },
         default: "M".into(),
         options: vec![

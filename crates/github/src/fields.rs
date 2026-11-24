@@ -1,6 +1,10 @@
 //! Reads and writes of a role's field on GitHub issues, design §4.3 and §4.6: organisation
 //! issue fields by id, or one label per option.
 //!
+//! A field is configured by name only; the caller resolves its id (for example with
+//! [`GitHubFieldCatalogue::field_id`](crate::GitHubFieldCatalogue::field_id)) and passes it to
+//! each read and write, and resolves it again when an error calls for it.
+//!
 //! A [`FieldClient`] is bound to one repository and keeps an ETag cache across passes. A
 //! [`FieldPass`] is one pass over issues with one token: every role of an issue is read from one
 //! response per resource, and the next pass revalidates it with `If-None-Match`. Field-class
@@ -138,6 +142,8 @@ pub struct FieldPass<'a> {
 impl FieldPass<'_> {
     /// The value of the role's field on `issue`.
     ///
+    /// `field_id` is the id the caller resolved from the field's name; labels mode ignores it,
+    /// and a field-mode read without one is `field_missing`, before any request.
     /// A field-mode value whose field has the mapped name but another id is
     /// `field_recreated`; [`FieldError::should_resolve_again`] tells the caller to resolve the
     /// id again by name.
@@ -145,12 +151,14 @@ impl FieldPass<'_> {
         &self,
         issue: IssueNumber,
         field: &FieldRef,
+        field_id: Option<u64>,
     ) -> Result<FieldRead, FieldError> {
         match &field.source {
-            FieldSource::Field { name, field_id } => {
+            FieldSource::Field { name } => {
+                let field_id = resolved(field_id)?;
                 let entries = self.fetch(issue.0, Resource::FieldValues).await?;
                 let endpoint = format!("GET {}", self.client.path(issue.0, Resource::FieldValues));
-                resolve_values(&entries, name, *field_id, &field.options, &endpoint)
+                resolve_values(&entries, name, field_id, &field.options, &endpoint)
             }
             FieldSource::Labels { label } => {
                 let pattern = Pattern::checked(label)?;
@@ -162,6 +170,8 @@ impl FieldPass<'_> {
 
     /// Sets the role's field on `issue` to the option `option`, or clears it for `None`.
     ///
+    /// `field_id` is the id the caller resolved from the field's name, as for
+    /// [`read_field`](Self::read_field).
     /// An option the map does not list is refused with `option_unmapped` before any request,
     /// as is a label pattern without `{option}` with `field_missing`.
     /// A write GitHub refuses, or answers with another value, is `write_rejected`, and one whose
@@ -171,6 +181,7 @@ impl FieldPass<'_> {
         &self,
         issue: IssueNumber,
         field: &FieldRef,
+        field_id: Option<u64>,
         option: Option<&str>,
     ) -> Result<(), FieldError> {
         if let Some(name) = option {
@@ -179,8 +190,9 @@ impl FieldPass<'_> {
             }
         }
         match &field.source {
-            FieldSource::Field { name, field_id } => {
-                self.write_value(issue.0, name, *field_id, &field.options, option)
+            FieldSource::Field { name } => {
+                let field_id = resolved(field_id)?;
+                self.write_value(issue.0, name, field_id, &field.options, option)
                     .await?;
             }
             FieldSource::Labels { label } => {
@@ -354,6 +366,12 @@ impl FieldPass<'_> {
             etags.remove(&(issue, resource));
         }
     }
+}
+
+/// The resolved id of a field-mode role, or `field_missing` when the caller has none, so it
+/// resolves the id by the field's name ([`FieldError::should_resolve_again`]).
+fn resolved(field_id: Option<u64>) -> Result<u64, FieldError> {
+    field_id.ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
 /// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.

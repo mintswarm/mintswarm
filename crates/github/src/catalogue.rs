@@ -1,5 +1,6 @@
 //! The options of a role's field on GitHub, for the operator's admin commands (design §4.6). It
-//! uses the token its caller gives it, never one the runner mints.
+//! uses the token its caller gives it, never one the runner mints. Fields are configured by
+//! name, so it also resolves a field's id from its name.
 
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
@@ -44,7 +45,32 @@ impl GitHubFieldCatalogue {
             .await
     }
 
-    async fn field_options(&self, field_id: u64) -> Result<Vec<FieldValue>, FieldError> {
+    /// The id of the organisation's issue field named `name`, or `field_missing` when the
+    /// organisation has no field of that name.
+    pub async fn field_id(&self, name: &str) -> Result<u64, FieldError> {
+        for page in 1..=MAX_PAGES {
+            let path = format!(
+                "/orgs/{}/issue-fields?per_page={PER_PAGE}&page={page}",
+                self.owner
+            );
+            let bad = || FieldError::Transport(format!("GET {path}: not the expected JSON"));
+            let body = success(&self.get(&path).await?)?;
+            let fields = body.as_array().ok_or_else(bad)?;
+            if let Some(field) = fields
+                .iter()
+                .find(|field| field.get("name").and_then(Value::as_str) == Some(name))
+            {
+                return field.get("id").and_then(Value::as_u64).ok_or_else(bad);
+            }
+            if fields.len() < PER_PAGE {
+                break;
+            }
+        }
+        Err(FieldError::Field(FieldFinding::FieldMissing))
+    }
+
+    /// Every option of the organisation's issue field `field_id`, mapped or not.
+    pub async fn field_options(&self, field_id: u64) -> Result<Vec<FieldValue>, FieldError> {
         let path = format!("/orgs/{}/issue-fields/{field_id}", self.owner);
         let bad = || FieldError::Transport(format!("GET {path}: not the expected JSON"));
         let reply = self.get(&path).await?;
@@ -113,7 +139,7 @@ fn success(reply: &Reply) -> Result<Value, FieldError> {
 impl FieldCatalogue for GitHubFieldCatalogue {
     async fn options(&self, field: &FieldRef) -> Result<Vec<FieldValue>, FieldError> {
         match &field.source {
-            FieldSource::Field { field_id, .. } => self.field_options(*field_id).await,
+            FieldSource::Field { name } => self.field_options(self.field_id(name).await?).await,
             FieldSource::Labels { label } => self.label_options(label).await,
         }
     }
