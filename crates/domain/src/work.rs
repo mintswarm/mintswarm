@@ -38,7 +38,7 @@ pub struct StageJob {
 /// A deterministic step that needs the clone, a workspace or credentials.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Step {
+pub enum StepKind {
     Prepare,
     Commit,
     Gates,
@@ -53,19 +53,19 @@ pub enum Step {
     FileChildren,
 }
 
-impl Step {
+impl StepKind {
     /// Every step, in the order design §5 lists them.
-    pub const ALL: [Step; 10] = [
-        Step::Prepare,
-        Step::Commit,
-        Step::Gates,
-        Step::Push,
-        Step::Bundle,
-        Step::KeepRound,
-        Step::DependencyInputs,
-        Step::LandingFacts,
-        Step::TrackerEffects,
-        Step::FileChildren,
+    pub const ALL: [StepKind; 10] = [
+        StepKind::Prepare,
+        StepKind::Commit,
+        StepKind::Gates,
+        StepKind::Push,
+        StepKind::Bundle,
+        StepKind::KeepRound,
+        StepKind::DependencyInputs,
+        StepKind::LandingFacts,
+        StepKind::TrackerEffects,
+        StepKind::FileChildren,
     ];
 }
 
@@ -74,7 +74,7 @@ impl Step {
 pub struct StepJob {
     pub job: JobId,
     pub attempt: AttemptId,
-    pub step: Step,
+    pub step: StepKind,
     pub base: RevId,
     pub head: Option<RevId>,
     pub inputs: Vec<InputFile>,
