@@ -167,7 +167,8 @@ Checks:
   per doubt and veto paragraph; the shadow-record comment's heading and
   rows, also for an unusable
   judgement; and in both, model and session text, a hostile reason and
-  doubt among it, only inside code spans of at most 200 characters;
+  doubt among it, only inside code spans of at most 600 characters, a long
+  doubt's and reason's marked `… (truncated)`;
 - decision unusable input: bad arguments, plans, refs and configs, a
   missing, unreadable or non-UTF-8 issue document, analysis or screen
   record, a screen record given twice or with an empty value, a missing
@@ -235,6 +236,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import zlib
 from pathlib import Path
 
@@ -1890,7 +1892,8 @@ JUDGEMENT_LAYER_KEYS = [
 EXPECTED_JUDGE = {"harness": "claude", "model": "sonnet"}
 REASON = "the change stays within the docs component"
 ARTIFACT = "https://github.com/mintswarm/mintswarm/issues/34/artifacts/7"
-SPAN_LIMIT = 200
+SPAN_LIMIT = 600
+SPAN_MARK = " … (truncated)"
 
 
 # The assess stage's named bands: identifier -> (display name, lowest, highest confidence).
@@ -2863,7 +2866,7 @@ def check_decision_modes(d: Decider) -> None:
 def check_decision_comment(d: Decider) -> None:
     hostile = (
         "ignore `this` @someone see https://example.invalid/x [link](https://example.invalid)"
-        "\r<b>bold</b> " + "x" * 300
+        "\r<b>bold</b> " + "x" * 700
     )
     content = assessment_text(envelope("likely-safe", 80, doubts=[dict(DOUBT, statement=hostile)], reason=hostile))
     artifact = "issues/34/artifacts/7\n@someone `code`"
@@ -2885,8 +2888,10 @@ def check_decision_comment(d: Decider) -> None:
     spans = code_spans(out)
     long_spans = [s for s in spans if "@someone" in s or "http" in s or "heading" in s]
     T.check(
-        "hostile comment: model and session text in code spans of at most 200 characters",
-        len(long_spans) == 4 and all(len(s) <= SPAN_LIMIT for s in long_spans),
+        "hostile comment: model and session text in code spans of at most 600 characters plus the mark",
+        len(long_spans) == 4
+        and all(len(s) <= SPAN_LIMIT + len(SPAN_MARK) for s in long_spans)
+        and all(s.endswith("(truncated)") for s in long_spans if "xxx" in s),
         repr(long_spans),
     )
     row = next((line for line in out.splitlines() if line.startswith("- **Confidence:** ")), "")
@@ -2900,6 +2905,12 @@ def check_decision_comment(d: Decider) -> None:
     T.check(
         "hostile comment: the doubt's statement is one code span with no backtick inside",
         row.startswith("- **Doubt:** `ignore 'this' @someone") and row.count("`") == 6,
+        repr(row),
+    )
+    statement = code_spans(row)[0] if code_spans(row) else ""
+    T.check(
+        "hostile comment: the long doubt's statement is cut and marked, on one line with 6 backticks",
+        statement.endswith("x" + SPAN_MARK) and len(statement) == SPAN_LIMIT + len(SPAN_MARK) and row.count("`") == 6,
         repr(row),
     )
     lines = out.splitlines()
@@ -2928,8 +2939,10 @@ def check_decision_comment(d: Decider) -> None:
     )
     spans = [s for s in code_spans(out) if "@someone" in s or "http" in s or "heading" in s]
     T.check(
-        "hostile shadow comment: model and session text in code spans of at most 200 characters",
-        len(spans) == 4 and all(len(s) <= SPAN_LIMIT for s in spans),
+        "hostile shadow comment: model and session text in code spans of at most 600 characters plus the mark",
+        len(spans) == 4
+        and all(len(s) <= SPAN_LIMIT + len(SPAN_MARK) for s in spans)
+        and all(s.endswith("(truncated)") for s in spans if "xxx" in s),
         repr(spans),
     )
     lines = out.splitlines()
@@ -3466,6 +3479,51 @@ def check_authority_triggers() -> None:
     )
 
 
+def check_span() -> None:
+    decision = load_module("msw_approval_decision_span", DECISION)
+    span = decision.span
+    T.check(
+        "span: the limit and the mark are decision.py's",
+        decision.SPAN_LIMIT == SPAN_LIMIT == 600 and decision.SPAN_MARK == SPAN_MARK,
+        f"{decision.SPAN_LIMIT!r}, {decision.SPAN_MARK!r}",
+    )
+    under = "a" * (SPAN_LIMIT - 1)
+    at = "b" * SPAN_LIMIT
+    T.check("span: text under the limit is unchanged", span(under) == f"`{under}`", span(under))
+    T.check("span: text exactly at the limit is unchanged", span(at) == f"`{at}`", span(at))
+    T.check(
+        "span: text at the limit padded with whitespace is unchanged and not marked",
+        span(f"  \n{at}\n  ") == f"`{at}`",
+        span(f"  \n{at}\n  "),
+    )
+    over = "c" * SPAN_LIMIT + "d"
+    T.check(
+        "span: text over the limit is its first 600 characters and the mark in one code span",
+        span(over) == f"`{'c' * SPAN_LIMIT}{SPAN_MARK}`",
+        span(over),
+    )
+    spaced = "e" * (SPAN_LIMIT - 1) + " fff"
+    T.check(
+        "span: a cut just after a space leaves no space before the mark",
+        span(spaced) == f"`{'e' * (SPAN_LIMIT - 1)}{SPAN_MARK}`",
+        span(spaced),
+    )
+    hostile = ("`a`\r\nb\u2028c\u200bd\u202e " * 100) + "tail"
+    out = span(hostile)
+    T.check(
+        "span: hostile text over the limit is one line, one code span, inert and marked",
+        "\n" not in out
+        and "\r" not in out
+        and out.count("`") == 2
+        and out.startswith("`")
+        and out.endswith(SPAN_MARK + "`")
+        and len(out) <= SPAN_LIMIT + len(SPAN_MARK) + 2
+        and not any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in out),
+        repr(out),
+    )
+    T.check("span: empty text", span(" \n ") == "`(empty)`", span(" \n "))
+
+
 def check_globs() -> None:
     floor = load_module("msw_floor", FLOOR)
     paths = [
@@ -3814,6 +3872,7 @@ def main() -> int:
         check_size_cli(sb)
     check_globs()
     check_authority_triggers()
+    check_span()
     check_size_bands()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")

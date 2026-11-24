@@ -162,9 +162,9 @@ package is not in it. The record is not part of decision.json.
 
 Model and session text in either, the screen record's and the footprint's
 package text among it, is flattened to one line, stripped of control and
-format characters, its backticks replaced, cut to 200 characters and set in
-a code span; layer problems are this script's fixed strings. Nothing else is
-ever printed to stdout.
+format characters, its backticks replaced, cut to 600 characters and marked
+`… (truncated)` when cut, and set in a code span; layer problems are this
+script's fixed strings. Nothing else is ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
 record unless a stale one could not be deleted: bad arguments, an
@@ -236,7 +236,8 @@ DOUBT_KEYS = ["statement", "consequence", "resolution"]
 MAX_DOUBTS = 10
 FENCE_OPEN = "```json"
 FENCE_CLOSE = "```"
-SPAN_LIMIT = 200
+SPAN_LIMIT = 600
+SPAN_MARK = " … (truncated)"
 REQUIRED = (
     "--issue",
     "--component",
@@ -657,7 +658,9 @@ def inert(text) -> str:
 
 def span(text) -> str:
     """Model or session text as one bounded, inert Markdown code span."""
-    flat = inert(text)[:SPAN_LIMIT].strip()
+    flat = inert(text)
+    if len(flat) > SPAN_LIMIT:
+        flat = flat[:SPAN_LIMIT].rstrip() + SPAN_MARK
     return f"`{flat}`" if flat else "`(empty)`"
 
 

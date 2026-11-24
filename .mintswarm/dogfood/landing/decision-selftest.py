@@ -74,7 +74,11 @@ Checks:
   configured model shows today's row;
   hostile text with backticks, newlines, an at-sign and the steer marker
   in the reason, a doubt, a floor reason, the approver and the landing
-  model stays in code spans, and no line is the steer marker;
+  model stays in code spans, and no line is the steer marker; a 700-character
+  doubt shows its first 600 characters marked `… (truncated)`, on one line;
+- spans: decision.py's span keeps text under and exactly at the 600-character
+  limit unchanged, and cuts text over it to 600 characters marked
+  `… (truncated)` inside one code span, hostile text on one line;
 - unusable input: bad arguments (among them a repeated, an empty and an
   argument-name --landing-model), an unknown component, an unreadable plan,
   an unresolvable head, a base without a config and an invalid config exit
@@ -1046,6 +1050,19 @@ def check_comment(r: Runner, real: dict) -> None:
         proc.stdout,
     )
 
+    long = "s" * 700
+    ctx = r.context("shadow")
+    landing = document(envelope("likely-safe", 85, doubts=[dict(DOUBT, statement=long)]), summary="85 confidence: fine")
+    proc, record, _, _ = r.run(ctx, verdict_for(ctx), landing)
+    mark = J.decision.SPAN_MARK
+    want = f"- **Doubt:** `{'s' * 600}{mark}`; if wrong: `{DOUBT['consequence']}`; resolved by: `{DOUBT['resolution']}`"
+    row = [line for line in proc.stdout.splitlines() if line.startswith("- **Doubt:** ")]
+    T.check(
+        "comment: a long doubt is cut to 600 characters and marked, on one line with 6 backticks",
+        usable_record(record) and row == [want] and row[0].count("`") == 6,
+        proc.stdout,
+    )
+
     ctx = r.context("shadow")
     proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"], extra=["--landing-model", hostile])
     lines = proc.stdout.splitlines()
@@ -1059,6 +1076,39 @@ def check_comment(r: Runner, real: dict) -> None:
         and f"landing `{configured['landing']['harness']}` {inert} (configured " in row[0]
         and not any(line.strip().startswith(STEER) for line in lines),
         proc.stdout,
+    )
+
+
+def check_span() -> None:
+    span, limit, mark = J.decision.span, J.decision.SPAN_LIMIT, J.decision.SPAN_MARK
+    T.check("span: the limit is 600 characters", limit == 600, repr(limit))
+    under, at = "a" * (limit - 1), "b" * limit
+    T.check("span: text under the limit is unchanged", span(under) == f"`{under}`", span(under))
+    T.check("span: text exactly at the limit is unchanged", span(at) == f"`{at}`", span(at))
+    T.check(
+        "span: text at the limit padded with whitespace is unchanged",
+        span(f" \n{at}\n ") == f"`{at}`",
+        span(f" \n{at}\n "),
+    )
+    T.check(
+        "span: text over the limit is its first 600 characters and the mark in one code span",
+        span("c" * limit + "d") == f"`{'c' * limit}{mark}`" and mark.endswith("(truncated)"),
+        span("c" * limit + "d"),
+    )
+    T.check(
+        "span: a cut just after a space leaves no space before the mark",
+        span("e" * (limit - 1) + " fff") == f"`{'e' * (limit - 1)}{mark}`",
+        span("e" * (limit - 1) + " fff"),
+    )
+    out = span(("`a`\r\n" + STEER + "\u2028@zmij ") * 40)
+    T.check(
+        "span: hostile text over the limit is one line, one code span and marked",
+        "\n" not in out
+        and "\r" not in out
+        and "\u2028" not in out
+        and out.count("`") == 2
+        and out.endswith(mark + "`"),
+        repr(out),
     )
 
 
@@ -1235,6 +1285,7 @@ def main() -> int:
         check_unusable(runner, bases)
         check_stale(runner)
         check_hygiene(sb)
+    check_span()
     check_shape()
     check_checkout(real)
     print(f"{T.passed} passed, {T.failed} failed")
