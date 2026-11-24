@@ -131,7 +131,7 @@ The session checks for one before implement starts, before it records implement 
 
 A trusted approver can approve a plan on the issue itself, in either of two ways:
 
-- **The command:** an issue comment whose first command line is `/approve-plan`. A command line is a line that, with CRLF normalised to LF and surrounding whitespace trimmed, is exactly one `/` token, at the start of the line and outside `>` quotes, fenced blocks and indented code; only the first command line of a comment counts, and the comment's other lines are a note that goes with the approval. `/approve-plan` is the tracker's spelling of the runner's `approve` event on a plan approval.
+- **The command:** an issue comment whose first command line is `/approve-plan`. A command line is a line that, with CRLF normalised to LF and surrounding whitespace trimmed, is exactly one `/` token, at the start of the line and outside `>` quotes (a non-blank line right after a quote line, up to a blank line, is still quoted), fenced blocks and indented code; only the first command line of a comment counts, and the comment's other lines are a note that goes with the approval. `/approve-plan` is the tracker's spelling of the runner's `approve` event on a plan approval.
 - **Setting the value by hand:** setting the issue's `msw-state` to `plan approved`.
 
 Either counts only when all of these hold:
