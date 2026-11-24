@@ -9,4 +9,5 @@ pub mod exit;
 pub mod field;
 pub mod glob;
 pub mod json;
+pub mod markdown;
 pub mod size;
