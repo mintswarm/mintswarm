@@ -363,7 +363,7 @@ def item_owner(number: int, issue: dict) -> str:
 
 
 def issue_owner(number: int) -> str:
-    """Issue NUMBER's owner, read from GitHub without writing; watch-plan-approvals.py trusts only this login."""
+    """Issue NUMBER's owner, read from GitHub without writing; watch-plan-approvals.py trusts only this login, and only with write access."""
     issue = gh([f"repos/{{owner}}/{{repo}}/issues/{number}"])
     if not isinstance(issue, dict):
         raise RuntimeError("GitHub returned no issue")

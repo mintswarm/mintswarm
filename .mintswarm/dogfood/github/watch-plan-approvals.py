@@ -13,13 +13,18 @@ It reads tracker.state with msw-state.py's settings() at the base ref (--base,
 resolved in the current directory). An issue's one trusted approver is its
 owner, the person a waiting plan is assigned to: assign-approvers.py's
 issue_owner() reads it, the issue's author, or the author of the nearest
-ancestor a person filed when a bot filed it, so never a `[bot]` login. When
-no owner can be found (a bot filed the issue and no ancestor a person filed),
-the issue has no trusted approver, and the reason goes to stderr. Logins are
-compared case-insensitively. For each ISSUE it reads the owner, the msw-state
-value (msw-state.py's read_field or read_labels), the comments (`--paginate --slurp repos/{owner}/{repo}/issues/N/comments`) and, in
-labels mode, the events (the same for `issues/N/events`). Comments and events
-are ordered by created_at, then id.
+ancestor a person filed when a bot filed it, so never a `[bot]` login. The
+owner is trusted only when GitHub reports write access or higher for them
+(`repos/{owner}/{repo}/collaborators/LOGIN/permission`: permission admin or
+write, or role_name admin, maintain or write). When no owner can be found (a
+bot filed the issue and no ancestor a person filed), or the owner has no
+write access, the issue has no trusted approver, and the reason goes to
+stderr. Logins are compared case-insensitively. For each ISSUE it reads the
+owner and their permission, the msw-state value (msw-state.py's read_field or
+read_labels), the comments (`--paginate --slurp
+repos/{owner}/{repo}/issues/N/comments`) and, in labels mode, the events (the
+same for `issues/N/events`). Comments and events are ordered by created_at,
+then id.
 
 The current approval package is the latest mintswarm-dev[bot] comment whose
 first line is `<!-- mintswarm: plan approval package -->` and whose second is
@@ -221,13 +226,33 @@ def hand_set(number: int, config: dict, comments: list, package, trusted: set) -
     return [f"set-back #{number} by {who}: {reason}"]
 
 
+WRITE_PERMISSIONS = {"admin", "write"}
+WRITE_ROLES = {"admin", "maintain", "write"}
+
+
+def can_write(owner: str) -> bool:
+    """Whether GitHub reports write, maintain or admin access to the repository for OWNER."""
+    got = aa.gh([f"repos/{{owner}}/{{repo}}/collaborators/{owner}/permission"], missing_ok=True)
+    if not isinstance(got, dict):
+        return False
+    return got.get("permission") in WRITE_PERMISSIONS or got.get("role_name") in WRITE_ROLES
+
+
 def trusted_of(number: int) -> set:
-    """The issue's trusted approvers: its owner, or nobody when it has none."""
+    """The issue's trusted approvers: its owner when they may write, or nobody."""
     try:
-        return {aa.issue_owner(number).lower()}
+        owner = aa.issue_owner(number)
     except aa.UsageError as err:
         print(f"watch-plan-approvals.py: {err}; #{number} has no trusted approver", file=sys.stderr)
         return set()
+    if not can_write(owner):
+        print(
+            f"watch-plan-approvals.py: #{number}'s owner {owner} has no write access to the repository;"
+            f" #{number} has no trusted approver",
+            file=sys.stderr,
+        )
+        return set()
+    return {owner.lower()}
 
 
 def watch(number: int, config: dict) -> list:

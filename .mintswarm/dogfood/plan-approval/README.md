@@ -134,7 +134,7 @@ A trusted approver can approve a plan on the issue itself, in either of two ways
 
 Either counts only when all of these hold:
 
-- it comes from the issue's owner, the person the issue is assigned to while the plan waits (`assign-approvers.py assign <issue> plan`): the issue's author, or the author of the nearest ancestor a person filed when a bot filed it, compared case-insensitively; an issue with no such person has no trusted approver;
+- it comes from the issue's owner, the person the issue is assigned to while the plan waits (`assign-approvers.py assign <issue> plan`): the issue's author, or the author of the nearest ancestor a person filed when a bot filed it, compared case-insensitively, and trusted only when GitHub reports write, maintain or admin access to the repository for them; an issue with no such person, or whose owner has no write access, has no trusted approver;
 - that login is not a bot: it does not end in `[bot]` and its account type is not `Bot`;
 - the issue's `msw-state` is `awaiting approval` (for the command);
 - it was posted or set after the latest approval package, the latest `mintswarm-dev[bot]` comment that opens with `<!-- mintswarm: plan approval package -->`; a replan moves the issue to `planning` and posts a new package, so an earlier command never approves a later plan;

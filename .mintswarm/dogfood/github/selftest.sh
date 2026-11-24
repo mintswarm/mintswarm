@@ -385,7 +385,11 @@ cat > "$stubs/gh" <<'EOF'
 # served for pulls/<n>/reviews and pulls/<n>/comments, in reviews.json and
 # review-comments.json: {"<n>": [...]} or {"<n>": {"reads": [[...], ...]}},
 # one list per read, the last repeating, counted in reviews-reads.json and
-# review-comments-reads.json.
+# review-comments-reads.json. A collaborator's permission,
+# collaborators/<login>/permission, comes from permissions.json,
+# {"<login, lower case>": "<role_name>"}, write when the login is not there,
+# and HTTP 404 for the role "404"; role_name is the role and permission is
+# admin, write, read or none, as GitHub maps the role.
 # For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
 # last read repeating, counted in pulls-reads.json; check runs, check suites
 # and statuses per commit in commits.json, {"<sha>": {"check_runs": [...],
@@ -571,6 +575,17 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/labels", a) fo
         print(json.dumps(label))
     else:
         print(json.dumps([labels] if "--slurp" in argv else labels))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/collaborators/[^/]+/permission", a) for a in argv):
+    path = next(a for a in argv if a.startswith("repos/"))
+    who = path.split("/")[4]
+    store = os.path.join(STATE, "permissions.json")
+    roles = json.load(open(store)) if os.path.exists(store) else {}
+    role = roles.get(who.lower(), "write")
+    if role == "404":
+        print("gh: Not Found (HTTP 404)", file=sys.stderr)
+        sys.exit(1)
+    permission = {"maintain": "write", "triage": "read"}.get(role, role)
+    print(json.dumps({"permission": permission, "role_name": role, "user": {"login": who}}))
 elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments|/parent)?", a) for a in argv):
     path = next(a for a in argv if a.startswith("repos/"))
     n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
@@ -3166,6 +3181,23 @@ wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 z
 check "only the issue's author is trusted, not another person" eq "$(wpa_lines 81 --base "$real_base")" \
   "approve #81 comment 12 by Alice $p81
 refuse #81 comment 11 by zmij: zmij is not a trusted approver"
+check "the owner's permission is read through bot-gh.sh" \
+  gh_argv_seen '["api","repos/{owner}/{repo}/collaborators/alice/permission"]'
+printf '{"alice": "maintain"}' > "$MSW_STUB_STATE/permissions.json"
+check "an owner with maintain access is trusted" eq "$(wpa_lines 81 --base "$real_base")" \
+  "approve #81 comment 12 by Alice $p81
+refuse #81 comment 11 by zmij: zmij is not a trusted approver"
+printf '{"alice": "triage"}' > "$MSW_STUB_STATE/permissions.json"
+check "an owner without write access is not trusted" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: zmij is not a trusted approver
+refuse #81 comment 12 by Alice: Alice is not a trusted approver"
+check "and the watcher says why on stderr" \
+  present "#81's owner alice has no write access to the repository; #81 has no trusted approver" "$sandbox/wpa.err"
+printf '{"alice": "404"}' > "$MSW_STUB_STATE/permissions.json"
+check "an owner who is not a collaborator is not trusted" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: zmij is not a trusted approver
+refuse #81 comment 12 by Alice: Alice is not a trusted approver"
+rm -f "$MSW_STUB_STATE/permissions.json"
 wpa_author='{"login": "mintswarm-dev[bot]", "type": "Bot"}'
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 jq '.["81"].parent = 87' "$MSW_STUB_STATE/issues.json" > "$sandbox/issues.json" && mv "$sandbox/issues.json" "$MSW_STUB_STATE/issues.json"
