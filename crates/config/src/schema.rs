@@ -1,0 +1,933 @@
+//! The schema of the repository config, `.mintswarm/config.yaml`.
+//!
+//! The whole document is checked: every key must be known, and the sections the dogfood tools
+//! validate are checked as they check them, one check for each of theirs:
+//! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
+//! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve` and
+//! `github/msw-state.py` `settings`. A change to any of those, or to the config's keys, changes
+//! this module in the same change.
+//!
+//! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
+//! some mismatched types; this module checks every key and rejects each mismatch instead. A
+//! config the tools accept can therefore fail here, for example:
+//!
+//! - a non-string `agents.stages.<stage>.effort`, which `landing/decision.py` reads as none;
+//! - a stage name under `agents.stages` that is not a stage, which the tools never look up;
+//! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
+//! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
+//! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores.
+
+use std::collections::BTreeMap;
+
+use serde_json::{Map, Value};
+
+use crate::{Error, Path, Stage, parse_yaml};
+
+/// The plan-approval and landing modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// A human always decides.
+    Always,
+    /// The checks run and are recorded, while a human decides.
+    Shadow,
+    /// The checks decide, within their limits.
+    Judged,
+    /// No approval is asked.
+    Never,
+}
+
+impl Mode {
+    const NAMES: [(&'static str, Mode); 4] = [
+        ("always", Mode::Always),
+        ("shadow", Mode::Shadow),
+        ("judged", Mode::Judged),
+        ("never", Mode::Never),
+    ];
+}
+
+/// `gates.summary`: whether an agent summarises gate failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatesSummary {
+    /// An agent summarises them.
+    Agent,
+    /// They are not summarised; the default.
+    Off,
+}
+
+/// `pipeline.dependencies.review`: whether new and upgraded packages are judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyReview {
+    /// The review stage judges each one.
+    Agent,
+    /// They are not judged; the default.
+    Off,
+}
+
+/// The components and paths whose match sends a plan or a change to a human.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequireHuman {
+    /// Component names, each defined in `components`.
+    pub components: Vec<String>,
+    /// Path globs.
+    pub paths: Vec<String>,
+}
+
+/// `pipeline.plan_approval.limits`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Files a plan may touch.
+    pub files: u64,
+    /// Lines a plan may change.
+    pub lines: u64,
+    /// New files a plan may add.
+    pub new_files: u64,
+    /// New dependencies a plan may add.
+    pub new_dependencies: u64,
+}
+
+/// One component's entry in `pipeline.plan_approval.limits_by_component`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LimitOverrides {
+    /// Overrides `limits.files`.
+    pub files: Option<u64>,
+    /// Overrides `limits.lines`.
+    pub lines: Option<u64>,
+    /// Overrides `limits.new_files`.
+    pub new_files: Option<u64>,
+    /// Overrides `limits.new_dependencies`.
+    pub new_dependencies: Option<u64>,
+}
+
+/// `pipeline.plan_approval`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanApproval {
+    /// `mode`.
+    pub mode: Mode,
+    /// `min_confidence`, 90 when absent.
+    pub min_confidence: u64,
+    /// `require_human`.
+    pub require_human: RequireHuman,
+    /// `limits`.
+    pub limits: Limits,
+    /// `limits_by_component`, by component name.
+    pub limits_by_component: BTreeMap<String, LimitOverrides>,
+    /// `non_production`, the floor's built-in globs when absent.
+    pub non_production: Vec<String>,
+}
+
+/// `pipeline.landing`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Landing {
+    /// `mode`.
+    pub mode: Mode,
+    /// `require_human`.
+    pub require_human: RequireHuman,
+    /// `footprint.lines_factor`.
+    pub lines_factor: f64,
+    /// `min_confidence`, 95 when absent.
+    pub min_confidence: u64,
+}
+
+/// A validated repository config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoConfig {
+    value: Value,
+    plan_approval: PlanApproval,
+    landing: Landing,
+    dependency_review: DependencyReview,
+    review_max_rounds: Option<u64>,
+    gates_summary: GatesSummary,
+}
+
+/// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
+const MIN_CONFIDENCE: u64 = 90;
+/// The default `pipeline.landing.min_confidence`.
+const LANDING_MIN_CONFIDENCE: u64 = 95;
+/// The limit names, in the floor's order.
+const LIMITS: [&str; 4] = ["files", "lines", "new_files", "new_dependencies"];
+/// `pipeline.plan_approval.non_production` when absent.
+const NON_PRODUCTION: [&str; 9] = [
+    "**/tests/**",
+    "**/*selftest*",
+    "**/test_*.py",
+    "**/*_test.*",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/fixtures/**",
+    "**/Cargo.lock",
+    "**/pnpm-lock.yaml",
+];
+/// The report formats with a built-in converter, besides `ctrf`.
+const BUILT_IN_FORMATS: [&str; 1] = ["junit"];
+
+/// Parse and validate a repository config.
+pub fn load_repo_config(text: &str) -> Result<RepoConfig, Error> {
+    RepoConfig::from_value(parse_yaml(text)?)
+}
+
+impl RepoConfig {
+    /// Validate a config already converted to JSON.
+    pub fn from_value(value: Value) -> Result<Self, Error> {
+        let root = Path::root();
+        let top = mapping(&value, &root)?;
+        known(
+            top,
+            &root,
+            &[
+                "tracker",
+                "design",
+                "components",
+                "shared",
+                "agents",
+                "pipeline",
+                "gates",
+            ],
+        )?;
+        if let Some(tracker) = top.get("tracker") {
+            check_tracker(tracker, &root.key("tracker"))?;
+        }
+        if let Some(design) = top.get("design") {
+            strings_only(design, &root.key("design"), &["store"], &[])?;
+        }
+        let components = check_components(top.get("components"), &root.key("components"))?;
+        optional_string_list(top.get("shared"), &root.key("shared"))?;
+        if let Some(agents) = top.get("agents") {
+            check_agents(agents, &root.key("agents"))?;
+        }
+
+        let pipeline_path = root.key("pipeline");
+        let pipeline = match top.get("pipeline") {
+            Some(pipeline @ Value::Object(_)) => mapping(pipeline, &pipeline_path)?,
+            _ => {
+                return Err(Error::schema(
+                    &pipeline_path.key("plan_approval"),
+                    "is missing",
+                ));
+            }
+        };
+        known(
+            pipeline,
+            &pipeline_path,
+            &["plan_approval", "landing", "dependencies", "review"],
+        )?;
+        let plan_approval = check_plan_approval(pipeline, &pipeline_path, components)?;
+        let landing = check_landing(pipeline, &pipeline_path, components)?;
+        let dependency_review = check_dependencies(pipeline, &pipeline_path)?;
+        let review_max_rounds = check_review(pipeline, &pipeline_path)?;
+        let gates_summary = check_gates(top.get("gates"), &root.key("gates"))?;
+
+        Ok(RepoConfig {
+            value,
+            plan_approval,
+            landing,
+            dependency_review,
+            review_max_rounds,
+            gates_summary,
+        })
+    }
+
+    /// The validated config, as JSON.
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// `pipeline.plan_approval`.
+    pub fn plan_approval(&self) -> &PlanApproval {
+        &self.plan_approval
+    }
+
+    /// `pipeline.landing`.
+    pub fn landing(&self) -> &Landing {
+        &self.landing
+    }
+
+    /// `pipeline.dependencies.review`, `off` when absent.
+    pub fn dependency_review(&self) -> DependencyReview {
+        self.dependency_review
+    }
+
+    /// `pipeline.review.max_rounds`, absent when `pipeline.review` is.
+    pub fn review_max_rounds(&self) -> Option<u64> {
+        self.review_max_rounds
+    }
+
+    /// `gates.summary`, `off` when absent.
+    pub fn gates_summary(&self) -> GatesSummary {
+        self.gates_summary
+    }
+}
+
+fn kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a bool",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "a mapping",
+    }
+}
+
+fn mapping<'a>(value: &'a Value, path: &Path) -> Result<&'a Map<String, Value>, Error> {
+    value
+        .as_object()
+        .ok_or_else(|| Error::schema(path, format!("must be a mapping, not {}", kind(value))))
+}
+
+/// Rejects the first key of `map` that is not in `allowed`, naming it.
+fn known(map: &Map<String, Value>, path: &Path, allowed: &[&str]) -> Result<(), Error> {
+    match map.keys().find(|key| !allowed.contains(&key.as_str())) {
+        Some(key) => Err(Error::schema(&path.key(key), "unknown key")),
+        None => Ok(()),
+    }
+}
+
+fn string<'a>(value: &'a Value, path: &Path) -> Result<&'a str, Error> {
+    value
+        .as_str()
+        .ok_or_else(|| Error::schema(path, format!("must be a string, not {}", kind(value))))
+}
+
+fn string_list(value: &Value, path: &Path) -> Result<Vec<String>, Error> {
+    let error = || Error::schema(path, "must be a list of strings");
+    let items = value.as_array().ok_or_else(error)?;
+    items
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned).ok_or_else(error))
+        .collect()
+}
+
+/// A string list where absent or null reads as empty, as the floor's `string_list` reads it.
+fn optional_string_list(value: Option<&Value>, path: &Path) -> Result<Vec<String>, Error> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(value) => string_list(value, path),
+    }
+}
+
+/// A mapping with only the keys `scalars` (strings) and `lists` (string lists).
+fn strings_only(value: &Value, path: &Path, scalars: &[&str], lists: &[&str]) -> Result<(), Error> {
+    let map = mapping(value, path)?;
+    let allowed: Vec<&str> = scalars.iter().chain(lists).copied().collect();
+    known(map, path, &allowed)?;
+    for (key, value) in map {
+        if lists.contains(&key.as_str()) {
+            string_list(value, &path.key(key))?;
+        } else {
+            string(value, &path.key(key))?;
+        }
+    }
+    Ok(())
+}
+
+/// An integer, not a bool, as the floors' `isinstance(v, int) and not isinstance(v, bool)`.
+fn integer(value: &Value) -> Option<i128> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from)),
+        _ => None,
+    }
+}
+
+/// An integer of at least `low`, and at most `high` when given.
+fn bounded(value: &Value, path: &Path, low: u64, high: Option<u64>) -> Result<u64, Error> {
+    let message = match high {
+        Some(high) => format!("must be an integer from {low} to {high}"),
+        None if low == 0 => "must be a non-negative integer".to_owned(),
+        None => format!("must be an integer of {low} or more"),
+    };
+    integer(value)
+        .filter(|&n| n >= i128::from(low) && high.is_none_or(|high| n <= i128::from(high)))
+        .and_then(|n| u64::try_from(n).ok())
+        .ok_or_else(|| Error::schema(path, format!("{message}, not {value}")))
+}
+
+fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
+    let tracker = mapping(value, path)?;
+    known(
+        tracker,
+        path,
+        &["kind", "kinds", "components", "state", "ingest"],
+    )?;
+    if let Some(kind) = tracker.get("kind") {
+        string(kind, &path.key("kind"))?;
+    }
+    if let Some(kinds) = tracker.get("kinds") {
+        let kinds_path = path.key("kinds");
+        let map = mapping(kinds, &kinds_path)?;
+        known(
+            map,
+            &kinds_path,
+            &["source", "design", "plan", "implementation"],
+        )?;
+        for (key, value) in map {
+            if key == "source" {
+                string(value, &kinds_path.key(key))?;
+            } else {
+                strings_only(value, &kinds_path.key(key), &["issue_type", "label"], &[])?;
+            }
+        }
+    }
+    if let Some(components) = tracker.get("components") {
+        strings_only(
+            components,
+            &path.key("components"),
+            &["source", "label", "field"],
+            &[],
+        )?;
+    }
+    if let Some(state) = tracker.get("state") {
+        check_state(state, &path.key("state"))?;
+    }
+    if let Some(ingest) = tracker.get("ingest") {
+        let ingest_path = path.key("ingest");
+        let map = mapping(ingest, &ingest_path)?;
+        known(map, &ingest_path, &["trusted", "match"])?;
+        if let Some(trusted) = map.get("trusted") {
+            strings_only(
+                trusted,
+                &ingest_path.key("trusted"),
+                &[],
+                &["labels", "authors"],
+            )?;
+        }
+        if let Some(any) = map.get("match") {
+            string(any, &ingest_path.key("match"))?;
+        }
+    }
+    Ok(())
+}
+
+/// `tracker.state`, checked as `msw-state.py` `settings` checks it.
+fn check_state(value: &Value, path: &Path) -> Result<(), Error> {
+    let state = mapping(value, path)?;
+    known(
+        state,
+        path,
+        &["source", "field", "field_id", "label", "status"],
+    )?;
+    let one_of = |key: &str, allowed: [&str; 2]| match state.get(key) {
+        Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(value.as_str()),
+        other => Err(Error::schema(
+            &path.key(key),
+            format!(
+                "must be {} or {}, not {}",
+                allowed[0],
+                allowed[1],
+                other.unwrap_or(&Value::Null)
+            ),
+        )),
+    };
+    if one_of("source", ["field", "labels"])? == "field" {
+        match state.get("field") {
+            Some(Value::String(field)) if !field.trim().is_empty() => {}
+            _ => return Err(Error::schema(&path.key("field"), "must be a field name")),
+        }
+        match state.get("field_id") {
+            Some(value) => bounded(value, &path.key("field_id"), 1, None).map(drop)?,
+            None => return Err(Error::schema(&path.key("field_id"), "is missing")),
+        }
+    }
+    match state.get("label") {
+        Some(Value::String(label)) if label.matches("{value}").count() == 1 => {}
+        _ => {
+            return Err(Error::schema(&path.key("label"), "must hold {value} once"));
+        }
+    }
+    one_of("status", ["issue_status", "off"]).map(drop)
+}
+
+/// The component names, after checking each component as `validate_config` does.
+fn check_components<'a>(
+    value: Option<&'a Value>,
+    path: &Path,
+) -> Result<&'a Map<String, Value>, Error> {
+    let components = match value {
+        Some(value) => mapping(value, path)?,
+        None => return Err(Error::schema(path, "is missing")),
+    };
+    for (name, spec) in components {
+        let spec_path = path.key(name);
+        let map = mapping(spec, &spec_path)?;
+        known(map, &spec_path, &["description", "paths", "reviewers"])?;
+        if let Some(description) = map.get("description") {
+            string(description, &spec_path.key("description"))?;
+        }
+        optional_string_list(map.get("paths"), &spec_path.key("paths"))?;
+        if let Some(reviewers) = map.get("reviewers") {
+            string_list(reviewers, &spec_path.key("reviewers"))?;
+        }
+    }
+    Ok(components)
+}
+
+fn check_agents(value: &Value, path: &Path) -> Result<(), Error> {
+    let agents = mapping(value, path)?;
+    known(agents, path, &["default", "stages"])?;
+    let choice = ["harness", "model", "effort"];
+    if let Some(default) = agents.get("default") {
+        strings_only(default, &path.key("default"), &choice, &[])?;
+    }
+    if let Some(stages) = agents.get("stages") {
+        let stages_path = path.key("stages");
+        for (stage, value) in mapping(stages, &stages_path)? {
+            let stage_path = stages_path.key(stage);
+            if Stage::from_name(stage).is_none() {
+                return Err(Error::schema(&stage_path, "unknown key"));
+            }
+            strings_only(value, &stage_path, &choice, &[])?;
+        }
+    }
+    Ok(())
+}
+
+fn mode(value: Option<&Value>, path: &Path) -> Result<Mode, Error> {
+    let found = value
+        .and_then(Value::as_str)
+        .and_then(|name| Mode::NAMES.iter().find(|(known, _)| *known == name));
+    match found {
+        Some((_, mode)) => Ok(*mode),
+        None => Err(Error::schema(
+            path,
+            format!(
+                "must be one of always, shadow, judged, never, not {}",
+                value.map_or_else(|| "absent".to_owned(), Value::to_string)
+            ),
+        )),
+    }
+}
+
+/// `require_human`, absent or null reading as empty, with its components defined.
+fn require_human(
+    value: Option<&Value>,
+    path: &Path,
+    components: &Map<String, Value>,
+) -> Result<RequireHuman, Error> {
+    let map = match value {
+        None | Some(Value::Null) => return Ok(RequireHuman::default()),
+        Some(value) => mapping(value, path)?,
+    };
+    known(map, path, &["components", "paths"])?;
+    let names = optional_string_list(map.get("components"), &path.key("components"))?;
+    let paths = optional_string_list(map.get("paths"), &path.key("paths"))?;
+    if let Some(undefined) = names.iter().find(|name| !components.contains_key(*name)) {
+        return Err(Error::schema(
+            &path.key("components"),
+            format!("names an undefined component: {undefined}"),
+        ));
+    }
+    Ok(RequireHuman {
+        components: names,
+        paths,
+    })
+}
+
+fn check_plan_approval(
+    pipeline: &Map<String, Value>,
+    pipeline_path: &Path,
+    components: &Map<String, Value>,
+) -> Result<PlanApproval, Error> {
+    let path = pipeline_path.key("plan_approval");
+    let approval = match pipeline.get("plan_approval") {
+        Some(value) => mapping(value, &path)?,
+        None => return Err(Error::schema(&path, "is missing")),
+    };
+    known(
+        approval,
+        &path,
+        &[
+            "mode",
+            "require_human",
+            "limits",
+            "min_confidence",
+            "non_production",
+            "limits_by_component",
+        ],
+    )?;
+    let mode = mode(approval.get("mode"), &path.key("mode"))?;
+    let min_confidence = match approval.get("min_confidence") {
+        None => MIN_CONFIDENCE,
+        Some(value) => bounded(
+            value,
+            &path.key("min_confidence"),
+            MIN_CONFIDENCE,
+            Some(100),
+        )?,
+    };
+    let require_human = require_human(
+        approval.get("require_human"),
+        &path.key("require_human"),
+        components,
+    )?;
+
+    let limits_path = path.key("limits");
+    let limits = match approval.get("limits") {
+        Some(Value::Object(limits)) => limits,
+        _ => return Err(Error::schema(&limits_path, "is missing or not a mapping")),
+    };
+    known(limits, &limits_path, &LIMITS)?;
+    let mut values = [0; 4];
+    for (slot, key) in values.iter_mut().zip(LIMITS) {
+        *slot = match limits.get(key) {
+            Some(value) => bounded(value, &limits_path.key(key), 0, None)?,
+            None => return Err(Error::schema(&limits_path.key(key), "is missing")),
+        };
+    }
+    let [files, lines, new_files, new_dependencies] = values;
+    let limits = Limits {
+        files,
+        lines,
+        new_files,
+        new_dependencies,
+    };
+
+    let non_production = match approval.get("non_production") {
+        None => NON_PRODUCTION.iter().map(|&glob| glob.to_owned()).collect(),
+        Some(value) => string_list(value, &path.key("non_production"))?,
+    };
+
+    let by_path = path.key("limits_by_component");
+    let mut limits_by_component = BTreeMap::new();
+    if let Some(value) = approval.get("limits_by_component") {
+        for (name, overrides) in mapping(value, &by_path)? {
+            let where_ = by_path.key(name);
+            if !components.contains_key(name) {
+                return Err(Error::schema(&where_, "names an undefined component"));
+            }
+            let map = mapping(overrides, &where_)?;
+            known(map, &where_, &LIMITS)?;
+            let get = |key: &str| {
+                map.get(key)
+                    .map(|value| bounded(value, &where_.key(key), 0, None))
+                    .transpose()
+            };
+            let entry = LimitOverrides {
+                files: get("files")?,
+                lines: get("lines")?,
+                new_files: get("new_files")?,
+                new_dependencies: get("new_dependencies")?,
+            };
+            limits_by_component.insert(name.clone(), entry);
+        }
+    }
+
+    Ok(PlanApproval {
+        mode,
+        min_confidence,
+        require_human,
+        limits,
+        limits_by_component,
+        non_production,
+    })
+}
+
+fn check_landing(
+    pipeline: &Map<String, Value>,
+    pipeline_path: &Path,
+    components: &Map<String, Value>,
+) -> Result<Landing, Error> {
+    let path = pipeline_path.key("landing");
+    let landing = match pipeline.get("landing") {
+        Some(value) => mapping(value, &path)?,
+        None => return Err(Error::schema(&path, "is missing")),
+    };
+    known(
+        landing,
+        &path,
+        &["mode", "require_human", "footprint", "min_confidence"],
+    )?;
+    let mode = mode(landing.get("mode"), &path.key("mode"))?;
+    let require_human = require_human(
+        landing.get("require_human"),
+        &path.key("require_human"),
+        components,
+    )?;
+
+    let footprint_path = path.key("footprint");
+    let footprint = match landing.get("footprint") {
+        Some(Value::Object(footprint)) => footprint,
+        _ => {
+            return Err(Error::schema(
+                &footprint_path,
+                "is missing or not a mapping",
+            ));
+        }
+    };
+    known(footprint, &footprint_path, &["lines_factor"])?;
+    let factor_path = footprint_path.key("lines_factor");
+    let lines_factor = match footprint.get("lines_factor") {
+        Some(Value::Number(number)) => number.as_f64().filter(|f| f.is_finite() && *f >= 1.0),
+        Some(_) => None,
+        None => return Err(Error::schema(&factor_path, "is missing")),
+    }
+    .ok_or_else(|| Error::schema(&factor_path, "must be a number of 1 or more"))?;
+
+    let min_confidence = match landing.get("min_confidence") {
+        None => LANDING_MIN_CONFIDENCE,
+        Some(value) => bounded(
+            value,
+            &path.key("min_confidence"),
+            MIN_CONFIDENCE,
+            Some(100),
+        )?,
+    };
+    Ok(Landing {
+        mode,
+        require_human,
+        lines_factor,
+        min_confidence,
+    })
+}
+
+fn check_dependencies(
+    pipeline: &Map<String, Value>,
+    pipeline_path: &Path,
+) -> Result<DependencyReview, Error> {
+    let path = pipeline_path.key("dependencies");
+    let dependencies = match pipeline.get("dependencies") {
+        None | Some(Value::Null) => return Ok(DependencyReview::Off),
+        Some(value) => mapping(value, &path)?,
+    };
+    known(dependencies, &path, &["review"])?;
+    match dependencies.get("review") {
+        None | Some(Value::Null) => Ok(DependencyReview::Off),
+        Some(Value::String(value)) if value == "off" => Ok(DependencyReview::Off),
+        Some(Value::String(value)) if value == "agent" => Ok(DependencyReview::Agent),
+        Some(value) => Err(Error::schema(
+            &path.key("review"),
+            format!("must be agent or off, not {value}"),
+        )),
+    }
+}
+
+fn check_review(pipeline: &Map<String, Value>, pipeline_path: &Path) -> Result<Option<u64>, Error> {
+    let path = pipeline_path.key("review");
+    let Some(value) = pipeline.get("review") else {
+        return Ok(None);
+    };
+    let review = mapping(value, &path)?;
+    known(review, &path, &["max_rounds", "reviewers"])?;
+    if let Some(reviewers) = review.get("reviewers") {
+        string_list(reviewers, &path.key("reviewers"))?;
+    }
+    match review.get("max_rounds") {
+        Some(value) => bounded(value, &path.key("max_rounds"), 1, None).map(Some),
+        None => Err(Error::schema(&path.key("max_rounds"), "is missing")),
+    }
+}
+
+fn check_gates(value: Option<&Value>, path: &Path) -> Result<GatesSummary, Error> {
+    let gates = match value {
+        None | Some(Value::Null) => return Ok(GatesSummary::Off),
+        Some(value) => mapping(value, path)?,
+    };
+    known(gates, path, &["tests", "run", "summary", "report"])?;
+    match gates.get("tests") {
+        None | Some(Value::Null) => {}
+        Some(value) => {
+            string(value, &path.key("tests"))?;
+        }
+    }
+    let run_path = path.key("run");
+    let run = match gates.get("run") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(run)) => run.as_slice(),
+        Some(value) => {
+            return Err(Error::schema(
+                &run_path,
+                format!("must be a list, not {}", kind(value)),
+            ));
+        }
+    };
+    for (index, gate) in run.iter().enumerate() {
+        check_gate(gate, &run_path.index(index))?;
+    }
+    if let Some(report) = gates.get("report") {
+        check_report(report, &path.key("report"))?;
+    }
+    match gates.get("summary") {
+        None | Some(Value::Null) => Ok(GatesSummary::Off),
+        Some(Value::String(value)) if value == "off" => Ok(GatesSummary::Off),
+        Some(Value::String(value)) if value == "agent" => Ok(GatesSummary::Agent),
+        Some(value) => Err(Error::schema(
+            &path.key("summary"),
+            format!("must be agent or off, not {value}"),
+        )),
+    }
+}
+
+fn check_gate(gate: &Value, path: &Path) -> Result<(), Error> {
+    let map = gate
+        .as_object()
+        .ok_or_else(|| Error::schema(path, "must be a mapping with a command string"))?;
+    known(map, path, &["name", "command", "timeout"])?;
+    if let Some(name) = map.get("name") {
+        string(name, &path.key("name"))?;
+    }
+    let command_path = path.key("command");
+    let command = match map.get("command") {
+        Some(Value::String(command)) => command,
+        _ => return Err(Error::schema(&command_path, "must be a string")),
+    };
+    shell_split_ok(command)
+        .map_err(|problem| Error::schema(&command_path, format!("does not split: {problem}")))?;
+    if let Some(timeout) = map.get("timeout") {
+        bounded(timeout, &path.key("timeout"), 1, None)?;
+    }
+    Ok(())
+}
+
+/// Whether POSIX `shlex.split` accepts `command`: every quote is closed and no escape is left
+/// without the character it escapes.
+fn shell_split_ok(command: &str) -> Result<(), &'static str> {
+    enum State {
+        Plain,
+        Single,
+        Double,
+    }
+    const UNCLOSED: &str = "No closing quotation";
+    const ESCAPE: &str = "No escaped character";
+    let mut state = State::Plain;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (&state, c) {
+            (State::Plain, '\\') | (State::Double, '\\') => {
+                if chars.next().is_none() {
+                    return Err(ESCAPE);
+                }
+            }
+            (State::Plain, '\'') => state = State::Single,
+            (State::Plain, '"') => state = State::Double,
+            (State::Single, '\'') | (State::Double, '"') => state = State::Plain,
+            _ => {}
+        }
+    }
+    match state {
+        State::Plain => Ok(()),
+        State::Single | State::Double => Err(UNCLOSED),
+    }
+}
+
+/// A format name: `[a-z0-9][a-z0-9-]*`.
+fn format_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn check_report(value: &Value, path: &Path) -> Result<(), Error> {
+    let report = match value {
+        Value::Null => return Ok(()),
+        value => mapping(value, path)?,
+    };
+    known(report, path, &["formats", "converters"])?;
+    let converters_path = path.key("converters");
+    let mut declared: Vec<&str> = Vec::new();
+    match report.get("converters") {
+        None | Some(Value::Null) => {}
+        Some(value) => {
+            for (name, converter) in mapping(value, &converters_path)? {
+                check_converter(name, converter, &converters_path.key(name))?;
+                declared.push(name);
+            }
+        }
+    }
+    let formats_path = path.key("formats");
+    let formats = match report.get("formats") {
+        None => vec!["ctrf".to_owned()],
+        Some(value) => string_list(value, &formats_path)?,
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    for name in &formats {
+        if !format_name(name) {
+            return Err(Error::schema(
+                &formats_path,
+                format!("{name} must match [a-z0-9][a-z0-9-]*"),
+            ));
+        }
+        if seen.contains(&name.as_str()) {
+            return Err(Error::schema(
+                &formats_path,
+                format!("{name} is listed twice"),
+            ));
+        }
+        seen.push(name);
+        if name != "ctrf"
+            && !BUILT_IN_FORMATS.contains(&name.as_str())
+            && !declared.contains(&name.as_str())
+        {
+            return Err(Error::schema(
+                &formats_path,
+                format!("no converter for {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_converter(name: &str, value: &Value, path: &Path) -> Result<(), Error> {
+    if !format_name(name) {
+        return Err(Error::schema(
+            path,
+            "a format name must match [a-z0-9][a-z0-9-]*",
+        ));
+    }
+    if name == "ctrf" {
+        return Err(Error::schema(
+            path,
+            "ctrf is reserved and cannot be a converter",
+        ));
+    }
+    let map = mapping(value, path)?;
+    known(map, path, &["command", "extension", "timeout"])?;
+    let command_path = path.key("command");
+    match map.get("command") {
+        Some(command) if !string_list(command, &command_path)?.is_empty() => {}
+        _ => {
+            return Err(Error::schema(
+                &command_path,
+                "must be a non-empty list of strings",
+            ));
+        }
+    }
+    let extension = map.get("extension").and_then(Value::as_str);
+    if !extension.is_some_and(|e| {
+        !e.is_empty()
+            && e.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    }) {
+        return Err(Error::schema(
+            &path.key("extension"),
+            "must match [a-z0-9]+",
+        ));
+    }
+    if let Some(timeout) = map.get("timeout") {
+        bounded(timeout, &path.key("timeout"), 1, None)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_name, shell_split_ok};
+
+    #[test]
+    fn shell_split_finds_unclosed_quotes_and_escapes() {
+        assert!(shell_split_ok("cd ./web && bash x.sh").is_ok());
+        assert!(shell_split_ok(r#"echo "a \" b" 'c\'"#).is_ok());
+        assert!(shell_split_ok("echo 'a").is_err());
+        assert!(shell_split_ok("echo \"a").is_err());
+        assert!(shell_split_ok("echo a\\").is_err());
+        assert!(shell_split_ok("echo \"a\\").is_err());
+    }
+
+    #[test]
+    fn format_names() {
+        assert!(format_name("junit") && format_name("0-x"));
+        assert!(!format_name("") && !format_name("-x") && !format_name("Junit"));
+    }
+}
