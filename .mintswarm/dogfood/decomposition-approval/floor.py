@@ -124,9 +124,9 @@ def children_fence(text: str) -> str:
     except P.DocumentError as exc:
         raise BlockError(str(exc)) from exc
     start = next((i for i, line in enumerate(body) if line.strip()), None)
-    if start is None or body[start] != "```yaml":
+    if start is None or body[start].rstrip() != "```yaml":
         raise BlockError("the decomposition: '## Children' does not start with a '```yaml' fence")
-    end = next((i for i in range(start + 1, len(body)) if body[i] == "```"), None)
+    end = next((i for i in range(start + 1, len(body)) if body[i].rstrip() == "```"), None)
     if end is None:
         raise BlockError("the decomposition: the '## Children' yaml fence is not closed by a '```' line")
     return "".join(line + "\n" for line in body[start + 1 : end])
@@ -183,7 +183,10 @@ def component_reasons(children: list) -> list:
             continue
         component = c.get("component")
         if isinstance(component, list):
-            reasons.append(f"child {c['key']!r}: {len(component)} components given as a list; it needs exactly one")
+            reasons.append(
+                f"child {c['key']!r}: component is a list of {len(component)}; "
+                "an implementation child names exactly one component as a string"
+            )
         elif not isinstance(component, str) or not component:
             reasons.append(f"child {c['key']!r}: an implementation child needs one component")
     return reasons

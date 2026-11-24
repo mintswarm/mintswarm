@@ -21,7 +21,8 @@ Checks:
   which is empty or the five child rules after a `children-block` hit, the
   sha256 of both documents, `base.commit`, the base config's components,
   `verdict` against the rules and the exit code, and the printed lines;
-- a clean base modelled on the decompose output format;
+- a clean base modelled on the decompose output format, and a clean case
+  with trailing whitespace on both fence lines of the Children block;
 - per rule, clean and hit cases: children-block (missing section or fence,
   `~~~` and bare `yaml` openers, unclosed fence, yaml that does not parse,
   multi-document yaml, `children` empty or not a list, a duplicate or
@@ -348,6 +349,8 @@ def check_children_block(sb: Sandbox) -> None:
     # the open fence runs to the end of the document, so it swallows '## Coverage' too
     unclosed = decomposition(block="## Children\n\n```yaml\n" + CHILDREN)
     case(sb, "unclosed fence", unclosed, hits=["children-block", "coverage"], skipped=True, contains="not closed")
+    spaced = decomposition(block="## Children\n\n```yaml  \n" + CHILDREN + "```\t\n")
+    case(sb, "fence lines with trailing whitespace", spaced)
     case(sb, "unparsable yaml", decomposition("children: [\n  - key: a\n"), **hit)
     case(sb, "multi-document yaml", decomposition(CHILDREN + "---\n" + CHILDREN), **hit)
     case(sb, "children empty", decomposition("children: []\n"), **hit)
@@ -376,7 +379,11 @@ def check_child_rules(sb: Sandbox) -> None:
         sb, "component list", decomposition(child_yaml([child("a", component=["agents", "docs"])])), ["child-component"]
     )
     case(
-        sb, "component list of one", decomposition(child_yaml([child("a", component=["agents"])])), ["child-component"]
+        sb,
+        "component list of one",
+        decomposition(child_yaml([child("a", component=["agents"])])),
+        ["child-component"],
+        contains="component is a list of 1",
     )
     case(sb, "component web known at base", decomposition(child_yaml([child("a", component="web")])))
     case(
