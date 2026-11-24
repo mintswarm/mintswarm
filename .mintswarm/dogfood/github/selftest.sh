@@ -3083,28 +3083,27 @@ wpa_package() {  # wpa_package ISSUE ID MINUTE: a marked approval package by the
 wpa_field() {  # wpa_field VALUE: the msw-state issue field holding VALUE
   jq -nc --arg v "$1" '[{issue_field_id: 50325307, issue_field_name: "msw-state", value: $v, single_select_option: {name: $v}}]'
 }
-wpa_seed() {  # wpa_seed ISSUE VALUE COMMENT_JSON...: a field-mode issue with VALUE and these comments
+wpa_author='{"login": "zmij", "type": "User"}'  # the issue's author, so its owner and only trusted approver
+wpa_seed() {  # wpa_seed ISSUE VALUE COMMENT_JSON...: a field-mode issue by $wpa_author with VALUE and these comments
   local n="$1" value="$2"; shift 2
   seed "$n" "$(jq -nc --argjson f "$(wpa_field "$value")" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
-    '{fields: $f, comments: $c}')"
+    --argjson u "$wpa_author" '{user: $u, fields: $f, comments: $c}')"
 }
 wpa_labeled() {  # wpa_labeled ID LOGIN MINUTE [TYPE]: a labeled event for msw-state:plan approved
   jq -nc --argjson id "$1" --arg login "$2" --arg t "2026-11-24T10:$3:00Z" --arg type "${4:-User}" \
     '{id: $id, event: "labeled", label: {name: "msw-state:plan approved"}, actor: {login: $login, type: $type}, created_at: $t}'
 }
-wpa_seed_labels() {  # wpa_seed_labels ISSUE EVENTS_JSON COMMENT_JSON...: a labels-mode issue set to plan approved
+wpa_seed_labels() {  # wpa_seed_labels ISSUE EVENTS_JSON COMMENT_JSON...: a labels-mode issue by $wpa_author set to plan approved
   local n="$1" events="$2"; shift 2
   seed "$n" "$(jq -nc --argjson e "$events" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
-    '{labels: ["bug", "msw-state:plan approved"], events: $e, comments: $c}')"
+    --argjson u "$wpa_author" '{user: $u, labels: ["bug", "msw-state:plan approved"], events: $e, comments: $c}')"
 }
-wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: issue_status}}
-pipeline: {review: {reviewers: [zmij, "mintswarm-dev[bot]"]}}')"
+wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: issue_status}}')"
 wpa_argv_before="$(wc -l < "$argv_log" | tr -d ' ')"
 p81="package $(wpa_url 81 10) sha256 $wpa_sha"
 
 check "no issue exits 2" exits_2 wpa --base "$real_base"
 check "issue 0 exits 2" exits_2 wpa 0 --base "$real_base"
-check "a config without reviewers exits 2" exits_2 wpa 81 --base "$labels_base"
 
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
 check "a trusted /approve-plan after the package gives approve" eq "$(wpa_lines 81 --base "$real_base")" \
@@ -3159,6 +3158,25 @@ wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 m
   "$(wpa_comment 81 13 'mintswarm-dev[bot]' 07 '/approve-plan' 07 Bot)"
 check "an answer marker from anyone but the bot does not answer, and the bot's own command is skipped" \
   eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 11 by mallory: mallory is not a trusted approver"
+check "the owner is read from the issue through bot-gh.sh" gh_argv_seen '["api","repos/{owner}/{repo}/issues/81"]'
+
+wpa_author='{"login": "alice", "type": "User"}'
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
+  "$(wpa_comment 81 12 Alice 06 '/approve-plan')"
+check "only the issue's author is trusted, not another person" eq "$(wpa_lines 81 --base "$real_base")" \
+  "approve #81 comment 12 by Alice $p81
+refuse #81 comment 11 by zmij: zmij is not a trusted approver"
+wpa_author='{"login": "mintswarm-dev[bot]", "type": "Bot"}'
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+jq '.["81"].parent = 87' "$MSW_STUB_STATE/issues.json" > "$sandbox/issues.json" && mv "$sandbox/issues.json" "$MSW_STUB_STATE/issues.json"
+seed 87 '{"user": {"login": "zmij", "type": "User"}}'
+check "a bot-filed issue trusts the nearest person-filed ancestor's author" \
+  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 11 by zmij $p81"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+check "a bot-filed issue with no person-filed ancestor trusts nobody" \
+  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 11 by zmij: zmij is not a trusted approver"
+check "and says why on stderr" present "#81 has no trusted approver" "$sandbox/wpa.err"
+wpa_author='{"login": "zmij", "type": "User"}'
 
 wpa_seed 82 "plan approved" "$(wpa_package 82 20 00)"
 check "field mode: a hand-set is set back, its actor unknown" eq "$(wpa_lines 82 --base "$real_base")" \

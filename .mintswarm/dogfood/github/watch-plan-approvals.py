@@ -9,13 +9,15 @@ hand-set `plan approved` msw-state (`.mintswarm/dogfood/plan-approval/README.md`
 interval and acts on each line it prints (Session procedure, step 14, in this
 directory's README). It only reads; every GitHub call goes through bot-gh.sh.
 
-It reads tracker.state with msw-state.py's settings() and the trusted approvers
-with assign-approvers.py's load_config() and approvers(), all at the base ref
-(--base, resolved in the current directory), so the trusted approvers are
-exactly pipeline.review.reviewers, the people a waiting plan is assigned to,
-never a `[bot]` login. Logins are compared case-insensitively. For each ISSUE it
-reads the msw-state value (msw-state.py's read_field or read_labels), the
-comments (`--paginate --slurp repos/{owner}/{repo}/issues/N/comments`) and, in
+It reads tracker.state with msw-state.py's settings() at the base ref (--base,
+resolved in the current directory). An issue's one trusted approver is its
+owner, the person a waiting plan is assigned to: assign-approvers.py's
+issue_owner() reads it, the issue's author, or the author of the nearest
+ancestor a person filed when a bot filed it, so never a `[bot]` login. When
+no owner can be found (a bot filed the issue and no ancestor a person filed),
+the issue has no trusted approver, and the reason goes to stderr. Logins are
+compared case-insensitively. For each ISSUE it reads the owner, the msw-state
+value (msw-state.py's read_field or read_labels), the comments (`--paginate --slurp repos/{owner}/{repo}/issues/N/comments`) and, in
 labels mode, the events (the same for `issues/N/events`). Comments and events
 are ordered by created_at, then id.
 
@@ -219,7 +221,17 @@ def hand_set(number: int, config: dict, comments: list, package, trusted: set) -
     return [f"set-back #{number} by {who}: {reason}"]
 
 
-def watch(number: int, config: dict, trusted: set) -> list:
+def trusted_of(number: int) -> set:
+    """The issue's trusted approvers: its owner, or nobody when it has none."""
+    try:
+        return {aa.issue_owner(number).lower()}
+    except aa.UsageError as err:
+        print(f"watch-plan-approvals.py: {err}; #{number} has no trusted approver", file=sys.stderr)
+        return set()
+
+
+def watch(number: int, config: dict) -> list:
+    trusted = trusted_of(number)
     if config["source"] == "field":
         value = ms.read_field(number, config)
     else:
@@ -243,9 +255,8 @@ def main(argv: list) -> int:
         if any(number <= 0 for number in args.issues):
             raise ms.UsageError("issue numbers must be positive")
         config = ms.settings(args.base)
-        trusted = {name.lower() for name in aa.approvers(aa.load_config(args.base))}
-        found = [line for number in args.issues for line in watch(number, config, trusted)]
-    except (ms.UsageError, aa.UsageError) as err:
+        found = [line for number in args.issues for line in watch(number, config)]
+    except ms.UsageError as err:
         print(f"watch-plan-approvals.py: {err}", file=sys.stderr)
         return 2
     except (RuntimeError, json.JSONDecodeError, OSError) as err:

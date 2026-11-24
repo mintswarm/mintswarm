@@ -53,7 +53,9 @@ plan, needs_input and external_steps wait on the tracker item's owner: the
 issue's author, unless a bot filed it (user.type Bot, or a login ending in
 `[bot]`); then the author of the nearest ancestor a person filed, followed
 through GitHub's sub-issue `repos/{owner}/{repo}/issues/N/parent`. An issue
-with no parent (HTTP 404), or a parent already visited, exits 2. --paths and
+with no parent (HTTP 404), or a parent already visited, exits 2. The same
+owner is the one person watch-plan-approvals.py trusts to approve the issue's
+plan; it gets it from issue_owner(), which only reads. --paths and
 --branch are refused for these reasons and for release; --base is accepted and
 not used.
 
@@ -356,8 +358,16 @@ def item_owner(number: int, issue: dict) -> str:
     if not LOGIN.fullmatch(login):
         raise UsageError(f"#{current}'s author is not a valid login: {login!r}")
     if current != number:
-        note(f"#{number} was filed by a bot; waiting on #{current}'s author")
+        note(f"#{number} was filed by a bot; its owner is #{current}'s author")
     return login
+
+
+def issue_owner(number: int) -> str:
+    """Issue NUMBER's owner, read from GitHub without writing; watch-plan-approvals.py trusts only this login."""
+    issue = gh([f"repos/{{owner}}/{{repo}}/issues/{number}"])
+    if not isinstance(issue, dict):
+        raise RuntimeError("GitHub returned no issue")
+    return item_owner(number, issue)
 
 
 def assign(number: int, reason: str, base: str, paths: list, branch: str, dry_run: bool) -> int:
