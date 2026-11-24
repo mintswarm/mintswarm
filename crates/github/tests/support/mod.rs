@@ -32,6 +32,9 @@ pub fn temp_dir() -> TempDir {
         .expect("cannot create a temporary directory")
 }
 
+/// The argument that makes a fake CLI exit at once, without logging.
+const WARM_UP: &str = "--mintswarm-warm-up";
+
 /// Fake backend CLIs in a temporary directory, each appending its argv to `argv.log`.
 pub struct Fakes {
     pub dir: TempDir,
@@ -64,17 +67,28 @@ impl Fakes {
         fakes
     }
 
-    /// Replaces the fake `name` with a script running `body` after logging its argv.
+    /// Replaces the fake `name` with a script running `body` after logging its argv, and runs it
+    /// once to warm it up.
+    ///
+    /// The first exec of a freshly written script can stall for seconds under a loaded, parallel
+    /// test run (macOS assesses new executables), so no test may time it. The warm-up run exits
+    /// before logging, so it is not among [`Fakes::calls`].
     pub fn write(&self, name: &str, body: &str) {
         let path = self.dir.path().join(name);
         let log = self.log_path();
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> '{}'\n{body}\n",
+            "#!/bin/sh\n[ \"$1\" = {WARM_UP} ] && exit 0\n\
+             printf '%s\\n' \"{name} $*\" >> '{}'\n{body}\n",
             log.display()
         );
         std::fs::write(&path, script).expect("cannot write a fake CLI");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("cannot make a fake CLI executable");
+        let warmed = Command::new(&path)
+            .arg(WARM_UP)
+            .status()
+            .expect("cannot run a fake CLI to warm it up");
+        assert!(warmed.success(), "the warm-up of {name} failed: {warmed}");
     }
 
     pub fn log_path(&self) -> PathBuf {

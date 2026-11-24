@@ -105,8 +105,8 @@ Checks:
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
   error and no traceback;
-- glob semantics: floor.py's glob_to_regex agrees with the one in
-  .mintswarm/dogfood/github/request-review.py;
+- glob semantics: floor.py's glob_to_regex matches a pinned table of
+  patterns by paths, and pinned edge cases;
 - decision record shape, on every decision run that exits 0 or 1: the
   record's keys (version 2) and each layer's keys in order, the subject, the
   mode, `min_confidence` (90 unless the config sets it), the floor layer's
@@ -115,14 +115,24 @@ Checks:
   harness and model equal to the arguments, `as_configured` against the
   config, `judged_decision` and `decision` recomputed from the layers, the
   threshold, `as_configured` and the mode, the judgement's reasons (its
-  confidence and band, then a hard trigger or a confidence below
-  `min_confidence`), the exit code, and stdout: the auto-approval comment
-  for `auto`, the shadow-record comment in `shadow` mode, empty otherwise;
+  confidence and band, then the unusable triggers as `hard trigger`, the
+  authority triggers as `requires the maintainer`, or, with no trigger, a
+  confidence below `min_confidence`), the exit code, and stdout: the
+  auto-approval comment for `auto`, the shadow-record comment in `shadow`
+  mode, empty otherwise;
 - bands under `judged` with the default threshold of 90: `blocked` 0 with
-  each of the six hard triggers, `uncertain` 1 and 49, `needs-review` 50
+  each unusable hard trigger, `uncertain` 1 and 49, `needs-review` 50
   and 79 and `likely-safe` 80 and 89 are `human`; `likely-safe` 90 and 94
   and `safe` 95 and 100 are `auto`; a floor hit with `safe` 100 is `human`;
-  under `never`, `blocked` with two triggers lists both in the comment;
+  each authority trigger, and all four together, at `safe` 100 with a clean
+  floor are `human` with a usable judgement and the reason `requires the
+  maintainer`, and `weakens-safeguard` at `needs-review` 62 is `human`;
+  each unusable trigger at `safe` 100 and `needs-review` 60, and `blocked`
+  with only `credentials`, are unusable, and `blocked` with
+  `criterion-not-met` and `credentials` is usable; under `never`, `blocked`
+  with an unusable and an authority trigger shows the unusable one in the
+  Hard triggers row and the authority one in the Confidence row;
+  AUTHORITY_TRIGGERS here are decision.py's and a subset of HARD_TRIGGERS;
 - thresholds: at `min_confidence` 95, 94 is `human` and 95 `auto`; at 100,
   99 is `human` and 100 `auto`;
 - malformed envelopes, each `human` with the judgement unusable: a missing
@@ -132,9 +142,10 @@ Checks:
   extra or reordered key, a confidence that is a boolean, float or string or
   is -1 or 101, an unknown band, a range (`80-94`) or a display name
   (`Likely safe`) as the band, a confidence outside its band's range,
-  `blocked` without a trigger, a trigger outside `blocked`, an unknown or
-  repeated trigger, triggers that are not a list, an empty, format-only or
-  non-string reason, a doubt missing a field or with an empty one, 11
+  `blocked` without a trigger, an unusable trigger outside `blocked`, an
+  unknown or repeated trigger, triggers that are not a list, an empty,
+  format-only or non-string reason, a doubt missing a field or with an
+  empty one, 11
   doubts, `safe` with a doubt, `likely-safe` without one, a `Risk:` line, a
   summary confidence that differs from the envelope's, a summary in the old
   risk form, without a reason or missing, and no title; trailing spaces on
@@ -151,9 +162,10 @@ Checks:
 - decision under `always`, `shadow` and `never`: `human`, `human` with
   `judged_decision` recorded, and `auto` whatever the layers say;
 - the comments: the auto-approval comment's heading, floor line,
-  Confidence row (the band's display name and score, the threshold and the
-  reason), Hard triggers row, one Doubt row per doubt and veto paragraph;
-  the shadow-record comment's heading and rows, also for an unusable
+  Confidence row (the band's display name and score, the authority triggers
+  listed, the threshold and the reason), Hard triggers row, one Doubt row
+  per doubt and veto paragraph; the shadow-record comment's heading and
+  rows, also for an unusable
   judgement; and in both, model and session text, a hostile reason and
   doubt among it, only inside code spans of at most 200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a
@@ -233,7 +245,6 @@ SIZE = HERE / "size.py"
 FIXTURES = HERE / "fixtures"
 ROOT = HERE.parents[2]
 CONFIG = ROOT / ".mintswarm" / "config.yaml"
-REQUEST_REVIEW = ROOT / ".mintswarm" / "dogfood" / "github" / "request-review.py"
 CONFIG_PATH = ".mintswarm/config.yaml"
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 RECORD = Path(".mintswarm/job/outputs/decision.json")
@@ -1898,6 +1909,8 @@ HARD_TRIGGERS = [
     "weakens-safeguard",
     "undeclared-high",
 ]
+AUTHORITY_TRIGGERS = ["not-revertible", "credentials", "weakens-safeguard", "undeclared-high"]
+UNUSABLE_TRIGGERS = [t for t in HARD_TRIGGERS if t not in AUTHORITY_TRIGGERS]
 DOUBT = {
     "statement": "the docs index may list the page twice",
     "consequence": "a duplicate entry in the index",
@@ -1945,8 +1958,9 @@ def assessment_text(
     return eol.join(lines) + extra
 
 
-def confidence_line(band: str, confidence: int, threshold: int = 90, reason: str = REASON) -> str:
-    return f"`{BANDS[band][0]} · {confidence}` (min_confidence {threshold}), `{reason}`"
+def confidence_line(band: str, confidence: int, threshold: int = 90, reason: str = REASON, authority=()) -> str:
+    requires = f" · requires the maintainer: {', '.join(f'`{t}`' for t in authority)}" if authority else ""
+    return f"`{BANDS[band][0]} · {confidence}`{requires} (min_confidence {threshold}), `{reason}`"
 
 
 SAFE_LINE = confidence_line("safe", 95)
@@ -2238,7 +2252,7 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
             or type(jd["confidence"]) is not int
             or not band[1] <= jd["confidence"] <= band[2]
             or not all(t in HARD_TRIGGERS for t in jd["hard_triggers"])
-            or bool(jd["hard_triggers"]) != (jd["band"] == "blocked")
+            or any(t not in AUTHORITY_TRIGGERS for t in jd["hard_triggers"]) != (jd["band"] == "blocked")
             or len(jd["reasons"]) != 1
         ):
             problems.append(f"judgement {fields!r}")
@@ -2275,9 +2289,13 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
     elif usable:
         triggers = jd["hard_triggers"]
         wanted = [f"judgement: confidence {jd['confidence']} (band {jd['band']})"]
-        if triggers:
-            wanted.append(f"judgement: hard trigger {', '.join(triggers)}")
-        elif jd["confidence"] < threshold:
+        unusable = [t for t in triggers if t not in AUTHORITY_TRIGGERS]
+        authority = [t for t in triggers if t in AUTHORITY_TRIGGERS]
+        if unusable:
+            wanted.append(f"judgement: hard trigger {', '.join(unusable)}")
+        if authority:
+            wanted.append(f"judgement: requires the maintainer: {', '.join(authority)}")
+        if not triggers and jd["confidence"] < threshold:
             wanted.append(f"judgement: confidence below min_confidence {threshold}")
         listed = [x for x in reasons if x.startswith("judgement: ") and "as configured" not in x]
         if listed != wanted:
@@ -2368,20 +2386,61 @@ def check_decision_bands(d: Decider) -> None:
         "usable",
         "usable",
     )
-    for trigger in HARD_TRIGGERS:
+    for trigger in UNUSABLE_TRIGGERS:
         name = f"judged blocked 0 {trigger}"
         proc, record = d.run(name, assessment=envelope("blocked", 0, [trigger]))
         expect_decision(name, (proc, record), "human", "human", "usable", "usable")
+    for triggers in [[t] for t in AUTHORITY_TRIGGERS] + [AUTHORITY_TRIGGERS]:
+        name = f"judged safe 100 {' '.join(triggers)}"
+        proc, record = d.run(name, assessment=envelope("safe", 100, triggers))
+        expect_decision(name, (proc, record), "human", "human", "usable", "usable")
+        want = f"judgement: requires the maintainer: {', '.join(triggers)}"
+        T.check(f"{name}: reason {want!r}", want in record.get("reasons", []), repr(record.get("reasons")))
+    name = "judged needs-review 62 weakens-safeguard"
+    expect_decision(
+        name,
+        d.run(name, assessment=envelope("needs-review", 62, ["weakens-safeguard"])),
+        "human",
+        "human",
+        "usable",
+        "usable",
+    )
+    for trigger in UNUSABLE_TRIGGERS:
+        for band, confidence in (("safe", 100), ("needs-review", 60)):
+            name = f"judged {band} {confidence} unusable {trigger}"
+            expect_decision(
+                name,
+                d.run(name, assessment=envelope(band, confidence, [trigger])),
+                "human",
+                "human",
+                "usable",
+                "unusable",
+            )
+    name = "judged blocked 0 only credentials"
+    expect_decision(
+        name, d.run(name, assessment=envelope("blocked", 0, ["credentials"])), "human", "human", "usable", "unusable"
+    )
+    name = "judged blocked 0 criterion-not-met credentials"
+    expect_decision(
+        name,
+        d.run(name, assessment=envelope("blocked", 0, ["criterion-not-met", "credentials"])),
+        "human",
+        "human",
+        "usable",
+        "usable",
+    )
     proc, record = d.run(
-        "never blocked two triggers", config="never", assessment=envelope("blocked", 0, HARD_TRIGGERS[2:4])
+        "never blocked two triggers",
+        config="never",
+        assessment=envelope("blocked", 0, ["criterion-not-met", "credentials"]),
     )
     expect_decision("never blocked two triggers", (proc, record), "auto", "human", "usable", "usable")
     check_comment(
         "never blocked two triggers",
         proc,
         f"clean, {len(RULES)} of {len(RULES)} rules",
-        confidence_line("blocked", 0),
-        "`not-revertible`, `credentials`",
+        confidence_line("blocked", 0, authority=["credentials"]),
+        "`criterion-not-met`",
     )
     edges = [
         ("uncertain", 1, "human"),
@@ -2475,7 +2534,7 @@ def malformed_assessments() -> list:
         ("likely-safe at 95", assessment_text(envelope("likely-safe", 95))),
         ("blocked at 1", assessment_text(envelope("blocked", 1))),
         ("blocked without a trigger", assessment_text(envelope("blocked", 0, []))),
-        ("a trigger outside blocked", assessment_text(envelope("needs-review", 60, ["credentials"]))),
+        ("an unusable trigger outside blocked", assessment_text(envelope("needs-review", 60, ["criterion-not-met"]))),
         ("an unknown trigger", assessment_text(envelope("blocked", 0, ["risky"]))),
         ("a repeated trigger", assessment_text(envelope("blocked", 0, ["credentials", "credentials"]))),
         ("hard_triggers not a list", assessment_text(envelope("blocked", 0, "credentials"))),
@@ -2736,7 +2795,7 @@ def check_decision_documents(d: Decider) -> None:
 
 
 def check_decision_modes(d: Decider) -> None:
-    blocked = envelope("blocked", 0, ["credentials"])
+    blocked = envelope("blocked", 0, ["criterion-not-met", "credentials"])
     expect_decision("always clean safe", d.run("always clean safe", config="always"), "human", "auto")
     expect_decision(
         "always hit blocked",
@@ -2788,7 +2847,11 @@ def check_decision_modes(d: Decider) -> None:
     proc, record = d.run("never hit blocked", config="never", plan="hit", assessment=blocked)
     expect_decision("never hit blocked", (proc, record), "auto", "human", "usable", "usable")
     check_comment(
-        "never hit blocked", proc, "hit on `require-human-paths`", confidence_line("blocked", 0), "`credentials`"
+        "never hit blocked",
+        proc,
+        "hit on `require-human-paths`",
+        confidence_line("blocked", 0, authority=["credentials"]),
+        "`criterion-not-met`",
     )
     proc, record = d.run("never no layers", config="never", verdict=None, assessment=None)
     expect_decision("never no layers", (proc, record), "auto", "human", "unusable", "unusable")
@@ -3382,33 +3445,29 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
 
 
 def load_module(name: str, path: Path):
-    sys.dont_write_bytecode = True  # leave no __pycache__ next to either script
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to the script
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def check_authority_triggers() -> None:
+    decision = load_module("msw_approval_decision", DECISION)
+    T.check(
+        "authority triggers: decision.py's, in order",
+        tuple(AUTHORITY_TRIGGERS) == decision.AUTHORITY_TRIGGERS and tuple(HARD_TRIGGERS) == decision.HARD_TRIGGERS,
+        f"{decision.AUTHORITY_TRIGGERS}, {decision.HARD_TRIGGERS}",
+    )
+    T.check(
+        "authority triggers: a subset of the hard triggers",
+        set(AUTHORITY_TRIGGERS) <= set(HARD_TRIGGERS) and len(set(AUTHORITY_TRIGGERS)) == len(AUTHORITY_TRIGGERS),
+        repr(AUTHORITY_TRIGGERS),
+    )
+
+
 def check_globs() -> None:
     floor = load_module("msw_floor", FLOOR)
-    review = load_module("msw_request_review", REQUEST_REVIEW)
-    patterns = [
-        "**",
-        "docs/**",
-        "**/x.md",
-        "a/**/b",
-        "a/**",
-        "*.md",
-        "docs/*.md",
-        "?.md",
-        "a?c",
-        "a.b",
-        "[ab].md",
-        "a+b(c)",
-        "README.md",
-        ".mintswarm/dogfood/github/**",
-        "crates/*/src/**",
-    ]
     paths = [
         "docs",
         "docs/a.md",
@@ -3434,14 +3493,29 @@ def check_globs() -> None:
         "crates/core/src/lib.rs",
         "crates/core/x/src/lib.rs",
     ]
+    # Each pattern with exactly the paths above it matches; it matches none of the others.
+    matches = {
+        "**": paths,
+        "docs/**": ["docs/a.md", "docs/x/y.md"],
+        "**/x.md": ["x.md", "a/x.md", "a/b/x.md"],
+        "a/**/b": ["a/b", "a/c/d/b"],
+        "a/**": ["a/x.md", "a/b/x.md", "a/b", "a/c/d/b", "a/", "a/c"],
+        "*.md": ["x.md", "a.md", "ab.md", "[ab].md", "README.md", "readme.md"],
+        "docs/*.md": ["docs/a.md"],
+        "?.md": ["x.md", "a.md"],
+        "a?c": ["abc"],
+        "a.b": ["a.b"],
+        "[ab].md": ["[ab].md"],
+        "a+b(c)": ["a+b(c)"],
+        "README.md": ["README.md"],
+        ".mintswarm/dogfood/github/**": [".mintswarm/dogfood/github/push.sh"],
+        "crates/*/src/**": ["crates/core/src/lib.rs"],
+    }
     differ = [
-        (p, s)
-        for p in patterns
-        for s in paths
-        if bool(floor.glob_to_regex(p).fullmatch(s)) != bool(review.glob_to_regex(p).fullmatch(s))
+        (p, s) for p, want in matches.items() for s in paths if bool(floor.glob_to_regex(p).fullmatch(s)) != (s in want)
     ]
     T.check(
-        f"glob semantics: floor.py and request-review.py agree on {len(patterns) * len(paths)} pairs",
+        f"glob semantics: floor.py matches as pinned on {len(matches) * len(paths)} pairs",
         not differ,
         str(differ[:5]),
     )
@@ -3739,6 +3813,7 @@ def main() -> int:
         check_size_floor(runner)
         check_size_cli(sb)
     check_globs()
+    check_authority_triggers()
     check_size_bands()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")

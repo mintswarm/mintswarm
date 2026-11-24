@@ -60,4 +60,4 @@ All three pass before pushing:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
+- `cargo nextest run --workspace && cargo test --doc --workspace`, which needs `cargo-nextest` `0.9.152`, the version `.github/workflows/gates.yml` pins; nextest runs each test in its own process and does not run doctests, so `cargo test --doc` runs those

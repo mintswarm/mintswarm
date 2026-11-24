@@ -23,6 +23,16 @@ cap, the crates.io pause); a fake `AdvisorySource` in place of `OsvSource`;
 the CLI (exit codes, the record shape, the same output on two runs); the
 typosquat list, with the known neighbours of popular names (poem, tide, curl,
 x25519-dalek, k256, gloo, gix, cbor, preact, nuxt, msw, h3) not flagged;
+the review mode on recorded `packages.json`, `prefetch.json` and
+`metadata.json` files (one record per lockfile package, transitive ones
+included; each disqualifier on a transitive package; each threshold just
+under and at its limit: a new package, a new version, a publisher change,
+low crates.io downloads, no repository; an `"unavailable"` value and npm
+downloads never flagging; a clean package unflagged; a refused or failed
+prefetch, a missing `metadata.json` and an OSV error giving `unscreened`
+and flagged; no `packages.json`, a stale `screen.json` removed, a malformed
+`packages.json` or `prefetch.json`; every request to `https://api.osv.dev`
+and none to a registry host);
 Python 3.9 syntax, standard-library imports, and AST rules that `request`
 is the only function in screen.py that opens a URL, that every
 `subprocess.run` in it has a literal list argv starting with "yq", that
@@ -992,6 +1002,434 @@ def cli(fx: Fixture, tmp: Path):
         S.request = REAL_REQUEST
 
 
+# --- the review mode --------------------------------------------------------
+
+
+REPO = "https://github.com/example/locked"
+
+
+def ago(days: int) -> str:
+    return (TODAY - datetime.timedelta(days=days)).isoformat() + "T00:00:00Z"
+
+
+def locked(ecosystem: str, name: str, version: str = "1.0.0", direct: bool = False, registry: bool = True) -> dict:
+    """A packages.json entry as new-packages.py writes it."""
+    return {
+        "ecosystem": ecosystem,
+        "lockfile": "Cargo.lock" if ecosystem == "cargo" else "web/pnpm-lock.yaml",
+        "name": name,
+        "version": version,
+        "previous": [],
+        "source": "registry+https://github.com/rust-lang/crates.io-index" if ecosystem == "cargo" else "registry",
+        "registry": registry,
+        "direct": direct,
+        "checksum": "0" * 64 if ecosystem == "cargo" else None,
+        "integrity": "sha512-AA==" if ecosystem == "npm" else None,
+    }
+
+
+def crate_meta(
+    created=None, published=None, by="alice", previous="alice", downloads=50000, repository=REPO, yanked=False
+) -> dict:
+    """The registry part of a crate's metadata.json as prefetch.py trims it; previous None is a first release."""
+    return {
+        "crate": {
+            "created_at": created or ago(2000),
+            "updated_at": None,
+            "downloads": downloads,
+            "recent_downloads": None,
+            "repository": repository,
+            "homepage": None,
+        },
+        "version": {
+            "created_at": published or ago(200),
+            "yanked": yanked,
+            "license": "MIT",
+            "downloads": 1,
+            "rust_version": None,
+            "published_by": by,
+        },
+        "owners": [{"login": "alice", "kind": "user"}],
+        "versions_count": 2,
+        "history": [],
+        "previous": (None if previous is None else {"num": "0.9.0", "created_at": ago(2000), "published_by": previous}),
+    }
+
+
+def npm_meta(
+    created=None, published=None, by="carol", previous="carol", repository=REPO, deprecated=None, source="packument"
+) -> dict:
+    """The registry part of an npm package's metadata.json as prefetch.py trims it."""
+    return {
+        "source": source,
+        "created": created or ago(2000),
+        "modified": None,
+        "versions_count": 2,
+        "history": [],
+        "time": published or ago(200),
+        "previous": None if previous is None else {"version": "0.9.0", "time": ago(2000), "publisher": previous},
+        "maintainers": ["carol"],
+        "publisher": by,
+        "license": "MIT",
+        "repository": repository,
+        "deprecated": deprecated,
+        "scripts": {},
+        "hasInstallScript": None,
+        "downloads": "unavailable",
+    }
+
+
+class Locked:
+    """A dependencies directory with packages.json, prefetch.json and each fetched package's metadata.json."""
+
+    def __init__(self, tmp: Path):
+        self.tmp = tmp
+        self.counter = 0
+
+    def make(self, items: list) -> Path:
+        """items: (entry, registry metadata), with metadata a dict, ("refused" or "failed", reason), or "missing"."""
+        self.counter += 1
+        out = self.tmp / f"review-{self.counter}"
+        out.mkdir()
+        records = []
+        for entry, metadata in items:
+            record = {k: entry[k] for k in ("ecosystem", "lockfile", "name", "version")}
+            record.update(status="fetched", reason="", dir=None)
+            if isinstance(metadata, tuple):
+                record.update(status=metadata[0], reason=metadata[1])
+            else:
+                record["dir"] = f"{entry['ecosystem']}/{entry['name']}@{entry['version']}"
+                if isinstance(metadata, dict):
+                    (out / record["dir"]).mkdir(parents=True)
+                    document = {"registry": metadata, "build_time": "none", "found": [], "files": []}
+                    (out / record["dir"] / "metadata.json").write_text(json.dumps(document), encoding="utf-8")
+            records.append(record)
+        packages = {"base": "b", "head": "h", "changed": [], "problems": [], "packages": [e for e, _ in items]}
+        (out / "packages.json").write_text(json.dumps(packages), encoding="utf-8")
+        (out / "prefetch.json").write_text(json.dumps({"packages": records}), encoding="utf-8")
+        return out
+
+
+def reviewed(fx: Fixture, out: Path) -> tuple:
+    """(exit, stdout, screen.json or None, requests made) after `screen.py review --dir out`."""
+    calls = len(fx.reg.calls)
+    S.request = fx.reg
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
+            code = S.main(["review", "--dir", str(out)])
+    finally:
+        S.request = REAL_REQUEST
+    target = out / "screen.json"
+    record = json.loads(target.read_text(encoding="utf-8")) if target.exists() else None
+    return code, stdout.getvalue(), record, fx.reg.calls[calls:]
+
+
+def screened(fx: Fixture, box: Locked, items: list) -> list:
+    """The review records of items, screened against the self-test's typosquat list."""
+    out = box.make(items)
+    S.request = fx.reg
+    try:
+        packages = S.P.load(out / "packages.json")
+        record = S.review(packages, S.prefetched(out, packages), out, NAMES, A.OsvSource(S.request))
+    finally:
+        S.request = REAL_REQUEST
+    return record["packages"]
+
+
+def flags_of(fx: Fixture, box: Locked, entry: dict, metadata) -> list:
+    return screened(fx, box, [(entry, metadata)])[0]["flags"]
+
+
+def review_mode(fx: Fixture, tmp: Path):
+    box = Locked(tmp)
+    fx.reg.osv[("crates.io", "vulnlocked", "1.0.0")] = ["RUSTSEC-2099-0001"]
+    items = [
+        (locked("cargo", "cleancrate", direct=True), crate_meta()),
+        (locked("cargo", "deepcrate"), crate_meta()),
+        (locked("npm", "clean-npm"), npm_meta()),
+        (locked("cargo", "vulnlocked"), crate_meta()),
+    ]
+    records = screened(fx, box, items)
+    T.check(
+        "review: one record per lockfile package, transitive ones included",
+        [(r["name"], r["direct"]) for r in records]
+        == [("cleancrate", True), ("deepcrate", False), ("clean-npm", False), ("vulnlocked", False)],
+        str(records),
+    )
+    T.check(
+        "review: the record keys",
+        all(
+            set(r)
+            == {
+                "name",
+                "ecosystem",
+                "lockfile",
+                "version",
+                "direct",
+                "status",
+                "reason",
+                "signals",
+                "problems",
+                "disqualifiers",
+                "flags",
+                "flagged",
+            }
+            for r in records
+        ),
+        str(records[0]),
+    )
+    T.check(
+        "review: cargo is crates.io, the locked version kept",
+        [(r["ecosystem"], r["version"]) for r in records[:3]]
+        == [("crates.io", "1.0.0"), ("crates.io", "1.0.0"), ("npm", "1.0.0")],
+    )
+    clean = records[0]
+    T.check(
+        "review: a clean package is screened and unflagged",
+        clean["status"] == "screened" and clean["flags"] == [] and clean["flagged"] is False,
+        str(clean),
+    )
+    T.check(
+        "review: the signals of a crate",
+        clean["signals"]
+        == {
+            "age_days": 2000,
+            "version_age_days": 200,
+            "publisher": "alice",
+            "previous_publisher": "alice",
+            "publisher_changed": False,
+            "downloads": 50000,
+            "repository": REPO,
+        },
+        str(clean["signals"]),
+    )
+    T.check(
+        "review: the signals of an npm package",
+        records[2]["signals"]
+        == {
+            "age_days": 2000,
+            "version_age_days": 200,
+            "publisher": "carol",
+            "previous_publisher": "carol",
+            "publisher_changed": False,
+            "downloads": "unavailable",
+            "repository": REPO,
+        }
+        and records[2]["flagged"] is False,
+        str(records[2]),
+    )
+    vuln = records[3]
+    T.check(
+        "review disqualifier: an advisory on a transitive crate",
+        vuln["disqualifiers"] == ["advisory"]
+        and vuln["flags"] == ["advisory"]
+        and vuln["flagged"] is True
+        and vuln["problems"]["advisories"][0]["id"] == "RUSTSEC-2099-0001",
+        str(vuln),
+    )
+    for entry, metadata, wanted, label in (
+        (locked("cargo", "yankedlock"), crate_meta(yanked=True), ["yanked"], "a yanked crate"),
+        (locked("npm", "gone-npm"), npm_meta(deprecated="use other"), ["deprecated"], "a deprecated npm package"),
+        (locked("cargo", "tokoi"), crate_meta(), ["typosquat"], "a typosquat"),
+    ):
+        T.check(f"review disqualifier: {label}, transitive", flags_of(fx, box, entry, metadata) == wanted)
+    record = screened(fx, box, [(locked("npm", "gone-npm"), npm_meta(deprecated="use other"))])[0]
+    T.check("review: the deprecation message kept", record["problems"]["deprecated"] == "use other", str(record))
+
+    crate = locked("cargo", "edgecrate")
+    for label, under, at, flag in (
+        ("a new package", {"created": ago(89)}, {"created": ago(90)}, "new_package"),
+        ("a new version", {"published": ago(13)}, {"published": ago(14)}, "new_version"),
+        ("low crates.io downloads", {"downloads": 9999}, {"downloads": 10000}, "low_downloads"),
+    ):
+        T.check(
+            f"review threshold: {label} just under the limit flags",
+            flags_of(fx, box, crate, crate_meta(**under)) == [flag],
+        )
+        T.check(f"review threshold: {label} at the limit does not", flags_of(fx, box, crate, crate_meta(**at)) == [])
+    T.check(
+        "review threshold: the limits are the constants",
+        (S.NEW_PACKAGE_DAYS, S.NEW_VERSION_DAYS, S.LOW_DOWNLOADS) == (90, 14, 10000),
+    )
+    T.check(
+        "review threshold: a publisher change flags",
+        flags_of(fx, box, crate, crate_meta(by="mallory", previous="alice")) == ["publisher_changed"],
+    )
+    T.check("review threshold: the same publisher does not", flags_of(fx, box, crate, crate_meta()) == [])
+    T.check(
+        "review threshold: an npm publisher change flags",
+        flags_of(fx, box, locked("npm", "moved-npm"), npm_meta(by="mallory")) == ["publisher_changed"],
+    )
+    T.check(
+        "review threshold: a first release has no publisher change",
+        screened(fx, box, [(crate, crate_meta(previous=None))])[0]["signals"]["publisher_changed"] is None
+        and flags_of(fx, box, crate, crate_meta(previous=None)) == [],
+    )
+    T.check(
+        "review threshold: no repository flags",
+        flags_of(fx, box, crate, crate_meta(repository=None)) == ["no_repository"],
+    )
+    T.check(
+        "review threshold: no npm repository flags",
+        flags_of(fx, box, locked("npm", "bare-lock"), npm_meta(repository=None)) == ["no_repository"],
+    )
+    T.check("review threshold: a repository link does not", flags_of(fx, box, crate, crate_meta()) == [])
+    T.check(
+        "review: every flag at once, in order",
+        flags_of(
+            fx,
+            box,
+            locked("cargo", "tokoi"),
+            crate_meta(created=ago(1), published=ago(1), by="x", downloads=1, repository=None, yanked=True),
+        )
+        == ["yanked", "typosquat", "new_package", "new_version", "publisher_changed", "low_downloads", "no_repository"],
+    )
+
+    blank = crate_meta()
+    blank["crate"] = {"created_at": None, "downloads": None}
+    blank["version"] = {"created_at": "not a date", "yanked": False, "published_by": None}
+    del blank["previous"]
+    record = screened(fx, box, [(crate, blank)])[0]
+    T.check(
+        "review: unavailable values never flag",
+        record["status"] == "screened"
+        and record["flags"] == []
+        and all(v == "unavailable" for v in record["signals"].values()),
+        str(record),
+    )
+    record = screened(
+        fx, box, [(locked("npm", "doc-npm"), npm_meta(published=None, previous=None, source="version document"))]
+    )[0]
+    T.check(
+        "review: an npm version document gives no previous publisher, and no flag",
+        record["signals"]["previous_publisher"] == "unavailable"
+        and record["signals"]["publisher_changed"] == "unavailable"
+        and record["flags"] == [],
+        str(record),
+    )
+    untimed_crate, untimed_npm = crate_meta(by="mallory"), npm_meta(by="mallory")
+    untimed_crate["version"]["created_at"], untimed_npm["time"] = None, None
+    for label, lock, meta in (
+        ("a crate", crate, untimed_crate),
+        ("an npm package", locked("npm", "untimed-npm"), untimed_npm),
+    ):
+        del meta["previous"]
+        record = screened(fx, box, [(lock, meta)])[0]
+        T.check(
+            f"review: {label} with no locked publish time, and so no previous, is unavailable, not a first release",
+            record["signals"]["previous_publisher"] == "unavailable"
+            and record["signals"]["publisher_changed"] == "unavailable"
+            and "publisher_changed" not in record["flags"],
+            str(record),
+        )
+    T.check(
+        "review: npm downloads never flag",
+        screened(fx, box, [(locked("npm", "clean-npm"), dict(npm_meta(), downloads=0))])[0]["flags"] == [],
+    )
+
+    records = screened(
+        fx,
+        box,
+        [
+            (locked("cargo", "gitdep", registry=False), ("refused", "not from the public registry: git+https://x")),
+            (locked("npm", "broken-npm"), ("failed", "https://registry.npmjs.org/broken-npm: HTTP 500")),
+            (locked("cargo", "lostcrate"), "missing"),
+            (locked("cargo", "tokoi"), ("failed", "HTTP 500")),
+        ],
+    )
+    for record, label in zip(records, ("a refused prefetch", "a failed prefetch", "a missing metadata.json")):
+        T.check(
+            f"review unscreened: {label}",
+            record["status"] == "unscreened"
+            and record["reason"]
+            and record["flags"] == ["unscreened"]
+            and record["flagged"] is True,
+            str(record),
+        )
+    T.check(
+        "review unscreened: the prefetch reason kept", "public registry" in records[0]["reason"], records[0]["reason"]
+    )
+    T.check(
+        "review unscreened: a typosquat still listed",
+        records[3]["flags"] == ["typosquat", "unscreened"],
+        str(records[3]),
+    )
+    fx.reg.osv_error = S.ScreenError("HTTP 500")
+    try:
+        records = screened(fx, box, [(locked("cargo", "cleancrate"), crate_meta())])
+    finally:
+        fx.reg.osv_error = None
+    T.check(
+        "review unscreened: an OSV error",
+        records[0]["status"] == "unscreened"
+        and records[0]["reason"].startswith("advisory query failed")
+        and records[0]["flags"] == ["unscreened"],
+        str(records),
+    )
+
+    # the command line
+    out = box.make(items + [(locked("npm", "broken-npm"), ("failed", "HTTP 500"))])
+    (out / "screen.json").write_text("stale\n", encoding="utf-8")
+    code, stdout, record, calls = reviewed(fx, out)
+    T.check("review cli: exit 0", code == 0, stdout)
+    T.check(
+        "review cli: the record shape",
+        record is not None
+        and {k: v for k, v in record.items() if k != "packages"}
+        == {"tool": "dependency-screen", "version": 1, "mode": "review", "date": "2024-01-01", "advisory_source": "osv"}
+        and len(record["packages"]) == 5,
+        str(record)[:500],
+    )
+    T.check(
+        "review cli: the summary",
+        stdout.strip() == f"4 screened, 1 unscreened, 2 flagged: {out / 'screen.json'}",
+        stdout,
+    )
+    T.check(
+        "review transport: only api.osv.dev, over HTTPS",
+        calls and all(m in ("GET", "POST") and u.startswith("https://api.osv.dev/") for m, u in calls),
+        str(calls),
+    )
+    T.check(
+        "review transport: no registry host",
+        not any(urllib.parse.urlsplit(u).netloc in S.P.HOSTS for _, u in calls),
+        str(calls),
+    )
+    first = (out / "screen.json").read_bytes()
+    reviewed(fx, out)
+    T.check("review cli: the same output on two runs", (out / "screen.json").read_bytes() == first)
+
+    empty = tmp / "review-empty"
+    empty.mkdir()
+    (empty / "screen.json").write_text("stale\n", encoding="utf-8")
+    code, stdout, record, calls = reviewed(fx, empty)
+    T.check(
+        "review cli: no packages.json, exit 0 and no screen.json",
+        code == 0 and stdout.strip() == "no packages.json" and record is None and not calls,
+        stdout,
+    )
+    for label, name, text in (
+        ("packages.json not JSON", "packages.json", "{"),
+        ("packages.json in the wrong shape", "packages.json", json.dumps({"packages": [{"name": "x"}]})),
+        ("prefetch.json not JSON", "prefetch.json", "{"),
+        ("prefetch.json for other packages", "prefetch.json", json.dumps({"packages": []})),
+    ):
+        out = box.make(items[:1])
+        (out / "screen.json").write_text("stale\n", encoding="utf-8")
+        (out / name).write_text(text, encoding="utf-8")
+        code, _, record, _ = reviewed(fx, out)
+        T.check(f"review cli: {label}: exit 2, stale screen.json removed", code == 2 and record is None)
+    out = box.make(items[:1])
+    (out / "prefetch.json").unlink()
+    T.check("review cli: no prefetch.json: exit 2", reviewed(fx, out)[0] == 2)
+    for label, bad in (
+        ("review without --dir", ["review"]),
+        ("review with plan options", ["review", "--dir", str(out), "--plan", "x"]),
+    ):
+        with contextlib.redirect_stderr(io.StringIO()):
+            T.check(f"cli: {label}: exit 2", S.main(bad) == 2)
+
+
 # --- static rules -----------------------------------------------------------
 
 
@@ -1132,6 +1570,7 @@ def main() -> int:
         advisory_source(fx)
         transport()
         cli(fx, tmp)
+        review_mode(fx, tmp)
         names_list()
         source_rules()
     finally:

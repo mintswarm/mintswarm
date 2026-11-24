@@ -13,7 +13,7 @@ use mintswarm_domain::field::{
 use mintswarm_domain::ids::{AccountName, IssueNumber, PrNumber};
 use mintswarm_domain::scale::{Scale, Size};
 use mintswarm_domain::tracker::{
-    Artifact, AssignReason, Comment, Cursor, Issue, IssueRead, IssueType, Link, Login, SubItem,
+    Artifact, AssignmentReason, Comment, Cursor, Issue, IssueRead, IssueType, Link, Login, SubItem,
     Tracker,
 };
 
@@ -247,7 +247,7 @@ impl Tracker for Stub {
         &self,
         _issue: IssueNumber,
         _who: Vec<Login>,
-        _reason: AssignReason,
+        _reason: AssignmentReason,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         unused()
     }

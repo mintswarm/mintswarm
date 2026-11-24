@@ -1,0 +1,8 @@
+msw-result:
+  status: complete
+  artefact: handoff
+  outputs: [.mintswarm/job/outputs/handoff.md]
+  questions: []
+  reason: ""
+  commit: "feat(domain): structured Question objects in StageOutcome"
+  pr_title: "feat(domain): structured Question objects in StageOutcome"

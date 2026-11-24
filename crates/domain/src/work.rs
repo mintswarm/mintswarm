@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AttemptId, IssueNumber, JobId, RevId};
+use crate::question::{Question, QuestionViolation, repeated};
 
 /// A file written into a job's inputs, bound by its sha256.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +38,7 @@ pub struct StageJob {
 /// A deterministic step that needs the clone, a workspace or credentials.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Step {
+pub enum StepKind {
     Prepare,
     Commit,
     Gates,
@@ -52,19 +53,19 @@ pub enum Step {
     FileChildren,
 }
 
-impl Step {
+impl StepKind {
     /// Every step, in the order design §5 lists them.
-    pub const ALL: [Step; 10] = [
-        Step::Prepare,
-        Step::Commit,
-        Step::Gates,
-        Step::Push,
-        Step::Bundle,
-        Step::KeepRound,
-        Step::DependencyInputs,
-        Step::LandingFacts,
-        Step::TrackerEffects,
-        Step::FileChildren,
+    pub const ALL: [StepKind; 10] = [
+        StepKind::Prepare,
+        StepKind::Commit,
+        StepKind::Gates,
+        StepKind::Push,
+        StepKind::Bundle,
+        StepKind::KeepRound,
+        StepKind::DependencyInputs,
+        StepKind::LandingFacts,
+        StepKind::TrackerEffects,
+        StepKind::FileChildren,
     ];
 }
 
@@ -73,7 +74,7 @@ impl Step {
 pub struct StepJob {
     pub job: JobId,
     pub attempt: AttemptId,
-    pub step: Step,
+    pub step: StepKind,
     pub base: RevId,
     pub head: Option<RevId>,
     pub inputs: Vec<InputFile>,
@@ -94,14 +95,53 @@ pub struct StageOutcome {
     pub status: OutcomeStatus,
     pub artefact: String,
     pub outputs: Vec<String>,
-    /// Non-empty exactly for `needs_input`.
-    pub questions: Vec<String>,
+    /// The stage's open questions and assumptions; `needs_input` exactly when one is
+    /// `must_decide` or `recommended`.
+    pub questions: Vec<Question>,
     /// Non-empty for `failed`.
     pub reason: String,
     /// The commit message implement and address propose.
     pub commit: Option<String>,
     /// The PR title the first implement round proposes.
     pub pr_title: Option<String>,
+}
+
+impl StageOutcome {
+    /// Checks the questions, and returns every violation at once, in this order:
+    ///
+    /// 1. each question's own violations, in question order (see [`Question::violations`]);
+    /// 2. one `DuplicateId` per id that two or more questions share, in order of first use;
+    /// 3. the status rule: `NeedsInputWithoutBlocking` when a `needs_input` outcome has no
+    ///    `must_decide` or `recommended` question, or one `BlockingNotNeedsInput` per such
+    ///    question in a `complete` or `failed` outcome.
+    pub fn check(&self) -> Result<(), Vec<QuestionViolation>> {
+        let mut out: Vec<QuestionViolation> = self
+            .questions
+            .iter()
+            .flat_map(Question::violations)
+            .collect();
+        out.extend(
+            repeated(self.questions.iter().map(|q| q.id.as_str()))
+                .into_iter()
+                .map(|id| QuestionViolation::DuplicateId { id: id.into() }),
+        );
+        match self.status {
+            OutcomeStatus::NeedsInput => {
+                if !self.questions.iter().any(Question::is_blocking) {
+                    out.push(QuestionViolation::NeedsInputWithoutBlocking);
+                }
+            }
+            OutcomeStatus::Complete | OutcomeStatus::Failed => {
+                out.extend(self.questions.iter().filter(|q| q.is_blocking()).map(|q| {
+                    QuestionViolation::BlockingNotNeedsInput {
+                        id: q.id.clone(),
+                        status: self.status,
+                    }
+                }));
+            }
+        }
+        if out.is_empty() { Ok(()) } else { Err(out) }
+    }
 }
 
 /// Token counts of an attempt.
