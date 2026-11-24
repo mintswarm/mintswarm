@@ -4,7 +4,7 @@ The harness-neutral source of every mintswarm stage agent: capabilities, model t
 
 ## What is here
 
-- `<stage>.md` is the definition of one stage, the source of truth for its agent: `analyse`, `design`, `decompose`, `plan`, `assess`, `implement`, `gates`, `review` and `landing`.
+- `<stage>.md` is the definition of one stage, the source of truth for its agent: `analyse`, `design`, `decompose`, `plan`, `assess`, `assess-decomposition`, `implement`, `gates`, `review` and `landing`.
 - `.mintswarm/stages.md`, next to this directory, is different: it holds the rules every stage follows, and the definitions refer to it.
 - `.claude/agents/msw-<stage>.md` is generated from these files by `.mintswarm/dogfood/render-agents.py`. Never edit it by hand.
 
