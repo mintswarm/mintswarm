@@ -1,11 +1,14 @@
 //! The JSON-in-YAML result block form: each block under `tests/fixtures/result-blocks/` parses
 //! with `yaml-rust2`, and its `msw-result` mapping equals the case's `result.json`.
 //!
+//! Each directory there is one case: `block.yaml` holds a result block in the JSON-in-YAML form,
+//! and `result.json` holds what it means.
+//!
 //! `result.json` is the block in its one JSON form: the `msw-result` mapping after it is read as
-//! a `StageOutcome` and written back, so optional fields the block leaves out or sets to `null`
-//! appear as `null`, and absent or `null` lists as `[]`. The raw YAML tree equals `result.json`
-//! only after that normalisation; any other reader of these fixtures must apply the same
-//! defaults before it compares. See also `README.md` beside the cases.
+//! a `StageOutcome` and written back, so every key is present, optional fields the block leaves
+//! out or sets to `null` appear as `null`, and absent or `null` lists as `[]`. The raw YAML tree
+//! equals `result.json` only after those defaults are applied; every other reader of these
+//! fixtures, such as the Python self-test, must apply the same defaults before it compares.
 
 use std::path::{Path, PathBuf};
 
