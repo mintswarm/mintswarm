@@ -119,7 +119,7 @@ async fn a_timeout_also_stops_the_processes_a_backend_started() {
         .await
         .unwrap();
     assert!(warmed.success(), "the fake's warm-up failed: {warmed}");
-    // Long enough for a freshly written fake to start under a loaded, parallel test run.
+    // Generous, so the warmed-up fake still starts its helper under a loaded, parallel test run.
     home.env.timeout = Duration::from_secs(4);
     let error = read(KeyStore::Pass, &fakes, &home).await.unwrap_err();
     assert!(matches!(error, KeyStoreError::TimedOut { .. }), "{error}");
