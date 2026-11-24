@@ -25,10 +25,13 @@
 # approvers; re-classification of a split issue and the parent check before
 # children are filed; landing a PR as the steward with land.py, and each of its
 # refusals; msw-state.py in field and labels mode (exact bodies, no-op re-runs,
-# a foreign field id, unavailable fields, ignored writes, a single label swapped
-# in one PUT, label names in any case) and the issue status it maps to (reset
-# after GitHub moves it, none and status: off leave it alone), and the README's
-# msw-state tables against the script's VALUES and STATUS. Secrets and the
+# unavailable fields, ignored writes, a single label swapped in one PUT, label
+# names in any case) and the issue status it maps to (reset after GitHub moves
+# it, none and status: off leave it alone); field ids resolved by name into the
+# per-account cache (learnt from an issue, a recreated field, a refused stale id,
+# a renamed field, fields resolve, the account key); its verdict mode for plan,
+# decomp and pr; and the README's msw-state tables against the script's VALUES
+# and STATUS. Secrets and the
 # manifest code must appear in no recorded argv, nothing may be left in TMPDIR,
 # each create adds only its own App's config to HOME, and .git/config stays
 # byte-identical across pushes. Every background process runs in its own
@@ -71,6 +74,7 @@ export TMPDIR="$sandbox/tmp"
 export XDG_RUNTIME_DIR="$sandbox/run"
 export MSW_APP_CONFIG="$HOME/.config/mintswarm/dev-app.json"
 export MSW_STUB_STATE="$sandbox/stub-state"
+export MSW_FIELD_CACHE="$sandbox/field-cache/issue-fields.json"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_TERMINAL_PROMPT=0
 stubs="$sandbox/stubs"
@@ -406,14 +410,20 @@ cat > "$stubs/gh" <<'EOF'
 # mintswarm-dev-steward[bot].
 # For msw-state.py an issue also keeps "fields" (its issue-field values, served
 # and POSTed at issues/<n>/issue-field-values; a POST replaces the value of each
-# field id given, named msw-state, unless "field_ignores_post"; with
-# "fields_unavailable" both answer HTTP 404), "labels" (names, served and PUT at
+# field id given, named as the organisation's field table names it, unless
+# "field_ignores_post", and is refused with HTTP 422 for an id the table lacks;
+# with "fields_unavailable" both answer HTTP 404), "labels" (names, served and PUT at
 # issues/<n>/labels) and "status" (a status name or null; the issue GET returns
 # it with node_id I_<n>). The repository's labels are in labels.json (served and
 # POSTed at repos/.../labels) and its issue statuses in statuses.json
 # ([{"id", "name", "category"}], four by default); api graphql with --input -
 # answers the planningStatuses query from them and applies setIssueStatus to the issue whose
-# node id is I_<n>, unless that issue has "status_ignores_set".
+# node id is I_<n>, unless that issue has "status_ignores_set". The organisation's
+# field table is org-fields.json ([{"id", "name"}], msw-state, msw-plan and
+# msw-decomp by default); orgs/<owner>/issue-fields lists it only while
+# org-fields-readable exists, and answers HTTP 403 otherwise, as it does for a bot
+# without read:org. repos/<owner>/<repo> answers the owner login in repo-owner
+# (mintswarm by default).
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
@@ -422,6 +432,8 @@ STATUSES = [{"id": "S_todo", "name": "Todo", "category": "TODO"},
             {"id": "S_progress", "name": "In progress", "category": "IN_PROGRESS"},
             {"id": "S_review", "name": "In review", "category": "IN_PROGRESS"},
             {"id": "S_done", "name": "Done", "category": "DONE"}]
+ORG_FIELDS = [{"id": 50325307, "name": "msw-state"}, {"id": 50375240, "name": "msw-plan"},
+              {"id": 50375368, "name": "msw-decomp"}]
 argv = sys.argv[1:]
 record("gh", argv)
 names = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
@@ -550,11 +562,17 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/(is
             print("gh: Not Found (HTTP 404)", file=sys.stderr)
             sys.exit(1)
         fields = item.setdefault("fields", [])
+        opath = os.path.join(STATE, "org-fields.json")
+        table = {f["id"]: f["name"] for f in (json.load(open(opath)) if os.path.exists(opath) else ORG_FIELDS)}
+        if method == "POST" and any(fv["field_id"] not in table for fv in json.loads(data)["issue_field_values"]):
+            print("gh: Validation Failed (HTTP 422)", file=sys.stderr)
+            sys.exit(1)
         if method == "POST" and not item.get("field_ignores_post"):
             for fv in json.loads(data)["issue_field_values"]:
                 fields[:] = [f for f in fields if f["issue_field_id"] != fv["field_id"]]
                 fields.append({"issue_field_id": fv["field_id"], "node_id": "IFV_%d" % fv["field_id"],
-                               "data_type": "single_select", "issue_field_name": "msw-state", "value": fv["value"],
+                               "data_type": "single_select", "issue_field_name": table[fv["field_id"]],
+                               "value": fv["value"],
                                "single_select_option": {"id": 1, "name": fv["value"], "color": "GRAY"}})
         out = fields
     else:
@@ -650,6 +668,18 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
                "status": {"category": status["category"], "id": status["id"], "name": status["name"]}
                if status else None}
     print(json.dumps(out))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"orgs/[^/]+/issue-fields", a) for a in argv):
+    if not os.path.exists(os.path.join(STATE, "org-fields-readable")):
+        print("gh: Resource not accessible by integration (HTTP 403)", file=sys.stderr)
+        sys.exit(1)
+    opath = os.path.join(STATE, "org-fields.json")
+    table = json.load(open(opath)) if os.path.exists(opath) else ORG_FIELDS
+    out = [{"id": f["id"], "name": f["name"], "data_type": "single_select"} for f in table]
+    print(json.dumps([out] if "--slurp" in argv else out))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+", a) for a in argv):
+    opath = os.path.join(STATE, "repo-owner")
+    owner = open(opath).read().strip() if os.path.exists(opath) else "mintswarm"
+    print(json.dumps({"full_name": "mintswarm/mintswarm", "owner": {"login": owner}}))
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
 EOF
@@ -2877,13 +2907,14 @@ ms_rc() {  # ms_rc RC ARGS...: msw-state.py exits RC
   cat "$sandbox/ms.out"
   eq "$rc" "$want"
 }
+cache_ids() { if [ -f "$MSW_FIELD_CACHE" ]; then jq -c . "$MSW_FIELD_CACHE"; else echo none; fi; }
 state_cfg() {  # state_cfg SOURCE STATUS: a config with tracker.state only
-  printf 'tracker: {state: {source: %s, field: msw-state, field_id: 50325307, label: "msw-state:{value}", status: %s}}' "$1" "$2"
+  printf 'tracker: {state: {source: %s, field: msw-state, label: "msw-state:{value}", status: %s}}' "$1" "$2"
 }
 bad_source_base="$(commit_config "$(state_cfg other issue_status)")"
 bad_status_base="$(commit_config "$(state_cfg field on)")"
-bad_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
-bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, field_id: 50325307, label: "msw-state", status: off}}')"
+leftover_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
+bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, label: "msw-state", status: off}}')"
 off_base="$(commit_config "$(state_cfg field off)")"
 labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
 labels_base="$(commit_config "$(state_cfg labels off)")"
@@ -2892,14 +2923,25 @@ labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
 check "an unknown value exits 2" exits_2 ms set 41 bogus --base "$real_base"
 check "a source other than field or labels exits 2" exits_2 ms set 41 queued --base "$bad_source_base"
 check "a status other than issue_status or off exits 2" exits_2 ms set 41 queued --base "$bad_status_base"
-check "a field_id that is not an integer exits 2" exits_2 ms set 41 queued --base "$bad_id_base"
+check "a leftover field_id is ignored" eq "$(ms get 41 --base "$leftover_id_base" 2>&1)" "msw-state: none"
 check "a label without {value} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
 check "number 0 exits 2" exits_2 ms set 0 queued --base "$real_base"
 
 seed 41 '{"status": "Todo"}'
+posts_before="$(field_posts)"
+check "with no cached id and the organisation's fields refused, an unresolvable id exits 1" \
+  ms_rc 1 set 41 implementing --base "$real_base"
+check "naming fields resolve and writing nothing, not even the cache" \
+  eq "$(grep -c 'msw-state.py fields resolve ISSUE' "$sandbox/ms.out") $(( $(field_posts) - posts_before )) $(field_of 41) $(cache_ids)" \
+  "1 0  none"
+seed 40 '{"fields": [{"issue_field_id": 50325307, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+out="$(ms set 40 planning --base "$off_base" 2>/dev/null)" || out="(failed) $out"
+check "an id is learnt from the issue's own value and cached under the account" \
+  eq "$out $(cache_ids)" 'set #40 msw-state to planning (was queued) {"mintswarm":{"msw-state":50325307}}'
+
 posts_before="$(field_posts)" mut_before="$(mutations)"
 out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
-check "set on an unset issue sets the field and the mapped status" eq "$out" "set #41 msw-state to implementing (was none)
+check "set on an unset issue sets the field, by the cached id, and the mapped status" eq "$out" "set #41 msw-state to implementing (was none)
 set #41 status to In progress (was Todo)"
 check "it POSTs the issue's field values through bot-gh.sh" \
   gh_argv_seen '["api","--method","POST","repos/{owner}/{repo}/issues/41/issue-field-values","--input","-"]'
@@ -2936,11 +2978,52 @@ gql_before="$(graphql_calls)"
 check "none sets the field" eq "$(ms set 48 none --base "$real_base" 2>&1)" "set #48 msw-state to none (was queued)"
 check "and makes no GraphQL call, leaving the status alone" eq "$(( $(graphql_calls) - gql_before )) $(status_of 48)" "0 Todo"
 
-seed 42 '{"fields": [{"issue_field_id": 999, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+org_fields() {  # org_fields STATE_ID PLAN_NAME: the organisation's field table, msw-state's id and msw-plan's name changed
+  jq -nc --argjson s "$1" --arg p "$2" '[{id: $s, name: "msw-state"}, {id: 50375240, name: $p}, {id: 50375368, name: "msw-decomp"}]' \
+    > "$MSW_STUB_STATE/org-fields.json"
+}
+field_id_of() { jq -r --arg n "$1" --arg f "$2" '[.[$n].fields // [] | .[] | select(.issue_field_name == $f) | .issue_field_id] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+org_fields 50325999 msw-plan
+seed 42 '{"fields": [{"issue_field_id": 50325999, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+out="$(ms set 42 implementing --base "$off_base" 2>/dev/null)" || out="(failed) $out"
+check "a recreated field: the issue's new id is learnt, cached and written to" \
+  eq "$out $(jq -c .mintswarm "$MSW_FIELD_CACHE") $(field_id_of 42 msw-state)" \
+  'set #42 msw-state to implementing (was queued) {"msw-state":50325999} 50325999'
+check "with the new id in the POST" \
+  present '{"issue_field_values": [{"field_id": 50325999, "value": "implementing"}]}' "$MSW_STUB_STATE/stdin-gh.log"
+rm -f "$MSW_STUB_STATE/org-fields.json"
+touch "$MSW_STUB_STATE/org-fields-readable"
+seed 52 '{}'
 posts_before="$(field_posts)"
-check "a msw-state field with another id exits 1" ms_rc 1 set 42 implementing --base "$real_base"
-check "and names the id and writes nothing" \
-  eq "$(grep -c 'with id 999, not 50325307' "$sandbox/ms.out") $(( $(field_posts) - posts_before ))" "1 0"
+out="$(ms set 52 implementing --base "$off_base" 2>/dev/null)" || out="(failed) $out"
+check "a refused stale cached id is dropped and re-resolved from the organisation's fields" \
+  eq "$out $(( $(field_posts) - posts_before )) $(field_of 52) $(jq -c .mintswarm "$MSW_FIELD_CACHE")" \
+  'set #52 msw-state to implementing (was none) 2 implementing {"msw-state":50325307}'
+rm -f "$MSW_STUB_STATE/org-fields-readable"
+printf '%s\n' '{"mintswarm": {"msw-state": 50325999}}' > "$MSW_FIELD_CACHE"
+seed 53 '{}'
+check "with the organisation's fields refused, a refused stale id exits 1" ms_rc 1 set 53 implementing --base "$off_base"
+check "naming fields resolve, with the stale id gone from the cache and nothing written" \
+  eq "$(grep -c 'the cached id 50325999 was dropped' "$sandbox/ms.out") $(cache_ids) $(field_of 53)" '1 {"mintswarm":{}} '
+seed 54 '{"fields": [{"issue_field_id": 50325307, "issue_field_name": "msw-state", "value": "queued"}, {"issue_field_id": 50375240, "issue_field_name": "msw-plan", "value": "safe"}]}'
+seed 55 '{}'
+check "fields resolve reports a field no issue holds as unresolved and exits 1" ms_rc 1 fields resolve 55 54 --base "$real_base"
+check "after caching the ids it found" eq "$(cat "$sandbox/ms.out") $(cache_ids)" \
+  'msw-state: 50325307 (from #54)
+msw-plan: 50375240 (from #54)
+msw-decomp: unresolved {"mintswarm":{"msw-plan":50375240,"msw-state":50325307}}'
+touch "$MSW_STUB_STATE/org-fields-readable"
+check "fields resolve learns from the organisation's fields when they are readable" \
+  eq "$(ms fields resolve --base "$real_base" 2>&1) $(jq -c .mintswarm.\"msw-decomp\" "$MSW_FIELD_CACHE")" \
+  'msw-state: 50325307 (from the organisation)
+msw-plan: 50375240 (from the organisation)
+msw-decomp: 50375368 (from the organisation) 50375368'
+rm -f "$MSW_STUB_STATE/org-fields-readable"
+printf 'someone-else\n' > "$MSW_STUB_STATE/repo-owner"
+seed 56 '{}'
+check "the cache is keyed by account: another owner's id is not used" ms_rc 1 set 56 implementing --base "$off_base"
+check "and nothing is written" eq "$(field_of 56) $(jq -c 'keys' "$MSW_FIELD_CACHE")" ' ["mintswarm"]'
+rm -f "$MSW_STUB_STATE/repo-owner"
 
 seed 43 '{"fields_unavailable": true}'
 check "unavailable issue fields exit 1" ms_rc 1 set 43 implementing --base "$real_base"
@@ -3005,11 +3088,12 @@ seed 64 '{"labels": []}'
 ms set 64 implementing --base "$labels_base" >/dev/null 2>&1 || true
 check "an existing label is not created again" eq "$(repo_label_count msw-state:implementing) $(labels_of 64)" "1 msw-state:implementing"
 seed 66 '{"labels": ["bug"]}'
-check "labels mode needs no field or field_id" \
+check "labels mode needs no field" \
   eq "$(ms set 66 designing --base "$labels_only_base" 2>&1) $(labels_of 66)" \
   "set #66 msw-state to designing (was none) bug,msw-state:designing"
-check "but field mode without field_id exits 2" exits_2 ms set 66 designing \
-  --base "$(commit_config 'tracker: {state: {source: field, field: msw-state, label: "msw-state:{value}", status: off}}')"
+seed 66 '{}'
+check "field mode names the field only: the id comes from the cache" \
+  eq "$(ms set 66 designing --base "$off_base" 2>&1) $(field_of 66)" "set #66 msw-state to designing (was none) designing"
 jq -c '. + [{"name": "MSW-State:Awaiting Merge", "color": "ededed"}]' "$MSW_STUB_STATE/labels.json" > "$sandbox/labels.json"
 mv "$sandbox/labels.json" "$MSW_STUB_STATE/labels.json"
 seed 67 '{"labels": []}'
@@ -3027,6 +3111,90 @@ seed 65 '{"labels": [], "status": "Todo"}'
 check "labels mode sets the status too" eq "$(ms set 65 analysing --base "$labels_status_base" 2>&1) $(status_of 65)" \
   "set #65 msw-state to analysing (was none)
 set #65 status to In progress (was Todo) In progress"
+
+# --- msw-state.py verdict ----------------------------------------------------
+
+label_puts() { jq -c 'select(.cmd == "gh") | .argv | select(index("PUT")) | select(any(.[]; endswith("/labels")))' "$argv_log" | wc -l | tr -d ' '; }
+verdict_cfg() {  # verdict_cfg BLOCK: a config with tracker.plan_verdict set to BLOCK
+  printf 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}, plan_verdict: %s}' "$1"
+}
+decomp_labels_base="$(commit_config 'tracker: {decomp_verdict: {source: labels, label: "msw-decomp:{value}"}}')"
+seed 71 '{"status": "Todo"}'
+posts_before="$(field_posts)" gql_before="$(graphql_calls)"
+out="$(ms verdict set 71 plan likely-safe --base "$real_base" 2>&1)" || out="(failed) $out"
+check "verdict set plan in field mode sets msw-plan" eq "$out $(( $(field_posts) - posts_before ))" \
+  "set #71 msw-plan to likely-safe (was none) 1"
+check "with exactly the msw-plan id and the band on stdin" \
+  eq "$(last_stdin)" '{"issue_field_values": [{"field_id": 50375240, "value": "likely-safe"}]}'
+check "and leaves msw-state and the issue status alone" \
+  eq "$(field_of 71) $(status_of 71) $(( $(graphql_calls) - gql_before ))" " Todo 0"
+posts_before="$(field_posts)"
+out="$(ms verdict set 71 plan likely-safe --base "$real_base" 2>&1)" || out="(failed) $out"
+check "the same band again writes nothing" eq "$out $(( $(field_posts) - posts_before ))" "#71 msw-plan is already likely-safe 0"
+out="$(ms verdict set 71 plan safe --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a re-assessment replaces the band" eq "$out" "set #71 msw-plan to safe (was likely-safe)"
+check "verdict get prints the band" eq "$(ms verdict get 71 plan --base "$real_base" 2>&1)" "msw-plan: safe"
+seed 76 '{}'
+posts_before="$(field_posts)"
+out="$(ms verdict set 76 plan blocked --base "$real_base" --dry-run 2>&1)" || out="(failed) $out"
+check "verdict set --dry-run prints the line and writes nothing" \
+  eq "$out $(( $(field_posts) - posts_before )) $(field_id_of 76 msw-plan)" "set #76 msw-plan to blocked (was none) 0 "
+org_fields 50325307 msw-plan-old
+seed 77 '{}'
+check "a field renamed under the cached id exits 1" ms_rc 1 verdict set 77 plan safe --base "$real_base"
+check "saying so, and drops the cached id" \
+  eq "$(grep -c 'the field was renamed' "$sandbox/ms.out") $(jq -c '.mintswarm | has("msw-plan")' "$MSW_FIELD_CACHE")" "1 false"
+rm -f "$MSW_STUB_STATE/org-fields.json"
+
+seed 72 '{"labels": ["bug"]}'
+out="$(ms verdict set 72 decomp uncertain --base "$decomp_labels_base" 2>&1)" || out="(failed) $out"
+check "verdict set decomp in labels mode adds one msw-decomp label" eq "$out $(labels_of 72)" \
+  "set #72 msw-decomp to uncertain (was none) bug,msw-decomp:uncertain"
+check "creating it with the description mintswarm verdict" \
+  eq "$(jq -r '.[] | select(.name == "msw-decomp:uncertain") | .color + " " + .description' "$MSW_STUB_STATE/labels.json")" \
+  "ededed mintswarm verdict"
+puts_before="$(label_puts)"
+out="$(ms verdict set 72 decomp needs-review --base "$decomp_labels_base" 2>&1)" || out="(failed) $out"
+check "a new band swaps the label in one PUT" eq "$out $(( $(label_puts) - puts_before )) $(labels_of 72)" \
+  "set #72 msw-decomp to needs-review (was uncertain) 1 bug,msw-decomp:needs-review"
+check "verdict get reads the band from the label" \
+  eq "$(ms verdict get 72 decomp --base "$decomp_labels_base" 2>&1)" "msw-decomp: needs-review"
+seed 73 '{"labels": ["msw-decomp:blocked", "docs", "msw-decomp:uncertain"]}'
+out="$(ms verdict set 73 decomp safe --base "$decomp_labels_base" 2>&1)" || out="(failed) $out"
+check "two stale msw-decomp labels end as one" eq "$out $(labels_of 73)" \
+  "set #73 msw-decomp to safe (was blocked, uncertain) docs,msw-decomp:safe"
+writes_before="$(label_writes)"
+out="$(ms verdict set 73 decomp safe --base "$decomp_labels_base" 2>&1)" || out="(failed) $out"
+check "the same band again makes no write" eq "$out $(( $(label_writes) - writes_before ))" "#73 msw-decomp is already safe 0"
+seed 74 '{"labels": ["MSW-Decomp:Safe"]}'
+out="$(ms verdict set 74 decomp safe --base "$decomp_labels_base" 2>&1)" || out="(failed) $out"
+check "a label in another case is already the band" eq "$out $(( $(label_writes) - writes_before ))" "#74 msw-decomp is already safe 0"
+
+seed 75 '{"labels": ["enhancement"]}'
+out="$(ms verdict set 75 pr blocked --base "$labels_only_base" 2>&1)" || out="(failed) $out"
+check "verdict set pr reads no config and sets one msw-verdict label" eq "$out $(labels_of 75)" \
+  "set #75 msw-verdict to blocked (was none) enhancement,msw-verdict:blocked"
+check "creating it with the description mintswarm verdict" \
+  eq "$(jq -r '.[] | select(.name == "msw-verdict:blocked") | .description' "$MSW_STUB_STATE/labels.json")" "mintswarm verdict"
+puts_before="$(label_puts)"
+out="$(ms verdict set 75 pr safe --base "$labels_only_base" 2>&1)" || out="(failed) $out"
+check "a new PR verdict replaces the label in one PUT" eq "$out $(( $(label_puts) - puts_before )) $(labels_of 75)" \
+  "set #75 msw-verdict to safe (was blocked) 1 enhancement,msw-verdict:safe"
+writes_before="$(label_writes)"
+out="$(ms verdict set 75 pr safe --base "$labels_only_base" 2>&1)" || out="(failed) $out"
+check "the same PR verdict again makes no write" eq "$out $(( $(label_writes) - writes_before ))" "#75 msw-verdict is already safe 0"
+seed 78 '{}'
+for band in blocked uncertain needs-review likely-safe safe; do ms verdict set 78 pr "$band" >/dev/null 2>&1 || true; done
+check "every band is accepted, leaving one label" eq "$(labels_of 78) $(ms verdict get 78 pr 2>&1)" \
+  "msw-verdict:safe msw-verdict: safe"
+
+check "an unknown band exits 2" exits_2 ms verdict set 71 plan great --base "$real_base"
+check "an unknown kind exits 2" exits_2 ms verdict set 71 issue safe --base "$real_base"
+check "a base without the block exits 2" exits_2 ms verdict set 71 plan safe --base "$labels_only_base"
+check "a verdict source other than field or labels exits 2" exits_2 ms verdict set 71 plan safe \
+  --base "$(commit_config "$(verdict_cfg '{source: other, label: "msw-plan:{value}"}')")"
+check "a verdict block with a status key exits 2" exits_2 ms verdict set 71 plan safe \
+  --base "$(commit_config "$(verdict_cfg '{source: labels, label: "msw-plan:{value}", status: off}')")"
 
 cat > "$sandbox/mscheck.py" <<'PY'
 # mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
