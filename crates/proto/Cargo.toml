@@ -16,6 +16,8 @@ tonic-prost = { workspace = true }
 
 [build-dependencies]
 protox = { workspace = true }
+# Not called by build.rs, which goes through tonic-prost-build; declared so the
+# crates that build on this one share the pinned tonic-build version.
 tonic-build = { workspace = true }
 tonic-prost-build = { workspace = true }
 

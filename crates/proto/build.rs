@@ -6,7 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api/proto");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("crates/proto has no repository root above it")?
+        .join("api/proto");
     println!("cargo:rerun-if-changed={}", root.display());
 
     let mut files = Vec::new();
