@@ -27,7 +27,8 @@ Checks:
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
   order, the 12 rule identifiers in order across `rules` and
   `not_evaluated`, results and reasons, `verdict` against the rules and the
-  exit code, the plan's sha256, `facts` (path, the sha256 of the facts
+  exit code, version 2, `evidence` a list of strings, empty when
+  `not_evaluated` is not, and its printed `evidence:` lines, the plan's sha256, `facts` (path, the sha256 of the facts
   file and the checks it lists), the full `base`, `head` and `merge_base`
   commits, `mode` and the printed lines;
 - clean cases, a dependency manifest declared only through
@@ -36,11 +37,15 @@ Checks:
 - the default facts' approver is `mintswarm[bot]`, so no path is covered
   and every require_human and protected hit ends with the not-approved
   reason;
-- single-rule hits: each diff rule, `size` at and one over its limit, an
-  eight-key footprint whose fixture lines bring the total near its limit
-  clean and its production lines one over floor(production_lines ×
-  lines_factor) a hit, and
-  the require_human rules with case variants;
+- single-rule hits: each diff rule, a binary file a `size` hit, and
+  the require_human rules with case variants; every case also asserts its
+  exact `evidence`, empty unless stated;
+- line limits as evidence: a diff at its limit is clean with no evidence,
+  one over floor(estimated_lines × lines_factor), an eight-key footprint
+  whose production lines are one over floor(production_lines ×
+  lines_factor) (its fixture lines near the total limit give none) and a
+  fully declared diff far over the factor are clean, exit 0, with the
+  overrun under `evidence`;
 - coverage, with a plan approved by a human login and a matching `human`
   decision record: declared CLAUDE.md and .claude/agents/x.md, the config
   and a gate word each with its `<path>:` gate_changes entry, CODEOWNERS
@@ -92,7 +97,7 @@ Checks:
   a directory above a protected path is a `protected` hit without
   require_human;
 - base ref: with a head commit and a worktree config that raise
-  lines_factor, the base's limit still gives the `size` hit;
+  lines_factor, the base's limit still gives the overrun under `evidence`;
 - unusable input: bad arguments (a missing or repeated --facts included),
   refs, history, configs and plans, a facts file that is missing, a
   directory, a symlink, not UTF-8, not JSON, has a duplicate key or NaN, is
@@ -117,7 +122,8 @@ Checks:
   elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
   checkout's objects, against plan-approval/fixtures/plan-{20,19}.md give
-  their recorded verdicts, and are clean under a human approval;
+  their recorded verdicts with no evidence, and are clean under a human
+  approval;
 - glob semantics: require-human-paths reasons, the not-approved reason
   aside, agree with plan-approval/floor.py's matching;
 - object store, with every run's TMPDIR an empty sandbox directory: GIT_DIR
@@ -202,6 +208,7 @@ VERDICT_KEYS = [
     "verdict",
     "rules",
     "not_evaluated",
+    "evidence",
 ]
 EXPECTED_LANDING = {
     "mode": "shadow",
@@ -653,8 +660,14 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
         problems.append(f"verdict {verdict.get('verdict')!r} against the rules")
     if proc.returncode != (1 if hit else 0):
         problems.append(f"exit {proc.returncode} with verdict {verdict.get('verdict')!r}")
-    if verdict.get("tool") != "mintswarm-landing-floor" or verdict.get("version") != 1:
+    if verdict.get("tool") != "mintswarm-landing-floor" or verdict.get("version") != 2:
         problems.append("tool or version")
+    evidence = verdict.get("evidence")
+    if not isinstance(evidence, list) or not all(isinstance(x, str) for x in evidence):
+        problems.append(f"evidence {evidence!r} is not a list of strings")
+        evidence = []
+    elif evidence and skipped:
+        problems.append(f"evidence {evidence!r} with not_evaluated {skipped}")
     plan_bytes = (sb.repo / args["plan"]).read_bytes()
     if verdict.get("plan") != {"path": args["plan"], "sha256": hashlib.sha256(plan_bytes).hexdigest()}:
         problems.append(f"plan {verdict.get('plan')}")
@@ -691,6 +704,7 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
         if r.get("reasons"):
             line += f": {printable(r['reasons'][0])}"
         expected.append(line)
+    expected += [f"evidence: {printable(x)}" for x in evidence]
     expected.append(f"floor: {verdict.get('verdict')}")
     if lines != expected:
         problems.append(f"stdout {lines!r}")
@@ -746,8 +760,11 @@ class Runner:
         check_shape(name, proc, verdict, self.sb, args, mode or self.modes[config])
         return proc, verdict
 
-    def expect(self, name: str, fp, changes: dict, hits: dict, **kwargs):
-        """Run a case; `hits` maps each rule that must hit, and no other, to a reason it must give."""
+    def expect(self, name: str, fp, changes: dict, hits: dict, evidence: list = (), **kwargs):
+        """Run a case; `hits` maps each rule that must hit, and no other, to a reason it must give.
+
+        `evidence` is the verdict's exact evidence list, empty by default.
+        """
         content = fp if isinstance(fp, str) else plan_text(fp)
         proc, verdict = self.run(name, content, changes, **kwargs)
         got = hits_of(verdict)
@@ -759,7 +776,12 @@ class Runner:
         for rule, reason in hits.items():
             if reason is not None and reason not in reasons_of(verdict, rule):
                 problems.append(f"{rule} reasons {reasons_of(verdict, rule)} lack {reason!r}")
+        got_evidence = verdict.get("evidence") if isinstance(verdict, dict) else None
+        if got_evidence != list(evidence):
+            problems.append(f"evidence {got_evidence!r}, expected {list(evidence)!r}")
         label = ", ".join(f"{rule} hit" for rule in hits) or "clean"
+        if evidence:
+            label += " with evidence"
         T.check(f"{name}: {label}", not problems, "; ".join(problems))
         return proc, verdict
 
@@ -863,7 +885,15 @@ def check_single_rules(r: Runner) -> None:
         "size one over floor(7 × 1.5)",
         footprint(["docs/guide.md"], estimated_lines=7),
         appended("docs/guide.md", 11),
-        {"size": "the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"},
+        {},
+        evidence=["the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"],
+    )
+    r.expect(
+        "every file declared, far over floor(7 × 1.5)",
+        footprint(["docs/guide.md"], estimated_lines=7),
+        appended("docs/guide.md", 40),
+        {},
+        evidence=["the diff counts 40 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"],
     )
     # eight keys, factor 1.5: all lines up to floor(30 × 1.5) = 45, production lines up to floor(4 × 1.5) = 6
     fixture = "docs/fixtures/big.md"
@@ -878,7 +908,8 @@ def check_single_rules(r: Runner) -> None:
         "production lines one over floor(4 × 1.5)",
         split,
         {**appended("docs/guide.md", 7), fixture: text(30)},
-        {"size": "the diff counts 7 production lines, over the limit of 6 (production_lines 4 × lines_factor 1.5)"},
+        {},
+        evidence=["the diff counts 7 production lines, over the limit of 6 (production_lines 4 × lines_factor 1.5)"],
     )
     # factor 1.15, estimated_lines 100: exactly 115, where binary floats give 114
     r.expect(
@@ -892,7 +923,8 @@ def check_single_rules(r: Runner) -> None:
         "size one over 100 × 1.15",
         footprint(["docs/guide.md"], estimated_lines=100),
         appended("docs/guide.md", 116),
-        {"size": "the diff counts 116 lines, over the limit of 115 (estimated_lines 100 × lines_factor 1.15)"},
+        {},
+        evidence=["the diff counts 116 lines, over the limit of 115 (estimated_lines 100 × lines_factor 1.15)"],
         config="factor-1.15",
     )
     r.expect(
@@ -1012,7 +1044,8 @@ def check_base_ref(r: Runner, sb: Sandbox, configs: dict) -> None:
         "base ref: head and worktree raise lines_factor",
         fp,
         None,
-        {"size": reason, "protected": None, "require-human-paths": None},
+        {"protected": None, "require-human-paths": None},
+        evidence=[reason],
         base="landing-base",
         head=first,
         config="factor-1",
@@ -1021,11 +1054,8 @@ def check_base_ref(r: Runner, sb: Sandbox, configs: dict) -> None:
         "base ref: a later head still under the base's limit",
         fp,
         None,
-        {
-            "size": "the diff counts 26 lines, over the limit of 10 (estimated_lines 10 × lines_factor 1)",
-            "protected": None,
-            "require-human-paths": None,
-        },
+        {"protected": None, "require-human-paths": None},
+        evidence=["the diff counts 26 lines, over the limit of 10 (estimated_lines 10 × lines_factor 1)"],
         base="landing-base",
         head=second,
         config="factor-1",
@@ -2450,7 +2480,10 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
         got = verdict.get("rules") if isinstance(verdict, dict) else None
         T.check(
             f"{name}: the recorded verdict",
-            got == expected and verdict.get("not_evaluated") == [] and proc.returncode == (1 if hits else 0),
+            got == expected
+            and verdict.get("not_evaluated") == []
+            and verdict.get("evidence") == []
+            and proc.returncode == (1 if hits else 0),
             f"exit {proc.returncode}, rules {json.dumps(got)}",
         )
         plan = (FIXTURES / fixture).read_bytes()
