@@ -37,6 +37,16 @@ holding `metadata.json` (`registry`: the trimmed registry metadata;
 … (the manifest and the build or install code, mode 0644). `<dir>/prefetch.json`
 lists every package with its `status`, `reason` and `dir`.
 
+Beside the newest HISTORY releases, the trimmed metadata names the release
+published right before the locked version, so that the review-time screen
+can tell a change of publisher and the version's age: a crate's `previous`
+(`num`, `created_at` and the `published_by` login), and an npm package's
+`time` (the locked version's publish time) and `previous` (`version`,
+`time` and the `_npmUser` name). Each is null when there is no earlier
+release or, for npm, when only the version document was read. When the
+locked version's own publish time is missing, `previous` is left out, so
+that an unknown earlier release is never read as a first release.
+
 Standard library only, apart from running yq. Exit 0 whatever happens to
 single packages; 2 on bad arguments, a malformed packages.json or an output
 that cannot be written.
@@ -601,6 +611,9 @@ def crate(name: str, version: str, checksum: str) -> tuple:
         raise PackageError("failed", f"version {version} is not on crates.io")
     release = match[0]
     users = mapping(owners).get("users")
+    locked = str(release.get("created_at") or "")
+    earlier = [v for v in versions if locked and str(v.get("created_at") or "") < locked]
+    before = max(earlier, key=lambda v: str(v.get("created_at") or ""), default=None)
     trimmed = {
         "crate": {k: scalar(info.get(k)) for k in CRATE_FIELDS},
         "version": dict(
@@ -617,7 +630,18 @@ def crate(name: str, version: str, checksum: str) -> tuple:
             {"num": scalar(v.get("num")), "created_at": scalar(v.get("created_at")), "yanked": scalar(v.get("yanked"))}
             for v in newest(versions, "created_at")
         ],
+        "previous": (
+            {
+                "num": scalar(before.get("num")),
+                "created_at": scalar(before.get("created_at")),
+                "published_by": scalar(mapping(before.get("published_by")).get("login")),
+            }
+            if before is not None
+            else None
+        ),
     }
+    if not locked:
+        del trimmed["previous"]
     archive = fetch(
         f"https://static.crates.io/crates/{quoted}/{quoted}-{urllib.parse.quote(version, safe='')}.crate", ARCHIVE_CAP
     )
@@ -668,8 +692,17 @@ def npm(name: str, version: str, integrity: str) -> tuple:
         raise PackageError("refused", f"dist.tarball: {exc}") from exc
     repository, licence = release.get("repository"), release.get("license")
     maintainers = packument.get("maintainers") if source == "packument" else release.get("maintainers")
-    history = None
+    history, locked, previous = None, None, None
     if versions is not None:
+        locked = scalar(times.get(version)) if isinstance(times.get(version), str) else None
+        earlier = [v for v in versions if locked and isinstance(times.get(v), str) and times[v] < locked]
+        if earlier:
+            before = max(earlier, key=lambda v: times[v])
+            previous = {
+                "version": scalar(before),
+                "time": scalar(times[before]),
+                "publisher": scalar(mapping(mapping(versions[before]).get("_npmUser")).get("name")),
+            }
         history = [{"version": v, "time": scalar(times.get(v))} for v in versions]
         for item in history:
             item["deprecated"] = bool(mapping(versions[item["version"]]).get("deprecated"))
@@ -680,6 +713,8 @@ def npm(name: str, version: str, integrity: str) -> tuple:
         "modified": scalar(times.get("modified")),
         "versions_count": len(versions) if versions is not None else None,
         "history": history,
+        "time": locked,
+        "previous": previous,
         "maintainers": [scalar(m.get("name")) for m in (maintainers or []) if isinstance(m, dict)],
         "publisher": scalar(mapping(release.get("_npmUser")).get("name")),
         "license": scalar(mapping(licence).get("type") if isinstance(licence, dict) else licence),
@@ -689,6 +724,8 @@ def npm(name: str, version: str, integrity: str) -> tuple:
         "hasInstallScript": scalar(release.get("hasInstallScript")),
         "downloads": "unavailable",
     }
+    if versions is not None and locked is None:
+        del trimmed["previous"]
     archive = fetch(tarball, ARCHIVE_CAP)
     if hashlib.sha512(archive).digest() not in digests:
         raise PackageError("failed", "the archive's SHA-512 differs from the lockfile integrity")

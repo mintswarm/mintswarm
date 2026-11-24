@@ -89,8 +89,10 @@ landing document in the problems):
   summary line's, and inside the range of `band`, one of the BANDS
   identifiers: `blocked` (0), `uncertain` (1-49), `needs-review` (50-79),
   `likely-safe` (80-94) or `safe` (95-100);
-- `hard_triggers` holds unique HARD_TRIGGERS identifiers and is non-empty
-  exactly when the band is `blocked`;
+- `hard_triggers` holds unique HARD_TRIGGERS identifiers, and the band is
+  `blocked` exactly when it holds one outside AUTHORITY_TRIGGERS (an
+  unusable trigger); an authority trigger, which routes the plan to a
+  person without changing the confidence, may be listed in any band;
 - `reason` is a non-empty string as above;
 - `doubts` holds at most 10 objects, each with exactly the non-empty strings
   `statement`, `consequence` and `resolution`, in order; `likely-safe` has
@@ -101,8 +103,8 @@ The envelope's reason is the layer's only entry in `reasons`.
 Problems in either layer are fixed strings that never quote the files.
 
 `judged_decision` is `auto` only when the floor layer is usable and clean,
-the judgement layer is usable with no hard trigger and a confidence of at
-least `min_confidence`, and the judge's harness and model are the
+the judgement layer is usable with no hard trigger of either kind and a
+confidence of at least `min_confidence`, and the judge's harness and model are the
 configured ones (`as_configured`); otherwise `human`.
 `decision` follows the mode: `always` and `shadow` give `human`, `never`
 gives `auto`, and `judged` gives `judged_decision`. Both layers are always
@@ -114,7 +116,9 @@ file and renamed onto it, with these keys in this order: `tool`
 `subject` ({`issue`, `component`, `plan` {`path`, `sha256`}, `base`
 {`ref`, `commit`}}), `mode`, `min_confidence`, `layers`, `judged_decision`,
 `decision` and `reasons` (the mode's rule, each layer's outcome, the
-judgement's confidence and band, and a hard trigger or a confidence below
+judgement's confidence and band, then `judgement: hard trigger …` for the
+unusable triggers listed and `judgement: requires the maintainer: …` for
+the authority triggers listed, or, when none is listed, a confidence below
 `min_confidence`). `layers.floor` holds
 `status` (`usable` or `unusable`), `problems`, `path`, `sha256` (of the
 verdict's bytes), `verdict`, `rules` (the verdict's rule objects,
@@ -139,9 +143,11 @@ stdout, in two cases only:
   and `decision`, and a pending maintainer decision.
 
 The judgement rows are `Confidence` (the band's display name and the score
-as `<name> · <score>`, the threshold and the reason, or `unusable` with the
-problems), and for a usable judgement `Hard triggers` and one `Doubt` row
-per doubt (its statement, consequence if wrong and resolution).
+as `<name> · <score>`, then ` · requires the maintainer: ` and the
+authority triggers listed when there are any, the threshold and the reason,
+or `unusable` with the problems), and for a usable judgement `Hard triggers`
+(the unusable triggers listed, or `none`) and one `Doubt` row per doubt
+(its statement, consequence if wrong and resolution).
 
 The Package rows are one `Package` row per entry of the footprint's
 new_dependencies, none when the footprint is unreadable: its name and
@@ -223,6 +229,8 @@ HARD_TRIGGERS = (
     "weakens-safeguard",
     "undeclared-high",
 )
+# The hard triggers that only route the plan to a person: listed in any band, never forcing `blocked`.
+AUTHORITY_TRIGGERS = ("not-revertible", "credentials", "weakens-safeguard", "undeclared-high")
 ENVELOPE_KEYS = ["confidence", "band", "hard_triggers", "reason", "doubts"]
 DOUBT_KEYS = ["statement", "consequence", "resolution"]
 MAX_DOUBTS = 10
@@ -464,8 +472,11 @@ def is_text(value) -> bool:
     return isinstance(value, str) and bool(inert(value))
 
 
-def envelope_fields(envelope, triggers=HARD_TRIGGERS, noun="assessment") -> list:
-    """Problems with the envelope's parsed content, as fixed strings naming the document by `noun`."""
+def envelope_fields(envelope, triggers=HARD_TRIGGERS, noun="assessment", authority=AUTHORITY_TRIGGERS) -> list:
+    """Problems with the envelope's parsed content, as fixed strings naming the document by `noun`.
+
+    The band is `blocked` exactly when `hard_triggers` lists a trigger outside `authority`.
+    """
     if not isinstance(envelope, dict) or list(envelope) != ENVELOPE_KEYS:
         return [f"the {noun}'s envelope is not an object with exactly " + ", ".join(ENVELOPE_KEYS) + ", in order"]
     confidence = envelope["confidence"]
@@ -482,8 +493,8 @@ def envelope_fields(envelope, triggers=HARD_TRIGGERS, noun="assessment") -> list
         return [f"the {noun}'s hard_triggers is not a list of known hard trigger identifiers"]
     if len(set(hard)) != len(hard):
         return [f"the {noun}'s hard_triggers repeats a trigger"]
-    if bool(hard) != (band == "blocked"):
-        return [f"the {noun}'s hard_triggers must be non-empty exactly when the band is blocked"]
+    if any(t not in authority for t in hard) != (band == "blocked"):
+        return [f"the {noun}'s band must be blocked exactly when hard_triggers lists an unusable trigger"]
     if not is_text(envelope["reason"]):
         return [f"the {noun}'s envelope gives no reason"]
     doubts = envelope["doubts"]
@@ -499,11 +510,12 @@ def envelope_fields(envelope, triggers=HARD_TRIGGERS, noun="assessment") -> list
     return []
 
 
-def envelope_problems(text: str, triggers=HARD_TRIGGERS, noun="assessment") -> tuple:
+def envelope_problems(text: str, triggers=HARD_TRIGGERS, noun="assessment", authority=AUTHORITY_TRIGGERS) -> tuple:
     """(problems, fields) for a document's text; fields is the envelope's object, or None when unusable.
 
-    `triggers` are the hard trigger identifiers the envelope may name and `noun` names the document in
-    the problems; the defaults are the assess stage's.
+    `triggers` are the hard trigger identifiers the envelope may name, `authority` those of them that
+    never force `blocked`, and `noun` names the document in the problems; the defaults are the assess
+    stage's.
     """
     lines = [line.rstrip("\r \t") for line in text.split("\n")]
     if any(line.startswith("Risk:") for line in lines):
@@ -533,7 +545,7 @@ def envelope_problems(text: str, triggers=HARD_TRIGGERS, noun="assessment") -> t
         json.dumps(envelope, ensure_ascii=False).encode("utf-8")
     except UnicodeEncodeError:  # a \uD800-style escape decodes to a lone surrogate
         return [f"the {noun}'s envelope holds a string with a lone surrogate"], None
-    problems = envelope_fields(envelope, triggers, noun)
+    problems = envelope_fields(envelope, triggers, noun, authority)
     if problems:
         return problems, None
     if int(summary.group(1)) != envelope["confidence"]:
@@ -617,9 +629,13 @@ def decide(mode: str, min_confidence: int, floor_: dict, judgement: dict) -> tup
         reasons.append("floor: unusable")
     if usable:
         reasons.append(f"judgement: confidence {judgement['confidence']} (band {judgement['band']})")
-        if judgement["hard_triggers"]:
-            reasons.append(f"judgement: hard trigger {', '.join(judgement['hard_triggers'])}")
-        elif judgement["confidence"] < min_confidence:
+        unusable = [t for t in judgement["hard_triggers"] if t not in AUTHORITY_TRIGGERS]
+        authority = [t for t in judgement["hard_triggers"] if t in AUTHORITY_TRIGGERS]
+        if unusable:
+            reasons.append(f"judgement: hard trigger {', '.join(unusable)}")
+        if authority:
+            reasons.append(f"judgement: requires the maintainer: {', '.join(authority)}")
+        if not judgement["hard_triggers"] and judgement["confidence"] < min_confidence:
             reasons.append(f"judgement: confidence below min_confidence {min_confidence}")
     else:
         reasons.append("judgement: unusable")
@@ -654,19 +670,28 @@ def floor_line(layer: dict) -> str:
     return "unusable"
 
 
-def confidence_line(layer: dict, min_confidence: int) -> str:
+def confidence_line(layer: dict, min_confidence: int, authority=AUTHORITY_TRIGGERS) -> str:
+    """The band and score, then ` · requires the maintainer: …` for the authority triggers listed."""
     if layer["status"] == "usable":
         name = BANDS[layer["band"]][0]
-        return f"`{name} · {layer['confidence']}` (min_confidence {min_confidence}), {span(layer['reasons'][0])}"
+        listed = ", ".join(f"`{t}`" for t in layer["hard_triggers"] if t in authority)
+        requires = f" · requires the maintainer: {listed}" if listed else ""
+        return (
+            f"`{name} · {layer['confidence']}`{requires} (min_confidence {min_confidence}), "
+            f"{span(layer['reasons'][0])}"
+        )
     return f"unusable (min_confidence {min_confidence})"
 
 
-def judgement_rows(layer: dict, min_confidence: int, suffix: str = "") -> list:
-    """The Confidence, Hard triggers and Doubt rows of a comment."""
-    rows = [f"- **Confidence:** {confidence_line(layer, min_confidence)}{suffix}"]
+def judgement_rows(layer: dict, min_confidence: int, suffix: str = "", authority=AUTHORITY_TRIGGERS) -> list:
+    """The Confidence, Hard triggers and Doubt rows of a comment.
+
+    The Confidence row names the authority triggers listed; the Hard triggers row the unusable ones.
+    """
+    rows = [f"- **Confidence:** {confidence_line(layer, min_confidence, authority)}{suffix}"]
     if layer["status"] != "usable":
         return rows
-    triggers = ", ".join(f"`{t}`" for t in layer["hard_triggers"]) or "none"
+    triggers = ", ".join(f"`{t}`" for t in layer["hard_triggers"] if t not in authority) or "none"
     rows.append(f"- **Hard triggers:** {triggers}")
     for doubt in layer["doubts"]:
         rows.append(

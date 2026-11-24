@@ -55,23 +55,28 @@ Spread says, in one line, whether the plan is mechanical-only and why.
 
 ## Bands
 
-The confidence is your estimate, from 0 to 100, that approving this plan without a person is right: that a careful maintainer would approve it as it stands, and that nothing it does is outside what the floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it. Touching tooling, a gate or stage instructions is not by itself a hard trigger.
+The confidence is your estimate, from 0 to 100, that approving this plan without a person is right: that a careful maintainer would approve it as it stands, and that nothing it does is outside what the floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it. Touching tooling, a gate or stage instructions is not by itself a hard trigger. An authority trigger (below) does not enter the confidence.
+
+Hard triggers are of two kinds. An authority trigger means only a person may approve the plan: name it in `hard_triggers`, and the plan goes to a person, but it does not change the confidence or the band. Rate everything else as the bands below say, setting aside only the fact the trigger names. An unusable trigger means the plan is broken or cannot be judged: it forces `blocked`, as band 1 says. Neither kind is ever weighed against anything.
+
+The authority triggers:
+
+- `not-revertible`: the change, or any step, cannot be undone by a plain revert, declared or not: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data).
+- `credentials`: the change, or any step, reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
+- `weakens-safeguard`: the change weakens a gate, a floor rule, a check or a security boundary: it removes or loosens one, or widens permissions or network or file access, except for a bounded widening (below); a mechanical-only plan's configuration change that loosens a rule, such as adding to a tool's ignore list, is a weakening.
+- `undeclared-high`: there is an undeclared step or override that would itself hit another hard trigger; name it together with that trigger, for example `["undeclared-high", "not-revertible"]`.
 
 Pick exactly one band. Check them in this order and take the first whose conditions hold:
 
-1. `blocked` (shown as Blocked), confidence 0, when any hard trigger holds. Name every trigger that holds in `hard_triggers`. A trigger is never weighed against anything: it forces `confidence: 0`, whatever else the plan does well. The hard triggers:
+1. `blocked` (shown as Blocked), confidence 0, when any unusable trigger holds. Name every trigger that holds in `hard_triggers`, of either kind. An unusable trigger is never weighed against anything: it forces `confidence: 0`, whatever else the plan does well. The unusable triggers:
    - `criterion-not-met`: a criterion is `no`.
    - `outside-scope`: the work goes outside the issue's scope or component.
-   - `not-revertible`: the change, or any step, cannot be undone by a plain revert, declared or not: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data).
-   - `credentials`: the change, or any step, reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
-   - `weakens-safeguard`: the change weakens a gate, a floor rule, a check or a security boundary: it removes or loosens one, or widens permissions or network or file access, except for a bounded widening (below); a mechanical-only plan's configuration change that loosens a rule, such as adding to a tool's ignore list, is a weakening.
-   - `undeclared-high`: there is an undeclared step or override that would itself hit one of the triggers above; name it together with the trigger it would hit, for example `["undeclared-high", "not-revertible"]`.
-2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no hard trigger holds and any of these holds:
+2. `uncertain` (shown as Uncertain), confidence 1 to 49, when no unusable trigger holds and any of these holds:
    - a criterion is `partly` proved;
    - an unresolved uncertainty would change the plan.
 3. `needs-review` (shown as Needs review), confidence 50 to 79, when none of the above holds and any of these holds:
    - a mistake would reach the gates, a floor or every stage's instructions, unless the plan is mechanical-only; adding a check or a gate, and a revertible change to tooling or stage instructions, belong here;
-   - there is an undeclared step or override that would not itself hit a hard trigger; report it under Undeclared steps and overrides;
+   - there is an undeclared step or override; report it under Undeclared steps and overrides;
    - the change is a bounded widening: network or file access only, read-only, to specific hosts or paths the plan names one by one (no wildcards, no "any"), none of them a credential store, sending no credentials, writing and publishing nothing to them, and undone by a plain revert. A bounded widening never covers credentials.
 4. `likely-safe` (shown as Likely safe), confidence 80 to 94, when none of the above holds, every condition below holds, and you state at least one doubt.
 5. `safe` (shown as Safe), confidence 95 to 100, when none of the above holds, every condition below holds, and you have no doubt to state.
@@ -79,7 +84,7 @@ Pick exactly one band. Check them in this order and take the first whose conditi
 The conditions of `likely-safe` and `safe`:
 
 - every criterion is `yes`;
-- a revert undoes the change;
+- a revert undoes the change, apart from what a listed `not-revertible` trigger names;
 - a mistake stays within the issue's component;
 - there is nothing undeclared and nothing outside scope;
 - no unresolved uncertainty would change the plan;
@@ -138,7 +143,7 @@ The summary line and the envelope are what the runner reads:
 - The envelope is strict JSON: one object with exactly the keys `confidence`, `band`, `hard_triggers`, `reason` and `doubts`, in that order, with no duplicate keys, NaN or Infinity.
   - `confidence` is an integer within the band's range.
   - `band` is the band's identifier, never its display name or its range.
-  - `hard_triggers` lists each hard trigger that holds, each once; it is non-empty exactly when the band is `blocked`.
+  - `hard_triggers` lists each hard trigger that holds, of either kind, each once; the band is `blocked` exactly when it lists an unusable trigger, and an authority trigger may be listed in any band.
   - `reason` is the decisive reason, a non-empty string.
   - `doubts` is a list of at most 10 objects, each with exactly the non-empty strings `statement`, `consequence` and `resolution`, in that order. A `likely-safe` envelope has at least one doubt, and a `safe` envelope has none.
 - No line starts with `Risk:`.

@@ -1,0 +1,27 @@
+msw-result:
+  status: complete
+  artefact: plan
+  outputs: [.mintswarm/job/outputs/plan.md]
+  questions: [
+    {"id": "q1", "kind": "assumption", "question": "Where do the fixtures live?",
+     "why": "The Python self-test reads the same files.", "shape": "one",
+     "options": [{"id": "a", "label": "One directory per case", "consequence": "Each case keeps its block and result together.", "trade_off": "More directories."},
+                 {"id": "b", "label": "Flat files", "consequence": "Names carry the case.", "trade_off": null}],
+     "recommendation": {"choice": ["a"], "answer": null, "reason": "Cases stay self-contained."},
+     "references": [{"kind": "design", "target": "#339 §10.4"},
+                    {"kind": "answer", "target": "s3/q2", "lines": null},
+                    {"kind": "url", "target": "https://yaml.org/spec/1.2.2/"}]},
+    {"id": "q2", "kind": "assumption", "question": "Which shapes do the fixtures cover?",
+     "why": "Each shape has its own rules.", "shape": "several",
+     "options": [{"id": "one", "label": "one", "consequence": "Single choice."},
+                 {"id": "several", "label": "several", "consequence": "Multiple choices."},
+                 {"id": "open", "label": "open", "consequence": "Free text."}],
+     "recommendation": {"choice": ["one", "several"], "reason": "Assumptions cannot be open."},
+     "references": null},
+    {"id": "q3", "kind": "assumption", "question": "Is the closing bracket indented?",
+     "why": "The four-space rule covers it.", "shape": "yes_no",
+     "options": [{"id": "yes", "label": "Yes", "consequence": "Every continuation line is indented."},
+                 {"id": "no", "label": "No", "consequence": "The bracket sits at column three."}],
+     "recommendation": {"choice": ["yes"], "reason": "One rule for every line."}}
+    ]
+  reason: ""

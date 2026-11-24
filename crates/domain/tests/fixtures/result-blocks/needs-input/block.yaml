@@ -1,0 +1,24 @@
+msw-result:
+  status: needs_input
+  artefact: analysis
+  outputs: [.mintswarm/job/outputs/analysis.md]
+  questions: [
+    {"id": "q1", "kind": "must_decide", "question": "Which component owns the parser?",
+     "why": "Decides the plan's component and reviewers.", "shape": "one",
+     "options": [{"id": "a", "label": "domain", "consequence": "The types and the parser live together."},
+                 {"id": "b", "label": "runner", "consequence": "Only the runner reads blocks."}]},
+    {"id": "q2", "kind": "assumption", "question": "Are trailing comments allowed?",
+     "why": "Changes the parser's grammar.", "shape": "yes_no",
+     "recommendation": {"choice": ["yes"], "reason": "stages.md already uses them"}},
+    {"id": "q3", "kind": "recommended", "question": "Which harnesses record replies?",
+     "why": "Sets the fixtures the runner keeps.", "shape": "several",
+     "options": [{"id": "claude", "label": "Claude Code", "consequence": "Records stream-json."},
+                 {"id": "codex", "label": "Codex", "consequence": "Records its event log.", "trade_off": "Its format changes often."},
+                 {"id": "none", "label": "Neither", "consequence": "Tests use hand-written replies."}],
+     "recommendation": {"choice": ["claude", "codex"], "answer": null, "reason": "Both run stages today."},
+     "references": [{"kind": "file", "target": "crates/runner/tests/harness/claude/record.sh", "lines": "1200-1240"}]},
+    {"id": "q4", "kind": "must_decide", "question": "What is the parser's module called?",
+     "why": "Other crates import it by name.", "shape": "open",
+     "recommendation": {"answer": "result_block", "reason": "It matches the stage's wording."}}
+    ]
+  reason: ""

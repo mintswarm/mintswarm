@@ -15,6 +15,9 @@ use mintswarm_domain::records::{
 use mintswarm_domain::work::{
     Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, Step, StepJob, Tokens, Usage,
 };
+use mintswarm_domain::{
+    Question, QuestionKind, QuestionOption, QuestionShape, Recommendation, Reference, ReferenceKind,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -347,5 +350,116 @@ fn step_job_has_the_ten_steps() {
     );
     for (i, step) in Step::ALL.iter().enumerate() {
         assert_eq!(index(*step), i);
+    }
+}
+
+fn option(id: &str, trade_off: Option<&str>) -> QuestionOption {
+    QuestionOption {
+        id: id.into(),
+        label: format!("option {id}"),
+        consequence: format!("choosing {id}"),
+        trade_off: trade_off.map(Into::into),
+    }
+}
+
+fn reference(kind: ReferenceKind, target: &str, lines: Option<&str>) -> Reference {
+    Reference {
+        kind,
+        target: target.into(),
+        lines: lines.map(Into::into),
+    }
+}
+
+#[test]
+fn stage_outcome_questions_round_trip() {
+    let outcome = StageOutcome {
+        status: OutcomeStatus::NeedsInput,
+        artefact: "analysis".into(),
+        outputs: vec![".mintswarm/job/outputs/analysis.md".into()],
+        questions: vec![
+            Question {
+                id: "q1".into(),
+                kind: QuestionKind::MustDecide,
+                question: "What should the parser be called?".into(),
+                why: "It names the module.".into(),
+                shape: QuestionShape::Open,
+                options: vec![],
+                recommendation: None,
+                references: vec![],
+            },
+            Question {
+                id: "q2".into(),
+                kind: QuestionKind::Recommended,
+                question: "Which formats are read?".into(),
+                why: "Sets the parser's scope.".into(),
+                shape: QuestionShape::Several,
+                options: vec![
+                    option("a", Some("slower")),
+                    option("b", None),
+                    option("c", None),
+                ],
+                recommendation: Some(Recommendation {
+                    choice: vec!["a".into(), "b".into()],
+                    answer: None,
+                    reason: "Both are in use.".into(),
+                }),
+                references: vec![],
+            },
+            Question {
+                id: "q3".into(),
+                kind: QuestionKind::Assumption,
+                question: "Which component owns the parser?".into(),
+                why: "Decides the reviewers.".into(),
+                shape: QuestionShape::One,
+                options: vec![option("a", None), option("b", None)],
+                recommendation: Some(Recommendation {
+                    choice: vec!["a".into()],
+                    answer: None,
+                    reason: "The types live there.".into(),
+                }),
+                references: vec![
+                    reference(
+                        ReferenceKind::File,
+                        "crates/domain/src/work.rs",
+                        Some("80-104"),
+                    ),
+                    reference(ReferenceKind::Artefact, "analysis", None),
+                    reference(ReferenceKind::Ticket, "#347", None),
+                    reference(ReferenceKind::Design, "#339 §4.1", None),
+                    reference(ReferenceKind::Answer, "s7/q1", None),
+                    reference(ReferenceKind::Url, "https://example.com/spec", None),
+                ],
+            },
+        ],
+        reason: String::new(),
+        commit: None,
+        pr_title: None,
+    };
+    outcome.check().expect("the outcome passes its checks");
+    round_trip(outcome);
+
+    let full = Question {
+        id: "q1".into(),
+        kind: QuestionKind::MustDecide,
+        question: "Proceed?".into(),
+        why: "Blocks the plan.".into(),
+        shape: QuestionShape::YesNo,
+        options: vec![],
+        recommendation: Some(Recommendation {
+            choice: vec![],
+            answer: None,
+            reason: "No preference.".into(),
+        }),
+        references: vec![],
+    };
+    let nulls = r#"{"id": "q1", "kind": "must_decide", "question": "Proceed?",
+        "why": "Blocks the plan.", "shape": "yes_no", "options": null, "references": null,
+        "recommendation": {"choice": null, "answer": null, "reason": "No preference."}}"#;
+    let absent = r#"{"id": "q1", "kind": "must_decide", "question": "Proceed?",
+        "why": "Blocks the plan.", "shape": "yes_no",
+        "recommendation": {"reason": "No preference."}}"#;
+    for text in [nulls, absent] {
+        let question: Question = serde_json::from_str(text).expect("the question deserialises");
+        assert_eq!(question, full, "{text}");
     }
 }

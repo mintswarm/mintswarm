@@ -106,8 +106,7 @@ a defined component.
 
 A glob matches the whole path: `**` matches anything including `/`, `**/`
 zero or more directories, `*` anything within one segment, `?` one
-character other than `/`; everything else is literal. The same semantics as
-.mintswarm/dogfood/github/request-review.py.
+character other than `/`; everything else is literal.
 
 Rules, evaluated in this order. The declared paths are `files` plus each
 new dependency's `manifest`.
@@ -379,8 +378,6 @@ class ScreenError(Exception):
     """The screen record is not usable; the message is the dependency-screen rule's fixed reason."""
 
 
-# A copy of glob_to_regex in .mintswarm/dogfood/github/request-review.py;
-# selftest.py checks that the two agree.
 def glob_to_regex(pattern: str) -> re.Pattern:
     out = []
     i = 0
