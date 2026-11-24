@@ -107,19 +107,12 @@ async fn a_timeout_also_stops_the_processes_a_backend_started() {
     fakes.write(
         "pass",
         &format!(
-            "[ \"$1\" = --warm-up ] && exit 0\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait",
+            "sleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait",
             pidfile.display()
         ),
     );
-    // The first exec of a freshly written script can stall for seconds under a loaded, parallel
-    // test run (macOS assesses new executables), so run it once before the timed read.
-    let warmed = tokio::process::Command::new(&fakes.tools.pass)
-        .arg("--warm-up")
-        .status()
-        .await
-        .unwrap();
-    assert!(warmed.success(), "the fake's warm-up failed: {warmed}");
-    // Generous, so the warmed-up fake still starts its helper under a loaded, parallel test run.
+    // Generous, so the fake (already warmed up by `Fakes::write`) still starts its helper under a
+    // loaded, parallel test run.
     home.env.timeout = Duration::from_secs(4);
     let error = read(KeyStore::Pass, &fakes, &home).await.unwrap_err();
     assert!(matches!(error, KeyStoreError::TimedOut { .. }), "{error}");
