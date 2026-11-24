@@ -20,7 +20,8 @@ Checks:
 
 - the matrix: each of the four modes against a floor that is clean, hit
   or missing (floor exit 2) and a landing document at the threshold, below
-  it, `blocked` with a hard trigger, unusable (a `Risk:` line) and missing:
+  it, `blocked` with a hard trigger, `safe` 100 with the authority trigger
+  `weakens-safeguard`, unusable (a `Risk:` line) and missing:
   `would_be` is judgement.py's judged_decision for the same inputs,
   `effective` follows the mode, the exit code is 0 exactly for an
   `auto` effective decision, `acts` is false, and a comment is printed in
@@ -29,6 +30,11 @@ Checks:
 - reasons: every hit rule with its reasons, the band, confidence and
   decisive reason, each hard trigger, a confidence below min_confidence
   and an unusable layer's problems;
+- an authority trigger: under `judged` with a clean floor, a `safe` 100
+  landing document listing `weakens-safeguard` gives `human` for `would_be`
+  and `effective`, the reason names the trigger, and the comment's
+  Confidence row says it requires the maintainer while the Hard triggers
+  row is `none`;
 - threshold edges: with `min_confidence: 90`, 90 is `auto` and 89 `human`,
   under `judged`;
 - bindings: a verdict whose plan, facts, base, head or merge base, component
@@ -309,6 +315,7 @@ JUDGEMENTS = {
     "at": document(envelope("safe", 95)),
     "below": document(envelope("likely-safe", 94)),
     "blocked": document(envelope("blocked", 0, triggers=["criterion-not-met", "credentials"])),
+    "authority": document(envelope("safe", 100, triggers=["weakens-safeguard"])),
     "unusable": document(envelope("safe", 97), extra="Risk: low\n"),
     "missing": None,
 }
@@ -562,6 +569,37 @@ def check_reasons(r: Runner) -> None:
         "floor: the floor verdict is missing" in reasons
         and "judgement: the landing document has a line starting with 'Risk:'" in reasons,
         json.dumps(reasons),
+    )
+
+
+def check_authority(r: Runner) -> None:
+    ctx = r.context("judged")
+    proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["authority"])
+    ok = usable_record(record)
+    reasons = record["reasons"] if ok else []
+    lines = proc.stdout.splitlines()
+    confidence = [line for line in lines if line.startswith("- **Confidence:** ")]
+    T.check(
+        "authority: weakens-safeguard at safe 100 with a clean floor is human",
+        ok
+        and record["layers"]["floor"]["verdict"] == "clean"
+        and record["layers"]["judgement"]["status"] == "usable"
+        and record["would_be"] == "human"
+        and record["effective"] == "human"
+        and proc.returncode == 1,
+        proc.stderr.strip(),
+    )
+    T.check(
+        "authority: the reasons name the trigger",
+        "judgement: hard trigger weakens-safeguard" in reasons,
+        json.dumps(reasons),
+    )
+    T.check(
+        "authority: the Confidence row requires the maintainer and the Hard triggers row is none",
+        len(confidence) == 1
+        and "`Safe · 100` · requires the maintainer: `weakens-safeguard` (min_confidence" in confidence[0]
+        and "- **Hard triggers:** none" in lines,
+        proc.stdout,
     )
 
 
@@ -1185,6 +1223,7 @@ def main() -> int:
         runner = Runner(sb, bases)
         check_matrix(runner)
         check_reasons(runner)
+        check_authority(runner)
         check_threshold(runner)
         check_bindings(runner)
         check_evidence(runner)
