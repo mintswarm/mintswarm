@@ -1,0 +1,21 @@
+{
+  "id": 5000400,
+  "number": 400,
+  "title": "feat(domain): GitHub REST reads",
+  "state": "open",
+  "draft": false,
+  "html_url": "https://github.com/acme/widgets/pull/400",
+  "user": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot" },
+  "head": {
+    "ref": "mintswarm/180-rest-reads",
+    "sha": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "base": {
+    "ref": "master",
+    "sha": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "mergeable_state": "blocked",
+  "requested_reviewers": [
+    { "login": "maintainer", "id": 1, "type": "User" }
+  ]
+}
