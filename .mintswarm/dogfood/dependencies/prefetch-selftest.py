@@ -22,7 +22,9 @@ only under case or Unicode folding; data after the gzip stream; build and
 install code that names files not copied, or that the scan cannot
 follow (`partial`); errors of any kind
 and non-regular members as `failed`, never a crash; the member cap on
-selected files only and the npm version-document fallback; single-package failures; the CLI
+selected files only and the npm version-document fallback; the release before
+the locked one (`previous`) and the npm version's `time`, null for a first
+release and in the version-document fallback; single-package failures; the CLI
 (stale output, no packages.json, malformed input, bad arguments); Python
 3.9 syntax and standard-library imports only.
 
@@ -181,7 +183,13 @@ class Fixture:
                     "readme": "SECRET-README",
                 },
                 "versions": [
-                    {"num": "1.0.0", "created_at": "2020-01-01T00:00:00Z", "yanked": True, "license": "MIT"},
+                    {
+                        "num": "1.0.0",
+                        "created_at": "2020-01-01T00:00:00Z",
+                        "yanked": True,
+                        "license": "MIT",
+                        "published_by": {"login": "carol", "name": "Carol"},
+                    },
                     {
                         "num": version,
                         "created_at": "2026-01-01T00:00:00Z",
@@ -226,7 +234,10 @@ class Fixture:
                     "1.0.0": "2020-01-01T00:00:00Z",
                     version: "2026-01-01T00:00:00Z",
                 },
-                "versions": {"1.0.0": {"deprecated": "use 2"}, version: release},
+                "versions": {
+                    "1.0.0": {"deprecated": "use 2", "_npmUser": {"name": "carol", "email": "carol@example.invalid"}},
+                    version: release,
+                },
             }
         ).encode()
         self.routes[tarball] = archive
@@ -341,6 +352,11 @@ def fetched(box: Box, fx: Fixture):
     )
     T.check("crate: history newest first", [h["num"] for h in registry["history"]] == ["1.2.3", "1.0.0"])
     T.check(
+        "crate: the release before the locked one",
+        registry["previous"] == {"num": "1.0.0", "created_at": "2020-01-01T00:00:00Z", "published_by": "carol"},
+        str(registry.get("previous")),
+    )
+    T.check(
         "crate: trimmed fields",
         registry["crate"]["downloads"] == 1000
         and registry["version"]["license"] == "MIT OR Apache-2.0"
@@ -369,6 +385,12 @@ def fetched(box: Box, fx: Fixture):
         str(registry),
     )
     T.check("npm: scripts cut", len(registry["scripts"]["test"]) == P.SCRIPT_CAP)
+    T.check("npm: the locked version's time", registry["time"] == "2026-01-01T00:00:00Z", str(registry.get("time")))
+    T.check(
+        "npm: the release before the locked one",
+        registry["previous"] == {"version": "1.0.0", "time": "2020-01-01T00:00:00Z", "publisher": "carol"},
+        str(registry.get("previous")),
+    )
     text = "\n".join(p.read_text(encoding="utf-8") for p in out.rglob("metadata.json"))
     for word in ("DESCRIPTION-TEXT", "SECRET-README", "@example.invalid", "avatar"):
         T.check(f"metadata: no {word}", word not in text)
@@ -861,6 +883,11 @@ def caps(box: Box):
         and registry.get("maintainers") == ["bob"],
         str(registry),
     )
+    T.check(
+        "F7 version document: time and previous null",
+        "time" in registry and registry["time"] is None and "previous" in registry and registry["previous"] is None,
+        str(registry),
+    )
     wrong = dict(version_doc, version="9.9.9")
     record, _ = one_npm(
         box,
@@ -869,6 +896,19 @@ def caps(box: Box):
         routes={P.NPM_TARBALLS + "rp": b" " * 2000, P.NPM_TARBALLS + "rp/1.0.0": json.dumps(wrong).encode()},
     )
     T.check("F7 a version document for another version: failed", record.get("status") == "failed", str(record))
+
+
+def first_release(box: Box):
+    _, metadata = one_crate(box, {"Cargo.toml": CARGO})
+    registry = (metadata or {}).get("registry", {})
+    T.check("first release: a crate has no previous", "previous" in registry and registry["previous"] is None)
+    _, metadata = one_npm(box, {"package.json": b'{"name": "rp"}'})
+    registry = (metadata or {}).get("registry", {})
+    T.check(
+        "first release: an npm package has a time and no previous",
+        registry.get("time") == "2026-01-01T00:00:00Z" and "previous" in registry and registry["previous"] is None,
+        str(registry),
+    )
 
 
 def cli(box: Box):
@@ -940,7 +980,7 @@ def main() -> int:
         integrity(box, fx)
         archives(box, fx)
         failures(box, fx)
-        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps):
+        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps, first_release):
             case(box)
         hosts()
         cli(box)
