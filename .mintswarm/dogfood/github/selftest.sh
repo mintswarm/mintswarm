@@ -2021,56 +2021,64 @@ check "gh is not run when there is no installation token" eq "$(gh_calls)" "$cal
 
 # --- request-review.py -------------------------------------------------------
 
-for f in crates/core/x.rs Cargo.toml .mintswarm/stages/plan.md; do
-  check "reviewers for $f from the real config" eq "$("$R" 1 --dry-run --files "$f")" "zmij"
-done
-cat > "$sandbox/review.yaml" <<'EOF'
-components:
-  core: {paths: ["crates/core/**"], reviewers: [alice, "@bob"]}
-  docs: {paths: ["docs/**", "README.md"]}
-  deep: {paths: ["a/**/b.md", "*.toml", "x?.txt"], reviewers: [carol]}
-pipeline:
-  review: {reviewers: [zmij]}
-EOF
-rr() { "$R" 1 --dry-run --config "$sandbox/review.yaml" "$@" | tr '\n' ' '; }
-check "component reviewers, @ stripped" eq "$(rr --files crates/core/x.rs)" "alice bob "
-check "union with the default for a component without reviewers" eq "$(rr --files crates/core/x.rs docs/a.md)" "alice bob zmij "
-check "**/ matches zero directories" eq "$(rr --files a/b.md)" "carol "
-check "**/ matches several directories" eq "$(rr --files a/x/y/b.md)" "carol "
-check "* stays within a segment" eq "$(rr --files x/Cargo.toml)" "zmij "
-check "* matches at the top level" eq "$(rr --files Cargo.toml)" "carol "
-check "? matches one character" eq "$(rr --files x1.txt x12.txt)" "carol zmij "
-check "a prefix is not a match" eq "$(rr --files crates/corex/y.rs)" "zmij "
-printf 'components:\n  core: {paths: ["crates/core/**"], reviewers: ["al ice"]}\n' > "$sandbox/bad.yaml"
-bad_login() { "$R" 1 --dry-run --config "$sandbox/bad.yaml" --files crates/core/x.rs >/dev/null 2>&1; [ $? -eq 2 ]; }
-check "an invalid login exits 2" bad_login
-printf 'components:\n  core: {paths: ["crates/core/**"]}\n' > "$sandbox/none.yaml"
-check "no reviewers resolved is a no-op" eq "$("$R" 1 --config "$sandbox/none.yaml" --files docs/a.md 2>/dev/null)" ""
+commit_codeowners() {  # commit_codeowners LOCATION TEXT: commit TEXT as LOCATION, the only CODEOWNERS
+  local loc           # (none: no CODEOWNERS at all), and print the commit
+  for loc in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+    if [ "$loc" != "$1" ]; then git rm -q --ignore-unmatch -- "$loc"; rm -f -- "$loc"; fi
+  done
+  if [ "$1" != none ]; then
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n' "$2" > "$1"
+    git add -- "$1"
+  fi
+  git commit -q --allow-empty -m "codeowners $1"
+  git rev-parse HEAD
+}
+last_gh_argv() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | tail -n 1; }
 
+check "request-review.py names no reviewer of its own" absent zmij "$R"
+check "request-review.py reads no config" absent config.yaml "$R"
 git checkout -q --no-track -b mintswarm/6-review refs/remotes/origin/master
+rr_base="$(commit_codeowners .github/CODEOWNERS '* @dave
+/crates/core/ @alice @Bob
+/crates/ui/ @bob @carol
+/docs/ @org/docs
+/vendor/')"
+rr() { "$R" 1 --dry-run --base "$rr_base" "$@" 2>/dev/null | tr '\n' ' '; }
+check "reviewers are the code owners of --files" eq "$(rr --files crates/core/x.rs)" "alice "
+check "two groups with a shared owner request only that owner" eq "$(rr --files crates/core/x.rs crates/ui/y.ts)" "Bob "
+check "the same login assign-approvers.py owners prints" \
+  eq "$(python3 -I "$here/assign-approvers.py" owners --base "$rr_base" --paths crates/core/x.rs crates/ui/y.ts 2>/dev/null)" "Bob"
+"$R" 1 --dry-run --base "$rr_base" --files README.md docs/a.md >"$sandbox/rr.out" 2>"$sandbox/rr.err" || true
+check "a team owner is not requested" eq "$(cat "$sandbox/rr.out")" "dave"
+check "a team owner is noted" present "not assigning team @org/docs" "$sandbox/rr.err"
+check "an unowned path exits 2" exits_2 "$R" 1 --dry-run --base "$rr_base" --files vendor/x.c
+check "and is named" fails_saying "vendor/x.c" "$R" 1 --dry-run --base "$rr_base" --files vendor/x.c
+check "only a team owner exits 2" exits_2 "$R" 1 --dry-run --base "$rr_base" --files docs/a.md
+check "--branch and --files together exit 2" exits_2 "$R" 1 --dry-run --base "$rr_base" --branch x --files a
+check "neither --branch nor --files exits 2" exits_2 "$R" 1 --dry-run --base "$rr_base"
+
 mkdir -p crates/core docs
 printf 'x\n' > crates/core/a.rs
 printf 'x\n' > docs/b.md
 git add crates/core/a.rs docs/b.md
 git commit -q -m "review files"
-check "changed files come from git diff BASE...BRANCH" \
-  eq "$(rr --branch mintswarm/6-review --base refs/remotes/origin/master)" "alice bob zmij "
+check "changed files come from git diff BASE...BRANCH" eq "$(rr --branch mintswarm/6-review)" "alice "
 
-requested="$(env MSW_TOKEN="$DUMMY" "$R" 7 --files crates/core/x.rs)" || requested="(failed)"
-check "request-review.py prints the requested reviewers" eq "$requested" "zmij"
-last_gh_argv() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | tail -n 1; }
+requested="$(env MSW_TOKEN="$DUMMY" "$R" 7 --base "$rr_base" --files crates/core/x.rs 2>/dev/null)" || requested="(failed)"
+check "request-review.py prints the requested reviewers" eq "$requested" "alice"
 check "request-review.py posts to requested_reviewers through bot-gh.sh" \
   eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/pulls/7/requested_reviewers","--input","-"]'
-check "request-review.py sends the reviewers on stdin" present '{"reviewers": ["zmij"]}' "$MSW_STUB_STATE/stdin-gh.log"
-printf '{"7": [{"id": 1, "user": {"login": "zmij", "type": "User"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-23T10:00:00Z"}]}\n' \
+check "request-review.py sends the reviewers on stdin" present '{"reviewers": ["alice"]}' "$MSW_STUB_STATE/stdin-gh.log"
+printf '{"7": [{"id": 1, "user": {"login": "alice", "type": "User"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-23T10:00:00Z"}]}\n' \
   > "$MSW_STUB_STATE/reviews.json"
 rereview_calls_before="$(gh_calls)"
-rerequested="$(env MSW_TOKEN="$DUMMY" "$R" 7 --files crates/core/x.rs)" || rerequested="(failed)"
-rerequests_once() {  # exactly one new gh call, the POST to requested_reviewers, naming zmij on stdin
+rerequested="$(env MSW_TOKEN="$DUMMY" "$R" 7 --base "$rr_base" --files crates/core/x.rs 2>/dev/null)" || rerequested="(failed)"
+rerequests_once() {  # exactly one new gh call, the POST to requested_reviewers, naming alice on stdin
   eq "$(( $(gh_calls) - rereview_calls_before ))" 1 &&
     eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/pulls/7/requested_reviewers","--input","-"]' &&
-    eq "$(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1)" '{"reviewers": ["zmij"]}' &&
-    eq "$rerequested" "zmij"
+    eq "$(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1)" '{"reviewers": ["alice"]}' &&
+    eq "$rerequested" "alice"
 }
 check "re-requests a reviewer who has already reviewed" rerequests_once
 
@@ -2081,6 +2089,8 @@ check "assign-approvers.py compiles" \
   python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
   "$A" "$sandbox/assign-approvers.pyc"
 check "assign-approvers.py names no approver" absent zmij "$A"
+check "assign-approvers.py reads no config" absent config.yaml "$A"
+check "assign-approvers.py reads no configured reviewers" absent pipeline.review "$A" "$R"
 aa() { python3 -I "$A" "$@"; }
 assignees() { jq -r --arg n "$1" '.[$n].assignees | join(" ")' "$MSW_STUB_STATE/issues.json"; }
 seed() {  # seed N JSON: issue N's state in the gh stub
@@ -2088,14 +2098,8 @@ seed() {  # seed N JSON: issue N's state in the gh stub
   [ -f "$f" ] || printf '{}\n' > "$f"
   jq --arg n "$1" --argjson v "$2" '.[$n] = $v' "$f" > "$f.new" && mv "$f.new" "$f"
 }
-gh_argv_seen() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | grep -qxF -- "$1"; }
+gh_argv_seen() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | grep -xF -- "$1" >/dev/null; }
 deletes() { jq -c 'select(.cmd == "gh") | .argv | select(index("DELETE"))' "$argv_log" | wc -l | tr -d ' '; }
-assign_drops() {  # assign on issue 13, where bob cannot be assigned: exit 1, naming bob
-  local rc=0
-  aa assign 13 plan --base HEAD >"$sandbox/aa.out" 2>&1 || rc=$?
-  cat "$sandbox/aa.out"
-  eq "$rc" 1 && grep -qF "did not assign bob" "$sandbox/aa.out"
-}
 commit_config() {  # commit_config YAML: commit YAML as .mintswarm/config.yaml and print the commit
   printf '%s\n' "$1" > .mintswarm/config.yaml
   git add .mintswarm/config.yaml
@@ -2104,6 +2108,18 @@ commit_config() {  # commit_config YAML: commit YAML as .mintswarm/config.yaml a
 }
 posts() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST"))' "$argv_log" | wc -l | tr -d ' '; }
 last_stdin() { tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1; }
+own() {  # own BASE PATH...: the logins owners prints for PATHs at BASE, space-separated
+  local base="$1"; shift
+  aa owners --base "$base" --paths "$@" 2>/dev/null | tr '\n' ' '
+}
+own_pr() {  # own_pr BASE PATH...: the same through assign 1 pr --dry-run
+  local base="$1"; shift
+  aa assign 1 pr --dry-run --base "$base" --paths "$@" 2>/dev/null | tr '\n' ' '
+}
+both() {  # both BASE WANT PATH...: owners and assign pr --dry-run both print WANT
+  local base="$1" want="$2"; shift 2
+  eq "$(own "$base" "$@")" "$want" && eq "$(own_pr "$base" "$@")" "$want"
+}
 
 git checkout -q --no-track -b mintswarm/7-assign refs/remotes/origin/master
 mkdir -p .mintswarm
@@ -2111,27 +2127,146 @@ cp "$here/../../config.yaml" .mintswarm/config.yaml
 git add .mintswarm/config.yaml
 git commit -q -m "the real config"
 real_base="$(git rev-parse HEAD)"
-bots_base="$(commit_config 'pipeline: {review: {reviewers: ["mintswarm-dev[bot]", "other[bot]"]}}')"
-list_base="$(commit_config 'pipeline: [review]')"
-newline_base="$(commit_config 'pipeline: {review: {reviewers: ["alice\n"]}}')"
-commit_config 'pipeline: {review: {reviewers: [alice, "@bob", "mintswarm-dev[bot]", "other[bot]", alice, Alice]}}' >/dev/null
-check "approvers from the real config" eq "$(aa assign 1 plan --dry-run --base "$real_base")" "zmij"
-check "assign with no human approver exits 2" exits_2 aa assign 1 plan --base "$bots_base"
-check "a pipeline that is not a mapping exits 2" exits_2 aa assign 1 plan --base "$list_base"
-check "a login with a trailing newline exits 2" exits_2 aa assign 1 plan --base "$newline_base"
-check "approvers from the base config: @ stripped, bots skipped, deduplicated without regard to case" \
-  eq "$(aa assign 1 plan --dry-run --base HEAD 2>/dev/null | tr '\n' ' ')" "alice bob "
-check "a skipped bot is noted" present "skipping other[bot]" <(aa assign 1 plan --dry-run --base HEAD 2>&1)
-printf 'pipeline:\n  review: {reviewers: [mallory]}\n' > .mintswarm/config.yaml
-check "an uncommitted edit of the config changes nothing" \
-  eq "$(aa assign 1 plan --dry-run --base HEAD 2>/dev/null | tr '\n' ' ')" "alice bob "
-git checkout -q -- .mintswarm/config.yaml
+
+last_base="$(commit_codeowners .github/CODEOWNERS '# owners
+* @alice
+/docs/ @bob
+*.md @carol')"
+check "the last matching rule wins" both "$last_base" "carol " docs/x.md
+check "an earlier rule decides where a later one does not match" both "$last_base" "bob " docs/x.rs
+check "the first rule decides the rest" both "$last_base" "alice " src/x.rs
+check "a pattern without / matches at any depth" both "$last_base" "carol " src/a/b/x.md
+case_base="$(commit_codeowners .github/CODEOWNERS '/a/ @Alice @bob
+/b/ @alice @carol')"
+check "several groups: one login, @ stripped, the same login in another case counted once" \
+  both "$case_base" "Alice " a/1 b/1
+mixed_base="$(commit_codeowners .github/CODEOWNERS '/a/ @alice @org/team dev@example.com')"
+aa owners --base "$mixed_base" --paths a/x >"$sandbox/aa.out" 2>"$sandbox/aa.err" || true
+check "team and e-mail owners are not assigned" eq "$(cat "$sandbox/aa.out")" "alice"
+check "a team owner is noted" present "not assigning team @org/team" "$sandbox/aa.err"
+check "an e-mail owner is noted" present "not assigning e-mail owner dev@example.com" "$sandbox/aa.err"
+check "the cover is noted" present "alice covers the group alice" "$sandbox/aa.err"
+unowned_base="$(commit_codeowners .github/CODEOWNERS '* @alice
+/vendor/
+/only/ @alice')"
+check "a rule with no owners leaves its path unowned: exit 2, naming it" \
+  fails_saying "vendor/x.c" aa assign 1 pr --dry-run --base "$unowned_base" --paths src/a.rs vendor/x.c
+check "and the exit is 2" exits_2 aa owners --base "$unowned_base" --paths vendor/x.c
+nomatch_base="$(commit_codeowners .github/CODEOWNERS '/only/ @alice')"
+check "a path no rule matches exits 2, naming it" fails_saying "b/x.c" aa owners --base "$nomatch_base" --paths only/a b/x.c
+check "and the exit is 2" exits_2 aa owners --base "$nomatch_base" --paths only/a b/x.c
+teams_base="$(commit_codeowners .github/CODEOWNERS '* @org/team @helper[bot]')"
+check "only team and bot owners exit 2" fails_saying "no user code owner left" aa owners --base "$teams_base" --paths a.rs
+check "and the exit is 2" exits_2 aa assign 1 pr --base "$teams_base" --paths a.rs
+botowner_base="$(commit_codeowners .github/CODEOWNERS '* @alice @helper[bot] @mintswarm-dev[bot]')"
+aa owners --base "$botowner_base" --paths a.rs >"$sandbox/aa.out" 2>"$sandbox/aa.err" || true
+check "a [bot] owner is skipped" eq "$(cat "$sandbox/aa.out")" "alice"
+check "and noted" present "skipping helper[bot]: a bot is never assigned" "$sandbox/aa.err"
+
+check "CODEOWNERS in .github/" both "$(commit_codeowners .github/CODEOWNERS '* @gina')" "gina " a.rs
+check "CODEOWNERS at the root" both "$(commit_codeowners CODEOWNERS '* @hank')" "hank " a.rs
+check "CODEOWNERS in docs/" both "$(commit_codeowners docs/CODEOWNERS '* @ivan')" "ivan " a.rs
+mkdir -p .github
+printf '* @gina\n' > .github/CODEOWNERS
+printf '* @hank\n' > CODEOWNERS
+git add .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS
+git commit -q -m "every location"
+check ".github/CODEOWNERS wins over the root and docs/" both HEAD "gina " a.rs
+git rm -q .github/CODEOWNERS
+git commit -q -m "root and docs"
+check "the root CODEOWNERS wins over docs/" both HEAD "hank " a.rs
+none_base="$(commit_codeowners none '')"
+check "no CODEOWNERS at all exits 2" exits_2 aa owners --base "$none_base" --paths a.rs
+check "and says so" fails_saying "no CODEOWNERS at" aa owners --base "$none_base" --paths a.rs
+
+wt_base="$(commit_codeowners .github/CODEOWNERS '* @alice')"
+printf '* @mallory\n' > .github/CODEOWNERS
+check "an uncommitted edit of CODEOWNERS changes nothing" both "$wt_base" "alice " a.rs
+git checkout -q -- .github/CODEOWNERS
+git checkout -q --no-track -b mintswarm/8-edit
+printf '* @mallory\n' > .github/CODEOWNERS
+printf 'x\n' > edited.rs
+git add .github/CODEOWNERS edited.rs
+git commit -q -m "edit CODEOWNERS on the branch"
+check "a CODEOWNERS edit on the branch changes nothing" \
+  eq "$(aa assign 1 pr --dry-run --base "$wt_base" --branch mintswarm/8-edit 2>/dev/null)" "alice"
+git checkout -q mintswarm/7-assign
+ab_base="$(commit_codeowners .github/CODEOWNERS '/a/ @alice
+/b/ @bob')"
+git checkout -q --no-track -b mintswarm/9-diff
+mkdir -p b
+printf 'x\n' > b/x.rs
+git add b/x.rs
+git commit -q -m "touch b"
+check "pr --branch takes its paths from git diff BASE...BRANCH" \
+  eq "$(aa assign 1 pr --dry-run --base "$ab_base" --branch mintswarm/9-diff 2>/dev/null)" "bob"
+check "owners --branch too" eq "$(aa owners --base "$ab_base" --branch mintswarm/9-diff 2>/dev/null)" "bob"
+check "an empty diff exits 2" exits_2 aa owners --base "$ab_base" --branch "$ab_base"
+git checkout -q mintswarm/7-assign
+
+check "a path ending in / exits 2" exits_2 aa owners --base "$ab_base" --paths a/
+bang_base="$(commit_codeowners .github/CODEOWNERS '* @alice
+!/a/ @bob')"
+check "a ! pattern exits 2, naming the line" fails_saying ".github/CODEOWNERS:2" aa owners --base "$bang_base" --paths x
+check "and the exit is 2" exits_2 aa owners --base "$bang_base" --paths x
+check "pr with --paths and --branch exits 2" exits_2 aa assign 1 pr --base "$ab_base" --paths a/x --branch mintswarm/9-diff
+check "pr with neither exits 2" exits_2 aa assign 1 pr --base "$ab_base"
+check "owners with neither exits 2" exits_2 aa owners --base "$ab_base"
+check "plan with --paths exits 2" exits_2 aa assign 1 plan --base "$ab_base" --paths a/x
+check "release with --paths exits 2" exits_2 aa release 1 plan --paths a/x
 check "an unknown reason exits 2" exits_2 aa assign 1 later --base HEAD
 check "number 0 exits 2" exits_2 aa assign 0 plan --base HEAD
 check "a missing action exits 2" exits_2 aa 1 plan
 
-out="$(aa assign 11 plan --base HEAD 2>/dev/null)" || out="(failed)"
-check "assign prints the assigned logins and the reason" eq "$out" "assigned alice bob to #11 (plan)"
+# The greedy cover.
+cover_base="$(commit_codeowners .github/CODEOWNERS '/one/ @carol @bob @dave
+/ab/ @alice @bob
+/bc/ @bob @carol
+/cb/ @carol @bob
+/d/ @dave
+/x/ @aaron @cara
+/y/ @cara @dan
+/z/ @cara @erin
+/team/ @org/team')"
+check "one group with several owners: the lowest login" both "$cover_base" "bob " one/x
+check "two groups sharing an owner: only that owner" both "$cover_base" "bob " ab/x bc/x
+check "two disjoint groups: one login each" both "$cover_base" "bob dave " cb/x d/x
+check "an owner in several groups wins over an earlier login in one" both "$cover_base" "cara " x/1 y/1 z/1
+check "ties compare in lower case" both "$(commit_codeowners .github/CODEOWNERS '* @Bob @alice')" "alice " tie/x
+check "the order of the paths does not matter" both "$cover_base" "bob dave " d/x cb/x
+aa owners --base "$cover_base" --paths team/x d/x >"$sandbox/aa.out" 2>"$sandbox/aa.err" || true
+check "a team-only path next to a user group: only the user group is covered" eq "$(cat "$sandbox/aa.out")" "dave"
+check "and the team path is noted" present "no user code owner for team/x" "$sandbox/aa.err"
+check "paths matching one rule form one group" both "$cover_base" "bob " one/1 one/2 one/3
+
+seed 71 '{"user": {"login": "alice", "type": "User"}}'
+check "plan assigns the issue's author, not a code owner" \
+  eq "$(aa assign 71 plan --dry-run --base "$ab_base" 2>/dev/null)" "alice"
+seed 72 '{"user": {"login": "dave", "type": "User"}}'
+check "needs_input assigns a person author" eq "$(aa assign 72 needs_input --dry-run 2>/dev/null)" "dave"
+seed 73 '{"user": {"login": "mintswarm-dev[bot]", "type": "Bot"}, "parent": 74}'
+seed 74 '{"user": {"login": "helper", "type": "Bot"}, "parent": 75}'
+seed 75 '{"user": {"login": "erin", "type": "User"}}'
+for reason in plan needs_input external_steps; do
+  check "$reason on a bot-filed issue assigns the nearest person-filed ancestor's author" \
+    eq "$(aa assign 73 "$reason" --dry-run 2>/dev/null)" "erin"
+done
+check "the ancestors come from the sub-issue parent" \
+  gh_argv_seen '["api","repos/{owner}/{repo}/issues/74/parent"]'
+seed 76 '{"user": {"login": "mintswarm-dev[bot]", "type": "Bot"}}'
+check "a bot-filed issue with no parent exits 2" exits_2 aa assign 76 needs_input --dry-run
+check "and says so" fails_saying "no person-filed ancestor" aa assign 76 external_steps
+seed 77 '{"user": {"login": "mintswarm-dev[bot]", "type": "Bot"}, "parent": 78}'
+seed 78 '{"user": {"login": "other[bot]", "type": "User"}, "parent": 77}'
+check "a parent cycle exits 2" exits_2 aa assign 77 plan --dry-run
+before="$(posts)"
+out="$(aa assign 73 plan 2>/dev/null)" || out="(failed)"
+check "the owner stand-in is assigned" eq "$out" "assigned erin to #73 (plan)"
+check "issue 73 is assigned to erin" eq "$(assignees 73)" "erin"
+check "with one POST" eq "$(( $(posts) - before ))" 1
+
+out="$(aa assign 11 pr --base "$ab_base" --paths a/x b/y 2>/dev/null)" || out="(failed)"
+check "assign prints the assigned logins and the reason" eq "$out" "assigned alice bob to #11 (pr)"
 check "assign posts to the issue's assignees through bot-gh.sh" \
   eq "$(last_gh_argv)" '["api","--method","POST","repos/{owner}/{repo}/issues/11/assignees","--input","-"]'
 check "gh sees the minted token" eq "$(gh_env GH_TOKEN)" "$MINTED"
@@ -2140,6 +2275,12 @@ check "assign sends the approvers on stdin" eq "$(last_stdin)" '{"assignees": ["
 check "no bot login is in any request body" absent "[bot]" "$MSW_STUB_STATE/stdin-gh.log"
 check "issue 11 is assigned to alice and bob" eq "$(assignees 11)" "alice bob"
 seed 13 '{"assignees": [], "events": [], "unassignable": ["bob"]}'
+assign_drops() {  # assign on issue 13, where bob cannot be assigned: exit 1, naming bob
+  local rc=0
+  aa assign 13 pr --base "$ab_base" --paths a/x b/y >"$sandbox/aa.out" 2>&1 || rc=$?
+  cat "$sandbox/aa.out"
+  eq "$rc" 1 && grep -F "did not assign bob" "$sandbox/aa.out" >/dev/null
+}
 check "a login GitHub drops fails assign with 1 and is named" assign_drops
 
 out="$(aa release 11 pr 2>/dev/null)" || out="(failed)"
@@ -2153,14 +2294,14 @@ check "release sends the bot's assignees on stdin" \
 check "issue 11 has no assignees left" eq "$(assignees 11)" ""
 
 seed 12 '{"assignees": ["carol"], "events": [{"event": "assigned", "actor": {"login": "carol"}, "assignee": {"login": "carol"}}]}'
-aa assign 12 plan --base HEAD >/dev/null 2>&1 || true
+aa assign 12 pr --base "$ab_base" --paths a/x b/y >/dev/null 2>&1 || true
 check "issue 12 is assigned to carol, alice and bob" eq "$(assignees 12)" "carol alice bob"
 check "release --dry-run prints what it would remove" eq "$(aa release 12 plan --dry-run 2>/dev/null | tr '\n' ' ')" "alice bob "
 out="$(aa release 12 plan 2>/dev/null)" || out="(failed)"
 check "release removes only the bot's assignments" eq "$out" "released alice bob from #12 (plan)"
 check "carol, assigned by a person, stays" eq "$(assignees 12)" "carol"
 seed 14 '{"assignees": ["alice"], "events": [{"event": "assigned", "actor": {"login": "dave"}, "assigner": {"login": "dave"}, "assignee": {"login": "alice"}}]}'
-aa assign 14 needs_input --base HEAD >"$sandbox/aa.out" 2>&1 || true
+aa assign 14 pr --base "$ab_base" --paths a/x b/y >"$sandbox/aa.out" 2>&1 || true
 check "an approver already assigned is noted" present "already assigned to #14: alice" "$sandbox/aa.out"
 check "and only the others are posted" eq "$(last_stdin)" '{"assignees": ["bob"]}'
 out="$(aa release 14 needs_input 2>/dev/null)" || out="(failed)"
@@ -2180,11 +2321,30 @@ seed 16 '{"assignees": ["Alice", "Bob"], "events": [
   {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Alice"}},
   {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Bob"}}]}'
 before="$(posts)"
-out="$(aa assign 16 pr --base HEAD 2>/dev/null)" || out="(failed)"
+out="$(aa assign 16 pr --base "$ab_base" --paths a/x b/y 2>/dev/null)" || out="(failed)"
 check "approvers assigned in another case count as assigned" eq "$out" "nothing to assign: #16 is assigned to every approver (pr)"
 check "and nothing is posted" eq "$(posts)" "$before"
 out="$(aa release 16 pr 2>/dev/null)" || out="(failed)"
 check "release matches events without regard to case" eq "$out" "nothing to release"
+
+# This repository's own CODEOWNERS: every reason waits on its one code owner.
+repo_owners_base="$(commit_codeowners .github/CODEOWNERS "$(cat "$here/../../../.github/CODEOWNERS")")"
+git checkout -q --no-track -b mintswarm/10-real
+printf 'x\n' > real.rs
+git add real.rs
+git commit -q -m "touch real.rs"
+check "the repository's CODEOWNERS: pr --branch assigns zmij" \
+  eq "$(aa assign 1 pr --dry-run --base "$repo_owners_base" --branch mintswarm/10-real 2>/dev/null)" "zmij"
+check "the repository's CODEOWNERS: owners prints zmij" \
+  eq "$(aa owners --base "$repo_owners_base" --branch mintswarm/10-real 2>/dev/null)" "zmij"
+check "the repository's CODEOWNERS: request-review.py requests zmij" \
+  eq "$("$R" 1 --dry-run --base "$repo_owners_base" --branch mintswarm/10-real 2>/dev/null)" "zmij"
+seed 79 '{"user": {"login": "zmij", "type": "User"}}'
+for reason in plan needs_input external_steps; do
+  check "an issue zmij filed: $reason assigns zmij" \
+    eq "$(aa assign 79 "$reason" --dry-run --base "$repo_owners_base" 2>/dev/null)" "zmij"
+done
+git checkout -q mintswarm/7-assign
 
 # --- reclassify.py -----------------------------------------------------------
 
