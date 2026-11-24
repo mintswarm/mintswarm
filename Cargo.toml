@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/domain", "crates/config", "crates/github"]
+members = ["crates/domain", "crates/config", "crates/github", "crates/proto"]
 resolver = "3"
 
 [workspace.package]
@@ -9,7 +9,11 @@ license = "FSL-1.1-ALv2"
 
 [workspace.dependencies]
 clap = "4.6.9"
+ed25519-dalek = "2.2.0"
 jsonwebtoken = "9.3.1" # first user: hold simple_asn1 0.6.3 and time 0.3.41 in Cargo.lock, or move the toolchain to 1.88
+prost = "0.14.6"
+prost-types = "0.14.6"
+protox = "0.9.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = "1.1.6"
@@ -19,7 +23,12 @@ sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = "1.54.1"
+tokio-stream = "0.1.19"
 toml = "1.2.2"
+tonic = "0.14.5" # 0.14.6 and later need Rust 1.88; move with the toolchain
+tonic-build = "0.14.5"
+tonic-prost = "0.14.5"
+tonic-prost-build = "0.14.5"
 tracing = "0.1.44"
 yaml-rust2 = { version = "=0.13.2", default-features = false }
 

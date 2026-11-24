@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline self-test of floor.py and decision.py, the two scripts of plan approval.
+"""Offline self-test of floor.py, decision.py and size.py, the scripts of plan approval.
 
     selftest.py
 
@@ -20,17 +20,18 @@ written under `cases/`; their TMPDIR is an empty directory of the sandbox,
 where the floors make their object stores. Unless a case says otherwise,
 floor.py gets a generated issue document for the case's component, whose criteria the
 plan's Verification table quotes and whose comments hold a decoy criteria
-section, and an analysis with no questions.
+section, and an analysis with no questions, and no --screen.
 
 Checks:
 
 - config: the checkout's config has no pipeline.approve_plan and has the
   expected pipeline.plan_approval;
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
-  order, version 2, the 16 rule identifiers in order across `rules` and
+  order, version 3, the 16 rule identifiers in order across `rules` and
   `not_evaluated`, which is empty or the footprint rules after a `footprint`
   hit, results and reasons, `verdict` against the rules and the exit code,
-  `plan`, `issue_document` and `analysis` against the files given,
+  `plan`, `issue_document`, `analysis` and `screen` against the files given
+  (null when not given),
   `base.commit`, `mode` and the printed lines;
 - clean base: a footprint modelled on #20 is clean on every rule, also
   with a `## TL;DR` section after the summary line, and is accepted with
@@ -74,23 +75,33 @@ Checks:
   over, whatever estimated_lines; without a non-production file it is
   measured by estimated_lines; production_lines above estimated_lines,
   negative or `true` is a `footprint` hit;
-- new dependencies, at `lockfiles`, a commit beside `real` holding a root
-  Cargo.lock (`anyhow`), a root Cargo.toml with [workspace.dependencies]
-  (`serde`) and web/pnpm-lock.yaml (`left-pad`): packages present there are
-  not counted, a package in two Cargo.toml manifests counts once, the same
-  name in a Cargo.toml and a package.json counts twice, a pyproject.toml
-  package counts, and a base Cargo.lock that does not convert exits 2; at
-  `stray-lockfile`, `lockfiles` with a malformed
-  tests/fixtures/pnpm-lock.yaml, those packages are still clean and a
-  package.json under tests/fixtures/ exits 2;
+- dependency screen, with records shaped as dependencies/screen.py writes
+  them: no packages with no record or with an empty one, and a package
+  screened without a disqualifier but with alarming evidence (a large size,
+  900 transitive dependencies, a changed publisher, one day old) are clean;
+  five packages, all screened, exit 0 with no `limit-new-dependencies` rule
+  anywhere in the verdict; each of the four disqualifiers, two together, an
+  `unscreened` package with its reason, packages with no --screen, a
+  declared package the record does not list, a record package the
+  footprint does not declare or declares in another manifest, a package
+  listed twice, and a record that is not strict JSON, not an object, of
+  another tool, `version` true or 2, `mode` review, `packages` not a list,
+  or a package without a name, with another status, an unknown or a
+  repeated disqualifier, are `dependency-screen` hits with their exact
+  reasons; an unusable record is a hit without packages declared too;
+  record text in a reason is one line, cut to 200 characters; and after a
+  `footprint` hit, `dependency-screen` is not evaluated;
 - per-component limits, at `component-limits` (docs lines 400): a docs plan
   of 350 lines is clean, of 401 a hit naming the override, a tooling plan
   of 350 lines a hit, and the docs plan's files limit stays 10;
 - unusable input: bad arguments, plans, documents (missing, unreadable, not
   UTF-8, given twice or with an empty value), refs and configs (among them
-  a `min_confidence` of 89, 101, `true` or `"95"`, and a
-  limits_by_component or non_production of the wrong shape), and a
-  missing `yq`, exit 2 and leave no verdict file, even a stale one;
+  a `min_confidence` of 89, 101, `true` or `"95"`, a
+  limits_by_component or non_production of the wrong shape, and the removed
+  `new_dependencies` limit in `limits` or in limits_by_component), screen
+  records (missing, unreadable, not UTF-8, given twice or with an empty
+  value) and a missing `yq`, exit 2 and leave no verdict file, even a stale
+  one;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
   error and no traceback;
@@ -146,9 +157,21 @@ Checks:
   judgement; and in both, model and session text, a hostile reason and
   doubt among it, only inside code spans of at most 200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a
-  missing, unreadable or non-UTF-8 issue document or analysis, a missing
+  missing, unreadable or non-UTF-8 issue document, analysis or screen
+  record, a screen record given twice or with an empty value, a missing
   `yq` and a record path that is a directory exit 2, print nothing
   to stdout and leave no record, even a stale one;
+- decision and the screen: in `shadow` mode a two-package record gives a
+  `dependency-screen` hit and, right after the Floor row, one Package row
+  per declared package with its version, status, disqualifiers (advisory
+  ids, the name a typosquat imitates) and evidence, and the footprint in
+  brief counts declared packages; a hostile package name and version stay
+  inside code spans; under `judged` a screened package with the matching
+  --screen gives a usable, clean floor layer, `auto` and its Package row in
+  the auto-approval comment; a verdict made without --screen but decided
+  with it, made with it but decided without, or decided with another
+  record give `human`, the floor layer unusable and only the screen binding
+  named;
 - object store, with every run's TMPDIR an empty sandbox directory: a git
   on PATH that logs its arguments shows the store made there and the base,
   the config and the history read through `--git-dir` at it; a replace ref
@@ -166,8 +189,24 @@ Checks:
   decoy repository at the path git would decode that to, gives the
   untampered verdict; a repository with extensions.partialClone exits 2; and no
   `msw-floor-objects-*` store is left after clean and exit 2 runs;
-- standard library: every import of floor.py, decision.py and selftest.py is
-  in the standard library.
+- sizes, of size.py: the lines floor at every boundary of design §5's
+  bands; in `plan` mode, a plan judged S with production_lines 300 prints
+  `size: L` and the raised-size line, one judged XL or L only its size, a
+  seven-key footprint's estimated_lines raises the same, and a missing or
+  malformed `## Size` (no section, two, one only inside a fence, the wrong
+  position, `size: l`, `Size: L`, `size: XXL`, trailing text, a leading
+  space, no or four reasons, an empty bullet, prose, a continuation line,
+  a nested bullet, a fence) prints the lines floor and the no-usable-size
+  line; in `analysis` mode the same sections exit 1, and so do a json
+  fence in the section and a plan's Size after `## Footprint`; blank lines
+  between reasons, CRLF, one or three reasons, trailing spaces and tabs on
+  the heading, size line and reasons, and a section ended right by the next
+  heading are usable in both; bad arguments, an unknown mode, a
+  missing or non-UTF-8 file, an unusable footprint and a json fence in a
+  plan's Size exit 2 with nothing on stdout; and the clean base with a
+  `## Size` section after the footprint is clean on every floor rule;
+- standard library: every import of floor.py, decision.py, size.py and
+  selftest.py is in the standard library.
 
 Prints one `ok` or `FAIL` line per check and exits 0 only when all passed.
 """
@@ -190,6 +229,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FLOOR = HERE / "floor.py"
 DECISION = HERE / "decision.py"
+SIZE = HERE / "size.py"
 FIXTURES = HERE / "fixtures"
 ROOT = HERE.parents[2]
 CONFIG = ROOT / ".mintswarm" / "config.yaml"
@@ -207,7 +247,7 @@ RULES = [
     "limit-files",
     "limit-lines",
     "limit-new-files",
-    "limit-new-dependencies",
+    "dependency-screen",
     "external-steps",
     "gate-changes",
     "tests-none",
@@ -224,6 +264,7 @@ VERDICT_KEYS = [
     "plan",
     "issue_document",
     "analysis",
+    "screen",
     "component",
     "base",
     "config",
@@ -259,7 +300,7 @@ EXPECTED_APPROVAL = {
             ".github/workflows/**",
         ],
     },
-    "limits": {"files": 10, "lines": 300, "new_files": 3, "new_dependencies": 0},
+    "limits": {"files": 10, "lines": 300, "new_files": 3},
     "limits_by_component": {
         "domain": {"lines": 2000, "files": 15, "new_files": 12},
         "runner": {"lines": 2000, "files": 15, "new_files": 12},
@@ -399,25 +440,6 @@ class Sandbox:
     def commit_empty(self, message: str) -> str:
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")
-
-    def commit_files(self, files: dict, message: str, branch: str) -> str:
-        """A commit on top of HEAD that adds files ({path: bytes}), kept at refs/heads/<branch>; HEAD, the index
-        and the worktree do not move."""
-        env = dict(self.env, GIT_INDEX_FILE=str(self.tmp / f"index-{branch}"))
-
-        def git(*args: str, data: bytes = None) -> str:
-            proc = subprocess.run(["git", *args], cwd=self.repo, env=env, input=data, capture_output=True)
-            if proc.returncode != 0:
-                raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode().strip()}")
-            return proc.stdout.decode().strip()
-
-        git("read-tree", "HEAD")
-        for path, data in files.items():
-            oid = git("hash-object", "-w", "--stdin", data=data)
-            git("update-index", "--add", "--cacheinfo", f"100644,{oid},{path}")
-        commit = git("commit-tree", git("write-tree"), "-p", "HEAD", "-m", message)
-        git("update-ref", f"refs/heads/{branch}", commit)
-        return commit
 
     def write_plan(self, name: str, content) -> str:
         self.counter += 1
@@ -576,9 +598,9 @@ def check_shape(name: str, proc, verdict, args: dict, commit: str, mode: str) ->
         problems.append(f"verdict {verdict.get('verdict')!r} against the rules")
     if proc.returncode != (1 if hit else 0):
         problems.append(f"exit {proc.returncode} with verdict {verdict.get('verdict')!r}")
-    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 2:
+    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 3:
         problems.append("tool or version")
-    for key in ("plan", "issue_document", "analysis"):
+    for key in ("plan", "issue_document", "analysis", "screen"):
         path = args.get(key)
         bound = (
             None
@@ -624,8 +646,10 @@ class Runner:
         mode: str = None,
         issue=DEFAULT,
         analysis=DEFAULT,
+        screen=None,
     ):
-        """issue and analysis: DEFAULT (generated, clean), None (not given), or the content to give."""
+        """issue and analysis: DEFAULT (generated, clean), None (not given), or the content to give; screen:
+        None (not given) or the content of the screen record to give."""
         mode = mode or EXPECTED_APPROVAL["mode"]
         plan = self.sb.write_plan(name, content)
         ref = ref or self.commits[config]
@@ -641,6 +665,10 @@ class Runner:
                 continue
             documents[key] = self.sb.write_plan(f"{name} {key}", generated() if value is DEFAULT else value)
             args += [flag, documents[key]]
+        documents["screen"] = None
+        if screen is not None:
+            documents["screen"] = self.sb.write_plan(f"{name} screen", screen)
+            args += ["--screen", documents["screen"]]
         proc, verdict = self.sb.floor(args)
         check_shape(
             name,
@@ -808,15 +836,6 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         only=True,
     )
 
-    def deps(count: int) -> list:
-        return [{"name": f"dep-{i}", "manifest": "docs/requirements.txt"} for i in range(count)]
-
-    n = limits["new_dependencies"]
-    expect_clean(r, f"new dependencies at {n}", base(new_dependencies=deps(n)), ["limit-new-dependencies"])
-    expect_hit(
-        r, f"new dependencies at {n + 1}", base(new_dependencies=deps(n + 1)), "limit-new-dependencies", only=True
-    )
-
     expect_hit(
         r,
         "external step",
@@ -945,99 +964,243 @@ def check_production_lines(r: Runner, limits: dict) -> None:
         )
 
 
-CARGO_LOCK = b"""version = 4
-
-[[package]]
-name = "anyhow"
-version = "1.0.98"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-"""
-CARGO_TOML = b"""[workspace]
-members = ["crates/*"]
-
-[workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
-"""
-PNPM_LOCK = b"""lockfileVersion: '9.0'
-importers:
-  apps/ui:
-    dependencies:
-      left-pad:
-        specifier: ^1.3.0
-        version: 1.3.0
-packages:
-  left-pad@1.3.0:
-    resolution: {integrity: sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQ7P5pI3pV8MyHxpVgLaFvvJNs8Qk8NLvYsa2a2LbOqa6xBw==}
-"""
+MANIFEST = "docs/requirements.txt"
 
 
-def check_new_dependencies(r: Runner, sb: Sandbox, commits: dict) -> None:
-    def dep(name: str, manifest: str) -> dict:
-        return {"name": name, "manifest": manifest}
+def screened_package(name: str, manifest: str = MANIFEST, **changes) -> dict:
+    """A package as dependencies/screen.py records it, screened with no disqualifier unless changes say so."""
+    package = {
+        "name": name,
+        "manifest": manifest,
+        "ecosystem": None,
+        "version": "1.2.3",
+        "status": "screened",
+        "reason": "",
+        "disqualifiers": [],
+        "size": {"download_bytes": 2048, "unpacked_bytes": "unavailable", "file_count": "unavailable"},
+        "dependencies": {"direct": 2, "transitive": 5, "approximate": False, "lockfile": None},
+        "author": {
+            "publisher": "alice",
+            "owners": ["alice"],
+            "publisher_first_release": "2020-01-01",
+            "previous_publisher": "alice",
+            "publisher_changed": False,
+        },
+        "establishment": {
+            "created": "2020-01-01",
+            "age_days": 2000,
+            "releases": 40,
+            "downloads": 100000,
+            "repository": "https://example.invalid/repo",
+            "last_release": "2025-01-01",
+        },
+        "problems": {"advisories": [], "yanked": False, "deprecated": None, "typosquat_of": None},
+    }
+    package.update(changes)
+    return package
 
-    rule = ["limit-new-dependencies"]
-    files = ["crates/runner/src/lib.rs"]
-    present = [
-        dep("serde", "Cargo.toml"),
-        dep("serde", "crates/runner/Cargo.toml"),
-        dep("anyhow", "crates/runner/Cargo.toml"),
-        dep("left-pad", "web/apps/ui/package.json"),
-    ]
-    expect_clean(r, "packages at the base", base(files=files, new_dependencies=present), rule, config="lockfiles")
+
+def screen_record(packages: list = (), **changes) -> str:
+    """The text of a screen record as dependencies/screen.py writes it."""
+    record = {
+        "tool": "dependency-screen",
+        "version": 1,
+        "mode": "plan",
+        "date": "2026-01-01",
+        "advisory_source": "osv",
+        "packages": list(packages),
+    }
+    record.update(changes)
+    return json.dumps(record, indent=2) + "\n"
+
+
+def declared(*names: str, manifest: str = MANIFEST) -> list:
+    return [{"name": name, "manifest": manifest} for name in names]
+
+
+def check_dependency_screen(r: Runner, sb: Sandbox, commits: dict) -> None:
+    rule = "dependency-screen"
+    expect_clean(r, "no packages, no screen record", base(), [rule])
+    expect_clean(r, "no packages, an empty screen record", base(), [rule], screen=screen_record())
+    alarming = screened_package(
+        "alarming",
+        size={"download_bytes": 900 * 1024 * 1024, "unpacked_bytes": 2**31, "file_count": 50000},
+        dependencies={"direct": 60, "transitive": 900, "approximate": True, "lockfile": None},
+        author=dict(screened_package("x")["author"], previous_publisher="mallory", publisher_changed=True),
+        establishment=dict(screened_package("x")["establishment"], age_days=1, releases=1),
+    )
+    verdict = expect_clean(
+        r,
+        "screened with alarming evidence and no disqualifier",
+        base(new_dependencies=declared("alarming")),
+        [rule],
+        screen=screen_record([alarming]),
+    )
+    T.check(
+        "screened with alarming evidence and no disqualifier: every rule clean",
+        set(results_of(verdict).values()) == {"clean"},
+        str({k: v for k, v in results_of(verdict).items() if v != "clean"}),
+    )
+
+    five = base(new_dependencies=declared(*(f"dep-{i}" for i in range(5))))
+    proc, verdict = r.run(
+        "five packages, all screened",
+        plan_text(footprint=five),
+        screen=screen_record([screened_package(f"dep-{i}") for i in range(5)]),
+    )
+    named = [x.get("rule") for x in verdict.get("rules", [])] + list(verdict.get("not_evaluated", []))
+    T.check(
+        "five packages, all screened: exit 0, no count rule, dependency-screen clean",
+        proc.returncode == 0 and "limit-new-dependencies" not in named and results_of(verdict).get(rule) == "clean",
+        proc.stdout,
+    )
+
+    one = base(new_dependencies=declared("pkg"))
+    for disqualifier in ("advisory", "yanked", "deprecated", "typosquat"):
+        expect_hit(
+            r,
+            f"the {disqualifier} disqualifier",
+            one,
+            rule,
+            only=True,
+            reasons=[f"pkg 1.2.3 ({MANIFEST}) is disqualified: {disqualifier}"],
+            screen=screen_record([screened_package("pkg", disqualifiers=[disqualifier])]),
+        )
     expect_hit(
         r,
-        "packages at the base, against real",
-        base(files=files, new_dependencies=present),
-        "limit-new-dependencies",
-        reason="new_dependencies is 3, over the limit of 0",
-    )
-    expect_hit(
-        r,
-        "a package in two Cargo.toml",
-        base(
-            files=files, new_dependencies=[dep("newcrate", "Cargo.toml"), dep("newcrate", "crates/runner/Cargo.toml")]
-        ),
-        "limit-new-dependencies",
-        reasons=["new_dependencies is 1, over the limit of 0: cargo newcrate"],
-        config="lockfiles",
-    )
-    expect_hit(
-        r,
-        "a name in Cargo.toml and package.json",
-        base(files=files, new_dependencies=[dep("newcrate", "Cargo.toml"), dep("newcrate", "web/package.json")]),
-        "limit-new-dependencies",
-        reasons=["new_dependencies is 2, over the limit of 0: cargo newcrate, npm newcrate"],
-        config="lockfiles",
-    )
-    expect_hit(
-        r,
-        "a pyproject.toml package",
-        base(files=files, new_dependencies=[dep("anyhow", "pyproject.toml")]),
-        "limit-new-dependencies",
-        reasons=["new_dependencies is 1, over the limit of 0: pyproject.toml anyhow"],
-        config="lockfiles",
-    )
-    expect_clean(
-        r,
-        "an unrelated malformed pnpm-lock.yaml",
-        base(files=files, new_dependencies=present),
+        "two disqualifiers",
+        one,
         rule,
-        config="stray-lockfile",
+        reasons=[
+            f"pkg 1.2.3 ({MANIFEST}) is disqualified: advisory",
+            f"pkg 1.2.3 ({MANIFEST}) is disqualified: yanked",
+        ],
+        screen=screen_record([screened_package("pkg", disqualifiers=["advisory", "yanked"])]),
     )
-    stray = base(files=files, new_dependencies=[dep("left-pad", "tests/fixtures/sub/package.json")])
-    used = sb.write_plan("malformed lockfile in use", plan_text(footprint=stray))
-    proc, verdict = sb.floor(["--plan", used, "--component", "docs", "--base", commits["stray-lockfile"]])
-    T.check(
-        "a malformed pnpm-lock.yaml a manifest uses: exit 2, no verdict",
-        proc.returncode == 2 and verdict is None and "tests/fixtures/pnpm-lock.yaml" in proc.stderr,
-        f"exit {proc.returncode}: {proc.stderr.strip()}",
+    unscreened = screened_package("pkg", version=None, status="unscreened", reason="crates.io: HTTP 503")
+    expect_hit(
+        r,
+        "an unscreened package",
+        one,
+        rule,
+        only=True,
+        reasons=[f"pkg ({MANIFEST}) is unscreened: crates.io: HTTP 503"],
+        screen=screen_record([unscreened]),
     )
-    good = sb.write_plan("bad lockfile", plan_text())
-    proc, verdict = sb.floor(["--plan", good, "--component", "docs", "--base", commits["bad-lockfile"]])
+    expect_hit(
+        r,
+        "packages and no screen record",
+        base(new_dependencies=declared("a", "b")),
+        rule,
+        only=True,
+        reasons=["2 declared packages and no screen record (--screen)"],
+    )
+    expect_hit(
+        r,
+        "a declared package the record does not list",
+        base(new_dependencies=declared("a", "b")),
+        rule,
+        only=True,
+        reasons=[f"b ({MANIFEST}) is declared but not screened: the screen record does not list it"],
+        screen=screen_record([screened_package("a")]),
+    )
+    expect_hit(
+        r,
+        "a package in another manifest",
+        one,
+        rule,
+        reasons=[
+            "the screen record lists pkg (docs/other.txt), which the footprint does not declare: unbound",
+            f"pkg ({MANIFEST}) is declared but not screened: the screen record does not list it",
+        ],
+        screen=screen_record([screened_package("pkg", manifest="docs/other.txt")]),
+    )
+    expect_hit(
+        r,
+        "a record package not declared",
+        base(),
+        rule,
+        only=True,
+        reasons=[f"the screen record lists extra ({MANIFEST}), which the footprint does not declare: unbound"],
+        screen=screen_record([screened_package("extra")]),
+    )
+    expect_hit(
+        r,
+        "a package listed twice",
+        one,
+        rule,
+        reasons=[f"the screen record lists pkg ({MANIFEST}), which the footprint does not declare: unbound"],
+        screen=screen_record([screened_package("pkg"), screened_package("pkg")]),
+    )
+    package = screened_package("pkg")
+    unusable = [
+        ("not JSON", "{ not json\n", "the screen record is not strict JSON"),
+        ("a duplicate key", '{"tool": "dependency-screen", "tool": "x"}\n', "the screen record is not strict JSON"),
+        ("a list", "[]\n", "the screen record is not a JSON object"),
+        ("another tool", screen_record([package], tool="other"), "the screen record's tool is not dependency-screen"),
+        ("version true", screen_record([package], version=True), "the screen record's version is not 1"),
+        ("version 2", screen_record([package], version=2), "the screen record's version is not 1"),
+        ("mode review", screen_record([package], mode="review"), "the screen record's mode is not plan"),
+        (
+            "packages not a list",
+            json.dumps(dict(json.loads(screen_record()), packages={})),
+            "the screen record's packages is not a list",
+        ),
+        (
+            "a package without a name",
+            screen_record([dict(package, name=None)]),
+            "a package of the screen record has no string name, manifest or reason",
+        ),
+        (
+            "another status",
+            screen_record([dict(package, status="clean")]),
+            "a package of the screen record has a status other than screened or unscreened",
+        ),
+        (
+            "an unknown disqualifier",
+            screen_record([dict(package, disqualifiers=["unmaintained"])]),
+            "a package of the screen record has disqualifiers that are not unique values of "
+            "advisory, yanked, deprecated, typosquat",
+        ),
+        (
+            "a repeated disqualifier",
+            screen_record([dict(package, disqualifiers=["yanked", "yanked"])]),
+            "a package of the screen record has disqualifiers that are not unique values of "
+            "advisory, yanked, deprecated, typosquat",
+        ),
+    ]
+    for label, text, reason in unusable:
+        expect_hit(r, f"screen record {label}", one, rule, only=True, reasons=[reason], screen=text)
+    expect_hit(
+        r,
+        "an unusable record without packages declared",
+        base(),
+        rule,
+        only=True,
+        reasons=["the screen record's mode is not plan"],
+        screen=screen_record(mode="review"),
+    )
+    hostile = screened_package("pkg", disqualifiers=["typosquat"], version="1.0\n\n## Heading " + "x" * 300)
+    verdict = expect_hit(r, "a multi-line version", one, rule, screen=screen_record([hostile]))
+    reasons = reasons_of(verdict, rule)
     T.check(
-        "unusable Cargo.lock at the base: exit 2, no verdict",
-        proc.returncode == 2 and verdict is None and "Cargo.lock" in proc.stderr,
-        f"exit {proc.returncode}: {proc.stderr.strip()}",
+        "a multi-line version: the reason is one line, the version cut to 200 characters",
+        len(reasons) == 1 and "\n" not in reasons[0] and "1.0 ## Heading " in reasons[0] and len(reasons[0]) < 300,
+        repr(reasons),
+    )
+
+    proc, verdict = r.run(
+        "a footprint hit with a screen record",
+        plan_text(section="", opener="Nothing here.", block="", closer="\n"),
+        screen=screen_record([screened_package("pkg", disqualifiers=["advisory"])]),
+    )
+    T.check(
+        "a footprint hit with a screen record: dependency-screen not evaluated",
+        proc.returncode == 1
+        and isinstance(verdict, dict)
+        and rule in verdict.get("not_evaluated", [])
+        and rule not in results_of(verdict),
+        proc.stdout,
     )
 
 
@@ -1580,12 +1743,14 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         "missing-limit",
         *MIN_CONFIDENCE_INVALID,
         *SIZE_INVALID,
+        *REMOVED_LIMIT,
     ):
         cases.append((f"config {variant}", ["--plan", good, "--component", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
     analysis = sb.write_plan("unusable analysis", analysis_document())
     plain = ["--plan", good, "--component", "docs", "--base", real]
-    for flag, path in (("--issue-document", issue), ("--analysis", analysis)):
+    screen = sb.write_plan("unusable screen", screen_record())
+    for flag, path in (("--issue-document", issue), ("--analysis", analysis), ("--screen", screen)):
         what = flag[2:]
         cases += [
             (f"{what} missing", plain + [flag, "cases/missing.md"]),
@@ -1796,6 +1961,7 @@ def outside_spans(text: str) -> str:
 
 
 # The plans Decider prepares: (plan text, issue document, analysis, floor.py's exit code).
+HOSTILE_PACKAGE = "evil`pkg @someone https://example.invalid/x"
 DECIDER_PLANS = {
     "clean": (plan_text(), issue_document(), analysis_document(), 0),
     "hit": (plan_text(footprint=base(files=["CLAUDE.md"])), issue_document(), analysis_document(), 1),
@@ -1807,6 +1973,45 @@ DECIDER_PLANS = {
         1,
     ),
     "kind plan": (plan_text(), issue_document(kind="plan"), analysis_document(), 1),
+    "packages": (
+        plan_text(footprint=base(new_dependencies=declared("good-pkg", "bad-pkg"))),
+        issue_document(),
+        analysis_document(),
+        1,
+    ),
+    "screened": (
+        plan_text(footprint=base(new_dependencies=declared("good-pkg"))),
+        issue_document(),
+        analysis_document(),
+        0,
+    ),
+    "hostile package": (
+        plan_text(footprint=base(new_dependencies=declared(HOSTILE_PACKAGE))),
+        issue_document(),
+        analysis_document(),
+        0,
+    ),
+}
+# The screen records Decider gives floor.py, and decision.py by default, for a plan.
+DECIDER_SCREENS = {
+    "packages": screen_record(
+        [
+            screened_package("good-pkg"),
+            screened_package(
+                "bad-pkg",
+                version="0.9.0",
+                disqualifiers=["advisory", "typosquat"],
+                problems={
+                    "advisories": [{"id": "GHSA-0000-1111-2222", "summary": "bad", "source": "osv", "aliases": []}],
+                    "yanked": False,
+                    "deprecated": None,
+                    "typosquat_of": "good-pkg",
+                },
+            ),
+        ]
+    ),
+    "screened": screen_record([screened_package("good-pkg")]),
+    "hostile package": screen_record([screened_package(HOSTILE_PACKAGE, version="1.0 @someone")]),
 }
 
 
@@ -1818,11 +2023,17 @@ class Decider:
         self.commits = commits
         self.prepared = {}
 
-    def floor_verdict(self, ctx: dict, issue: str = None, analysis: str = None, documents: bool = True) -> bytes:
-        """floor.py's verdict for ctx's plan, with ctx's documents, other ones, or none."""
+    def floor_verdict(
+        self, ctx: dict, issue: str = None, analysis: str = None, documents: bool = True, screen="ctx"
+    ) -> bytes:
+        """floor.py's verdict for ctx's plan, with ctx's documents, other ones, or none; screen: "ctx" (ctx's
+        screen record, if any), None (none) or a path."""
         args = ["--plan", ctx["plan"], "--component", ctx["component"], "--base", ctx["commit"]]
         if documents:
             args += ["--issue-document", issue or ctx["issue"], "--analysis", analysis or ctx["analysis"]]
+        screen = ctx["screen"] if screen == "ctx" else screen
+        if screen is not None:
+            args += ["--screen", screen]
         proc = self.sb.exec(args)
         if proc.returncode not in (0, 1):
             raise RuntimeError(f"selftest bug: floor.py exit {proc.returncode}: {proc.stderr.strip()}")
@@ -1838,7 +2049,10 @@ class Decider:
                 "analysis": self.sb.write_plan(f"decision {config} {plan} analysis", analysis),
                 "commit": self.commits[config],
                 "component": "docs",
+                "screen": None,
             }
+            if plan in DECIDER_SCREENS:
+                ctx["screen"] = self.sb.write_plan(f"decision {config} {plan} screen", DECIDER_SCREENS[plan])
             proc = self.sb.exec(
                 [
                     "--plan",
@@ -1851,6 +2065,7 @@ class Decider:
                     ctx["issue"],
                     "--analysis",
                     ctx["analysis"],
+                    *(["--screen", ctx["screen"]] if ctx["screen"] is not None else []),
                 ]
             )
             if proc.returncode != code:
@@ -1869,8 +2084,10 @@ class Decider:
         harness: str = "claude",
         model: str = "sonnet",
         artifact: str = ARTIFACT,
+        screen="ctx",
     ):
-        """verdict: "floor" (the real one), None (missing), a function editing the JSON, or bytes."""
+        """verdict: "floor" (the real one), None (missing), a function editing the JSON, or bytes; screen:
+        "ctx" (the plan's screen record, if any), None (no --screen) or a path."""
         ctx = self.prepare(config, plan)
         path = self.sb.repo / VERDICT
         path.unlink(missing_ok=True)
@@ -1910,6 +2127,9 @@ class Decider:
             "--model",
             model,
         ]
+        screen = ctx["screen"] if screen == "ctx" else screen
+        if screen is not None:
+            args += ["--screen", screen]
         record_path = self.sb.repo / RECORD
         record_path.write_text('{"stale": true}\n', encoding="utf-8")
         proc = self.sb.exec(args, script=DECISION)
@@ -2711,6 +2931,11 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
         ("analysis missing", args(analysis="cases/missing.md")),
         ("analysis unreadable", args(analysis="cases")),
         ("analysis not UTF-8", args(analysis=not_utf8)),
+        ("screen record missing", args(screen="cases/missing.md")),
+        ("screen record unreadable", args(screen="cases")),
+        ("screen record not UTF-8", args(screen=not_utf8)),
+        ("screen record twice", args(screen=assessment) + ["--screen", assessment]),
+        ("screen record empty value", args() + ["--screen", ""]),
     ]
     for name, argv in cases:
         record.write_text('{"stale": true}\n', encoding="utf-8")
@@ -2761,6 +2986,82 @@ def check_decision(sb: Sandbox, commits: dict) -> None:
     check_decision_modes(d)
     check_decision_comment(d)
     check_decision_unusable(sb, d)
+    check_decision_screen(d)
+
+
+def check_decision_screen(d: Decider) -> None:
+    proc, record = d.run("shadow two packages", config="real", plan="packages")
+    expect_decision("shadow two packages", (proc, record), "human", "human", "usable", "usable")
+    floor_ = record.get("layers", {}).get("floor", {}) if isinstance(record, dict) else {}
+    T.check(
+        "shadow two packages: the floor layer holds the dependency-screen hit",
+        [r["rule"] for r in floor_.get("rules", []) if r["result"] == "hit"] == ["dependency-screen"],
+        str(floor_.get("rules")),
+    )
+    lines = proc.stdout.splitlines()
+    rows = [line for line in lines if line.startswith("- **Package:** ")]
+    floor_at = next((i for i, line in enumerate(lines) if line.startswith("- **Floor:** ")), None)
+    evidence = (
+        "dependencies `2` direct, `5` transitive; publisher `alice`, publisher_changed `false`; "
+        "age_days `2000`, releases `40`"
+    )
+    T.check(
+        "shadow two packages: one Package row per declared package, right after the Floor row",
+        rows
+        == [
+            f"- **Package:** `good-pkg` in `{MANIFEST}`, version `1.2.3`; status `screened`; disqualifiers: none; "
+            + evidence,
+            f"- **Package:** `bad-pkg` in `{MANIFEST}`, version `0.9.0`; status `screened`; disqualifiers: "
+            "`advisory` (`GHSA-0000-1111-2222`), `typosquat` of `good-pkg`; " + evidence,
+        ]
+        and floor_at is not None
+        and lines[floor_at + 1 : floor_at + 3] == rows,
+        repr(lines),
+    )
+    T.check(
+        "shadow two packages: the footprint in brief counts declared packages",
+        any(line.startswith("- **Plan:** ") and "2 declared packages" in line for line in lines),
+        repr(lines),
+    )
+
+    proc, record = d.run("hostile package name", config="real", plan="hostile package")
+    expect_decision("hostile package name", (proc, record), "human", "auto", "usable", "usable")
+    out = proc.stdout
+    outside = outside_spans(out)
+    rows = [line for line in out.splitlines() if line.startswith("- **Package:** ")]
+    T.check(
+        "hostile package name: shown only inside code spans",
+        len(rows) == 1
+        and "@" not in outside
+        and "http" not in outside
+        and rows[0].startswith("- **Package:** `evil'pkg @someone https://example.invalid/x` in "),
+        repr(rows),
+    )
+
+    proc, record = d.run("judged screened package", plan="screened")
+    expect_decision("judged screened package", (proc, record), "auto", "auto", "usable", "usable")
+    rows = [line for line in proc.stdout.splitlines() if line.startswith("- **Package:** ")]
+    T.check(
+        "judged screened package: the auto-approval comment has its Package row",
+        len(rows) == 1 and rows[0].startswith("- **Package:** `good-pkg` in "),
+        repr(proc.stdout),
+    )
+
+    ctx = d.prepare("judged", "packages")
+    other = d.sb.write_plan("decision other screen", screen_record([screened_package("good-pkg")]))
+    problem = ["the floor verdict's screen does not match --screen"]
+    for label, verdict, screen in (
+        ("made without --screen, decided with it", d.floor_verdict(ctx, screen=None), "ctx"),
+        ("made with --screen, decided without it", "floor", None),
+        ("made with --screen, decided with another record", "floor", other),
+    ):
+        proc, record = d.run(f"judged verdict {label}", plan="packages", verdict=verdict, screen=screen)
+        expect_decision(f"judged verdict {label}", (proc, record), "human", "human", "unusable", "usable")
+        T.check(
+            f"judged verdict {label}: the screen binding named",
+            floor_problems(record) == problem,
+            str(floor_problems(record)),
+        )
 
 
 # --- object store ---------------------------------------------------------
@@ -3160,7 +3461,7 @@ def check_globs() -> None:
 
 
 def check_stdlib() -> None:
-    for path in (FLOOR, DECISION, Path(__file__).resolve()):
+    for path in (FLOOR, DECISION, SIZE, Path(__file__).resolve()):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names = set()
         for node in ast.walk(tree):
@@ -3174,6 +3475,165 @@ def check_stdlib() -> None:
             not outside,
             f"not standard library: {outside}",
         )
+
+
+# --- sizes ----------------------------------------------------------------
+
+
+SIZE_SECTION = "## Size\n\nsize: S\n- the change is one small script\n"
+SIZE_ANALYSIS_SPLIT = (
+    "## Split\n\n```json\n"
+    '{"split": {"proposed": false, "reason": "none", "components": ["docs"], "finding": ""}}\n'
+    "```\n\n"
+)
+
+
+def size_plan(section: str = SIZE_SECTION, footprint: dict = None) -> str:
+    """A plan whose `## Size` section, when given, comes right after the footprint fence."""
+    footprint = eight_keys(300, estimated_lines=400) if footprint is None else footprint
+    return plan_text(footprint=footprint, after=f"\n{section}" if section else "")
+
+
+def size_analysis(section: str = "## Size\n\nsize: M\n- one reason\n", before: str = SIZE_ANALYSIS_SPLIT) -> str:
+    return (
+        "# Analysis: selftest case\n\nGenerated by selftest.py.\n\n"
+        f"## What is asked\n\nA generated case.\n\n{before}{section}\n## Approaches\n\n## Questions\n\n"
+    )
+
+
+def check_size_bands() -> None:
+    size = load_module("msw_size", SIZE)
+    pinned = [
+        (0, "XS"),
+        (25, "XS"),
+        (26, "S"),
+        (75, "S"),
+        (76, "M"),
+        (200, "M"),
+        (201, "L"),
+        (500, "L"),
+        (501, "XL"),
+        (1200, "XL"),
+        (1201, "2XL"),
+        (3000, "2XL"),
+        (3001, "3XL"),
+        (7000, "3XL"),
+        (7001, "4XL"),
+    ]
+    wrong = [(lines, want, size.floor_size(lines)) for lines, want in pinned if size.floor_size(lines) != want]
+    T.check(f"size bands: {len(pinned)} boundaries of design §5", not wrong, str(wrong))
+    T.check(
+        "size bands: the eight sizes in order",
+        list(size.SIZES) == ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"],
+        str(size.SIZES),
+    )
+
+
+def run_size(sb: Sandbox, name: str, args: list, content=None):
+    """size.py run as `sys.executable -I`, on the content written under cases/ when given."""
+    if content is not None:
+        args = [*args, sb.write_plan(f"size {name}", content)]
+    return subprocess.run(
+        [sys.executable, "-I", str(SIZE), *args], cwd=sb.repo, env=sb.env, capture_output=True, text=True
+    )
+
+
+def expect_size(sb: Sandbox, name: str, mode: str, content, code: int, out: list = None) -> None:
+    proc = run_size(sb, name, [mode], content)
+    lines = proc.stdout.splitlines()
+    T.check(
+        f"size {mode}: {name}: exit {code}" + (f", prints {out}" if out is not None else ""),
+        proc.returncode == code and (out is None or lines == out) and (code != 1 or len(lines) == 1),
+        f"exit {proc.returncode}, stdout {lines}, stderr {proc.stderr.strip()!r}",
+    )
+
+
+def malformed_sizes() -> list:
+    """(name, `## Size` section, or None for none) of sections that are not usable."""
+    good = "size: L\n- a reason\n"
+    return [
+        ("no section", None),
+        ("two sections", f"## Size\n\n{good}\n## Size\n\n{good}"),
+        ("only inside a fence", f"## Notes\n\n~~~\n## Size\n\n{good}~~~\n"),
+        ("wrong position", f"## Notes\n\nA note.\n\n## Size\n\n{good}"),
+        ("lower-case value", "## Size\n\nsize: l\n- a reason\n"),
+        ("capitalised key", "## Size\n\nSize: L\n- a reason\n"),
+        ("unknown value", "## Size\n\nsize: XXL\n- a reason\n"),
+        ("trailing text", "## Size\n\nsize: L (large)\n- a reason\n"),
+        ("leading space", "## Size\n\n size: L\n- a reason\n"),
+        ("no reasons", "## Size\n\nsize: L\n"),
+        ("four reasons", "## Size\n\nsize: L\n- one\n- two\n- three\n- four\n"),
+        ("empty bullet", "## Size\n\nsize: L\n- \n"),
+        ("prose line", "## Size\n\nsize: L\n- a reason\nSome prose.\n"),
+        ("continuation line", "## Size\n\nsize: L\n- a reason\n  continued\n"),
+        ("nested bullet", "## Size\n\nsize: L\n- a reason\n  - nested\n"),
+        ("fence", "## Size\n\nsize: L\n- a reason\n```text\nL\n```\n"),
+    ]
+
+
+def valid_sizes() -> list:
+    """(name, `## Size` section, the size it states) of usable sections."""
+    return [
+        ("blank lines between reasons", "## Size\n\nsize: XL\n\n- one\n\n- two\n", "XL"),
+        ("one reason", "## Size\n\nsize: XL\n- one\n", "XL"),
+        ("three reasons", "## Size\n\nsize: XL\n- one\n- two\n- three\n", "XL"),
+        ("ended by the next heading", "## Size\n\nsize: 2XL\n- one", "2XL"),
+        ("trailing spaces and tabs", "## Size \n\nsize: XL \t\n- one\t\n- two \n", "XL"),
+    ]
+
+
+def check_size_cli(sb: Sandbox) -> None:
+    raised = ["size: L", "size raised from S to L by planned lines"]
+    no_size = ["size: L", "the plan states no usable size; the size shown is the lines floor"]
+    expect_size(sb, "judged S, 300 production lines", "plan", size_plan(), 0, raised)
+    expect_size(
+        sb, "judged XL, 300 production lines", "plan", size_plan("## Size\n\nsize: XL\n- big\n"), 0, ["size: XL"]
+    )
+    expect_size(sb, "judged L, 300 production lines", "plan", size_plan("## Size\n\nsize: L\n- one\n"), 0, ["size: L"])
+    expect_size(sb, "seven-key footprint", "plan", size_plan(footprint=base(estimated_lines=300)), 0, raised)
+    by_production = size_plan(footprint=eight_keys(50, estimated_lines=400))
+    expect_size(sb, "measured by production_lines", "plan", by_production, 0, ["size: S"])
+    expect_size(sb, "CRLF", "plan", size_plan().replace("\n", "\r\n"), 0, raised)
+    for name, section in malformed_sizes():
+        expect_size(sb, name, "plan", size_plan(section), 0, no_size)
+        expect_size(sb, name, "analysis", size_analysis(section or ""), 1)
+    for name, section, value in valid_sizes():
+        expect_size(sb, name, "plan", size_plan(section), 0, [f"size: {value}"])
+        expect_size(sb, name, "analysis", size_analysis(section), 0, [f"size: {value}"])
+    expect_size(sb, "valid analysis", "analysis", size_analysis(), 0, ["size: M"])
+    expect_size(sb, "analysis with CRLF", "analysis", size_analysis().replace("\n", "\r\n"), 0, ["size: M"])
+    expect_size(sb, "a plan is not an analysis", "analysis", size_plan(), 1)
+    json_fence = '## Size\n\nsize: L\n- a reason\n```json\n{"size": "L"}\n```\n'
+    expect_size(sb, "json fence", "analysis", size_analysis(json_fence), 1)
+    unusable = [
+        ("no arguments", []),
+        ("mode only", ["plan"]),
+        ("three arguments", ["plan", "a.md", "b.md"]),
+        ("unknown mode", ["design", sb.write_plan("size unknown mode", size_plan())]),
+        ("missing file", ["plan", "cases/no-such-plan.md"]),
+        ("not UTF-8", ["plan", sb.write_plan("size not utf-8", b"\xff\xfe## Size\n")]),
+        ("analysis not UTF-8", ["analysis", sb.write_plan("size analysis not utf-8", b"\xff\xfe## Size\n")]),
+        ("unusable footprint", ["plan", sb.write_plan("size no footprint", size_analysis())]),
+        ("json fence in a plan's Size", ["plan", sb.write_plan("size json fence", size_plan(json_fence))]),
+    ]
+    for name, args in unusable:
+        proc = run_size(sb, name, args)
+        T.check(
+            f"size: {name}: exit 2, nothing on stdout, one line on stderr",
+            proc.returncode == 2 and proc.stdout == "" and len(proc.stderr.splitlines()) == 1,
+            f"exit {proc.returncode}, stdout {proc.stdout!r}, stderr {proc.stderr!r}",
+        )
+
+
+def check_size_floor(r: Runner) -> None:
+    proc, verdict = r.run("plan with a Size section", plan_text(after=f"\n{SIZE_SECTION}"))
+    T.check(
+        "plan with a Size section: exit 0, every rule clean",
+        proc.returncode == 0
+        and set(results_of(verdict).values()) == {"clean"}
+        and len(results_of(verdict)) == len(RULES),
+        proc.stdout,
+    )
 
 
 # Config variants whose pipeline.plan_approval.min_confidence is unusable input.
@@ -3190,6 +3650,13 @@ SIZE_INVALID = {
     "lbc-list": {"limits_by_component": []},
     "non-production-string": {"non_production": "**/tests/**"},
     "non-production-numbers": {"non_production": [1]},
+}
+
+
+# Config variants that still give the removed new_dependencies limit: unusable input.
+REMOVED_LIMIT = {
+    "limit-new-dependencies": lambda approval: approval["limits"].update(new_dependencies=0),
+    "lbc-new-dependencies": lambda approval: approval.update(limits_by_component={"docs": {"new_dependencies": 0}}),
 }
 
 
@@ -3223,6 +3690,8 @@ def build_commits(sb: Sandbox) -> tuple:
         variant(name, lambda c, value=value: approval(c).update(min_confidence=value))
     for name, change in SIZE_INVALID.items():
         variant(name, lambda c, change=change: approval(c).update(change))
+    for name, change in REMOVED_LIMIT.items():
+        variant(name, lambda c, change=change: change(approval(c)))
     variant("component-limits", lambda c: approval(c).update(limits_by_component={"docs": {"lines": 400}}))
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
@@ -3236,11 +3705,6 @@ def build_commits(sb: Sandbox) -> tuple:
         ),
     )
     commits["real"] = sb.commit_config(real_bytes, "real")
-    lockfiles = {"Cargo.lock": CARGO_LOCK, "Cargo.toml": CARGO_TOML, "web/pnpm-lock.yaml": PNPM_LOCK}
-    commits["lockfiles"] = sb.commit_files(lockfiles, "lockfiles", "lockfiles")
-    commits["bad-lockfile"] = sb.commit_files({"Cargo.lock": b"[[package]\nname = \n"}, "bad lockfile", "bad-lockfile")
-    stray = dict(lockfiles, **{"tests/fixtures/pnpm-lock.yaml": b"importers: [\n"})
-    commits["stray-lockfile"] = sb.commit_files(stray, "stray lockfile", "stray-lockfile")
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
     variant("dropped", lambda c: approval(c)["require_human"]["paths"].remove(".mintswarm/dogfood/github/**"))
@@ -3260,7 +3724,7 @@ def main() -> int:
         check_clean_base(runner)
         check_single_rules(runner, limits)
         check_production_lines(runner, limits)
-        check_new_dependencies(runner, sb, commits)
+        check_dependency_screen(runner, sb, commits)
         check_component_limits(runner, limits)
         check_unusable_footprints(runner)
         check_base_ref(runner, sb)
@@ -3272,7 +3736,10 @@ def main() -> int:
         check_verdict_errors(sb, commits)
         check_decision(sb, commits)
         check_object_store(sb, commits)
+        check_size_floor(runner)
+        check_size_cli(sb)
     check_globs()
+    check_size_bands()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1

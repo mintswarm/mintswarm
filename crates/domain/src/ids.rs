@@ -45,3 +45,7 @@ id!(
     /// A pull request number on the code host.
     PrNumber(u64)
 );
+id!(
+    /// A harness account, by the nickname the runner config gives it.
+    AccountName(String)
+);

@@ -32,7 +32,16 @@ is loaded by its file path. The cases:
   that exception covers only a declared gate or floor change, never a gate
   that failed and was then changed, a step that only names the file does not
   declare it, and the Care ground and the likely-safe condition except a
-  declared gate.
+  declared gate;
+- decomposition stage agreement: the band lines under "## Bands" in
+  .mintswarm/stages/assess-decomposition.md (identifier, display name and
+  range) are assess.md's, in order, with both start-at-top phrases; its
+  hard triggers are exactly criterion-uncovered, contradicts-design,
+  outside-scope and work-dropped; its envelope template has the envelope
+  keys in order and the stage has one json fence; "## Inputs" lists
+  exactly the four inputs and says the decomposer's reasoning is never
+  received; the template has the five dimension headings; and "## Bands"
+  says require_human and floor hits do not lower the confidence.
 
 Exits 0 when every case passes, 1 otherwise.
 """
@@ -51,6 +60,7 @@ HERE = Path(__file__).resolve().parent
 JUDGEMENT = HERE / "judgement.py"
 STAGE = HERE.parent.parent / "stages" / "landing.md"
 ASSESS = HERE.parent.parent / "stages" / "assess.md"
+DECOMPOSITION = HERE.parent.parent / "stages" / "assess-decomposition.md"
 NOUN = "landing document"
 
 
@@ -411,6 +421,88 @@ def check_stage_rules() -> None:
         T.check(f"stage rules: landing says {phrase!r}", phrase in text, "")
 
 
+DECOMPOSITION_TRIGGERS = ("criterion-uncovered", "contradicts-design", "outside-scope", "work-dropped")
+DECOMPOSITION_INPUTS = [
+    ".mintswarm/job/inputs/issue.md",
+    ".mintswarm/job/inputs/artefacts/analysis.md",
+    ".mintswarm/job/inputs/parent/design.md",
+    ".mintswarm/job/inputs/artefacts/decomposition.md",
+]
+BAND_LINE = re.compile(r"\d\. `([a-z-]+)` \(shown as ([^)]+)\), confidence (\d+(?: to \d+)?),")
+
+
+def band_lines(bands_section: list) -> list:
+    """The (identifier, display name, range) of each numbered band line, in order."""
+    return [m.groups() for line in bands_section if (m := BAND_LINE.match(line))]
+
+
+def check_decomposition_stage() -> None:
+    lines = DECOMPOSITION.read_text(encoding="utf-8").split("\n")
+    bands_section = section(lines, "## Bands", "## Output")
+    ours = band_lines(bands_section)
+    theirs = band_lines(section(ASSESS.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output"))
+    T.check(
+        "decomposition: band lines are assess.md's, in order",
+        len(ours) == 5 and ours == theirs,
+        f"stage {ours}, assess.md {theirs}",
+    )
+    text = "\n".join(bands_section)
+    for phrase in (
+        "starts at the band's highest value and only goes down",
+        "State no reasons for raising the value",
+    ):
+        T.check(f"decomposition: says {phrase!r}", phrase in text, "")
+    starts = [i for i, line in enumerate(bands_section) if line.startswith("1. `blocked`")]
+    ends = [i for i, line in enumerate(bands_section) if line.startswith("2. ")]
+    triggers = ()
+    if len(starts) == 1 and len(ends) == 1:
+        triggers = tuple(
+            m.group(1) for line in bands_section[starts[0] : ends[0]] if (m := re.match(r"   - `([a-z-]+)`:", line))
+        )
+    T.check(
+        "decomposition: hard triggers are exactly the four",
+        triggers == DECOMPOSITION_TRIGGERS,
+        repr(triggers),
+    )
+    T.check(
+        "decomposition: one json fence in the stage",
+        [line for line in lines if line == "```json"] == ["```json"],
+        "",
+    )
+    output = section(lines, "## Output", "## Status")
+    keys = []
+    opens = [i for i, line in enumerate(output) if line == "```json"]
+    if len(opens) == 1:
+        close = next((i for i in range(opens[0] + 1, len(output)) if output[i] == "```"), len(output))
+        keys = [m.group(1) for line in output[opens[0] + 1 : close] if (m := re.match(r'  "([a-z_]+)":', line))]
+    T.check(
+        "decomposition: the envelope template has the envelope keys, in order",
+        keys == J.ENVELOPE_KEYS,
+        repr(keys),
+    )
+    inputs = section(lines, "## Inputs", "## Reading")
+    paths = [m.group(1) for line in inputs if (m := re.match(r"- `([^`]+)`:", line))]
+    T.check("decomposition: exactly the four inputs", paths == DECOMPOSITION_INPUTS, repr(paths))
+    T.check(
+        "decomposition: never the decomposer's reasoning",
+        "decomposer's reasoning" in "\n".join(inputs),
+        "",
+    )
+    for heading in ("## Coverage", "## Fidelity", "## Scope", "## Atomicity", "## Dependencies and order"):
+        T.check(f"decomposition: the template has {heading}", heading in output, "")
+    rule = [p for p in text.split("\n\n") if "require_human" in p]
+    T.check(
+        "decomposition: require_human and floor hits do not lower the confidence",
+        len(rule) == 1 and "floor" in rule[0] and "do not lower" in rule[0],
+        repr(rule),
+    )
+    T.check(
+        "decomposition: no line starts with Risk:",
+        not any(line.startswith("Risk:") for line in lines),
+        "",
+    )
+
+
 def check_stdlib() -> None:
     allowed = set(sys.stdlib_module_names)
     for path in (JUDGEMENT, Path(__file__)):
@@ -433,6 +525,7 @@ def main() -> int:
     check_consumable()
     check_stage()
     check_stage_rules()
+    check_decomposition_stage()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
