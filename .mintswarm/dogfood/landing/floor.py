@@ -285,9 +285,9 @@ paragraph separators in a printed reason are printed as JSON escapes
 (`\\n`, `\\u2028`), so a reason cannot add a line. Then `floor: hit` or
 `floor: clean`.
 
-Exits 0 when clean, 1 on a rule hit only (evidence never makes one), 2 on unusable input: bad arguments, a
-missing or broken plan-approval/floor.py, an unresolvable base or head, a
-partial clone, a failed fetch into the object store (a forged or missing
+Exits 0 when clean, 1 on a rule hit only (evidence never makes one), 2
+on unusable input: bad arguments, a missing or broken
+plan-approval/floor.py, an unresolvable base or head, a partial clone, a failed fetch into the object store (a forged or missing
 object, a shallow history), no merge base, a head the base already
 contains, no config at the base, an invalid config, a missing,
 unreadable, malformed or mismatched facts file, an unreadable plan, a diff that does not parse, git or yq missing or

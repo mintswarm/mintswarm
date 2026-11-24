@@ -28,8 +28,9 @@ Checks:
   order, the 12 rule identifiers in order across `rules` and
   `not_evaluated`, results and reasons, `verdict` against the rules and the
   exit code, version 2, `evidence` a list of strings, empty when
-  `not_evaluated` is not, and its printed `evidence:` lines, the plan's sha256, `facts` (path, the sha256 of the facts
-  file and the checks it lists), the full `base`, `head` and `merge_base`
+  `not_evaluated` is not, and its printed `evidence:` lines, the plan's
+  sha256, `facts` (path, the sha256 of the facts file and the checks it
+  lists), the full `base`, `head` and `merge_base`
   commits, `mode` and the printed lines;
 - clean cases, a dependency manifest declared only through
   new_dependencies, a path with a space and a non-ASCII character, and
