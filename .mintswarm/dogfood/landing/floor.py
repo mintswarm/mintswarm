@@ -285,18 +285,20 @@ paragraph separators in a printed reason are printed as JSON escapes
 (`\\n`, `\\u2028`), so a reason cannot add a line. Then `floor: hit` or
 `floor: clean`.
 
-Exits 0 when clean, 1 on a rule hit only (evidence never makes one), 2
-on unusable input: bad arguments, a missing or broken
-plan-approval/floor.py, an unresolvable base or head, a partial clone, a failed fetch into the object store (a forged or missing
-object, a shallow history), no merge base, a head the base already
-contains, no config at the base, an invalid config, a missing,
-unreadable, malformed or mismatched facts file, an unreadable plan, a diff that does not parse, git or yq missing or
-failing, a stale verdict that cannot be deleted, or any unexpected error.
-Unusable input leaves no verdict file, unless a stale one could not be
-deleted. The interpreter itself exits 1 when it crashes outside main(), for
-example at import time, so exit 0 or 1 counts only together with a verdict
-file whose `plan.sha256`, `facts.sha256`, `base.commit` and `head.commit`
-match the request; exit 2 never comes with a valid verdict. Standard library only, apart from running git and yq.
+Exits 0 when clean, 1 on a rule hit only (evidence never makes one), 2 on
+unusable input: bad arguments, a missing or broken plan-approval/floor.py,
+an unresolvable base or head, a partial clone, a failed fetch into the
+object store (a forged or missing object, a shallow history), no merge base,
+a head the base already contains, no config at the base, an invalid config,
+a missing, unreadable, malformed or mismatched facts file, an unreadable
+plan, a diff that does not parse, git or yq missing or failing, a stale
+verdict that cannot be deleted, or any unexpected error. Unusable input
+leaves no verdict file, unless a stale one could not be deleted. The
+interpreter itself exits 1 when it crashes outside main(), for example at
+import time, so exit 0 or 1 counts only together with a verdict file whose
+`plan.sha256`, `facts.sha256`, `base.commit` and `head.commit` match the
+request; exit 2 never comes with a valid verdict. Standard library only,
+apart from running git and yq.
 """
 
 import hashlib

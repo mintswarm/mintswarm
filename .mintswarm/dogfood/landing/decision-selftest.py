@@ -31,14 +31,14 @@ Checks:
   and an unusable layer's problems;
 - threshold edges: with `min_confidence: 90`, 90 is `auto` and 89 `human`,
   under `judged`;
-- bindings: a verdict whose plan, facts, base, head or merge base,
-  component or mode is not the run's, whose keys are out of order, whose
-  verdict disagrees with its rules, whose not_evaluated does not follow its
+- bindings: a verdict whose plan, facts, base, head or merge base, component
+  or mode is not the run's, whose keys are out of order, whose verdict
+  disagrees with its rules, whose not_evaluated does not follow its
   footprint, whose evidence is not a list, holds a non-string or is not
   empty after a footprint hit, of version 1, or that is not strict JSON;
-  facts of another head, base or PR, or with another tool or version; and a landing document that is not
-  UTF-8: each makes its layer unusable with a fixed problem and gives
-  `human`, also under `judged` and `never`;
+  facts of another head, base or PR, or with another tool or version; and a
+  landing document that is not UTF-8: each makes its layer unusable with a
+  fixed problem and gives `human`, also under `judged` and `never`;
 - a footprint hit with the diff rules not evaluated is a usable hit, listed
   in the comment;
 - evidence: a clean verdict with a line-limit overrun under `evidence` is a
