@@ -1,13 +1,15 @@
 //! The options of a role's field on GitHub, for the operator's admin commands (design §4.6). It
 //! uses the token its caller gives it, never one the runner mints.
 
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use serde_json::Value;
 
-use mintswarm_domain::field::{FieldCatalogue, FieldError, FieldRef, FieldSource, FieldValue};
+use mintswarm_domain::field::{
+    FieldCatalogue, FieldError, FieldFinding, FieldRef, FieldSource, FieldValue,
+};
 
 use crate::fields::{Op, Pattern, classify};
-use crate::rest::{ClientError, Rest, check_names};
+use crate::rest::{ClientError, Reply, Rest, check_names};
 use crate::secret::Token;
 
 /// Labels are listed this many to a page.
@@ -36,23 +38,21 @@ impl GitHubFieldCatalogue {
         })
     }
 
-    async fn get(&self, path: &str) -> Result<Value, FieldError> {
-        let reply = self
-            .rest
+    async fn get(&self, path: &str) -> Result<Reply, FieldError> {
+        self.rest
             .send(Method::GET, path, &self.token, None, None)
-            .await?;
-        if reply.status.is_success() {
-            reply.json()
-        } else {
-            Err(classify(&reply, Op::Read))
-        }
+            .await
     }
 
     async fn field_options(&self, field_id: u64) -> Result<Vec<FieldValue>, FieldError> {
         let path = format!("/orgs/{}/issue-fields/{field_id}", self.owner);
         let bad = || FieldError::Transport(format!("GET {path}: not the expected JSON"));
-        self.get(&path)
-            .await?
+        let reply = self.get(&path).await?;
+        // The resource is the field itself, so a plain 404 means the field is missing.
+        if reply.status == StatusCode::NOT_FOUND {
+            return Err(FieldError::Field(FieldFinding::FieldMissing));
+        }
+        success(&reply)?
             .get("options")
             .and_then(Value::as_array)
             .ok_or_else(bad)?
@@ -78,7 +78,7 @@ impl GitHubFieldCatalogue {
                 "/repos/{}/{}/labels?per_page={PER_PAGE}&page={page}",
                 self.owner, self.repo
             );
-            let body = self.get(&path).await?;
+            let body = success(&self.get(&path).await?)?;
             let labels = body.as_array().ok_or_else(|| {
                 FieldError::Transport(format!("GET {path}: not the expected JSON"))
             })?;
@@ -100,6 +100,15 @@ impl GitHubFieldCatalogue {
             }
         }
         Ok(options)
+    }
+}
+
+/// The body of a successful reply, or the reply classified as a read's error.
+fn success(reply: &Reply) -> Result<Value, FieldError> {
+    if reply.status.is_success() {
+        reply.json()
+    } else {
+        Err(classify(reply, Op::Read))
     }
 }
 

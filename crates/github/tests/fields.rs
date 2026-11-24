@@ -478,3 +478,16 @@ async fn invalid_repository_names_are_refused() {
     assert!(FieldClient::new("http://127.0.0.1:1", "acme", "../x").is_err());
     assert!(GitHubFieldCatalogue::new("http://127.0.0.1:1", "", "widgets", token()).is_err());
 }
+
+#[tokio::test]
+async fn catalogue_reads_a_missing_field_as_field_missing() {
+    let responder = Responder::start().await;
+    responder.reply(404, r#"{"message":"Not Found"}"#);
+    responder.reply(502, "");
+    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let error = catalogue.options(&size()).await.unwrap_err();
+    assert_eq!(error, FieldError::Field(FieldFinding::FieldMissing));
+    assert!(error.should_resolve_again());
+    let error = catalogue.options(&size()).await.unwrap_err();
+    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+}
