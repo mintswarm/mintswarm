@@ -1,17 +1,24 @@
 //! GitHub access for the runner: it acts as the runner App with an RS256 App JWT and
 //! installation tokens narrowed to one repository and the read permissions each use asks for.
 //! The App's private key is read from the key store its configuration names, for each JWT, and
-//! dropped after signing.
+//! dropped after signing. [`FieldClient`] and [`GitHubFieldCatalogue`] read and write a role's
+//! issue field or labels with a token their caller passes in.
 
+mod catalogue;
 mod config;
+mod fields;
 mod jwt;
 mod key_store;
+mod rest;
 mod secret;
 mod token;
 
+pub use catalogue::GitHubFieldCatalogue;
 pub use config::{AppConfig, ConfigError, KeyStore};
+pub use fields::{FieldClient, FieldPass};
 pub use jwt::{JWT_BACKDATE_SECS, JWT_LIFETIME_SECS, JwtError, app_jwt};
 pub use key_store::{DEFAULT_TIMEOUT, KeyStoreEnv, KeyStoreError, Tools, read_key};
+pub use rest::ClientError;
 pub use secret::{SecretBytes, Token};
 pub use token::{
     CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,

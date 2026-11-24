@@ -1,0 +1,16 @@
+[
+  {
+    "issue_field_id": 101,
+    "issue_field_name": "Effort",
+    "data_type": "single_select",
+    "value": "M",
+    "single_select_option": { "id": 1003, "name": "M", "color": "blue" }
+  },
+  {
+    "issue_field_id": 202,
+    "issue_field_name": "Priority",
+    "data_type": "single_select",
+    "value": "P1",
+    "single_select_option": { "id": 2002, "name": "P1", "color": "orange" }
+  }
+]
