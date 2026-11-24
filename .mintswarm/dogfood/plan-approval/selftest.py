@@ -117,8 +117,9 @@ Checks:
   threshold, `as_configured` and the mode, the judgement's reasons (its
   confidence and band, then the unusable triggers as `hard trigger`, the
   authority triggers as `requires the maintainer`, or, with no trigger, a
-  confidence below `min_confidence`), the exit code, and stdout: the auto-approval comment
-  for `auto`, the shadow-record comment in `shadow` mode, empty otherwise;
+  confidence below `min_confidence`), the exit code, and stdout: the
+  auto-approval comment for `auto`, the shadow-record comment in `shadow`
+  mode, empty otherwise;
 - bands under `judged` with the default threshold of 90: `blocked` 0 with
   each unusable hard trigger, `uncertain` 1 and 49, `needs-review` 50
   and 79 and `likely-safe` 80 and 89 are `human`; `likely-safe` 90 and 94
@@ -141,9 +142,10 @@ Checks:
   extra or reordered key, a confidence that is a boolean, float or string or
   is -1 or 101, an unknown band, a range (`80-94`) or a display name
   (`Likely safe`) as the band, a confidence outside its band's range,
-  `blocked` without a trigger, an unusable trigger outside `blocked`, an unknown or
-  repeated trigger, triggers that are not a list, an empty, format-only or
-  non-string reason, a doubt missing a field or with an empty one, 11
+  `blocked` without a trigger, an unusable trigger outside `blocked`, an
+  unknown or repeated trigger, triggers that are not a list, an empty,
+  format-only or non-string reason, a doubt missing a field or with an
+  empty one, 11
   doubts, `safe` with a doubt, `likely-safe` without one, a `Risk:` line, a
   summary confidence that differs from the envelope's, a summary in the old
   risk form, without a reason or missing, and no title; trailing spaces on
@@ -161,8 +163,9 @@ Checks:
   `judged_decision` recorded, and `auto` whatever the layers say;
 - the comments: the auto-approval comment's heading, floor line,
   Confidence row (the band's display name and score, the authority triggers
-  listed, the threshold and the reason), Hard triggers row, one Doubt row per doubt and veto paragraph;
-  the shadow-record comment's heading and rows, also for an unusable
+  listed, the threshold and the reason), Hard triggers row, one Doubt row
+  per doubt and veto paragraph; the shadow-record comment's heading and
+  rows, also for an unusable
   judgement; and in both, model and session text, a hostile reason and
   doubt among it, only inside code spans of at most 200 characters;
 - decision unusable input: bad arguments, plans, refs and configs, a

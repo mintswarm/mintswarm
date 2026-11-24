@@ -18,9 +18,9 @@ is loaded by its file path. The cases:
   that are decision.py's authority triggers, in order;
 - the threshold, through judged_decision: the confidence against
   min_confidence at the edges, and a hard trigger, each authority trigger
-  at `safe` 100, an unusable layer, a `hit` floor and a missing floor; a min_confidence that floor.py would
-  refuse (None, 89, True, 101, 0) is `human`, and judgement.py's
-  MIN_CONFIDENCE, taken from floor.py, is 90;
+  at `safe` 100, an unusable layer, a `hit` floor and a missing floor; a
+  min_confidence that floor.py would refuse (None, 89, True, 101, 0) is
+  `human`, and judgement.py's MIN_CONFIDENCE, taken from floor.py, is 90;
 - malformed and repeated envelopes, each unusable with a fixed problem that
   names the landing document;
 - consumable as is: judgement() gives the envelope's own values, with the
