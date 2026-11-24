@@ -188,9 +188,10 @@ the plan approval time, which decision.py records but does not decide on,
 and which the landing floor uses for coverage; and the harness, model and
 effort of implement, review and landing, with the configured model after
 the one that ran when they differ. Model, facts and session text is flattened
-to one line, its backticks replaced, cut to 200 characters and set in a
-code span (decision.py's span), so no line of the comment can be a steer
-marker. One status line goes to stderr.
+to one line, its backticks replaced, cut to 600 characters and marked
+`… (truncated)` when cut, and set in a code span (decision.py's span), so
+no line of the comment can be a steer marker. One status line goes to
+stderr.
 
 Exits 0 when `effective` is `auto` and 1 when it is `human`. Exits 2 on
 unusable input, with no record unless a stale one could not be deleted: bad
