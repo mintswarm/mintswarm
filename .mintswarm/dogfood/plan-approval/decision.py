@@ -31,6 +31,12 @@ Inputs:
 - PATH given to --screen, the screen record the floor read (the session's
   .mintswarm/job/outputs/screen.json), read as UTF-8 like the documents;
   an unreadable one is unusable input.
+- The result records beside the analysis and the plan (`<name>.result.json`
+  for `<name>.md`), read with floor.py's own read_record when they exist,
+  as floor.py reads them; an unreadable one is unusable input. The verdict
+  does not bind them, so a record added, removed or changed after the
+  floor ran makes the recomputed rules differ, and the floor layer is
+  unusable.
 - The history of the base commit, read by floor.py's own code.
 
 The base commit, the config at it and the history are read as floor.py
@@ -411,13 +417,24 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
 
 
 def floor_rules(
-    plan: bytes, issue: bytes, analysis: bytes, component: str, cfg: dict, commit: str, git_dir=None, screen=None
+    plan: bytes,
+    issue: bytes,
+    analysis: bytes,
+    component: str,
+    cfg: dict,
+    commit: str,
+    git_dir=None,
+    screen=None,
+    analysis_record=None,
+    plan_record=None,
 ) -> tuple:
     """What floor.py concludes for these inputs: (rules, not_evaluated, footprint or None).
 
     The history is read from git_dir, the object store, when given; screen is the screen record's bytes, or None
-    when --screen is not given."""
+    when --screen is not given, and the records the bytes of the result records beside the analysis and the
+    plan, or None when there is none."""
     subjects = floor.history(commit, git_dir=git_dir)
+    records = (None if record is None else record.decode("utf-8") for record in (analysis_record, plan_record))
     return floor.conclude(
         plan.decode("utf-8"),
         issue.decode("utf-8"),
@@ -426,6 +443,7 @@ def floor_rules(
         cfg,
         subjects,
         None if screen is None else screen.decode("utf-8"),
+        *records,
     )
 
 
@@ -913,8 +931,10 @@ def run(argv: list) -> int:
             issue = floor.read_document(args["issue_document"], "issue document")
             analysis = floor.read_document(args["analysis"], "analysis")
             screen = None if args["screen"] is None else floor.read_document(args["screen"], "screen record")
+            analysis_record = floor.read_record(args["analysis"])
+            plan_record = floor.read_record(args["plan"])
             rules, skipped, footprint = floor_rules(
-                plan, issue, analysis, args["component"], cfg, commit, store, screen
+                plan, issue, analysis, args["component"], cfg, commit, store, screen, analysis_record, plan_record
             )
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
