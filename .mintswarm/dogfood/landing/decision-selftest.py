@@ -31,15 +31,19 @@ Checks:
   and an unusable layer's problems;
 - threshold edges: with `min_confidence: 90`, 90 is `auto` and 89 `human`,
   under `judged`;
-- bindings: a verdict whose plan, facts, base, head or merge base,
-  component or mode is not the run's, whose keys are out of order, whose
-  verdict disagrees with its rules, whose not_evaluated does not follow its
-  footprint, or that is not strict JSON; facts of another head, base or PR,
-  or with another tool or version; and a landing document that is not
-  UTF-8: each makes its layer unusable with a fixed problem and gives
-  `human`, also under `judged` and `never`;
+- bindings: a verdict whose plan, facts, base, head or merge base, component
+  or mode is not the run's, whose keys are out of order, whose verdict
+  disagrees with its rules, whose not_evaluated does not follow its
+  footprint, whose evidence is not a list, holds a non-string or is not
+  empty after a footprint hit, of version 1, or that is not strict JSON;
+  facts of another head, base or PR, or with another tool or version; and a
+  landing document that is not UTF-8: each makes its layer unusable with a
+  fixed problem and gives `human`, also under `judged` and `never`;
 - a footprint hit with the diff rules not evaluated is a usable hit, listed
   in the comment;
+- evidence: a clean verdict with a line-limit overrun under `evidence` is a
+  usable clean floor layer carrying it, the reasons and the comment show
+  it, and `would_be` follows the judgement as for any clean floor;
 - approval: a human approver with no kickoff record and one with a kickoff
   decision, floor and assessment give the same `would_be`; the approver,
   the approval time and the kickoff records are in `inputs.approval`;
@@ -49,7 +53,7 @@ Checks:
   implement, review and landing, from the real config and from the
   override (null for a non-string effort), each with its configured model
   and both flags false; the landing stage's model differs from
-  implement's and review's; version 2;
+  implement's and review's; version 3;
 - the landing model: with --landing-model set to a model other than the
   configured landing one, the landing entry holds that model, the
   configured one and both flags true, and implement and review are
@@ -127,7 +131,7 @@ RECORD_KEYS = [
     "agents",
 ]
 SUBJECT_KEYS = ["pr", "issue", "component", "plan", "base", "head", "config"]
-FLOOR_LAYER_KEYS = ["status", "problems", "path", "sha256", "verdict", "rules", "not_evaluated"]
+FLOOR_LAYER_KEYS = ["status", "problems", "path", "sha256", "verdict", "rules", "not_evaluated", "evidence"]
 JUDGEMENT_LAYER_KEYS = [
     "status",
     "problems",
@@ -348,7 +352,7 @@ def verdict_for(ctx: dict, hits: dict = None, skip_diff: bool = False, **changes
     rules, skipped = rules_for(hits or {}, skip_diff)
     verdict = {
         "tool": "mintswarm-landing-floor",
-        "version": 1,
+        "version": 2,
         "plan": {"path": ctx["plan"], "sha256": ctx["plan_sha"]},
         "facts": {"path": ctx["facts"], "sha256": ctx["facts_sha"], "checks": []},
         "component": COMPONENT,
@@ -360,11 +364,13 @@ def verdict_for(ctx: dict, hits: dict = None, skip_diff: bool = False, **changes
         "verdict": "hit" if any(r["result"] == "hit" for r in rules) else "clean",
         "rules": rules,
         "not_evaluated": skipped,
+        "evidence": [],
     }
     verdict.update(changes)
     return verdict
 
 
+OVERRUN = "the diff counts 11 lines, over the limit of 10 (estimated_lines 7 × lines_factor 1.5)"
 HIT = {"steers": ["pr-comment by someone at 2026-01-02T00:00:00Z is a steer: https://example.invalid/1"]}
 
 
@@ -636,6 +642,28 @@ def check_bindings(r: Runner) -> None:
             "the floor verdict's tool or version is not landing/floor.py's",
         ),
         (
+            "verdict of version 1",
+            edit(setting("version", 1)),
+            "the floor verdict's tool or version is not landing/floor.py's",
+        ),
+        (
+            "verdict evidence not a list",
+            edit(setting("evidence", "the diff counts 11 lines")),
+            "the floor verdict's evidence is not a list of strings",
+        ),
+        (
+            "verdict evidence holding a non-string",
+            edit(setting("evidence", ["the diff counts 11 lines", 11])),
+            "the floor verdict's evidence is not a list of strings",
+        ),
+        (
+            "verdict evidence after a footprint hit",
+            lambda ctx: verdict_for(
+                ctx, {"footprint": ["the footprint is missing"]}, skip_diff=True, evidence=[OVERRUN]
+            ),
+            "the floor verdict's evidence is not empty after a footprint hit",
+        ),
+        (
             "verdict not strict JSON",
             lambda ctx: facts_bytes(verdict_for(ctx)).replace(b'"tool"', b'"tool": "x", "tool"', 1),
             "the floor verdict is not strict JSON",
@@ -708,6 +736,37 @@ def check_bindings(r: Runner) -> None:
     T.check("bindings: a footprint hit with the diff rules not evaluated is a usable hit", ok, proc.stdout)
 
 
+def check_evidence(r: Runner) -> None:
+    for name in ("at", "below"):
+        landing = JUDGEMENTS[name]
+        ctx = r.context("judged")
+        proc, record, _, _ = r.run(ctx, verdict_for(ctx, evidence=[OVERRUN]), landing)
+        if not T.check(f"evidence, judgement {name}: a record", usable_record(record), proc.stderr.strip()):
+            continue
+        floor_ = record["layers"]["floor"]
+        would_be = J.judged_decision("clean", judged_layer(landing), ctx["min_confidence"])
+        problems = []
+        if floor_["status"] != "usable" or floor_["verdict"] != "clean" or floor_["evidence"] != [OVERRUN]:
+            problems.append(f"floor layer {json.dumps(floor_)}")
+        if record["would_be"] != would_be or (would_be == "auto") != (name == "at"):
+            problems.append(f"would_be {record['would_be']}, not {would_be}")
+        if f"floor evidence: {OVERRUN}" not in record["reasons"]:
+            problems.append(f"reasons {json.dumps(record['reasons'])}")
+        if f"- **Floor evidence:** `{OVERRUN}`" not in proc.stdout.splitlines():
+            problems.append(f"comment {proc.stdout!r}")
+        T.check(f"evidence, judgement {name}: a usable clean floor that shows it", not problems, "; ".join(problems))
+    ctx = r.context("judged")
+    proc, record, _, _ = r.run(ctx, verdict_for(ctx), JUDGEMENTS["at"])
+    T.check(
+        "evidence: none gives no evidence reason or row",
+        usable_record(record)
+        and record["layers"]["floor"]["evidence"] == []
+        and not any(x.startswith("floor evidence:") for x in record["reasons"])
+        and "Floor evidence" not in proc.stdout,
+        proc.stdout,
+    )
+
+
 def check_approval(r: Runner) -> None:
     base, head = r.bases["judged"][0], r.bases["judged"][1]
     human = {"approver": "zmij", "approved_at": "2026-11-20T10:00:00Z", "approval_ref": "https://example.invalid/c/1"}
@@ -766,7 +825,7 @@ def check_record(r: Runner, real: dict) -> None:
     T.check("record: subject keys in order", list(subject) == SUBJECT_KEYS, json.dumps(list(subject)))
     T.check(
         "record: tool, version and approval",
-        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 2, "landing"),
+        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 3, "landing"),
     )
     T.check(
         "record: subject",
@@ -1118,6 +1177,7 @@ def main() -> int:
         check_reasons(runner)
         check_threshold(runner)
         check_bindings(runner)
+        check_evidence(runner)
         check_approval(runner)
         check_record(runner, real)
         check_comment(runner, real)

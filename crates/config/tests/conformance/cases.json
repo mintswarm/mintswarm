@@ -1,0 +1,578 @@
+{
+  "accepted": [
+    {
+      "name": "block mapping",
+      "yaml": "a: 1\nb:\n  c: two\n  d: [x, y]\n",
+      "yq": {
+        "a": 1,
+        "b": {
+          "c": "two",
+          "d": [
+            "x",
+            "y"
+          ]
+        }
+      }
+    },
+    {
+      "name": "block sequence",
+      "yaml": "items:\n  - one\n  - two\n  - nested:\n      k: v\n",
+      "yq": {
+        "items": [
+          "one",
+          "two",
+          {
+            "nested": {
+              "k": "v"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "flow collections",
+      "yaml": "m: {a: 1, b: [2, 3], c: {d: e}}\ns: [a, {b: c}, [d]]\n",
+      "yq": {
+        "m": {
+          "a": 1,
+          "b": [
+            2,
+            3
+          ],
+          "c": {
+            "d": "e"
+          }
+        },
+        "s": [
+          "a",
+          {
+            "b": "c"
+          },
+          [
+            "d"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "empty collections",
+      "yaml": "m: {}\ns: []\n",
+      "yq": {
+        "m": {},
+        "s": []
+      }
+    },
+    {
+      "name": "literal clip",
+      "yaml": "k: |\n  a\n  b\n\n",
+      "yq": {
+        "k": "a\nb\n"
+      }
+    },
+    {
+      "name": "literal strip",
+      "yaml": "k: |-\n  a\n  b\n\n",
+      "yq": {
+        "k": "a\nb"
+      }
+    },
+    {
+      "name": "literal keep",
+      "yaml": "k: |+\n  a\n  b\n\n",
+      "yq": {
+        "k": "a\nb\n\n"
+      }
+    },
+    {
+      "name": "folded clip",
+      "yaml": "k: >\n  a\n  b\n\n  c\n",
+      "yq": {
+        "k": "a b\nc\n"
+      }
+    },
+    {
+      "name": "folded strip",
+      "yaml": "k: >-\n  a\n  b\n",
+      "yq": {
+        "k": "a b"
+      }
+    },
+    {
+      "name": "folded keep",
+      "yaml": "k: >+\n  a\n  b\n\n",
+      "yq": {
+        "k": "a b\n\n"
+      }
+    },
+    {
+      "name": "literal indentation indicator",
+      "yaml": "k: |2\n    indented\n  less\n",
+      "yq": {
+        "k": "  indented\nless\n"
+      }
+    },
+    {
+      "name": "single-quoted",
+      "yaml": "k: 'it''s a \\n string'\n",
+      "yq": {
+        "k": "it's a \\n string"
+      }
+    },
+    {
+      "name": "double-quoted escapes",
+      "yaml": "k: \"tab\\there\\nnew \\u00e9 \\x41 \\\\ \\\"\"\n",
+      "yq": {
+        "k": "tab\there\nnew é A \\ \""
+      }
+    },
+    {
+      "name": "quoted scalars stay strings",
+      "yaml": "a: '1'\nb: \"true\"\nc: 'null'\nd: \"\"\ne: '~'\n",
+      "yq": {
+        "a": "1",
+        "b": "true",
+        "c": "null",
+        "d": "",
+        "e": "~"
+      }
+    },
+    {
+      "name": "comments",
+      "yaml": "# head\na: 1 # trailing\n# between\nb: 'x # not a comment'\n",
+      "yq": {
+        "a": 1,
+        "b": "x # not a comment"
+      }
+    },
+    {
+      "name": "unicode",
+      "yaml": "name: Zoë\nemoji: \"\\U0001F600\"\nkey ключ: значение\n",
+      "yq": {
+        "name": "Zoë",
+        "emoji": "😀",
+        "key ключ": "значение"
+      }
+    },
+    {
+      "name": "multi-line plain",
+      "yaml": "k: one\n  two\n  three\n",
+      "yq": {
+        "k": "one two three"
+      }
+    },
+    {
+      "name": "nulls",
+      "yaml": "a:\nb: ~\nc: null\nd: Null\ne: NULL\nf: nUll\n",
+      "yq": {
+        "a": null,
+        "b": null,
+        "c": null,
+        "d": null,
+        "e": null,
+        "f": "nUll"
+      }
+    },
+    {
+      "name": "bools",
+      "yaml": "a: true\nb: True\nc: TRUE\nd: false\ne: False\nf: FALSE\ng: tRue\n",
+      "yq": {
+        "a": true,
+        "b": true,
+        "c": true,
+        "d": false,
+        "e": false,
+        "f": false,
+        "g": "tRue"
+      }
+    },
+    {
+      "name": "yaml 1.1 words stay strings",
+      "yaml": "a: off\nb: yes\nc: on\nd: no\ne: y\nf: n\ng: Y\n",
+      "yq": {
+        "a": "off",
+        "b": "yes",
+        "c": "on",
+        "d": "no",
+        "e": "y",
+        "f": "n",
+        "g": "Y"
+      }
+    },
+    {
+      "name": "decimal integers",
+      "yaml": "a: 0\nb: 12\nc: +12\nd: -12\ne: -0\nf: 9223372036854775807\ng: -9223372036854775808\n",
+      "yq": {
+        "a": 0,
+        "b": 12,
+        "c": 12,
+        "d": -12,
+        "e": 0,
+        "f": 9223372036854775807,
+        "g": -9223372036854775808
+      }
+    },
+    {
+      "name": "integer separators",
+      "yaml": "a: 1_000\nb: 1__0\nc: 1_\nd: -_1\ne: 0_1\n",
+      "yq": {
+        "a": 1000,
+        "b": 10,
+        "c": 1,
+        "d": -1,
+        "e": 1
+      }
+    },
+    {
+      "name": "leading-zero integers",
+      "yaml": "a: 014\nb: 08\nc: 09\nd: -08\ne: 0001\n",
+      "yq": {
+        "a": 14,
+        "b": 8,
+        "c": 9,
+        "d": -8,
+        "e": 1
+      }
+    },
+    {
+      "name": "hexadecimal and octal",
+      "yaml": "a: 0x1F\nb: 0X1F\nc: 0xff_ff\nd: 0o14\ne: 0o9\nf: 0x\n",
+      "yq": {
+        "a": 31,
+        "b": 31,
+        "c": 65535,
+        "d": 12,
+        "e": "0o9",
+        "f": "0x"
+      }
+    },
+    {
+      "name": "floats",
+      "yaml": "a: 1.5\nb: -1.5\nc: .5\nd: -.5\ne: +.5\nf: 0.1\ng: 12345678.9\nh: 1.5e-2\n",
+      "yq": {
+        "a": 1.5,
+        "b": -1.5,
+        "c": 0.5,
+        "d": -0.5,
+        "e": 0.5,
+        "f": 0.1,
+        "g": 12345678.9,
+        "h": 0.015
+      }
+    },
+    {
+      "name": "whole floats become integers",
+      "yaml": "a: 1.0\nb: 1e3\nc: 1E3\nd: 5.\ne: 1.5e2\nf: 0.0\ng: 1e18\nh: 1e19\n",
+      "yq": {
+        "a": 1,
+        "b": 1000,
+        "c": 1000,
+        "d": 5,
+        "e": 150,
+        "f": 0,
+        "g": 1000000000000000000,
+        "h": 10000000000000000000
+      }
+    },
+    {
+      "name": "negative zero float",
+      "yaml": "a: -0.0\n",
+      "yq": {
+        "a": 0
+      }
+    },
+    {
+      "name": "large floats",
+      "yaml": "a: 1e21\nb: 123456789012345678901234567890.0\nc: 1.7976931348623157e308\nd: -9223372036854775809\n",
+      "yq": {
+        "a": 1e+21,
+        "b": 1.2345678901234568e+29,
+        "c": 1.7976931348623157e+308,
+        "d": -9223372036854776000
+      }
+    },
+    {
+      "name": "tiny floats",
+      "yaml": "a: 3e-400\nb: 1e-7\nc: 0e0\n",
+      "yq": {
+        "a": 0,
+        "b": 1e-07,
+        "c": 0
+      }
+    },
+    {
+      "name": "float separators",
+      "yaml": "a: 1_0.5\nb: .5_0\nc: 1e1_0\n",
+      "yq": {
+        "a": 10.5,
+        "b": 0.5,
+        "c": 10000000000
+      }
+    },
+    {
+      "name": "floats out of range stay strings",
+      "yaml": "a: 1e400\nb: -1e400\n",
+      "yq": {
+        "a": "1e400",
+        "b": "-1e400"
+      }
+    },
+    {
+      "name": "number-like strings",
+      "yaml": "a: 1e\nb: 1.2.3\nc: 12abc\nd: '1:2'\ne: 1,2\nf: ._5\ng: .\nh: 0.5e\ni: 0x1F.5\n",
+      "yq": {
+        "a": "1e",
+        "b": "1.2.3",
+        "c": "12abc",
+        "d": "1:2",
+        "e": "1,2",
+        "f": "._5",
+        "g": ".",
+        "h": "0.5e",
+        "i": "0x1F.5"
+      }
+    },
+    {
+      "name": "date",
+      "yaml": "a: 2001-12-14\nb: 2001-12-14T21:59:43.10-05:00\n",
+      "yq": {
+        "a": "2001-12-14",
+        "b": "2001-12-14T21:59:43.10-05:00"
+      }
+    },
+    {
+      "name": "str tag",
+      "yaml": "a: !!str 5\nb: !!str true\nc: !!str\n",
+      "yq": {
+        "a": "5",
+        "b": "true",
+        "c": ""
+      }
+    },
+    {
+      "name": "map and seq tags",
+      "yaml": "a: !!map {b: 1}\nc: !!seq [1]\n",
+      "yq": {
+        "a": {
+          "b": 1
+        },
+        "c": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "keys are the text as written",
+      "yaml": "1: a\n0x1F: b\ntrue: c\n~: d\n1.0: e\n\"x\": f\n",
+      "yq": {
+        "1": "a",
+        "0x1F": "b",
+        "true": "c",
+        "~": "d",
+        "1.0": "e",
+        "x": "f"
+      }
+    },
+    {
+      "name": "anchors and aliases",
+      "yaml": "base: &b {x: 1, y: [2]}\ncopy: *b\nlist: [&s scalar, *s]\n",
+      "yq": {
+        "base": {
+          "x": 1,
+          "y": [
+            2
+          ]
+        },
+        "copy": {
+          "x": 1,
+          "y": [
+            2
+          ]
+        },
+        "list": [
+          "scalar",
+          "scalar"
+        ]
+      }
+    },
+    {
+      "name": "top-level sequence",
+      "yaml": "- 1\n- two\n- {three: 3}\n",
+      "yq": [
+        1,
+        "two",
+        {
+          "three": 3
+        }
+      ]
+    },
+    {
+      "name": "top-level scalar",
+      "yaml": "hello\n",
+      "yq": "hello"
+    },
+    {
+      "name": "explicit document",
+      "yaml": "---\na: 1\n...\n",
+      "yq": {
+        "a": 1
+      }
+    },
+    {
+      "name": "pretty json",
+      "yaml": "{\n  \"a\": [\n    1,\n    true,\n    null\n  ],\n  \"b\": {\n    \"c\": \"d\"\n  },\n  \"e\": 1.15\n}\n",
+      "yq": {
+        "a": [
+          1,
+          true,
+          null
+        ],
+        "b": {
+          "c": "d"
+        },
+        "e": 1.15
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "name": "duplicate key",
+      "yaml": "a: 1\na: 2\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"a\": 1,\n  \"a\": 2\n}\n",
+      "reason": "a duplicate key, which yq emits twice"
+    },
+    {
+      "name": "nested duplicate key",
+      "yaml": "pipeline:\n  review:\n    max_rounds: 3\n    max_rounds: 4\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"pipeline\": {\n    \"review\": {\n      \"max_rounds\": 3,\n      \"max_rounds\": 4\n    }\n  }\n}\n",
+      "reason": "a duplicate key, which yq emits twice"
+    },
+    {
+      "name": "duplicate key as written differently",
+      "yaml": "1: a\n\"1\": b\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"1\": \"a\",\n  \"1\": \"b\"\n}\n",
+      "reason": "both keys are \"1\" in JSON"
+    },
+    {
+      "name": "merge key",
+      "yaml": "x: &x {k: 1}\ny: {k: 2, <<: *x}\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"x\": {\n    \"k\": 1\n  },\n  \"y\": {\n    \"k\": 1\n  }\n}\n",
+      "reason": "yq resolves merge keys with explicit keys losing"
+    },
+    {
+      "name": "complex key",
+      "yaml": "? [a]\n: b\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"\": \"b\"\n}\n",
+      "reason": "yq turns the key into an empty string"
+    },
+    {
+      "name": "custom tag",
+      "yaml": "a: !custom 5\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"a\": 5\n}\n",
+      "reason": "yq drops the tag"
+    },
+    {
+      "name": "binary tag",
+      "yaml": "a: !!binary aGk=\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"a\": \"aGk=\"\n}\n",
+      "reason": "yq keeps the base64 text"
+    },
+    {
+      "name": "int tag",
+      "yaml": "a: !!int 5\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"a\": 5\n}\n",
+      "reason": "only !!str, !!map and !!seq are supported"
+    },
+    {
+      "name": "two documents",
+      "yaml": "a: 1\n---\nb: 2\n",
+      "yq_exit": 0,
+      "yq": "{\n  \"a\": 1\n}\n{\n  \"b\": 2\n}\n",
+      "reason": "yq concatenates the documents"
+    },
+    {
+      "name": "empty input",
+      "yaml": "",
+      "yq_exit": 0,
+      "yq": "null\n",
+      "reason": "yq gives null"
+    },
+    {
+      "name": "comment only",
+      "yaml": "# nothing\n",
+      "yq_exit": 0,
+      "yq": "null\n",
+      "reason": "yq gives null"
+    },
+    {
+      "name": "inf",
+      "yaml": "a: .inf\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseFloat: parsing \".inf\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "negative inf",
+      "yaml": "a: -.Inf\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseFloat: parsing \"-.Inf\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "nan",
+      "yaml": "a: .nan\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseFloat: parsing \".nan\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "binary integer",
+      "yaml": "a: 0b11\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseInt: parsing \"0b11\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "signed hexadecimal",
+      "yaml": "a: -0x1F\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseInt: parsing \"-0x1F\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "integer beyond i64",
+      "yaml": "a: 9223372036854775808\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseInt: parsing \"9223372036854775808\": value out of range",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "bad float separators",
+      "yaml": "a: 1__0.5\n",
+      "yq_exit": 1,
+      "yq": "Error: json: error calling MarshalJSON for type *yqlib.CandidateNode: json: error calling MarshalJSON for type *yqlib.CandidateNode: strconv.ParseFloat: parsing \"1__0.5\": invalid syntax",
+      "reason": "yq cannot marshal it"
+    },
+    {
+      "name": "syntax error",
+      "yaml": "a: [1, 2\n",
+      "yq_exit": 1,
+      "yq": "Error: bad file '-': yaml: line 1: did not find expected ',' or ']'",
+      "reason": "not YAML"
+    },
+    {
+      "name": "unknown alias",
+      "yaml": "a: *nowhere\n",
+      "yq_exit": 1,
+      "yq": "Error: bad file '-': yaml: unknown anchor 'nowhere' referenced",
+      "reason": "not YAML"
+    }
+  ]
+}

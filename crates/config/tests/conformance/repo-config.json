@@ -1,0 +1,344 @@
+{
+  "tracker": {
+    "kind": "github",
+    "kinds": {
+      "source": "issue_types",
+      "design": {
+        "issue_type": "Design"
+      },
+      "plan": {
+        "issue_type": "Plan"
+      },
+      "implementation": {
+        "issue_type": "Task"
+      }
+    },
+    "components": {
+      "source": "labels",
+      "label": "component:{name}"
+    },
+    "state": {
+      "source": "field",
+      "field": "msw-state",
+      "field_id": 50325307,
+      "label": "msw-state:{value}",
+      "status": "issue_status"
+    },
+    "ingest": {
+      "trusted": {
+        "labels": [
+          "mintswarm"
+        ],
+        "authors": [
+          "zmij"
+        ]
+      },
+      "match": "any"
+    }
+  },
+  "design": {
+    "store": "issue_artifacts"
+  },
+  "components": {
+    "api": {
+      "description": "contracts: proto definitions, generated OpenAPI and JSON Schemas, generated Rust code",
+      "paths": [
+        "api/**",
+        "crates/proto/**"
+      ]
+    },
+    "domain": {
+      "description": "shared model and configuration types used by control plane and runner",
+      "paths": [
+        "crates/domain/**",
+        "crates/config/**",
+        "crates/rules/**",
+        "crates/github/**"
+      ]
+    },
+    "core": {
+      "description": "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary",
+      "paths": [
+        "crates/core/**",
+        "crates/server/**"
+      ]
+    },
+    "runner": {
+      "description": "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions",
+      "paths": [
+        "crates/runner/**",
+        "defaults/probes/**",
+        "defaults/lsp/**"
+      ]
+    },
+    "console-mcp": {
+      "description": "console MCP server used from people's own agent sessions",
+      "paths": [
+        "crates/console-mcp/**"
+      ]
+    },
+    "cli": {
+      "description": "the mintswarm command-line client",
+      "paths": [
+        "crates/cli/**"
+      ]
+    },
+    "web": {
+      "description": "web UI and its generated API client",
+      "paths": [
+        "web/**"
+      ]
+    },
+    "agents": {
+      "description": "stage agent definitions, stage conventions, prompt templates and the dogfooding glue",
+      "paths": [
+        ".claude/agents/**",
+        ".mintswarm/stages.md",
+        ".mintswarm/stages/**",
+        ".mintswarm/dogfood/**",
+        "defaults/prompts/**",
+        "defaults/packs/**",
+        ".claude/skills/**"
+      ]
+    },
+    "distribution": {
+      "description": "container image, compose files, service units and installers",
+      "paths": [
+        "docker/**",
+        "packaging/**",
+        "compose.yaml",
+        ".dockerignore"
+      ]
+    },
+    "tooling": {
+      "description": "repository tasks, CI workflows and end-to-end tests",
+      "paths": [
+        "xtask/**",
+        ".github/**",
+        "tests/**"
+      ]
+    },
+    "docs": {
+      "description": "architecture documents, guides and the repository's top-level documents",
+      "paths": [
+        "docs/**",
+        "README.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "LICENSE.md"
+      ]
+    }
+  },
+  "shared": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "deny.toml",
+    ".gitignore",
+    ".mintswarm/config.yaml",
+    ".editorconfig",
+    "rustfmt.toml",
+    "clippy.toml",
+    ".cargo/config.toml",
+    "pyproject.toml",
+    ".shellcheckrc"
+  ],
+  "agents": {
+    "default": {
+      "harness": "claude",
+      "model": "opus",
+      "effort": "high"
+    },
+    "stages": {
+      "assess": {
+        "model": "sonnet"
+      },
+      "landing": {
+        "model": "sonnet"
+      },
+      "gates": {
+        "model": "sonnet",
+        "effort": "low"
+      }
+    }
+  },
+  "pipeline": {
+    "plan_approval": {
+      "mode": "shadow",
+      "require_human": {
+        "components": [
+          "agents"
+        ],
+        "paths": [
+          ".mintswarm/config.yaml",
+          ".mintswarm/dogfood/github/**",
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".github/workflows/**"
+        ]
+      },
+      "limits": {
+        "files": 10,
+        "lines": 300,
+        "new_files": 3,
+        "new_dependencies": 0
+      },
+      "limits_by_component": {
+        "domain": {
+          "lines": 2000,
+          "files": 15,
+          "new_files": 12
+        },
+        "runner": {
+          "lines": 2000,
+          "files": 15,
+          "new_files": 12
+        }
+      },
+      "non_production": [
+        "**/tests/**",
+        "**/*selftest*",
+        "**/test_*.py",
+        "**/*_test.*",
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/fixtures/**",
+        "**/Cargo.lock",
+        "**/pnpm-lock.yaml",
+        ".claude/agents/msw-*.md"
+      ]
+    },
+    "landing": {
+      "mode": "shadow",
+      "require_human": {
+        "paths": [
+          ".mintswarm/**",
+          ".github/**",
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".claude/agents/**",
+          ".claude/skills/**"
+        ]
+      },
+      "footprint": {
+        "lines_factor": 1.5
+      }
+    },
+    "dependencies": {
+      "review": "agent"
+    },
+    "review": {
+      "max_rounds": 5,
+      "reviewers": [
+        "zmij"
+      ]
+    }
+  },
+  "gates": {
+    "tests": "selftests",
+    "run": [
+      {
+        "name": "whitespace",
+        "command": "git diff --check origin/master...HEAD"
+      },
+      {
+        "name": "agents-drift",
+        "command": "python3 .mintswarm/dogfood/render-agents.py --check"
+      },
+      {
+        "name": "packs-check",
+        "command": "python3 .mintswarm/dogfood/packs/pack.py check --base origin/master"
+      },
+      {
+        "name": "packs-selftest",
+        "command": "python3 .mintswarm/dogfood/packs/selftest.py"
+      },
+      {
+        "name": "python-format",
+        "command": "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs"
+      },
+      {
+        "name": "shell-lint",
+        "command": "bash .mintswarm/dogfood/shell-lint.sh"
+      },
+      {
+        "name": "save-output-selftest",
+        "command": "python3 .mintswarm/dogfood/save-output-selftest.py"
+      },
+      {
+        "name": "msw-vcs-selftest",
+        "command": "python3 .mintswarm/dogfood/msw-vcs-selftest.py"
+      },
+      {
+        "name": "plan-approval-selftest",
+        "command": "python3 .mintswarm/dogfood/plan-approval/selftest.py"
+      },
+      {
+        "name": "landing-floor-selftest",
+        "command": "python3 .mintswarm/dogfood/landing/floor-selftest.py"
+      },
+      {
+        "name": "landing-facts-selftest",
+        "command": "python3 .mintswarm/dogfood/landing/facts-selftest.py"
+      },
+      {
+        "name": "landing-judgement-selftest",
+        "command": "python3 .mintswarm/dogfood/landing/judgement-selftest.py"
+      },
+      {
+        "name": "landing-decision-selftest",
+        "command": "python3 .mintswarm/dogfood/landing/decision-selftest.py"
+      },
+      {
+        "name": "github-selftest",
+        "command": "bash .mintswarm/dogfood/github/selftest.sh"
+      },
+      {
+        "name": "readiness-selftest",
+        "command": "python3 .mintswarm/dogfood/readiness/selftest.py"
+      },
+      {
+        "name": "rust-format",
+        "command": "cargo fmt --all --check"
+      },
+      {
+        "name": "rust-lint",
+        "command": "cargo clippy --workspace --all-targets -- -D warnings"
+      },
+      {
+        "name": "rust-test",
+        "command": "cargo test --workspace"
+      },
+      {
+        "name": "dependencies-selftest",
+        "command": "python3 .mintswarm/dogfood/dependencies/selftest.py"
+      },
+      {
+        "name": "dependencies-prefetch-selftest",
+        "command": "python3 .mintswarm/dogfood/dependencies/prefetch-selftest.py"
+      },
+      {
+        "name": "typescript-typecheck",
+        "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/tsc --noEmit"
+      },
+      {
+        "name": "typescript-lint",
+        "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/eslint ."
+      },
+      {
+        "name": "typescript-format",
+        "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check ."
+      },
+      {
+        "name": "typescript-test",
+        "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run"
+      }
+    ],
+    "report": {
+      "formats": [
+        "ctrf"
+      ]
+    }
+  }
+}
