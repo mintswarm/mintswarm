@@ -374,7 +374,10 @@ cat > "$stubs/gh" <<'EOF'
 # Issues, their assignees, events, type and comments are kept in issues.json in
 # the stub state: {"<n>": {"assignees": [...], "events": [...], "unassignable":
 # [...], "type": "<name>" or null, "comments": [...], "untypeable": bool,
-# "comment_failures": n, "comment_reads": [[...], ...]}}; a PATCH of the issue
+# "comment_failures": n, "comment_reads": [[...], ...], "user": {"login": ...,
+# "type": ...} or null, "parent": <n>}}; the issue GET carries its "user", and
+# issues/<n>/parent serves the parent's number and user, or answers HTTP 404
+# when the issue has no "parent"; a PATCH of the issue
 # sets its type unless it is untypeable; a comment POST fails while
 # comment_failures is above 0, counting it down; a GET of the comments serves
 # one list of comment_reads per read, the last repeating, when it is set,
@@ -568,7 +571,7 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/labels", a) fo
         print(json.dumps(label))
     else:
         print(json.dumps([labels] if "--slurp" in argv else labels))
-elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments)?", a) for a in argv):
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments|/parent)?", a) for a in argv):
     path = next(a for a in argv if a.startswith("repos/"))
     n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
     method = opt(argv, "--method") or "GET"
@@ -618,12 +621,17 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         out = [comments] if "--slurp" in argv else comments
     elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
+    elif tail == "/parent":
+        if item.get("parent") is None:
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
+            sys.exit(1)
+        out = {"number": int(item["parent"]), "user": issues.get(str(item["parent"]), {}).get("user")}
     else:
         spath = os.path.join(STATE, "statuses.json")
         statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
         status = next((s for s in statuses if s["name"] == item.get("status")), None)
         out = {"number": int(n), "node_id": "I_%s" % n, "assignees": [{"login": a} for a in item["assignees"]],
-               "type": {"name": item["type"]} if item["type"] else None,
+               "type": {"name": item["type"]} if item["type"] else None, "user": item.get("user"),
                "status": {"category": status["category"], "id": status["id"], "name": status["name"]}
                if status else None}
     print(json.dumps(out))
