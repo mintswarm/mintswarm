@@ -1022,7 +1022,17 @@ def main() -> int:
         integrity(box, fx)
         archives(box, fx)
         failures(box, fx)
-        for case in (proc_macro_forms, case_folding, gzip_tail, build_code, fooled_scan, no_crash, caps, first_release, unknown_time):
+        for case in (
+            proc_macro_forms,
+            case_folding,
+            gzip_tail,
+            build_code,
+            fooled_scan,
+            no_crash,
+            caps,
+            first_release,
+            unknown_time,
+        ):
             case(box)
         hosts()
         cli(box)
