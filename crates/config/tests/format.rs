@@ -49,10 +49,11 @@ fn entry(change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Value {
 fn formatters_load_with_their_fields() {
     let config = with_format(json!([
         rustfmt(),
+        // The gate only has to be a `gates.run` name; the snapshot's are rust-format and rust-test.
         {
-            "name": "black",
-            "command": "black .",
-            "paths": ["**/*.py", ".mintswarm/dogfood/msw-vcs"],
+            "name": "taplo",
+            "command": "taplo fmt",
+            "paths": ["**/Cargo.toml", "rustfmt.toml"],
             "gate": "rust-test",
         },
     ]));
@@ -67,12 +68,9 @@ fn formatters_load_with_their_fields() {
                 gate: "rust-format".to_owned(),
             },
             Formatter {
-                name: "black".to_owned(),
-                command: "black .".to_owned(),
-                paths: vec![
-                    "**/*.py".to_owned(),
-                    ".mintswarm/dogfood/msw-vcs".to_owned()
-                ],
+                name: "taplo".to_owned(),
+                command: "taplo fmt".to_owned(),
+                paths: vec!["**/Cargo.toml".to_owned(), "rustfmt.toml".to_owned()],
                 gate: "rust-test".to_owned(),
             },
         ]
@@ -152,6 +150,21 @@ fn invalid_entries_are_rejected() {
         (
             "missing name",
             json!([without("name")]),
+            "gates.format[0].name",
+        ),
+        (
+            "empty name",
+            json!([set("name", json!(""))]),
+            "gates.format[0].name",
+        ),
+        (
+            "whitespace-only name",
+            json!([set("name", json!("  \t"))]),
+            "gates.format[0].name",
+        ),
+        (
+            "non-string name",
+            json!([set("name", json!(1))]),
             "gates.format[0].name",
         ),
         (
