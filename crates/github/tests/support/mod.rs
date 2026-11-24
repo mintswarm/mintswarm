@@ -219,12 +219,15 @@ impl Request {
     }
 }
 
+/// A scripted reply: its status, extra response headers and body.
+type Reply = (u16, Vec<(String, String)>, String);
+
 /// An HTTP/1.1 responder on a local port that serves one connection at a time, records each
-/// request and answers from a script of `(status, body)` replies, one per request.
+/// request and answers from a script of `(status, headers, body)` replies, one per request.
 pub struct Responder {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,
-    script: Arc<Mutex<Vec<(u16, String)>>>,
+    script: Arc<Mutex<Vec<Reply>>>,
 }
 
 impl Responder {
@@ -237,7 +240,7 @@ impl Responder {
             listener.local_addr().expect("the responder has no address")
         );
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let script: Arc<Mutex<Vec<(u16, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let script: Arc<Mutex<Vec<Reply>>> = Arc::new(Mutex::new(Vec::new()));
         let (recorded, replies) = (Arc::clone(&requests), Arc::clone(&script));
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
@@ -245,19 +248,32 @@ impl Responder {
                     continue;
                 };
                 recorded.lock().expect("poisoned").push(request);
-                let (status, body) = {
+                let (status, headers, body) = {
                     let mut replies = replies.lock().expect("poisoned");
                     if replies.is_empty() {
-                        (500, String::from("{\"message\":\"no reply scripted\"}"))
+                        (
+                            500,
+                            Vec::new(),
+                            String::from("{\"message\":\"no reply scripted\"}"),
+                        )
                     } else {
                         replies.remove(0)
                     }
                 };
-                let response = format!(
-                    "HTTP/1.1 {status} Scripted\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let mut response = format!("HTTP/1.1 {status} Scripted\r\n");
+                for (name, value) in &headers {
+                    response.push_str(&format!("{name}: {value}\r\n"));
+                }
+                if status == 304 {
+                    // A 304 has no body and no length.
+                    response.push_str("Connection: close\r\n\r\n");
+                } else {
+                    response.push_str(&format!(
+                        "Content-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    ));
+                }
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;
             }
@@ -269,12 +285,21 @@ impl Responder {
         }
     }
 
-    /// Queues a reply.
+    /// Queues a reply with no extra headers.
     pub fn reply(&self, status: u16, body: impl Into<String>) {
+        self.reply_with(status, &[], body);
+    }
+
+    /// Queues a reply with extra response headers, such as `ETag` or `retry-after`.
+    pub fn reply_with(&self, status: u16, headers: &[(&str, &str)], body: impl Into<String>) {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
         self.script
             .lock()
             .expect("poisoned")
-            .push((status, body.into()));
+            .push((status, headers, body.into()));
     }
 
     pub fn requests(&self) -> Vec<Request> {
