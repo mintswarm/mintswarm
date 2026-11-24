@@ -29,8 +29,6 @@
 #       MSW_PROFILE_CONFIG   the App's own config file
 #       MSW_PROFILE_SERVICE  the key's service name in every key store
 #       MSW_PROFILE_LABEL    the key's label
-#       MSW_PROFILE_CONFIRM  keychain-acl (every use of the key needs the
-#                            user's confirmation) or none
 #     for mintswarm-dev ($MSW_APP_CONFIG) and mintswarm-dev-steward
 #     ($MSW_STEWARD_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
 #     for any other name.
@@ -99,24 +97,20 @@ msw_recorded_key_store() {
 MSW_PROFILE_CONFIG=""
 MSW_PROFILE_SERVICE=""
 MSW_PROFILE_LABEL=""
-MSW_PROFILE_CONFIRM=""
 msw_app_profile() {  # msw_app_profile NAME: set MSW_PROFILE_*; 1 for an unknown NAME
   case "$1" in
     mintswarm-dev)
       MSW_PROFILE_CONFIG="$MSW_APP_CONFIG"
       MSW_PROFILE_SERVICE="$MSW_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev GitHub App private key'
-      MSW_PROFILE_CONFIRM=none ;;
+      MSW_PROFILE_LABEL='mintswarm-dev GitHub App private key' ;;
     mintswarm-dev-steward)
       MSW_PROFILE_CONFIG="$MSW_STEWARD_CONFIG"
       MSW_PROFILE_SERVICE="$MSW_STEWARD_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev-steward GitHub App private key'
-      MSW_PROFILE_CONFIRM=keychain-acl ;;
+      MSW_PROFILE_LABEL='mintswarm-dev-steward GitHub App private key' ;;
     *)
       MSW_PROFILE_CONFIG=""
       MSW_PROFILE_SERVICE=""
       MSW_PROFILE_LABEL=""
-      MSW_PROFILE_CONFIRM=""
       return 1 ;;
   esac
 }
