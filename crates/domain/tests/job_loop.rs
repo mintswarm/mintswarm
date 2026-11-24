@@ -537,3 +537,16 @@ fn replan_refused_once_merged_at_another_head() {
         })
     );
 }
+
+#[test]
+fn replan_stays_open_after_a_refused_merge() {
+    let facts = Facts::new(MAX_ROUNDS);
+    let job = step(&job_in(JobState::Merging), Event::MergeRefused, &facts);
+    assert_eq!(job.state, JobState::Escalated);
+    assert_eq!(
+        job.counters.escalation.map(|e| e.cause),
+        Some(EscalationCause::MergeRefused)
+    );
+    let job = step(&job, Event::Replan, &facts);
+    assert_eq!(job.state, JobState::Planning);
+}
