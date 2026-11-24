@@ -1,7 +1,13 @@
 //! Domain types for mintswarm: the vocabulary shared by the control plane, the runners and the
 //! tools.
 
+pub mod ids;
 pub mod job;
+pub mod plane;
+pub mod records;
+pub mod tracker;
+pub mod vcs;
+pub mod work;
 
 /// The name of this crate, as Cargo knows it.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
