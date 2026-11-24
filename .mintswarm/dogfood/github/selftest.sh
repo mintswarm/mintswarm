@@ -2136,6 +2136,16 @@ check "the last matching rule wins" both "$last_base" "carol " docs/x.md
 check "an earlier rule decides where a later one does not match" both "$last_base" "bob " docs/x.rs
 check "the first rule decides the rest" both "$last_base" "alice " src/x.rs
 check "a pattern without / matches at any depth" both "$last_base" "carol " src/a/b/x.md
+star_base="$(commit_codeowners .github/CODEOWNERS '* @alice
+docs/* @bob')"
+check "docs/* owns a direct child" both "$star_base" "bob " docs/a.md
+check "docs/* does not own a nested path" both "$star_base" "alice " docs/b/c.md
+check "/docs/* does not own a nested path either" both "$(commit_codeowners .github/CODEOWNERS '* @alice
+/docs/* @bob')" "alice " docs/b/c.md
+check "docs/** still owns a nested path" both "$(commit_codeowners .github/CODEOWNERS '* @alice
+docs/** @bob')" "bob " docs/b/c.md
+check "/docs/ then docs/*: a nested path keeps the directory owner" both "$(commit_codeowners .github/CODEOWNERS '/docs/ @alice
+docs/* @bob')" "alice " docs/x/y.md
 case_base="$(commit_codeowners .github/CODEOWNERS '/a/ @Alice @bob
 /b/ @alice @carol')"
 check "several groups: one login, @ stripped, the same login in another case counted once" \

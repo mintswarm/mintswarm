@@ -26,8 +26,10 @@ owners leaves its paths unowned. A pattern with a leading `/`, or with a `/`
 anywhere but at its end, is anchored to the root; otherwise it matches at any
 depth. `*` matches within one path segment, `?` one character other than `/`,
 `**/` zero or more directories and a trailing `/**` everything below; a
-pattern matches a file or anything under a directory, and one ending in `/`
-only what is under a directory. `\\#` is a literal `#`, and an owner starting
+pattern matches a file or anything under a directory, one ending in `/`
+only what is under a directory, and an anchored one whose last segment ends
+in a single `*` (`docs/*`, `/docs/*`) only that segment: `docs/*` owns
+`docs/a.md` but not `docs/b/c.md`. `\\#` is a literal `#`, and an owner starting
 with `#` starts a comment. Negation (`!`), character classes (`[...]`), other
 `\\` escapes and owners that are not `@login`, `@org/team` or an e-mail
 address exit 2, naming the line. A path ending in `/` is not a file path and
@@ -162,7 +164,10 @@ def pattern_regex(pattern: str) -> re.Pattern:
         else:
             out.append(re.escape(core[i]))
             i += 1
-    out.append("/.*" if directory else "(?:/.*)?")
+    if directory:
+        out.append("/.*")
+    elif not (anchored and core.endswith("*") and not core.endswith("**")):
+        out.append("(?:/.*)?")
     return re.compile("".join(out), re.DOTALL)
 
 
