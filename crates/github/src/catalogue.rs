@@ -69,9 +69,7 @@ impl GitHubFieldCatalogue {
     }
 
     async fn label_options(&self, pattern: &str) -> Result<Vec<FieldValue>, FieldError> {
-        let Some(pattern) = Pattern::new(pattern) else {
-            return Ok(Vec::new());
-        };
+        let pattern = Pattern::checked(pattern)?;
         let mut options = Vec::new();
         for page in 1..=MAX_PAGES {
             let path = format!(

@@ -491,3 +491,29 @@ async fn catalogue_reads_a_missing_field_as_field_missing() {
     let error = catalogue.options(&size()).await.unwrap_err();
     assert!(matches!(error, FieldError::Transport(_)), "{error}");
 }
+
+#[tokio::test]
+async fn a_label_pattern_without_its_option_is_refused_before_any_request() {
+    let responder = Responder::start().await;
+    let field = FieldRef {
+        source: FieldSource::Labels {
+            label: "effort".into(),
+        },
+        options: names(&["S", "M", "L"]),
+    };
+    let missing = FieldError::Field(FieldFinding::FieldMissing);
+    let client = client(&responder);
+    let pass = client.pass(&token());
+    assert_eq!(pass.read_field(ISSUE, &field).await, Err(missing.clone()));
+    assert_eq!(
+        pass.set_field(ISSUE, &field, Some("M")).await,
+        Err(missing.clone())
+    );
+    assert_eq!(
+        pass.set_field(ISSUE, &field, None).await,
+        Err(missing.clone())
+    );
+    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    assert_eq!(catalogue.options(&field).await, Err(missing));
+    assert!(responder.requests().is_empty());
+}

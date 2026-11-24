@@ -105,15 +105,17 @@ impl FieldPass<'_> {
                 resolve_values(&entries, name, *field_id, &field.options, &endpoint)
             }
             FieldSource::Labels { label } => {
+                let pattern = Pattern::checked(label)?;
                 let labels = self.labels(issue.0).await?;
-                resolve_labels(&labels, label, &field.options)
+                resolve_labels(&labels, &pattern, &field.options)
             }
         }
     }
 
     /// Sets the role's field on `issue` to the option `option`, or clears it for `None`.
     ///
-    /// An option the map does not list is refused with `option_unmapped` before any request.
+    /// An option the map does not list is refused with `option_unmapped` before any request,
+    /// as is a label pattern without `{option}` with `field_missing`.
     /// A write GitHub refuses, or answers with another value, is `write_rejected`, and one whose
     /// answer shows the mapped name under another id is `field_recreated`; both call for
     /// resolving the id again ([`FieldError::should_resolve_again`]).
@@ -134,7 +136,8 @@ impl FieldPass<'_> {
                     .await?;
             }
             FieldSource::Labels { label } => {
-                self.write_labels(issue.0, label, option).await?;
+                let pattern = Pattern::checked(label)?;
+                self.write_labels(issue.0, &pattern, option).await?;
             }
         }
         self.forget(issue.0).await;
@@ -181,22 +184,17 @@ impl FieldPass<'_> {
     async fn write_labels(
         &self,
         issue: u64,
-        pattern: &str,
+        pattern: &Pattern<'_>,
         option: Option<&str>,
     ) -> Result<(), FieldError> {
-        let pattern_parts = Pattern::new(pattern);
         let mut labels: Vec<String> = self
             .labels(issue)
             .await?
             .into_iter()
-            .filter(|label| {
-                pattern_parts
-                    .as_ref()
-                    .is_none_or(|pattern| pattern.option_of(label).is_none())
-            })
+            .filter(|label| pattern.option_of(label).is_none())
             .collect();
         if let Some(option) = option {
-            labels.push(pattern.replace(OPTION, option));
+            labels.push(pattern.label(option));
         }
         let path = format!("{}/labels", self.client.issue_path(issue));
         let body = serde_json::json!({ "labels": labels });
@@ -347,12 +345,9 @@ fn resolve_values(
 /// Resolves a labels-mode role against an issue's labels.
 fn resolve_labels(
     labels: &[String],
-    pattern: &str,
+    pattern: &Pattern<'_>,
     options: &[String],
 ) -> Result<FieldRead, FieldError> {
-    let Some(pattern) = Pattern::new(pattern) else {
-        return Ok(FieldRead::Unset);
-    };
     let mut values: Vec<(FieldValue, bool)> = labels
         .iter()
         .filter_map(|label| pattern.option_of(label))
@@ -398,6 +393,17 @@ impl<'a> Pattern<'a> {
     pub(crate) fn new(pattern: &'a str) -> Option<Self> {
         let (prefix, suffix) = pattern.split_once(OPTION)?;
         Some(Self { prefix, suffix })
+    }
+
+    /// The pattern's parts, or `field_missing` when it has no `{option}`: such a pattern names
+    /// no option, so the role maps no field.
+    pub(crate) fn checked(pattern: &'a str) -> Result<Self, FieldError> {
+        Self::new(pattern).ok_or(FieldError::Field(FieldFinding::FieldMissing))
+    }
+
+    /// The label that names `option` under this pattern.
+    pub(crate) fn label(&self, option: &str) -> String {
+        format!("{}{option}{}", self.prefix, self.suffix)
     }
 
     /// The option `label` names under this pattern, compared case-insensitively.
@@ -586,5 +592,13 @@ mod tests {
         assert_eq!(pattern.option_of("ab:S"), None);
 
         assert!(Pattern::new("effort").is_none());
+        assert_eq!(
+            Pattern::checked("effort").unwrap_err(),
+            FieldError::Field(FieldFinding::FieldMissing)
+        );
+        assert_eq!(
+            Pattern::checked("[{option}] size").unwrap().label("M"),
+            "[M] size"
+        );
     }
 }
