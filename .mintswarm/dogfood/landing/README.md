@@ -12,6 +12,8 @@ This directory stands in for the control plane's landing: the deterministic land
 
 **Decide.** `decision.py` combines the floor's verdict with the stage's judgement under `pipeline.landing.mode` at the base, writes `.mintswarm/job/outputs/landing.json` and prints the landing record that the session posts on the PR.
 
+**Record the verdict.** When the judgement in `landing.json` is usable, the session runs `msw-state.py verdict set <PR> pr <band> --base <base commit>` (`.mintswarm/dogfood/github/`) with the judgement's band. The PR then carries exactly one `msw-verdict:<band>` label, which replaces any earlier one in one write; PRs have no issue fields, so this is always a label. An unusable judgement records nothing.
+
 ## When the require-human and protected rules hit
 
 `require-human-paths`, `require-human-components` and `protected` ask a human only about what the approved plan did not cover. A changed path is covered when all of these hold:
