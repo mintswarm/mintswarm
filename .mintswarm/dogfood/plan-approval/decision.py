@@ -34,9 +34,9 @@ Inputs:
 - The result records beside the analysis and the plan (`<name>.result.json`
   for `<name>.md`), read with floor.py's own read_record when they exist,
   as floor.py reads them; an unreadable one is unusable input. The verdict
-  does not bind them, so a record added, removed or changed after the
-  floor ran makes the recomputed rules differ, and the floor layer is
-  unusable.
+  does not bind them: the rules are recomputed with them, so a record
+  added, removed or changed after the floor ran in a way that changes the
+  rules makes the floor layer unusable.
 - The history of the base commit, read by floor.py's own code.
 
 The base commit, the config at it and the history are read as floor.py

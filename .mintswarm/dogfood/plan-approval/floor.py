@@ -1250,7 +1250,7 @@ def record_questions(text: str) -> list:
         if not isinstance(question, dict):
             raise RecordError("a question is not a JSON object")
         if question.get("kind") not in QUESTION_KINDS:
-            raise RecordError(f"a question's kind is not {', '.join(QUESTION_KINDS)}")
+            raise RecordError("a question's kind is not must_decide, recommended or assumption")
         if not isinstance(question.get("question"), str):
             raise RecordError("a question's question is not a string")
         pairs.append((question["kind"], question["question"]))
