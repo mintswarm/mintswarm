@@ -4,5 +4,7 @@
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
 
+pub mod binding;
+pub mod exit;
 pub mod field;
 pub mod size;
