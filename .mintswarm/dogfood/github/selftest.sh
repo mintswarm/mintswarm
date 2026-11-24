@@ -985,7 +985,7 @@ check "the page is ~/.config/mintswarm/create-mintswarm-dev.html, mode 0600" \
   eq "$page|$(ls -ld "$page" | cut -c1-10)" "$HOME/.config/mintswarm/create-mintswarm-dev.html|-rw-------"
 probe page "$page" > "$sandbox/page-dev.json" || true
 state="$(jq -r '.action | sub("^.*[?]state="; "")' "$sandbox/page-dev.json")"
-page_action() { jq -r .action "$sandbox/page-dev.json" | grep -qE '^https://github\.com/organizations/mintswarm/settings/apps/new\?state=[0-9a-f]{32}$'; }
+page_action() { jq -r .action "$sandbox/page-dev.json" | grep -E '^https://github\.com/organizations/mintswarm/settings/apps/new\?state=[0-9a-f]{32}$' >/dev/null; }
 check "the page posts to the organisation's new-App form with a random state" page_action
 check "the page carries the manifest, submits itself and has a button" \
   eq "$(jq -c --slurpfile m "$m_dev" '[.manifest == $m[0], .autosubmit, .button]' "$sandbox/page-dev.json")" '[true,true,true]'
@@ -1482,7 +1482,7 @@ ks_e2e() {  # ks_e2e BACKEND: rotate into a copy of dev-app.json through BACKEND
   grep -qF "MSW_KEY_STORE=keychain $K delete mintswarm-dev-private-key $CLIENT_ID" "$ks_root/rotate.$1.out" || return 1
   ( ks_vars "$1"; unset MSW_KEY_STORE; export MSW_APP_CONFIG="$cfg"; verify_jwt "$keys/pub1.pem" )
 }
-argv_has() { jq -c 'select(.cmd == "'"$1"'") | .argv' "$argv_log" | grep -qF -- "$2"; }   # argv_has CMD TEXT
+argv_has() { jq -c 'select(.cmd == "'"$1"'") | .argv' "$argv_log" | grep -F -- "$2" >/dev/null; }   # argv_has CMD TEXT
 
 # keychain
 check "keychain: round trip, delete, get after delete fails" ks_roundtrip keychain kc
@@ -2080,7 +2080,7 @@ seed() {  # seed N JSON: issue N's state in the gh stub
   [ -f "$f" ] || printf '{}\n' > "$f"
   jq --arg n "$1" --argjson v "$2" '.[$n] = $v' "$f" > "$f.new" && mv "$f.new" "$f"
 }
-gh_argv_seen() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | grep -qxF -- "$1"; }
+gh_argv_seen() { jq -c 'select(.cmd == "gh") | .argv' "$argv_log" | grep -xF -- "$1" >/dev/null; }
 deletes() { jq -c 'select(.cmd == "gh") | .argv | select(index("DELETE"))' "$argv_log" | wc -l | tr -d ' '; }
 assign_drops() {  # assign on issue 13, where bob cannot be assigned: exit 1, naming bob
   local rc=0
