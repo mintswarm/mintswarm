@@ -49,7 +49,7 @@ RECORDS = {
     ("mintswarm-approval-decision", 2),
     ("mintswarm-keep-round", 2),
     ("mintswarm-landing-facts", 3),
-    ("mintswarm-landing-floor", 1),
+    ("mintswarm-landing-floor", 2),
 }
 SCRATCH = ROOT / "build" / "fixture-capture" / "tmp"
 CAPTURED_AT = "2000-01-01T00:00:00Z"

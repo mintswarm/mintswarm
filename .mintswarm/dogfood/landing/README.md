@@ -6,7 +6,7 @@ This directory stands in for the control plane's landing: the deterministic land
 
 **Collect the facts.** After the round is kept with `keep-round.py`, `collect-facts.py fetch` reads the PR from GitHub and `collect-facts.py assemble` writes `.mintswarm/job/inputs/landing/facts.json`: the checks on the head, the kept gate and review rounds, the steers, the pending re-requested reviews and the plan's approval, with its decision record when one is given.
 
-**Run the floor.** `floor.py` checks the change against its approved plan, with git alone, from a base-ref copy of `.mintswarm/dogfood/`. It writes `.mintswarm/job/outputs/landing-floor.json`; every hit sends the change to a human.
+**Run the floor.** `floor.py` checks the change against its approved plan, with git alone, from a base-ref copy of `.mintswarm/dogfood/`. It writes `.mintswarm/job/outputs/landing-floor.json`; every hit sends the change to a human. A diff over a line limit, floor(`estimated_lines` × `lines_factor`) in total or floor(`production_lines` × `lines_factor`) in production lines, is recorded under the verdict's `evidence` and is not a hit: the landing judge weighs it as a doubt.
 
 **Run the landing stage.** The landing stage rates the change's auto-approval confidence in a named band, against the approved plan, from the issue, the plan, the diff, the facts and the kept rounds, never from the implementer's reasoning or the floor's verdict. Its confidence rests on plan compliance, passed reviews and care.
 
