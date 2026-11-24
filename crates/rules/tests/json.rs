@@ -1,7 +1,15 @@
 //! The strict JSON reader and the `json.dumps` writer.
 
-use mintswarm_domain::records::Json;
-use mintswarm_rules::json::{MAX_DEPTH, ReadError, ReadErrorKind, read};
+use std::path::PathBuf;
+
+use mintswarm_domain::records::{
+    DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
+};
+use mintswarm_rules::json::{
+    MAX_DEPTH, ReadError, ReadErrorKind, Style, dumps, read, to_file_text, to_json,
+};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 fn kind(text: &str) -> ReadErrorKind {
     read(text).expect_err("the text is rejected").kind
@@ -167,4 +175,173 @@ fn valid_documents_read_as_python_reads_them() {
         ]))
     );
     assert_eq!(read("\"\u{7f}é\""), Ok(Json::String("\u{7f}é".into())));
+}
+
+fn manifest() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The `kind` lines of `tests/fixtures/python.jsonl`.
+fn python(kind: &str) -> Vec<Json> {
+    let path = manifest().join("tests/fixtures/python.jsonl");
+    let text = std::fs::read_to_string(&path).expect("the Python fixture is readable");
+    text.lines()
+        .map(|line| read(line).expect("the Python fixture is strict JSON"))
+        .filter(|entry| str_field(entry, "kind") == kind)
+        .collect()
+}
+
+fn field<'j>(value: &'j Json, key: &str) -> &'j Json {
+    let Json::Object(entries) = value else {
+        panic!("not an object: {value:?}");
+    };
+    entries
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("no {key} in {value:?}"))
+}
+
+fn str_field<'j>(value: &'j Json, key: &str) -> &'j str {
+    match field(value, key) {
+        Json::String(s) => s,
+        other => panic!("{key} is not a string: {other:?}"),
+    }
+}
+
+#[test]
+fn floats_are_written_as_python_repr() {
+    let lines = python("float");
+    assert!(lines.len() >= 20);
+    for entry in &lines {
+        let text = str_field(entry, "text");
+        let value: f64 = text.parse().expect("the float text parses");
+        assert_eq!(
+            dumps(&Json::Float(value), Style::LINE),
+            str_field(entry, "dumps"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn non_finite_floats_are_written_as_python_writes_them() {
+    assert_eq!(dumps(&Json::Float(f64::NAN), Style::LINE), "NaN");
+    assert_eq!(dumps(&Json::Float(f64::INFINITY), Style::LINE), "Infinity");
+    assert_eq!(
+        dumps(&Json::Float(f64::NEG_INFINITY), Style::LINE),
+        "-Infinity"
+    );
+}
+
+#[test]
+fn strings_are_escaped_as_python_escapes_them() {
+    let s = |text: &str| Json::String(text.into());
+    let text = "\u{7f}\u{1f600}\u{0}\u{1f}\u{8}\u{c}\n\r\t\"\\/\u{2028}é";
+    assert_eq!(
+        dumps(&s(text), Style::DISK_ASCII),
+        r#""\u007f\ud83d\ude00\u0000\u001f\b\f\n\r\t\"\\/\u2028\u00e9""#
+    );
+    assert_eq!(
+        dumps(&s(text), Style::LINE),
+        "\"\u{7f}\u{1f600}\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\u{2028}é\""
+    );
+}
+
+#[test]
+fn layout_follows_python_separators() {
+    let value = Json::Object(vec![
+        (
+            "b".into(),
+            Json::Array(vec![Json::Int(1), Json::UInt(u64::MAX)]),
+        ),
+        ("a".into(), Json::Object(vec![])),
+        ("c".into(), Json::Array(vec![])),
+        ("é".into(), Json::Null),
+        ("Z".into(), Json::Bool(true)),
+    ]);
+    assert_eq!(
+        dumps(&value, Style::LINE),
+        r#"{"b": [1, 18446744073709551615], "a": {}, "c": [], "é": null, "Z": true}"#
+    );
+    assert_eq!(
+        dumps(&value, Style::CANONICAL),
+        r#"{"Z": true, "a": {}, "b": [1, 18446744073709551615], "c": [], "é": null}"#
+    );
+    assert_eq!(
+        to_file_text(&value, Style::DISK),
+        "{\n  \"b\": [\n    1,\n    18446744073709551615\n  ],\n  \"a\": {},\n  \"c\": [],\n  \
+         \"é\": null,\n  \"Z\": true\n}\n"
+    );
+    assert_eq!(dumps(&Json::Array(vec![]), Style::DISK), "[]");
+    assert_eq!(dumps(&Json::Object(vec![]), Style::DISK), "{}");
+}
+
+/// The line read strictly as its record type and written back through `to_json`.
+fn through<T: DeserializeOwned + Serialize>(line: &str) -> Json {
+    read(line).expect("the record line is strict JSON");
+    let record: T = serde_json::from_str(line).expect("the line is its record type");
+    to_json(&record).expect("the record converts")
+}
+
+#[test]
+fn every_record_type_is_written_as_the_python_tools_write_it() {
+    let path = manifest().join("../domain/tests/fixtures/records.jsonl");
+    let text = std::fs::read_to_string(&path).expect("the record fixtures are readable");
+    let records: Vec<&str> = text.lines().collect();
+    let lines = python("dumps");
+    assert_eq!(lines.len(), records.len(), "one dumps line per record");
+    let mut seen = Vec::new();
+    for entry in &lines {
+        let Json::Int(number) = *field(entry, "line") else {
+            panic!("line is not an integer");
+        };
+        let number = usize::try_from(number).expect("the line number fits");
+        let line = records[number - 1];
+        let tool = str_field(entry, "tool");
+        let tree = match tool {
+            FloorRecord::TOOL => through::<FloorRecord>(line),
+            DecisionRecord::TOOL => through::<DecisionRecord>(line),
+            RoundRecord::TOOL => through::<RoundRecord>(line),
+            FactsRecord::TOOL => through::<FactsRecord>(line),
+            LandingFloorRecord::TOOL => through::<LandingFloorRecord>(line),
+            other => panic!("line {number}: unknown tool {other}"),
+        };
+        let disk = if tool == RoundRecord::TOOL {
+            Style::DISK_ASCII
+        } else {
+            Style::DISK
+        };
+        assert_eq!(
+            to_file_text(&tree, disk),
+            str_field(entry, "disk"),
+            "line {number} disk"
+        );
+        assert_eq!(
+            to_file_text(&tree, Style::DISK_ASCII),
+            str_field(entry, "ascii"),
+            "line {number} ascii"
+        );
+        assert_eq!(
+            dumps(&tree, Style::CANONICAL),
+            str_field(entry, "canonical"),
+            "line {number} canonical"
+        );
+        assert_eq!(dumps(&tree, Style::LINE), line, "line {number} one-line");
+        seen.push(tool.to_owned());
+    }
+    for tool in [
+        FloorRecord::TOOL,
+        DecisionRecord::TOOL,
+        RoundRecord::TOOL,
+        FactsRecord::TOOL,
+        LandingFloorRecord::TOOL,
+    ] {
+        assert!(seen.iter().any(|t| t == tool), "no fixture for {tool}");
+    }
+    let escaped = lines
+        .iter()
+        .filter(|entry| str_field(entry, "ascii") != str_field(entry, "disk"))
+        .count();
+    assert!(escaped > 0, "some record has non-ASCII text to escape");
 }
