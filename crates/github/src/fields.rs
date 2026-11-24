@@ -187,23 +187,40 @@ impl FieldPass<'_> {
         pattern: &Pattern<'_>,
         option: Option<&str>,
     ) -> Result<(), FieldError> {
-        let mut labels: Vec<String> = self
-            .labels(issue)
-            .await?
-            .into_iter()
-            .filter(|label| pattern.option_of(label).is_none())
-            .collect();
-        if let Some(option) = option {
-            labels.push(pattern.label(option));
+        // Only the role's labels are touched, so labels others changed since the pass's copy
+        // was fetched stay as they are. The target is added before the others are removed: a
+        // write cut short leaves a conflict to see, never a lost value.
+        let mut present = false;
+        let mut stale = Vec::new();
+        for label in self.labels(issue).await? {
+            let Some(found) = pattern.option_of(&label) else {
+                continue;
+            };
+            if !present && option.is_some_and(|option| option.eq_ignore_ascii_case(found)) {
+                present = true;
+            } else {
+                stale.push(label);
+            }
         }
-        let path = format!("{}/labels", self.client.issue_path(issue));
-        let body = serde_json::json!({ "labels": labels });
-        let reply = self.send(Method::PUT, &path, Some(body)).await?;
-        if reply.status.is_success() {
-            Ok(())
-        } else {
-            Err(classify(&reply, Op::Write))
+        let labels_path = format!("{}/labels", self.client.issue_path(issue));
+        if let Some(option) = option.filter(|_| !present) {
+            let body = serde_json::json!({ "labels": [pattern.label(option)] });
+            let reply = self.send(Method::POST, &labels_path, Some(body)).await?;
+            if !reply.status.is_success() {
+                return Err(classify(&reply, Op::Write));
+            }
         }
+        for label in stale {
+            let path = format!("{labels_path}/{}", path_segment(&label));
+            let reply = self.send(Method::DELETE, &path, None).await?;
+            // A label someone else removed meanwhile is already where the write wants it.
+            let gone = reply.status == StatusCode::NOT_FOUND
+                && error_text(&reply.body).contains("label does not exist");
+            if !reply.status.is_success() && !gone {
+                return Err(classify(&reply, Op::Write));
+            }
+        }
+        Ok(())
     }
 
     /// The names of `issue`'s labels, from the pass's copy of the issue.
@@ -289,6 +306,19 @@ impl FieldPass<'_> {
             etags.remove(&(issue, resource));
         }
     }
+}
+
+/// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.
+fn path_segment(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// The request that clears a field on an issue, given the issue's `issue-field-values` path.
@@ -479,7 +509,7 @@ mod tests {
 
     use mintswarm_domain::field::{FieldError, FieldFinding};
 
-    use super::{Op, Pattern, classify};
+    use super::{Op, Pattern, classify, path_segment};
     use crate::rest::Reply;
 
     fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
@@ -571,6 +601,16 @@ mod tests {
             assert!(is_transport(&classify(&reply(401, false, ""), op)));
             assert!(is_transport(&classify(&reply(409, false, "not json"), op)));
         }
+    }
+
+    #[test]
+    fn label_names_are_encoded_as_one_path_segment() {
+        assert_eq!(path_segment("effort:S"), "effort%3AS");
+        assert_eq!(
+            path_segment("[M] size/é?#"),
+            "%5BM%5D%20size%2F%C3%A9%3F%23"
+        );
+        assert_eq!(path_segment("a-b.c_d~1"), "a-b.c_d~1");
     }
 
     #[test]

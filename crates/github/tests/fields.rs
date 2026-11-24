@@ -403,25 +403,125 @@ async fn one_effort_label_reads_as_its_option() {
     assert_eq!(read, Err(FieldError::Field(FieldFinding::OptionUnmapped)));
 }
 
+/// The method and path of each request after the first, which reads the issue.
+fn writes(responder: &Responder) -> Vec<(String, String)> {
+    responder
+        .requests()
+        .into_iter()
+        .skip(1)
+        .map(|request| (request.method, request.path))
+        .collect()
+}
+
+fn write(method: &str, path: &str) -> (String, String) {
+    (
+        method.to_owned(),
+        format!("/repos/acme/widgets/issues/7/labels{path}"),
+    )
+}
+
 #[tokio::test]
-async fn a_label_swap_sends_one_put_keeping_the_other_labels() {
+async fn a_label_swap_adds_the_option_and_removes_only_the_roles_labels() {
     let responder = Responder::start().await;
     responder.reply(200, LABELS_CONFLICT);
     responder.reply(200, "[]");
+    responder.reply(204, "");
+    responder.reply(204, "");
     client(&responder)
         .pass(&token())
         .set_field(ISSUE, &effort_labels(), Some("M"))
         .await
         .unwrap();
+    assert_eq!(
+        writes(&responder),
+        [
+            write("POST", ""),
+            write("DELETE", "/effort%3AS"),
+            write("DELETE", "/effort%3AL"),
+        ]
+    );
     let requests = responder.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].method, "PUT");
-    assert_eq!(requests[1].path, "/repos/acme/widgets/issues/7/labels");
     assert_eq!(
         body(&requests[1]),
-        serde_json::json!({"labels": ["mintswarm", "effort:M"]})
+        serde_json::json!({"labels": ["effort:M"]})
     );
     assert_token_only_in_authorization(&requests);
+}
+
+#[tokio::test]
+async fn a_label_already_there_is_kept_and_the_others_removed() {
+    let responder = Responder::start().await;
+    responder.reply(200, LABELS_CONFLICT);
+    responder.reply(204, "");
+    client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &effort_labels(), Some("L"))
+        .await
+        .unwrap();
+    assert_eq!(writes(&responder), [write("DELETE", "/effort%3AS")]);
+}
+
+#[tokio::test]
+async fn a_label_value_set_already_sends_nothing() {
+    let responder = Responder::start().await;
+    responder.reply(200, r#"{"labels":[{"name":"Effort:m"},{"name":"bug"}]}"#);
+    client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &effort_labels(), Some("M"))
+        .await
+        .unwrap();
+    assert!(writes(&responder).is_empty());
+}
+
+#[tokio::test]
+async fn a_label_clear_removes_the_roles_labels_already_gone_or_not() {
+    let responder = Responder::start().await;
+    responder.reply(200, LABELS_CONFLICT);
+    responder.reply(404, r#"{"message":"Label does not exist"}"#);
+    responder.reply(200, "[]");
+    client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &effort_labels(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        writes(&responder),
+        [
+            write("DELETE", "/effort%3AS"),
+            write("DELETE", "/effort%3AL")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_label_add_removes_nothing() {
+    let responder = Responder::start().await;
+    responder.reply(200, LABELS_CONFLICT);
+    responder.reply(
+        403,
+        r#"{"message":"Resource not accessible by integration"}"#,
+    );
+    let error = client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &effort_labels(), Some("M"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
+    assert_eq!(writes(&responder), [write("POST", "")]);
+}
+
+#[tokio::test]
+async fn a_label_removal_on_a_missing_issue_is_transport() {
+    let responder = Responder::start().await;
+    responder.reply(200, LABELS_CONFLICT);
+    responder.reply(404, r#"{"message":"Not Found"}"#);
+    let error = client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &effort_labels(), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+    assert_eq!(writes(&responder), [write("DELETE", "/effort%3AS")]);
 }
 
 #[tokio::test]
