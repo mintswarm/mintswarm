@@ -13,7 +13,7 @@ use mintswarm_domain::records::{
     Bound, DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
 };
 use mintswarm_domain::work::{
-    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, Step, StepJob, Tokens, Usage,
+    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, StepJob, StepKind, Tokens, Usage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -131,7 +131,7 @@ fn step_job() -> StepJob {
     StepJob {
         job: JobId("job-164".into()),
         attempt: AttemptId("att-2".into()),
-        step: Step::KeepRound,
+        step: StepKind::KeepRound,
         base: rev('a'),
         head: Some(rev('c')),
         inputs: vec![],
@@ -239,7 +239,7 @@ fn plane_types_round_trip() {
         seq: Seq(9),
         attempt,
         outcome: Some(JobOutcome::Step {
-            step: Step::Gates,
+            step: StepKind::Gates,
             status: StepStatus::Failed,
             reason: "whitespace".into(),
         }),
@@ -309,24 +309,24 @@ fn code_host_declares_no_merge() {
     assert!(names.iter().all(|n| !n.contains("merge")), "{names:?}");
 }
 
-fn index(step: Step) -> usize {
+fn index(step: StepKind) -> usize {
     match step {
-        Step::Prepare => 0,
-        Step::Commit => 1,
-        Step::Gates => 2,
-        Step::Push => 3,
-        Step::Bundle => 4,
-        Step::KeepRound => 5,
-        Step::DependencyInputs => 6,
-        Step::LandingFacts => 7,
-        Step::TrackerEffects => 8,
-        Step::FileChildren => 9,
+        StepKind::Prepare => 0,
+        StepKind::Commit => 1,
+        StepKind::Gates => 2,
+        StepKind::Push => 3,
+        StepKind::Bundle => 4,
+        StepKind::KeepRound => 5,
+        StepKind::DependencyInputs => 6,
+        StepKind::LandingFacts => 7,
+        StepKind::TrackerEffects => 8,
+        StepKind::FileChildren => 9,
     }
 }
 
 #[test]
 fn step_job_has_the_ten_steps() {
-    let names: Vec<String> = Step::ALL
+    let names: Vec<String> = StepKind::ALL
         .iter()
         .map(|s| serde_json::to_string(s).unwrap())
         .collect();
@@ -345,7 +345,7 @@ fn step_job_has_the_ten_steps() {
             "\"file_children\"",
         ]
     );
-    for (i, step) in Step::ALL.iter().enumerate() {
+    for (i, step) in StepKind::ALL.iter().enumerate() {
         assert_eq!(index(*step), i);
     }
 }
