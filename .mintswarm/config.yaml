@@ -19,6 +19,26 @@ tracker:
     field_id: 50325307               # field mode only; recorded here: listing the organisation's fields needs read:org, which the bot lacks
     label: "msw-state:{value}"       # labels mode: exactly one per issue the session has touched
     status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
+  # Field mappings per role (size here); each role fixes its read point in code (size: the job's pinned base).
+  # A field is named, never given by id: its id is resolved from the name and cached, never written here.
+  fields:
+    size:
+      source: field                  # field | labels | off
+      field: Effort
+      label: "effort:{option}"       # labels mode only
+      default: M                     # also the fallback value
+      options:
+        XS:  { range: XS }
+        S:   { range: S }
+        M:   { range: M }
+        L:   { range: L }
+        XL:  { range: XL }
+        2XL: { range: 2XL }
+        3XL: { range: 3XL }
+        4XL: { range: 4XL }
+        Low:    { range: XS-S,   write: false }
+        Medium: { range: M-L,    write: false }
+        High:   { range: XL-4XL, write: false, reads_as: 2XL }
   ingest:
     trusted:
       labels: [mintswarm]            # maintainer-only; never applied by an issue template
