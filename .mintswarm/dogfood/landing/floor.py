@@ -125,11 +125,11 @@ is unusable input:
   footprint        required mapping with exactly `lines_factor`, an integer
                    or a finite number, never a boolean, of 1 or more; it
                    bounds the diff's production lines by production_lines
-                   and all its lines by estimated_lines (see `size`)
+                   and all its lines by estimated_lines (see `evidence`)
   min_confidence   optional integer, never a boolean, from 90 to 100; 95
                    when absent. The landing decision reads it (see
                    landing/judgement.py); no rule here does, and the
-                   verdict (still version 1) does not record it
+                   verdict (version 2) does not record it
 
 Globs follow the plan floor: a glob matches the whole path, `**` matches
 anything including `/`, `**/` zero or more directories, `*` anything within
@@ -145,17 +145,9 @@ footprint's `files` plus each new dependency's `manifest`.
                              exactly
   undeclared-new-files       an added path is not in `new_files`, compared
                              exactly
-  size                       the added plus deleted lines of the diff are
-                             over floor(estimated_lines × lines_factor),
-                             or those of the paths that match no
-                             pipeline.plan_approval.non_production glob
-                             (the plan floor's globs, its defaults when
-                             absent) are over floor(production_lines ×
-                             lines_factor), production_lines being
-                             estimated_lines in a footprint without it,
-                             each computed exactly, or an entry is binary
-                             (see above) or a submodule (gitlink) on
-                             either side
+  size                       an entry cannot be measured in lines: it is
+                             binary (see above) or a submodule (gitlink)
+                             on either side
   require-human-paths        a changed path that is not covered (see
                              below) matches require_human.paths, compared
                              case-insensitively
@@ -205,6 +197,17 @@ footprint's `files` plus each new dependency's `manifest`.
 When `footprint` is a hit, `undeclared-files`, `undeclared-new-files` and
 `size` are not evaluated; the other rules need only the diff or the facts
 and are.
+
+Going over the plan's line limits is evidence, never a rule: when the added
+plus deleted lines of the diff are over floor(estimated_lines ×
+lines_factor), or those of the paths that match no
+pipeline.plan_approval.non_production glob (the plan floor's globs, its
+defaults when absent) are over floor(production_lines × lines_factor),
+production_lines being estimated_lines in a footprint without it, each
+computed exactly, the overrun is recorded as a reason in the verdict's
+`evidence`. Evidence never makes a hit, changes the verdict or the exit
+code; it is there for the landing decision and the judge to weigh as a
+doubt. It is empty when `footprint` is a hit.
 
 The three rules above `gates` ask a human only about what the approved
 plan did not cover. A changed path is covered when all of these hold:
@@ -266,31 +269,36 @@ this script's.
 
 The verdict is .mintswarm/job/outputs/landing-floor.json, written to a
 temporary file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-landing-floor`), `version` (1), `plan` ({`path`, `sha256` of its
+(`mintswarm-landing-floor`), `version` (2), `plan` ({`path`, `sha256` of its
 bytes}), `facts` ({`path` as given, `sha256` of its bytes, `checks`: the
 checks it lists, each {`name`, `conclusion`, `source`, `app`}, in file
 order}), `component`, `base` and `head` ({`ref` as given, `commit`, the full
 hash}), `merge_base` (the full hash), `config` (`.mintswarm/config.yaml`),
 `mode` (pipeline.landing.mode as read), `verdict` (`hit` or `clean`),
 `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in the order
-above, `reasons` empty when clean) and `not_evaluated` (the identifiers
-skipped, in order). One line per evaluated rule is printed, with its first
-reason, if any, after a colon; control characters and line or paragraph
-separators in that reason are printed as JSON escapes (`\\n`, `\\u2028`), so
-a reason cannot add a line. Then `floor: hit` or `floor: clean`.
+above, `reasons` empty when clean), `not_evaluated` (the identifiers
+skipped, in order) and `evidence` (the line-limit overruns, see above, in
+order: total, then production). One line per evaluated rule is printed,
+with its first reason, if any, after a colon, then one line
+`evidence: <reason>` per evidence entry; control characters and line or
+paragraph separators in a printed reason are printed as JSON escapes
+(`\\n`, `\\u2028`), so a reason cannot add a line. Then `floor: hit` or
+`floor: clean`.
 
-Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, a
-missing or broken plan-approval/floor.py, an unresolvable base or head, a
-partial clone, a failed fetch into the object store (a forged or missing
-object, a shallow history), no merge base, a head the base already
-contains, no config at the base, an invalid config, a missing,
-unreadable, malformed or mismatched facts file, an unreadable plan, a diff that does not parse, git or yq missing or
-failing, a stale verdict that cannot be deleted, or any unexpected error.
-Unusable input leaves no verdict file, unless a stale one could not be
-deleted. The interpreter itself exits 1 when it crashes outside main(), for
-example at import time, so exit 0 or 1 counts only together with a verdict
-file whose `plan.sha256`, `facts.sha256`, `base.commit` and `head.commit`
-match the request; exit 2 never comes with a valid verdict. Standard library only, apart from running git and yq.
+Exits 0 when clean, 1 on a rule hit only (evidence never makes one), 2 on
+unusable input: bad arguments, a missing or broken plan-approval/floor.py,
+an unresolvable base or head, a partial clone, a failed fetch into the
+object store (a forged or missing object, a shallow history), no merge base,
+a head the base already contains, no config at the base, an invalid config,
+a missing, unreadable, malformed or mismatched facts file, an unreadable
+plan, a diff that does not parse, git or yq missing or failing, a stale
+verdict that cannot be deleted, or any unexpected error. Unusable input
+leaves no verdict file, unless a stale one could not be deleted. The
+interpreter itself exits 1 when it crashes outside main(), for example at
+import time, so exit 0 or 1 counts only together with a verdict file whose
+`plan.sha256`, `facts.sha256`, `base.commit` and `head.commit` match the
+request; exit 2 never comes with a valid verdict. Standard library only,
+apart from running git and yq.
 """
 
 import hashlib
@@ -311,7 +319,7 @@ PLAN_FLOOR = Path(__file__).resolve().parent.parent / "plan-approval" / "floor.p
 VERDICT = Path(".mintswarm/job/outputs/landing-floor.json")
 CONFIG = ".mintswarm/config.yaml"
 TOOL = "mintswarm-landing-floor"
-VERSION = 1
+VERSION = 2
 MODES = ("always", "shadow", "judged", "never")
 MIN_CONFIDENCE = 90  # the lowest pipeline.landing.min_confidence allowed
 DEFAULT_MIN_CONFIDENCE = 95  # pipeline.landing.min_confidence when absent
@@ -848,7 +856,8 @@ def has_workflows(base: str, git_dir=None) -> bool:
 # --- rules ---------------------------------------------------------------
 
 
-def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict, cfg: dict) -> list:
+def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, landing: dict, cfg: dict) -> tuple:
+    """The rule results and the evidence: line-limit overruns, which never make a hit."""
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
         if dep["manifest"] not in declared:
@@ -871,11 +880,11 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
         [f"{path} is added but is not in new_files" for path in new if path not in footprint["new_files"]],
     )
 
-    reasons = []
+    evidence = []
     limit = line_limit(footprint["estimated_lines"], landing["lines_factor"])
     total = sum(a + d for _, a, d in entries if a is not None)
     if total > limit:
-        reasons.append(
+        evidence.append(
             f"the diff counts {total} lines, over the limit of {limit} "
             f"(estimated_lines {footprint['estimated_lines']} × lines_factor {landing['lines_factor']!r})"
         )
@@ -883,17 +892,18 @@ def footprint_rules(footprint: dict, entries: list, new: list, gitlinks: set, la
     production = sum(a + d for path, a, d in entries if a is not None and not P.matching(cfg["non_production"], path))
     # With production_lines equal to estimated_lines (a seven-key footprint too) the total check covers it.
     if footprint["production_lines"] < footprint["estimated_lines"] and production > limit:
-        reasons.append(
+        evidence.append(
             f"the diff counts {production} production lines, over the limit of {limit} "
             f"(production_lines {footprint['production_lines']} × lines_factor {landing['lines_factor']!r})"
         )
+    reasons = []
     for path, added, _ in entries:
         if path in gitlinks:
             reasons.append(f"{path} is a submodule (gitlink), whose change is not measured in lines")
         elif added is None:
             reasons.append(f"{path} is binary or otherwise unmeasurable")
     rule("size", reasons)
-    return results
+    return results, evidence
 
 
 def plan_approval(facts: dict, plan_sha: str):
@@ -1151,9 +1161,11 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
     except P.FootprintError as exc:
         footprint = None
         results = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
+        evidence = []
     else:
         results = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        results += footprint_rules(footprint, entries, new, gitlinks, landing, cfg)
+        rules, evidence = footprint_rules(footprint, entries, new, gitlinks, landing, cfg)
+        results += rules
     cause = plan_approval(facts, hashlib.sha256(data).hexdigest())
     results += policy_rules(entries, args["component"], cfg, landing, footprint, cause)
     results += facts_rules(facts, base, head, store)
@@ -1180,6 +1192,7 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
         "verdict": "hit" if hit else "clean",
         "rules": results,
         "not_evaluated": [name for name in RULES if name not in evaluated],
+        "evidence": evidence,
     }
     write_verdict(verdict)
     for r in results:
@@ -1187,6 +1200,8 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
         if r["reasons"]:
             line += f": {printable(r['reasons'][0])}"
         print(line)
+    for reason in evidence:
+        print(f"evidence: {printable(reason)}")
     print(f"floor: {verdict['verdict']}")
     return 1 if hit else 0
 
