@@ -478,7 +478,8 @@ fn read_file(path: &Path) -> Result<Vec<u8>, KeyStoreError> {
 }
 
 /// Runs `command` with stdin null and stdout and stderr piped, and returns its stdout. Stderr is
-/// discarded. The child is killed when `timeout` expires.
+/// discarded. The child runs in its own process group, and when `timeout` expires the whole group
+/// is killed, so that helpers it started (a pinentry, an agent prompt) do not outlive the read.
 async fn run(
     mut command: Command,
     program: &Path,
@@ -488,14 +489,25 @@ async fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .kill_on_drop(true);
     let child = command.spawn().map_err(|source| KeyStoreError::Spawn {
         program: program.to_owned(),
         source,
     })?;
+    // The child leads its group, so the group id is its pid. The child is not reaped before the
+    // future below is dropped, so the id cannot be reused while it is killed.
+    let group = child
+        .id()
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(rustix::process::Pid::from_raw);
     let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(output) => output,
         Err(_) => {
+            if let Some(group) = group {
+                // The group may already be gone; the child itself is still killed on drop.
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
             return Err(KeyStoreError::TimedOut {
                 program: program.to_owned(),
                 timeout,

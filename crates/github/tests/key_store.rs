@@ -100,6 +100,38 @@ async fn every_backend_that_can_prompt_is_stopped_after_the_timeout() {
 }
 
 #[tokio::test]
+async fn a_timeout_also_stops_the_processes_a_backend_started() {
+    let (fakes, mut home) = (Fakes::new(false), Home::new());
+    let pidfile = fakes.dir.path().join("helper.pid");
+    // The helper stands in for a pinentry: a grandchild that would outlive its parent.
+    fakes.write(
+        "pass",
+        &format!(
+            "sleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait",
+            pidfile.display()
+        ),
+    );
+    // Long enough for a freshly written fake to start under a loaded, parallel test run.
+    home.env.timeout = Duration::from_secs(4);
+    let error = read(KeyStore::Pass, &fakes, &home).await.unwrap_err();
+    assert!(matches!(error, KeyStoreError::TimedOut { .. }), "{error}");
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("the fake did not start its helper before the timeout")
+        .trim()
+        .parse()
+        .unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rustix::process::test_kill_process(pid).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the helper {pid:?} is still running"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
 async fn pass_reads_its_pipe() {
     let (fakes, mut home) = (Fakes::new(false), Home::new());
     home.env.password_store_dir = Some(home.dir.path().join("store"));
