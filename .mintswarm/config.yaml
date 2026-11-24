@@ -95,7 +95,7 @@ pipeline:
     require_human:                   # any declared match sends the plan to a human
       components: [agents]
       paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md", ".github/workflows/**"]
-    limits: { files: 10, lines: 300, new_files: 3, new_dependencies: 0 }
+    limits: { files: 10, lines: 300, new_files: 3 }
     limits_by_component: { domain: { lines: 2000, files: 15, new_files: 12 }, runner: { lines: 2000, files: 15, new_files: 12 } }  # <component>: { <limit>: N }; per-component values override the flat limits key by key
     non_production:                  # paths whose lines are not production lines: limits.lines counts production_lines when a declared file matches
       - "**/tests/**"
@@ -112,16 +112,18 @@ pipeline:
   landing:
     mode: shadow                     # always | shadow | judged | never
                                      # shadow: floor, landing stage and landing/decision.py run and are recorded on every PR, while a human decides
-    require_human:                   # any changed path that matches sends the change to a human
+    require_human:                   # a matching changed path that the human-approved plan does not cover sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # rounded down: the diff's production lines (paths matching no plan_approval.non_production glob)
                                      # up to production_lines × lines_factor, and all its lines up to estimated_lines × lines_factor
   # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
   dependencies:
     review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
+  # clear is read from the base ref, never the worktree, by the review, implement (address rounds) and landing stages.
   review:
     max_rounds: 5
     reviewers: [zmij]                # default reviewers of a PR; see components above
+    clear: nit                       # blocker | major | minor | nit; findings at or above it must be cleared before the PR is ready; absent: major
 
 gates:
   tests: selftests                   # only none forces plan approval
@@ -161,7 +163,11 @@ gates:
     - name: rust-lint
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
-      command: "cargo test --workspace"
+      command: "cargo nextest run --workspace && cargo test --doc --workspace"
+    - name: proto-lint
+      command: "buf lint api/proto"
+    - name: proto-breaking
+      command: "git rev-parse --verify -q origin/master >/dev/null || { echo 'proto-breaking: origin/master not found; fetch it before running this gate'; exit 1; }; if git cat-file -e origin/master:api/proto/buf.yaml 2>/dev/null; then buf breaking api/proto --against '.git#ref=origin/master,subdir=api/proto'; else echo 'proto-breaking: origin/master has no api/proto yet; nothing to compare'; fi"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest

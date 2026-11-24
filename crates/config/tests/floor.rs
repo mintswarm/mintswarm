@@ -6,7 +6,7 @@
 
 #![cfg(test)]
 
-use mintswarm_config::{GatesSummary, load_repo_config};
+use mintswarm_config::{GatesSummary, ReviewClear, load_repo_config};
 use serde_json::{Value, json};
 
 const REPO_JSON: &str = include_str!("conformance/repo-config.json");
@@ -61,7 +61,8 @@ fn factor(value: Value) -> Change {
 }
 
 /// The `config` variants `plan-approval/selftest.py` `build_commits` builds and the floor rejects:
-/// those `check_unusable_input` lists, with `MIN_CONFIDENCE_INVALID` and `SIZE_INVALID`.
+/// those `check_unusable_input` lists, with `MIN_CONFIDENCE_INVALID`, `SIZE_INVALID` and
+/// `REMOVED_LIMIT`.
 fn plan_approval_rejected() -> Vec<(&'static str, Change)> {
     vec![
         (
@@ -130,15 +131,34 @@ fn plan_approval_rejected() -> Vec<(&'static str, Change)> {
             "non-production-numbers",
             approval_update("non_production", json!([1])),
         ),
+        (
+            "limit-new-dependencies",
+            Box::new(|c| {
+                set(
+                    c,
+                    &format!("{APPROVAL}/limits"),
+                    "new_dependencies",
+                    json!(0),
+                )
+            }),
+        ),
+        (
+            "lbc-new-dependencies",
+            approval_update(
+                "limits_by_component",
+                json!({"docs": {"new_dependencies": 0}}),
+            ),
+        ),
     ]
 }
 
 #[test]
 fn plan_approval_selftest_variants_rejected() {
     let variants = plan_approval_rejected();
-    // Seven named in `check_unusable_input`, the four of `MIN_CONFIDENCE_INVALID` and the eight of
-    // `SIZE_INVALID`; `variant_names_match_selftests` checks the names.
-    assert_eq!(variants.len(), 19);
+    // Seven named in `check_unusable_input`, the four of `MIN_CONFIDENCE_INVALID`, the eight of
+    // `SIZE_INVALID` and the two of `REMOVED_LIMIT`; `variant_names_match_selftests` checks the
+    // names.
+    assert_eq!(variants.len(), 21);
     for (name, change) in variants {
         let text = variant(change);
         let got = load_repo_config(&text);
@@ -482,7 +502,7 @@ fn tracker_state_values() {
 }
 
 /// A config with `summary: on`, which yq reads as the string "on" (YAML 1.2), not a bool.
-const SUMMARY_ON: &str = "components: {}\npipeline:\n  plan_approval:\n    mode: never\n    limits: {files: 1, lines: 1, new_files: 1, new_dependencies: 0}\n  landing:\n    mode: never\n    footprint: {lines_factor: 1}\ngates:\n  summary: on\n";
+const SUMMARY_ON: &str = "components: {}\npipeline:\n  plan_approval:\n    mode: never\n    limits: {files: 1, lines: 1, new_files: 1}\n  landing:\n    mode: never\n    footprint: {lines_factor: 1}\ngates:\n  summary: on\n";
 
 #[test]
 fn max_rounds_values() {
@@ -509,6 +529,44 @@ fn max_rounds_values() {
         "the snapshot sets pipeline.review.max_rounds"
     );
     assert_eq!(config.review_max_rounds(), recorded);
+}
+
+/// `pipeline.review.clear` as the readiness check's `review_config` accepts it: blocker, major,
+/// minor or nit, and major when absent.
+#[test]
+fn review_clear_values() {
+    let clear = |value: Option<Value>| {
+        load_repo_config(&variant(|c| match value {
+            Some(value) => set(c, "/pipeline/review", "clear", value),
+            None => remove(c, "/pipeline/review", "clear"),
+        }))
+    };
+    for (name, expected) in [
+        ("blocker", ReviewClear::Blocker),
+        ("major", ReviewClear::Major),
+        ("minor", ReviewClear::Minor),
+        ("nit", ReviewClear::Nit),
+    ] {
+        let config = clear(Some(json!(name))).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(config.review_clear(), expected, "{name}");
+    }
+    let absent = clear(None).expect("absent loads");
+    assert_eq!(absent.review_clear(), ReviewClear::Major);
+    let null = clear(Some(Value::Null)).expect("null loads as absent");
+    assert_eq!(null.review_clear(), ReviewClear::Major);
+    let no_review = load_repo_config(&variant(|c| remove(c, "/pipeline", "review")))
+        .expect("no pipeline.review loads");
+    assert_eq!(no_review.review_clear(), ReviewClear::Major);
+    for value in [
+        json!("trivial"),
+        json!("Nit"),
+        json!(""),
+        json!(1),
+        json!(true),
+    ] {
+        let error = clear(Some(value.clone())).expect_err("rejected");
+        assert_eq!(error.path(), "pipeline.review.clear", "{value}: {error}");
+    }
 }
 
 #[test]
@@ -665,8 +723,8 @@ fn dict_keys(source: &str, name: &str, relative: &str) -> Vec<String> {
 }
 
 /// The Rust variant lists name exactly the variants the self-tests build, so a variant added to
-/// either self-test, or to `MIN_CONFIDENCE_INVALID` or `SIZE_INVALID`, fails here until it is
-/// added to a list above.
+/// either self-test, or to `MIN_CONFIDENCE_INVALID`, `SIZE_INVALID` or `REMOVED_LIMIT`, fails
+/// here until it is added to a list above.
 #[test]
 fn variant_names_match_selftests() {
     let names = |lists: Vec<Vec<(&'static str, Change)>>| -> std::collections::BTreeSet<String> {

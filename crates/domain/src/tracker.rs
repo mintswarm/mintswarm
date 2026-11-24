@@ -6,6 +6,7 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
+use crate::field::{FieldError, FieldRead, FieldRef};
 use crate::ids::{IssueNumber, PrNumber, RevId};
 use crate::vcs::BranchName;
 
@@ -183,6 +184,23 @@ pub trait Tracker: Send + Sync {
 
     /// Release the bot's own assignments of an item.
     fn release(&self, issue: IssueNumber) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// The value of a role's field on an issue, design §4.6.
+    fn read_field(
+        &self,
+        issue: IssueNumber,
+        field: &FieldRef,
+    ) -> impl Future<Output = Result<FieldRead, FieldError>> + Send;
+
+    /// Set a role's field on an issue to the named option; `None` clears the field.
+    ///
+    /// It is never called for a read-only role.
+    fn set_field(
+        &self,
+        issue: IssueNumber,
+        field: &FieldRef,
+        option: Option<&str>,
+    ) -> impl Future<Output = Result<(), FieldError>> + Send;
 }
 
 /// A pull request to open.

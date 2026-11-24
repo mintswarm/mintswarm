@@ -22,9 +22,10 @@ You analyse one issue so that the next stage (design, decompose or plan) can wor
 1. Restate what is asked in your own words, and what is explicitly not asked.
 2. Find what already exists: code, documents in `docs/architecture/`, conventions in `AGENTS.md` and `CONTRIBUTING.md`, earlier artefacts. Cite paths.
 3. Name the components the work touches. For an implementation issue that should be exactly one; say so if it is not. Record the result in `## Split`: for an implementation issue that spans more than one component, or that should otherwise be split into one-component children, set `proposed` to `true`, `reason` to `components` or `other`, `components` to the components it spans and `finding` to the one-line finding that calls for the split. Otherwise set `proposed` to `false`, `reason` to `none` and `finding` to an empty string. The section is always there; `proposed` counts only for implementation issues.
-4. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
-5. List risks and unknowns.
-6. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`; a non-blocking question ends with `→` and the assumption. The Questions section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
+4. Estimate the size in `## Size`. For an implementation issue, the size is the expected cost of its phase 2: implement, the gates, review and address rounds, and landing. For a design or plan issue, it is the judged size of the work the issue covers. A size states no wall-clock time.
+5. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
+6. List risks and unknowns.
+7. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`; a non-blocking question ends with `→` and the assumption. The Questions section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
 
 ## Output
 
@@ -45,6 +46,9 @@ Return `analysis.md` as `.mintswarm/stages.md` describes:
 {"split": {"proposed": false, "reason": "none", "components": ["…"], "finding": ""}}
 ```
 
+## Size
+size: M
+- <reason>
 ## Approaches
 ## Risks
 ## Questions
@@ -53,6 +57,8 @@ Return `analysis.md` as `.mintswarm/stages.md` describes:
 ````
 
 `## Split` holds exactly one json fence with that object: `proposed` is a boolean, `reason` is `components`, `other` or `none`, `components` is a list of component names and `finding` is one line.
+
+`## Size` comes right after `## Split` and opens no fence. Ignoring blank lines, its first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text; trailing spaces and tabs on any line of the section are ignored); then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence. A missing or malformed section makes the analysis unusable, as a malformed `## Split` does.
 
 Status: `needs_input` if there is any blocking question, otherwise `complete`.
 

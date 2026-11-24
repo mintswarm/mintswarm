@@ -112,7 +112,9 @@ layer is usable, else none; the judgement layer; min_confidence), in every
 mode: `auto` only for a clean floor and a usable judgement with no hard
 trigger and a confidence of at least min_confidence; otherwise `human`.
 The approval in the facts is an input only: no branch reads it, so a plan
-approved by a human with no kickoff record leaves `would_be` as it is.
+approved by a human with no kickoff record leaves `would_be` as it is. The
+landing floor, not a branch here, uses the approval to decide which
+require_human paths the plan covered.
 
 `effective` follows the mode:
 
@@ -180,7 +182,8 @@ reasons, the rules not evaluated, or unusable with its problems); the
 judgement rows of plan-approval/decision.py (Confidence as the band's name
 and score with min_confidence and the decisive reason, Hard triggers and
 Doubts); the would-be and the effective decision; the plan approver and
-the plan approval time, as inputs, not gates; and the harness, model and
+the plan approval time, which decision.py records but does not decide on,
+and which the landing floor uses for coverage; and the harness, model and
 effort of implement, review and landing, with the configured model after
 the one that ran when they differ. Model, facts and session text is flattened
 to one line, its backticks replaced, cut to 200 characters and set in a
@@ -404,7 +407,10 @@ def read_facts(path: str, pr: int, base: str, head: str) -> tuple:
 
 
 def approval_inputs(facts) -> dict:
-    """The approval the facts record, as an input only; nothing decides on it."""
+    """The approval the facts record, as an input.
+
+    No branch here decides on it; the landing floor uses it for coverage.
+    """
     approval = facts.get("approval") if isinstance(facts, dict) else None
     if not isinstance(approval, dict):
         return {"approver": None, "approved_at": None, "approval_ref": None, "kickoff_records": []}
@@ -662,7 +668,7 @@ def comment(record: dict) -> str:
         *judgement.decision.judgement_rows(judged, record["min_confidence"], suffix),
         f"- **Would-be decision:** `{record['would_be']}`",
         f"- **Effective decision:** `{record['effective']}`",
-        f"- **Plan approval (inputs, not gates):** approver {maybe(approval['approver'])}, "
+        f"- **Plan approval (input; the landing floor uses it for coverage):** approver {maybe(approval['approver'])}, "
         f"approved at {maybe(approval['approved_at'])}",
         f"- **Agents (harness, model, effort):** {agents}",
     ]
