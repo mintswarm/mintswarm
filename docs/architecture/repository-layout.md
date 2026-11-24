@@ -32,19 +32,18 @@ mintswarm/
 │
 ├── api/                    # every contract, language-neutral
 │   ├── proto/              # the only hand-written API contract
-│   │   ├── buf.yaml        # lint + breaking-change rules; deps include googleapis (google.api.http)
-│   │   ├── buf.gen.yaml
+│   │   ├── buf.yaml        # module root; lint (STANDARD) and breaking-change (FILE) rules
+│   │   ├── buf.gen.yaml    # generator plugins; none yet, Rust comes from crates/proto/build.rs
 │   │   └── mintswarm/
-│   │       ├── runner/v1/  # runner ⇄ plane stream (gRPC only)
-│   │       ├── control/v1/ # Control API (CLI, console MCP; browser-facing RPCs annotated for HTTP)
-│   │       └── ui/v1/      # UI-only services, if any (aggregations for screens), HTTP-annotated
+│   │       └── runner/v1/  # runner ⇄ plane stream (gRPC only)
 │   ├── openapi/            # generated from proto; committed so PRs show JSON-level changes
 │   └── schemas/            # JSON Schemas generated from Rust types (config, ticket, StageJob, plan.json, findings); committed
 │
 ├── crates/                 # Rust, Cargo workspace members
-│   ├── domain/             # ids, entities, states + transition table, usage shape, StageJob
-│   ├── config/             # control-plane, runner and repo config; YAML 1.2 loader; schema generation
-│   ├── proto/              # code generated from api/proto (build.rs, not committed)
+│   ├── domain/             # ids; job states, events and the transition table; StageJob, StepJob, Usage; pipeline records; PlaneLink, Vcs, Tracker and CodeHost traits; Question objects and their checks; scales (size, priority), field maps, own level and the stride selector, cost model
+│   ├── config/             # repository config (.mintswarm/config.yaml) and runner config; native YAML loader matching yq
+│   ├── github/             # the runner's GitHub App access: App JWT, installation tokens scoped to one repository, private-key store; issue-field and label reads and writes (FieldClient, field catalogue)
+│   ├── proto/              # Rust generated from api/proto by build.rs (protox) into OUT_DIR, not committed; `fakes` feature for test fakes
 │   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
 │   │   └── migrations/     # SQL, append-only
 │   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
@@ -105,7 +104,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
-- **Dependency direction is one-way:** `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}. `core` and `runner` never depend on each other; anything they share goes down a level.
+- **Dependency direction is one-way** (`A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement): `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}, and beside it `domain` ← `github` ← {`core`, `runner`}; `proto` never depends on `github`. `core` and `runner` never depend on each other; anything they share goes down a level. Today `github` depends only on `domain`, and `domain`, `config` and `proto` depend on no other workspace crate.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
