@@ -2879,6 +2879,147 @@ refuses "and the cross-check catches a status that differs" python3 -I "$sandbox
 sed 's/| `ready`, `merging`, `releasing` | `awaiting merge` |/| `ready`, `merging`, `releasing` | `waiting` |/' "$here/README.md" > "$sandbox/README-bad.md"
 refuses "and a runner state mapped to an unknown value" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
 
+# --- watch-plan-approvals.py -------------------------------------------------
+
+W="$here/watch-plan-approvals.py"
+check "watch-plan-approvals.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$W" "$sandbox/watch-plan-approvals.pyc"
+wpa() { python3 -I "$W" "$@"; }
+wpa_lines() {  # wpa_lines ARGS...: the watcher's stdout, or (failed) and its output
+  local out
+  out="$(wpa "$@" 2>"$sandbox/wpa.err")" || out="(failed) $out $(cat "$sandbox/wpa.err")"
+  printf '%s' "$out"
+}
+wpa_sha="$(printf '%064d' 0 | tr 0 a)"
+wpa_url() { printf 'https://github.com/mintswarm/mintswarm/issues/%s#issuecomment-%s' "$1" "$2"; }
+wpa_comment() {  # wpa_comment ISSUE ID LOGIN MINUTE BODY [UPDATED_MINUTE] [TYPE]: one comment, as JSON
+  jq -nc --argjson id "$2" --arg login "$3" --arg body "$5" --arg url "$(wpa_url "$1" "$2")" \
+    --arg created "2026-11-24T10:$4:00Z" --arg updated "2026-11-24T10:${6:-$4}:00Z" --arg type "${7:-User}" \
+    '{id: $id, user: {login: $login, type: $type}, body: $body, html_url: $url,
+      created_at: $created, updated_at: $updated}'
+}
+wpa_package() {  # wpa_package ISSUE ID MINUTE: a marked approval package by the bot
+  wpa_comment "$1" "$2" "mintswarm-dev[bot]" "$3" "$(printf '<!-- mintswarm: plan approval package -->\nPlan sha256: %s\nPlease approve.' "$wpa_sha")" "$3" Bot
+}
+wpa_field() {  # wpa_field VALUE: the msw-state issue field holding VALUE
+  jq -nc --arg v "$1" '[{issue_field_id: 50325307, issue_field_name: "msw-state", value: $v, single_select_option: {name: $v}}]'
+}
+wpa_seed() {  # wpa_seed ISSUE VALUE COMMENT_JSON...: a field-mode issue with VALUE and these comments
+  local n="$1" value="$2"; shift 2
+  seed "$n" "$(jq -nc --argjson f "$(wpa_field "$value")" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
+    '{fields: $f, comments: $c}')"
+}
+wpa_labeled() {  # wpa_labeled ID LOGIN MINUTE [TYPE]: a labeled event for msw-state:plan approved
+  jq -nc --argjson id "$1" --arg login "$2" --arg t "2026-11-24T10:$3:00Z" --arg type "${4:-User}" \
+    '{id: $id, event: "labeled", label: {name: "msw-state:plan approved"}, actor: {login: $login, type: $type}, created_at: $t}'
+}
+wpa_seed_labels() {  # wpa_seed_labels ISSUE EVENTS_JSON COMMENT_JSON...: a labels-mode issue set to plan approved
+  local n="$1" events="$2"; shift 2
+  seed "$n" "$(jq -nc --argjson e "$events" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
+    '{labels: ["bug", "msw-state:plan approved"], events: $e, comments: $c}')"
+}
+wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: issue_status}}
+pipeline: {review: {reviewers: [zmij, "mintswarm-dev[bot]"]}}')"
+wpa_argv_before="$(wc -l < "$argv_log" | tr -d ' ')"
+p81="package $(wpa_url 81 10) sha256 $wpa_sha"
+
+check "no issue exits 2" exits_2 wpa --base "$real_base"
+check "issue 0 exits 2" exits_2 wpa 0 --base "$real_base"
+check "a config without reviewers exits 2" exits_2 wpa 81 --base "$labels_base"
+
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+check "a trusted /approve-plan after the package gives approve" eq "$(wpa_lines 81 --base "$real_base")" \
+  "approve #81 comment 11 by zmij $p81"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 ZMIJ 05 "$(printf '/approve-plan \r\nlooks good')")"
+check "with a note, CRLF and the login in another case" eq "$(wpa_lines 81 --base "$real_base")" \
+  "approve #81 comment 11 by ZMIJ $p81"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 mallory 05 '/approve-plan')"
+check "an untrusted login is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by mallory: mallory is not a trusted approver"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 'helper[bot]' 05 '/approve-plan' 05 Bot)"
+check "a [bot] login is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by helper[bot]: helper[bot] is a bot"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan' 05 Bot)"
+check "an account of type Bot is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: zmij is a bot"
+wpa_seed 81 implementing "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+check "an issue not awaiting approval is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: #81 is not awaiting plan approval (msw-state implementing)"
+wpa_seed 81 "awaiting approval" "$(wpa_comment 81 10 'mintswarm-dev[bot]' 00 'An unmarked package' 00 Bot)" \
+  "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+check "an issue with no marked package is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: #81 has no current approval package"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" "$(wpa_package 81 12 10)"
+check "a command before the latest package is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: it predates the current approval package"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan' 07)"
+check "an edited command is refused" eq "$(wpa_lines 81 --base "$real_base")" \
+  "refuse #81 comment 11 by zmij: it was edited after it was posted"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
+  "$(wpa_comment 81 12 zmij 06 '/approve-plan')"
+check "a second valid command is already approved" eq "$(wpa_lines 81 --base "$real_base")" \
+  "approve #81 comment 11 by zmij $p81
+refuse #81 comment 12 by zmij: the plan is already approved"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
+  "$(wpa_comment 81 13 'mintswarm-dev[bot]' 06 "$(printf '<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->\n<!-- mintswarm: approve-plan 11 -->')" 06 Bot)" \
+  "$(wpa_comment 81 14 zmij 07 '/approve-plan')"
+check "an answered command gives no line, and still makes a later one already approved" \
+  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 14 by zmij: the plan is already approved"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 mallory 05 '/approve-plan')" \
+  "$(wpa_comment 81 12 mallory 06 '<!-- mintswarm: approve-plan 11 -->')" \
+  "$(wpa_comment 81 13 'mintswarm-dev[bot]' 07 '/approve-plan' 07 Bot)"
+check "an answer marker from anyone but the bot does not answer, and the bot's own command is skipped" \
+  eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 11 by mallory: mallory is not a trusted approver"
+
+wpa_seed 82 "plan approved" "$(wpa_package 82 20 00)"
+check "field mode: a hand-set is set back, its actor unknown" eq "$(wpa_lines 82 --base "$real_base")" \
+  "set-back #82 by unknown: who set it cannot be read; comment /approve-plan instead"
+wpa_seed 82 "plan approved" "$(wpa_package 82 20 00)" \
+  "$(wpa_comment 82 21 'mintswarm-dev[bot]' 05 "$(printf '<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->')" 05 Bot)"
+check "field mode: a value with the session's record gives no line" eq "$(wpa_lines 82 --base "$real_base")" ""
+
+p83="package $(wpa_url 83 30) sha256 $wpa_sha"
+wpa_seed_labels 83 "[$(wpa_labeled 1 zmij 05)]" "$(wpa_package 83 30 00)"
+check "labels mode: a hand-set by a trusted approver gives hand-set" eq "$(wpa_lines 83 --base "$wpa_labels_base")" \
+  "hand-set #83 by zmij $p83"
+wpa_seed_labels 83 "[$(wpa_labeled 1 zmij 03), $(wpa_labeled 2 mallory 05)]" "$(wpa_package 83 30 00)"
+check "labels mode: the latest labeled event decides, by another login set-back" \
+  eq "$(wpa_lines 83 --base "$wpa_labels_base")" "set-back #83 by mallory: mallory is not a trusted approver"
+wpa_seed_labels 83 "[$(wpa_labeled 1 'mintswarm-dev[bot]' 05 Bot)]" "$(wpa_package 83 30 00)" \
+  "$(wpa_comment 83 31 'mintswarm-dev[bot]' 05 '<!-- mintswarm: plan approved -->' 05 Bot)"
+check "labels mode: by the bot with a record, no line" eq "$(wpa_lines 83 --base "$wpa_labels_base")" ""
+wpa_seed_labels 83 "[$(wpa_labeled 1 'mintswarm-dev[bot]' 05 Bot)]" "$(wpa_package 83 30 00)"
+check "labels mode: by the bot without a record, set-back" eq "$(wpa_lines 83 --base "$wpa_labels_base")" \
+  "set-back #83 by mintswarm-dev[bot]: it was set without a recorded approval"
+wpa_seed_labels 83 "[$(wpa_labeled 1 zmij 05)]" "$(wpa_package 83 30 07)"
+check "labels mode: a hand-set before the package, set-back" eq "$(wpa_lines 83 --base "$wpa_labels_base")" \
+  "set-back #83 by zmij: it predates the current approval package"
+wpa_seed_labels 83 "[$(wpa_labeled 1 zmij 05)]"
+check "labels mode: a hand-set with no package, set-back" eq "$(wpa_lines 83 --base "$wpa_labels_base")" \
+  "set-back #83 by zmij: #83 has no current approval package"
+wpa_seed_labels 83 "[]" "$(wpa_package 83 30 00)"
+check "labels mode: no labeled event, set-back as unknown" eq "$(wpa_lines 83 --base "$wpa_labels_base")" \
+  "set-back #83 by unknown: who set it cannot be read; comment /approve-plan instead"
+
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')"
+wpa_seed 84 "plan approved" "$(wpa_package 84 40 00)"
+check "one run over two issues reports a command on one and a hand-set on the other" \
+  eq "$(wpa_lines 81 84 --base "$real_base")" "approve #81 comment 11 by zmij $p81
+set-back #84 by unknown: who set it cannot be read; comment /approve-plan instead"
+seed 85 '{"fields_unavailable": true}'
+check "a failed request exits 1 and prints no finding" eq "$(wpa 81 85 --base "$real_base" 2>/dev/null; echo "rc=$?")" "rc=1"
+check "the watcher never writes to GitHub" \
+  eq "$(tail -n "+$((wpa_argv_before + 1))" "$argv_log" | jq -c 'select(.cmd == "gh") | .argv | select(index("POST") or index("PUT") or index("PATCH") or index("DELETE"))' | wc -l | tr -d ' ')" "0"
+check "it read through bot-gh.sh, comments and events with --paginate --slurp" \
+  gh_argv_seen '["api","--paginate","--slurp","repos/{owner}/{repo}/issues/83/events"]'
+
+seed 86 '{"labels": ["msw-state:awaiting approval"], "status": "In review"}'
+check "msw-state.py sets plan approved in labels mode, with In progress" \
+  eq "$(ms set 86 'plan approved' --base "$labels_status_base" 2>&1) $(labels_of 86) $(status_of 86)" \
+  "set #86 msw-state to plan approved (was awaiting approval)
+set #86 status to In progress (was In review) msw-state:plan approved In progress"
+
 # --- summary -----------------------------------------------------------------
 
 check "every curl call starts with -q, so ~/.curlrc is ignored" \
