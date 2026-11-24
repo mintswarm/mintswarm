@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AttemptId, IssueNumber, JobId, RevId};
+use crate::question::{Question, QuestionViolation};
 
 /// A file written into a job's inputs, bound by its sha256.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,14 +95,65 @@ pub struct StageOutcome {
     pub status: OutcomeStatus,
     pub artefact: String,
     pub outputs: Vec<String>,
-    /// Non-empty exactly for `needs_input`.
-    pub questions: Vec<String>,
+    /// The stage's open questions and assumptions; `needs_input` exactly when one is
+    /// `must_decide` or `recommended`.
+    pub questions: Vec<Question>,
     /// Non-empty for `failed`.
     pub reason: String,
     /// The commit message implement and address propose.
     pub commit: Option<String>,
     /// The PR title the first implement round proposes.
     pub pr_title: Option<String>,
+}
+
+impl StageOutcome {
+    /// Checks the questions, and returns every violation at once, in this order:
+    ///
+    /// 1. each question's own violations, in question order (see [`Question::violations`]);
+    /// 2. one `DuplicateId` per id that two or more questions share, in order of first use;
+    /// 3. the status rule: `NeedsInputWithoutBlocking` when a `needs_input` outcome has no
+    ///    `must_decide` or `recommended` question, or one `BlockingNotNeedsInput` per such
+    ///    question in a `complete` or `failed` outcome.
+    pub fn check(&self) -> Result<(), Vec<QuestionViolation>> {
+        let mut out: Vec<QuestionViolation> = self
+            .questions
+            .iter()
+            .flat_map(Question::violations)
+            .collect();
+        let mut seen: Vec<&str> = Vec::new();
+        let mut repeated: Vec<&str> = Vec::new();
+        for question in &self.questions {
+            let id = question.id.as_str();
+            if seen.contains(&id) {
+                if !repeated.contains(&id) {
+                    repeated.push(id);
+                }
+            } else {
+                seen.push(id);
+            }
+        }
+        out.extend(
+            repeated
+                .into_iter()
+                .map(|id| QuestionViolation::DuplicateId { id: id.into() }),
+        );
+        match self.status {
+            OutcomeStatus::NeedsInput => {
+                if !self.questions.iter().any(Question::is_blocking) {
+                    out.push(QuestionViolation::NeedsInputWithoutBlocking);
+                }
+            }
+            OutcomeStatus::Complete | OutcomeStatus::Failed => {
+                out.extend(self.questions.iter().filter(|q| q.is_blocking()).map(|q| {
+                    QuestionViolation::BlockingNotNeedsInput {
+                        id: q.id.clone(),
+                        status: self.status,
+                    }
+                }));
+            }
+        }
+        if out.is_empty() { Ok(()) } else { Err(out) }
+    }
 }
 
 /// Token counts of an attempt.
