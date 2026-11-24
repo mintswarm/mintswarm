@@ -25,7 +25,7 @@ fn has(value: &Json, key: &str) -> bool {
     matches!(value, Json::Object(entries) if entries.iter().any(|(k, _)| k == key))
 }
 
-fn string<'j>(value: &'j Json) -> &'j str {
+fn string(value: &Json) -> &str {
     match value {
         Json::String(s) => s,
         other => panic!("not a string: {other:?}"),

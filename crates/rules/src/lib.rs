@@ -1,5 +1,13 @@
-//! Pure rules shared by the runner and the plane: how a value is written to a tracker field,
-//! how a read is interpreted, what counts as drift, and how a size is resolved.
+//! Pure rules shared by the runner and the plane.
+//!
+//! - [`field`] and [`size`]: how a value is written to a tracker field, how a read is
+//!   interpreted, what counts as drift, and how a size is resolved.
+//! - The building blocks the ported Python tools rest on, each matching its Python helper:
+//!   - [`glob`]: path globs with the plan floor's semantics;
+//!   - [`json`]: the strict JSON reader and a writer that reproduces `json.dumps` byte for byte;
+//!   - [`markdown`]: headings, sections and fenced blocks, in both of the tools' fence dialects;
+//!   - [`binding`]: sha256 digests and the bindings of files to them;
+//!   - [`exit`]: the 0, 1 and 2 exit-code contract.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
