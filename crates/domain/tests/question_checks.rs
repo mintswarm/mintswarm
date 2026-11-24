@@ -71,7 +71,8 @@ fn outcome(status: OutcomeStatus, questions: Vec<Question>) -> StageOutcome {
     }
 }
 
-/// The violations of a `complete` outcome holding the one question.
+/// The violations of an outcome holding the one question, `complete` for an assumption and
+/// `needs_input` otherwise.
 fn violations_of(question: Question) -> Vec<QuestionViolation> {
     let status = if question.kind == Assumption {
         OutcomeStatus::Complete
@@ -201,6 +202,51 @@ fn unknown_choice_for_yes_no_without_options() {
         vec![QuestionViolation::UnknownChoice {
             id: id("q1"),
             choice: id("maybe")
+        }]
+    );
+}
+
+#[test]
+fn duplicate_option_ids() {
+    let mut q = question("q1", MustDecide, One);
+    q.options = options(&["a", "b", "a", "b", "a", "c"]);
+    assert_eq!(
+        violations_of(q),
+        vec![
+            QuestionViolation::DuplicateOptionId {
+                id: id("q1"),
+                option: id("a")
+            },
+            QuestionViolation::DuplicateOptionId {
+                id: id("q1"),
+                option: id("b")
+            },
+        ]
+    );
+}
+
+#[test]
+fn duplicate_option_ids_on_one_with_two_options() {
+    let mut q = question("q1", MustDecide, One);
+    q.options = options(&["a", "a"]);
+    assert_eq!(
+        violations_of(q),
+        vec![QuestionViolation::DuplicateOptionId {
+            id: id("q1"),
+            option: id("a")
+        }]
+    );
+}
+
+#[test]
+fn duplicate_choice_for_several() {
+    let mut q = question("q1", Recommended, Several);
+    q.recommendation = recommend(&["a", "a", "b"]);
+    assert_eq!(
+        violations_of(q),
+        vec![QuestionViolation::DuplicateChoice {
+            id: id("q1"),
+            choice: id("a")
         }]
     );
 }

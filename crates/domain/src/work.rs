@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AttemptId, IssueNumber, JobId, RevId};
-use crate::question::{Question, QuestionViolation};
+use crate::question::{Question, QuestionViolation, repeated};
 
 /// A file written into a job's inputs, bound by its sha256.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,20 +120,8 @@ impl StageOutcome {
             .iter()
             .flat_map(Question::violations)
             .collect();
-        let mut seen: Vec<&str> = Vec::new();
-        let mut repeated: Vec<&str> = Vec::new();
-        for question in &self.questions {
-            let id = question.id.as_str();
-            if seen.contains(&id) {
-                if !repeated.contains(&id) {
-                    repeated.push(id);
-                }
-            } else {
-                seen.push(id);
-            }
-        }
         out.extend(
-            repeated
+            repeated(self.questions.iter().map(|q| q.id.as_str()))
                 .into_iter()
                 .map(|id| QuestionViolation::DuplicateId { id: id.into() }),
         );

@@ -19,6 +19,20 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// The ids that occur more than once, each once, in order of first use.
+pub(crate) fn repeated<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut repeated: Vec<&str> = Vec::new();
+    for id in ids {
+        if !seen.contains(&id) {
+            seen.push(id);
+        } else if !repeated.contains(&id) {
+            repeated.push(id);
+        }
+    }
+    repeated
+}
+
 /// One open question or assumption.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
@@ -153,6 +167,8 @@ pub enum QuestionViolation {
     YesNoOptions { id: String },
     /// An `open` question has options.
     OpenWithOptions { id: String },
+    /// Two or more of the question's options share this option id.
+    DuplicateOptionId { id: String, option: String },
     /// The recommendation chooses the wrong number of options for the shape.
     ChoiceCount {
         id: String,
@@ -161,6 +177,8 @@ pub enum QuestionViolation {
     },
     /// The recommendation chooses an id that is not a valid option for the shape.
     UnknownChoice { id: String, choice: String },
+    /// The recommendation chooses this id more than once.
+    DuplicateChoice { id: String, choice: String },
     /// The recommendation has an `answer` on a shape other than `open`.
     AnswerNotOpen { id: String },
     /// Two or more questions share this id.
@@ -200,11 +218,17 @@ impl fmt::Display for QuestionViolation {
             QuestionViolation::OpenWithOptions { id } => {
                 write!(f, "{id}: an open question has no options")
             }
+            QuestionViolation::DuplicateOptionId { id, option } => {
+                write!(f, "{id}: option id {option:?} is not unique")
+            }
             QuestionViolation::ChoiceCount { id, shape, count } => {
                 write!(f, "{id}: {count} choices do not fit shape {shape}")
             }
             QuestionViolation::UnknownChoice { id, choice } => {
                 write!(f, "{id}: choice {choice:?} is not an option id")
+            }
+            QuestionViolation::DuplicateChoice { id, choice } => {
+                write!(f, "{id}: choice {choice:?} is chosen more than once")
             }
             QuestionViolation::AnswerNotOpen { id } => {
                 write!(
@@ -251,19 +275,23 @@ impl Question {
     /// 1. `MissingRecommendation`: `recommended` and `assumption` need a recommendation.
     /// 2. `AssumptionOpen`: an `assumption` has shape `one`, `several` or `yes_no`.
     /// 3. `AssumptionNoAlternative`: an `assumption` of another shape has at least one valid
-    ///    choice id (see 9) besides those its recommendation chooses.
+    ///    choice id (see 10) besides those its recommendation chooses.
     /// 4. `EmptyQuestion` and `EmptyWhy`: `question` and `why` are not empty or whitespace.
     /// 5. `TooFewOptions`: `one` and `several` have at least two options.
     /// 6. `YesNoOptions`: `yes_no` has no options, or exactly two with the ids `yes` and `no`.
     /// 7. `OpenWithOptions`: `open` has no options.
+    /// 8. `DuplicateOptionId`, once per option id that two or more options share, in order of
+    ///    first use.
     ///
     /// With a recommendation:
     ///
-    /// 8. `ChoiceCount`: `choice` holds exactly one id for `one` and `yes_no`, at least one for
+    /// 9. `ChoiceCount`: `choice` holds exactly one id for `one` and `yes_no`, at least one for
     ///    `several`, and none for `open`.
-    /// 9. `UnknownChoice`, once per bad id in `choice` order, except for `open`: each id is an
-    ///    option id, or `yes` or `no` for `yes_no` without options.
-    /// 10. `AnswerNotOpen`: `answer` is set only for `open`.
+    /// 10. `UnknownChoice`, once per bad id in `choice` order, except for `open`: each id is an
+    ///     option id, or `yes` or `no` for `yes_no` without options.
+    /// 11. `DuplicateChoice`, once per id that `choice` holds more than once, in order of first
+    ///     use.
+    /// 12. `AnswerNotOpen`: `answer` is set only for `open`.
     pub fn violations(&self) -> Vec<QuestionViolation> {
         let id = || self.id.clone();
         let mut out = Vec::new();
@@ -304,6 +332,14 @@ impl Question {
             }
             _ => {}
         }
+        out.extend(
+            repeated(self.options.iter().map(|o| o.id.as_str()))
+                .into_iter()
+                .map(|option| QuestionViolation::DuplicateOptionId {
+                    id: id(),
+                    option: option.into(),
+                }),
+        );
         if let Some(recommendation) = &self.recommendation {
             let count = choice.len();
             let fits = match self.shape {
@@ -326,6 +362,14 @@ impl Question {
                     });
                 }
             }
+            out.extend(
+                repeated(choice.iter().map(String::as_str))
+                    .into_iter()
+                    .map(|c| QuestionViolation::DuplicateChoice {
+                        id: id(),
+                        choice: c.into(),
+                    }),
+            );
             if recommendation.answer.is_some() && self.shape != QuestionShape::Open {
                 out.push(QuestionViolation::AnswerNotOpen { id: id() });
             }
