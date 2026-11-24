@@ -3194,6 +3194,9 @@ check "the owner is read from the issue through bot-gh.sh" gh_argv_seen '["api",
 wpa_decomposition() {  # wpa_decomposition ISSUE ID MINUTE: a marked decomposition approval package by the bot
   wpa_comment "$1" "$2" "mintswarm-dev[bot]" "$3" "$(printf '<!-- mintswarm: decomposition approval package -->\npackage: none\nPlease approve.')" "$3" Bot
 }
+wpa_design() {  # wpa_design ISSUE ID MINUTE: a marked design approval package by the bot
+  wpa_comment "$1" "$2" "mintswarm-dev[bot]" "$3" "$(printf '<!-- mintswarm: design approval package -->\nPlease approve.')" "$3" Bot
+}
 wpa_one() {  # wpa_one VALUE BODY [LOGIN] [TYPE]: issue 81 with a plan package and one comment 11 holding BODY
   wpa_seed 81 "$1" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 "${3:-zmij}" 05 "$2" 05 "${4:-User}")"
 }
@@ -3203,6 +3206,12 @@ check "/approve-plan on a later line gives react and approve" eq "$(wpa_lines 81
 approve #81 comment 11 by zmij $p81"
 wpa_one "awaiting approval" "$(printf 'Should I post\n> /approve-plan\nhere?')"
 check "a quoted /approve-plan gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf '> Should I post\n/approve-plan')"
+check "a /approve-plan lazily continuing a quote gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
+wpa_one "awaiting approval" "$(printf '> Should I post this?\n\n/approve-plan')"
+check "a /approve-plan after a quote and a blank line gives react and approve" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+approve #81 comment 11 by zmij $p81"
 wpa_one "awaiting approval" "$(printf 'Post this:\n```\n/approve-plan\n```')"
 check "a /approve-plan in a backtick fence gives no line" eq "$(wpa_lines 81 --base "$real_base")" ""
 wpa_one "awaiting approval" "$(printf 'Post this:\n~~~text\n/approve-plan\n~~~')"
@@ -3238,6 +3247,19 @@ wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_decomposition 81
 check "/help after a decomposition package gives commands decomposition" eq "$(wpa_lines 81 --base "$real_base")" \
   "react #81 comment 11
 help #81 comment 11 by zmij commands decomposition"
+wpa_seed 81 "awaiting approval" "$(wpa_decomposition 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve')"
+check "/approve under a decomposition package suggests approve, not /approve-plan" eq "$(wpa_lines 81 --base "$real_base")" \
+  "hint #81 comment 11 by zmij command /approve suggest approve commands decomposition"
+wpa_seed 81 "awaiting approval" "$(wpa_design 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/help')"
+check "/help after a design package gives commands design" eq "$(wpa_lines 81 --base "$real_base")" \
+  "react #81 comment 11
+help #81 comment 11 by zmij commands design"
+wpa_seed 81 "awaiting approval" "$(wpa_design 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/reject')"
+check "/reject under a design package suggests reject" eq "$(wpa_lines 81 --base "$real_base")" \
+  "hint #81 comment 11 by zmij command /reject suggest reject commands design"
+wpa_one implementing '/plan-approve'
+check "/plan-approve while implementing suggests none, as /approve-plan is not valid there" \
+  eq "$(wpa_lines 81 --base "$real_base")" "hint #81 comment 11 by zmij command /plan-approve suggest none commands none"
 wpa_one implementing '/help'
 check "/help while implementing gives commands none" eq "$(wpa_lines 81 --base "$real_base")" \
   "react #81 comment 11
@@ -3281,6 +3303,17 @@ check "--commands decomposition prints the decomposition's Commands section" eq 
 - `approve`: approve the decomposition, as the comment'"'"'s first line.
 - `changes`: ask for changes, as the comment'"'"'s first line, with what to change on the lines after it.
 - `reject`: reject the decomposition, as the comment'"'"'s first line.
+- `/help`: reply with the commands valid on this issue now.
+
+A `/` command counts only when it stands alone at the start of a line, outside quotes and code; only the first one in a comment counts.
+
+</details>'
+check "--commands design prints the design's Commands section" eq "$(wpa_lines --commands design)" \
+  '<details><summary>Commands</summary>
+
+- `approve`: approve the design, as the comment'"'"'s first line, citing the sha256 of the current design.
+- `changes`: ask for changes, as the comment'"'"'s first line, with what to change on the lines after it.
+- `reject`: reject the design, as the comment'"'"'s first line.
 - `/help`: reply with the commands valid on this issue now.
 
 A `/` command counts only when it stands alone at the start of a line, outside quotes and code; only the first one in a comment counts.

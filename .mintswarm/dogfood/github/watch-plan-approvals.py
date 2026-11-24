@@ -37,7 +37,9 @@ comment's first line is taken with CRLF normalised and whitespace trimmed.
 A comment's command is its first command line: a line that, with CRLF
 normalised and whitespace trimmed, is exactly one token `/[A-Za-z][A-Za-z0-9-]*`,
 outside a `>` quote, a ``` or ~~~ fenced block and an indented code block (a
-line starting with 4 spaces or a tab). Only that first command line counts; the
+line starting with 4 spaces or a tab). A non-blank line right after a `>` line
+with text, up to the next blank line or fence, is the quote's lazy
+continuation and is quoted too. Only that first command line counts; the
 comment's other lines are a note. A line holding a token and more text, such as
 `/approve-plan please` or `/tmp/x`, is not a command line. Comments by
 mintswarm-dev[bot] have no command.
@@ -85,21 +87,24 @@ mintswarm-dev[bot] comment holds a line that is exactly
 Comments by bots get no reply and print nothing. An unanswered `/help` prints
 `help #N comment ID by LOGIN commands CONTEXT`; any other token prints
 `hint #N comment ID by LOGIN command /X suggest /Y commands CONTEXT`. /Y is the
-known command (`/approve-plan` or `/help`) whose hyphen-separated words are
-those of /X in any order and case, else the closest one by
-difflib.get_close_matches with cutoff 0.6 on the lowercased token, else
-`none`. CONTEXT is `plan` or `decomposition` when the msw-state is
-`awaiting approval` and the latest mintswarm-dev[bot] comment opening with
-`<!-- mintswarm: plan approval package -->` or
-`<!-- mintswarm: decomposition approval package -->` is of that kind, and
-`none` otherwise.
+command valid in CONTEXT (as `--commands CONTEXT` lists them, `/help`
+included) whose hyphen-separated words, without a leading `/`, are those of /X
+in any order and case, else the closest one by difflib.get_close_matches with
+cutoff 0.6 on the lowercased names without `/`, else `none`; so `/approve`
+under a decomposition package suggests `approve`. CONTEXT is `plan`,
+`decomposition` or `design` when the msw-state is `awaiting approval` and the
+latest mintswarm-dev[bot] comment opening with
+`<!-- mintswarm: plan approval package -->`,
+`<!-- mintswarm: decomposition approval package -->` or
+`<!-- mintswarm: design approval package -->` is of that kind, and `none`
+otherwise.
 
 Every comment it acts on, an unanswered approval command (approved or refused)
 and an unanswered `/help`, first gets `react #N comment ID`: the session adds
 a +1 reaction to it. A hint gets no reaction.
 
-`--commands CONTEXT` prints the Commands section of `plan`, `decomposition` or
-`none` and makes no GitHub call: a `<details><summary>Commands</summary>`
+`--commands CONTEXT` prints the Commands section of `plan`, `decomposition`,
+`design` or `none` and makes no GitHub call: a `<details><summary>Commands</summary>`
 block listing each command valid in that context in a code span, with one line
 on where a command counts. The packages and the help and hint replies end with
 it. An unknown CONTEXT, or `--commands` with issues, exits 2.
@@ -128,6 +133,9 @@ COMMAND = "/approve-plan"
 HELP = "/help"
 PACKAGE = "<!-- mintswarm: plan approval package -->"
 DECOMPOSITION = "<!-- mintswarm: decomposition approval package -->"
+DESIGN = "<!-- mintswarm: design approval package -->"
+# The context each package marker puts an issue in while it awaits approval.
+CONTEXTS = {PACKAGE: "plan", DECOMPOSITION: "decomposition", DESIGN: "design"}
 RECORD = "<!-- mintswarm: plan approved -->"
 ANSWER = re.compile(r"<!-- mintswarm: approve-plan (\d+) -->")
 REPLY = re.compile(r"<!-- mintswarm: command-reply (\d+) -->")
@@ -150,6 +158,12 @@ COMMANDS = {
         ("approve", f"approve the decomposition, {FIRST_LINE}"),
         ("changes", f"ask for changes, {FIRST_LINE}, with what to change on the lines after it"),
         ("reject", f"reject the decomposition, {FIRST_LINE}"),
+        (HELP, HELP_TEXT),
+    ],
+    "design": [
+        ("approve", f"approve the design, {FIRST_LINE}, citing the sha256 of the current design"),
+        ("changes", f"ask for changes, {FIRST_LINE}, with what to change on the lines after it"),
+        ("reject", f"reject the design, {FIRST_LINE}"),
         (HELP, HELP_TEXT),
     ],
     "none": [(HELP, HELP_TEXT)],
@@ -202,47 +216,57 @@ def order(item: dict) -> tuple:
 
 
 def command_of(comment: dict):
-    """The first command token alone on a line outside quotes, fences and indented code, or None."""
+    """The first command token alone on a line outside quotes, fences and indented code, or None.
+
+    A non-blank line right after a quote line with text is the quote's lazy
+    continuation, so it is quoted too, until a blank line or a fence.
+    """
     body = comment.get("body")
     if not isinstance(body, str):
         return None
-    fence = None
+    fence, quoted = None, False
     for raw in body.replace("\r\n", "\n").split("\n"):
         if fence is not None:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{%d,}" % len(fence), raw.rstrip()):
                 fence = None
             continue
-        if m := FENCE.match(raw):
-            fence = m.group(1)
+        if not raw.strip():
+            quoted = False
             continue
-        if raw.startswith(("    ", "\t")) or raw.lstrip().startswith(">"):
+        if m := FENCE.match(raw):
+            fence, quoted = m.group(1), False
+            continue
+        if raw.lstrip().startswith(">"):
+            quoted = bool(raw.lstrip().lstrip(">").strip())
+            continue
+        if quoted or raw.startswith(("    ", "\t")):
             continue
         if TOKEN.fullmatch(raw.strip()):
             return raw.strip()
     return None
 
 
-def slash_commands() -> list:
-    return list(dict.fromkeys(name for rows in COMMANDS.values() for name, _ in rows if name.startswith("/")))
+def suggest(token: str, where: str) -> str:
+    """The command valid in context WHERE that TOKEN was probably meant as, or none.
 
-
-def suggest(token: str) -> str:
-    """The known command TOKEN was probably meant as, or none."""
-    known, words = slash_commands(), sorted(token.lower()[1:].split("-"))
-    for name in known:
-        if sorted(name[1:].split("-")) == words:
+    Names are compared without their leading `/`, so `/approve` finds `approve`.
+    """
+    known = {name.lstrip("/").lower(): name for name, _ in COMMANDS[where]}
+    words = sorted(token.lower()[1:].split("-"))
+    for bare, name in known.items():
+        if sorted(bare.split("-")) == words:
             return name
-    close = difflib.get_close_matches(token.lower(), known, n=1, cutoff=0.6)
-    return close[0] if close else "none"
+    close = difflib.get_close_matches(token.lower()[1:], list(known), n=1, cutoff=0.6)
+    return known[close[0]] if close else "none"
 
 
 def context(value: str, comments: list) -> str:
-    """plan or decomposition when awaiting approval of the latest marked package of that kind, else none."""
+    """plan, decomposition or design when awaiting approval of the latest marked package of that kind, else none."""
     found = "none"
     if value == AWAITING:
         for comment in comments:
-            if by_us(comment) and first_line(comment) in (PACKAGE, DECOMPOSITION):
-                found = "plan" if first_line(comment) == PACKAGE else "decomposition"
+            if by_us(comment) and first_line(comment) in CONTEXTS:
+                found = CONTEXTS[first_line(comment)]
     return found
 
 
@@ -298,7 +322,7 @@ def commands(number: int, value: str, comments: list, package, trusted: set) -> 
                 reacts.append(f"react #{number} comment {ident}")
                 replies.append(f"help {head} commands {where}")
             else:
-                replies.append(f"hint {head} command {token} suggest {suggest(token)} commands {where}")
+                replies.append(f"hint {head} command {token} suggest {suggest(token, where)} commands {where}")
             continue
         if ident in done:
             if done[comment.get("id")] and package is not None and order(comment) > order(package):
