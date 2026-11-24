@@ -28,7 +28,11 @@ is loaded by its file path. The cases:
   "## Bands" in both landing.md and assess.md the value starts at the
   band's highest value and only goes down, with no reasons for raising it
   and none of the old "starts at the lowest value" wording, and only the
-  landing `weakens-safeguard` trigger excepts a declared change.
+  landing `weakens-safeguard` trigger excepts a declared change; in landing.md
+  that exception covers only a declared gate or floor change, never a gate
+  that failed and was then changed, a step that only names the file does not
+  declare it, and the Care ground and the likely-safe condition except a
+  declared gate.
 
 Exits 0 when every case passes, 1 otherwise.
 """
@@ -386,6 +390,25 @@ def check_stage_rules() -> None:
             len(trigger) == 1 and declared == (name == "landing"),
             repr(trigger),
         )
+    bands_section = section(STAGE.read_text(encoding="utf-8").split("\n"), "## Bands", "## Output")
+    text = "\n".join(bands_section)
+    exception = "other than a removed or loosened gate that a plan approved by a human declared"
+    for label, prefix in (
+        ("the Care ground", "- **Care:**"),
+        ("the likely-safe condition", "- no undeclared dependency"),
+    ):
+        lines = [line for line in bands_section if line.startswith(prefix)]
+        T.check(
+            f"stage rules: landing {label} excepts a declared gate",
+            len(lines) == 1 and exception in lines[0],
+            repr(lines),
+        )
+    for phrase in (
+        "every other weakening the trigger names stays the trigger whether the plan declared it or not",
+        "a step that names the file but not the weakening does not declare it",
+        "a gate that failed and was then changed stays this trigger even when the change was declared",
+    ):
+        T.check(f"stage rules: landing says {phrase!r}", phrase in text, "")
 
 
 def check_stdlib() -> None:
