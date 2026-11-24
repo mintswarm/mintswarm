@@ -2966,6 +2966,16 @@ wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 z
   "$(wpa_comment 81 14 zmij 07 '/approve-plan')"
 check "an answered command gives no line, and still makes a later one already approved" \
   eq "$(wpa_lines 81 --base "$real_base")" "refuse #81 comment 14 by zmij: the plan is already approved"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 zmij 05 '/approve-plan')" \
+  "$(wpa_comment 81 13 'mintswarm-dev[bot]' 06 "$(printf '<!-- mintswarm: approve-plan 11 -->\n#81 is not awaiting plan approval (msw-state planning)')" 06 Bot)" \
+  "$(wpa_comment 81 14 zmij 07 '/approve-plan')"
+check "a command answered with a refusal is not judged again, and a later valid one gives approve" \
+  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 14 by zmij $p81"
+wpa_seed 81 "awaiting approval" "$(wpa_package 81 9 00)" "$(wpa_comment 81 11 zmij 01 '/approve-plan')" \
+  "$(wpa_comment 81 12 'mintswarm-dev[bot]' 02 "$(printf '<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->\n<!-- mintswarm: approve-plan 11 -->')" 02 Bot)" \
+  "$(wpa_package 81 10 03)" "$(wpa_comment 81 14 zmij 05 '/approve-plan')"
+check "an approval of an earlier package does not make a command on the current one already approved" \
+  eq "$(wpa_lines 81 --base "$real_base")" "approve #81 comment 14 by zmij $p81"
 wpa_seed 81 "awaiting approval" "$(wpa_package 81 10 00)" "$(wpa_comment 81 11 mallory 05 '/approve-plan')" \
   "$(wpa_comment 81 12 mallory 06 '<!-- mintswarm: approve-plan 11 -->')" \
   "$(wpa_comment 81 13 'mintswarm-dev[bot]' 07 '/approve-plan' 07 Bot)"

@@ -26,8 +26,13 @@ comment's first line is taken with CRLF normalised and whitespace trimmed.
 
 A command is a comment, not by mintswarm-dev[bot], whose first line is exactly
 `/approve-plan`. It is answered when a mintswarm-dev[bot] comment holds a line
-that is exactly `<!-- mintswarm: approve-plan ID -->`. Each command is checked
-in this order, and the first check that fails is its reason:
+that is exactly `<!-- mintswarm: approve-plan ID -->`, and answered with an
+approval when that comment also opens with `<!-- mintswarm: plan approved -->`
+(the session's record). An answered command is not checked again: it prints
+nothing, and it counts as approved only when it was answered with an approval
+and was posted after the current package, so a command refused earlier never
+counts, whatever the state is now. Each unanswered command is checked in this
+order, and the first check that fails is its reason:
 
     LOGIN is a bot                     (ends in [bot], or user type Bot)
     LOGIN is not a trusted approver
@@ -38,8 +43,7 @@ in this order, and the first check that fails is its reason:
     the plan is already approved       (a valid command came before it)
 
 An unanswered command prints `approve #N comment ID by LOGIN package PKG
-sha256 SHA` or `refuse #N comment ID by LOGIN: REASON`; an answered one prints
-nothing, but a valid one still makes later ones `already approved`.
+sha256 SHA` or `refuse #N comment ID by LOGIN: REASON`.
 
 When the value is `plan approved` and no mintswarm-dev[bot] comment opening
 with `<!-- mintswarm: plan approved -->` (the session's record) follows the
@@ -140,11 +144,16 @@ def describe(package: dict) -> str:
     return f"package {url} sha256 {SHA_LINE.fullmatch(lines(package['body'])[1]).group(1)}"
 
 
-def answered(comments: list) -> set:
-    ids = set()
+def answered(comments: list) -> dict:
+    """Answered command ids, each mapped to whether an answer was the approval record."""
+    ids = {}
     for comment in comments:
         if by_us(comment):
-            ids.update(int(m.group(1)) for line in lines(comment.get("body")) if (m := ANSWER.fullmatch(line)))
+            record = first_line(comment) == RECORD
+            for line in lines(comment.get("body")):
+                if m := ANSWER.fullmatch(line):
+                    ident = int(m.group(1))
+                    ids[ident] = ids.get(ident, False) or record
     return ids
 
 
@@ -152,6 +161,10 @@ def commands(number: int, value: str, comments: list, package, trusted: set) -> 
     done, approves, refusals, approved = answered(comments), [], [], False
     for comment in comments:
         if by_us(comment) or first_line(comment) != COMMAND:
+            continue
+        if comment.get("id") in done:
+            if done[comment.get("id")] and package is not None and order(comment) > order(package):
+                approved = True
             continue
         who = login(comment)
         if is_bot(comment):
@@ -170,8 +183,6 @@ def commands(number: int, value: str, comments: list, package, trusted: set) -> 
             reason = "the plan is already approved"
         else:
             reason, approved = None, True
-        if comment.get("id") in done:
-            continue
         head = f"#{number} comment {comment.get('id')} by {who}"
         if reason is None:
             approves.append(f"approve {head} {describe(package)}")
