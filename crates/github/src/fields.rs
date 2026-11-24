@@ -33,6 +33,54 @@ enum Resource {
 
 type Key = (u64, Resource);
 
+/// At most this many resources are kept in a client's ETag cache.
+const ETAG_CACHE_LIMIT: usize = 4096;
+
+/// The last ETag and body of each issue's resources, the oldest dropped above a fixed count.
+#[derive(Debug)]
+struct EtagCache {
+    limit: usize,
+    /// Each entry's ETag and body, and when it was stored.
+    entries: HashMap<Key, (String, Arc<Value>, u64)>,
+    stored: u64,
+}
+
+impl EtagCache {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            entries: HashMap::new(),
+            stored: 0,
+        }
+    }
+
+    fn get(&self, key: &Key) -> Option<(String, Arc<Value>)> {
+        self.entries
+            .get(key)
+            .map(|(etag, body, _)| (etag.clone(), Arc::clone(body)))
+    }
+
+    /// Stores `key`'s ETag and body, dropping the oldest entry when the cache is full.
+    fn insert(&mut self, key: Key, etag: String, body: Arc<Value>) {
+        if !self.entries.contains_key(&key) && self.entries.len() >= self.limit {
+            let oldest = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, _, stored))| *stored)
+                .map(|(key, _)| *key);
+            if let Some(oldest) = oldest {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.stored += 1;
+        self.entries.insert(key, (etag, body, self.stored));
+    }
+
+    fn remove(&mut self, key: &Key) {
+        self.entries.remove(key);
+    }
+}
+
 /// Reads and writes role fields on the issues of one repository.
 #[derive(Debug)]
 pub struct FieldClient {
@@ -40,7 +88,7 @@ pub struct FieldClient {
     owner: String,
     repo: String,
     /// The last ETag and body of each issue's resources, kept across passes.
-    etags: Mutex<HashMap<Key, (String, Arc<Value>)>>,
+    etags: Mutex<EtagCache>,
 }
 
 impl FieldClient {
@@ -52,7 +100,7 @@ impl FieldClient {
             rest: Rest::new(api_base)?,
             owner: owner.to_owned(),
             repo: repo.to_owned(),
-            etags: Mutex::new(HashMap::new()),
+            etags: Mutex::new(EtagCache::new(ETAG_CACHE_LIMIT)),
         })
     }
 
@@ -252,7 +300,7 @@ impl FieldPass<'_> {
         if let Some(body) = memo.get(&key) {
             return Ok(Arc::clone(body));
         }
-        let cached = self.client.etags.lock().await.get(&key).cloned();
+        let cached = self.client.etags.lock().await.get(&key);
         let path = self.client.path(issue, resource);
         let reply = self
             .client
@@ -274,9 +322,9 @@ impl FieldPass<'_> {
             let body = Arc::new(reply.json()?);
             let mut etags = self.client.etags.lock().await;
             match reply.etag {
-                Some(etag) => etags.insert(key, (etag, Arc::clone(&body))),
+                Some(etag) => etags.insert(key, etag, Arc::clone(&body)),
                 None => etags.remove(&key),
-            };
+            }
             body
         } else {
             return Err(classify(&reply, Op::Read));
@@ -509,7 +557,9 @@ mod tests {
 
     use mintswarm_domain::field::{FieldError, FieldFinding};
 
-    use super::{Op, Pattern, classify, path_segment};
+    use std::sync::Arc;
+
+    use super::{EtagCache, Op, Pattern, Resource, classify, path_segment};
     use crate::rest::Reply;
 
     fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
@@ -601,6 +651,22 @@ mod tests {
             assert!(is_transport(&classify(&reply(401, false, ""), op)));
             assert!(is_transport(&classify(&reply(409, false, "not json"), op)));
         }
+    }
+
+    #[test]
+    fn the_etag_cache_drops_its_oldest_entry_when_full() {
+        let mut cache = EtagCache::new(2);
+        let body = Arc::new(serde_json::Value::Null);
+        cache.insert((1, Resource::Issue), "a".into(), Arc::clone(&body));
+        cache.insert((2, Resource::Issue), "b".into(), Arc::clone(&body));
+        // Storing a key again refreshes it without dropping another.
+        cache.insert((1, Resource::Issue), "a2".into(), Arc::clone(&body));
+        assert_eq!(cache.entries.len(), 2);
+        cache.insert((3, Resource::FieldValues), "c".into(), body);
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.get(&(2, Resource::Issue)).is_none());
+        assert_eq!(cache.get(&(1, Resource::Issue)).unwrap().0, "a2");
+        assert_eq!(cache.get(&(3, Resource::FieldValues)).unwrap().0, "c");
     }
 
     #[test]
