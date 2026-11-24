@@ -268,6 +268,17 @@ fn plane_types_round_trip() {
 }
 
 #[test]
+fn json_keeps_integers_above_i64() {
+    let tree: Json = serde_json::from_str("[1, -1, 18446744073709551615]").expect("JSON");
+    assert_eq!(
+        tree,
+        Json::Array(vec![Json::Int(1), Json::Int(-1), Json::UInt(u64::MAX)])
+    );
+    let text = serde_json::to_string(&tree).expect("serialises");
+    assert_eq!(text, "[1,-1,18446744073709551615]");
+}
+
+#[test]
 fn credential_debug_hides_the_token() {
     let cred = Credential {
         token: "ghs_secret".into(),

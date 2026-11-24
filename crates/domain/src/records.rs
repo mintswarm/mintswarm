@@ -14,11 +14,14 @@ use crate::ids::{IssueNumber, PrNumber, RevId};
 /// A JSON value that keeps its object keys in order and its integers apart from its floats.
 ///
 /// Used where a record embeds a value the Python leaves open, and to compare records by structure.
+/// An integer is an `Int` when it fits in `i64`, and a `UInt` only above `i64::MAX`, so each
+/// integer has one form.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Json {
     Null,
     Bool(bool),
     Int(i64),
+    UInt(u64),
     Float(f64),
     String(String),
     Array(Vec<Json>),
@@ -31,6 +34,7 @@ impl Serialize for Json {
             Json::Null => serializer.serialize_unit(),
             Json::Bool(b) => serializer.serialize_bool(*b),
             Json::Int(i) => serializer.serialize_i64(*i),
+            Json::UInt(u) => serializer.serialize_u64(*u),
             Json::Float(f) => serializer.serialize_f64(*f),
             Json::String(s) => serializer.serialize_str(s),
             Json::Array(items) => {
@@ -81,9 +85,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 
     fn visit_u64<E: de::Error>(self, u: u64) -> Result<Json, E> {
-        i64::try_from(u)
-            .map(Json::Int)
-            .map_err(|_| E::custom("integer out of range"))
+        Ok(i64::try_from(u).map_or(Json::UInt(u), Json::Int))
     }
 
     fn visit_f64<E: de::Error>(self, f: f64) -> Result<Json, E> {
