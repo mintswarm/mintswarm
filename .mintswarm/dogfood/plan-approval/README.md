@@ -1,6 +1,6 @@
 # Plan approval while dogfooding
 
-This directory stands in for the control plane's plan approval: the deterministic floor (`floor.py`) and the decision that combines it with the assess stage's judgement (`decision.py`). Until the control plane exists, the session runs them by hand for every implementation plan, as described here. `selftest.py` tests both scripts offline; run it with `python3 -I .mintswarm/dogfood/plan-approval/selftest.py`.
+This directory stands in for the control plane's plan approval: the deterministic floor (`floor.py`) and the decision that combines it with the assess stage's judgement (`decision.py`). Until the control plane exists, the session runs them by hand for every implementation plan, as described here. `size.py` reads the size an analysis or a plan states (see Sizes below). `selftest.py` tests the three scripts offline; run it with `python3 -I .mintswarm/dogfood/plan-approval/selftest.py`.
 
 The mode is `pipeline.plan_approval.mode` in `.mintswarm/config.yaml` at the job's base commit, never the worktree's copy:
 
@@ -56,6 +56,13 @@ After the plan stage returns a plan, in this order:
 8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
 9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the band and confidence against `min_confidence`, any hard triggers, the reason, and links to the assessment and decision artifacts.
 
+## Sizes
+
+The analyse and plan stages state a size in a `## Size` section (`.mintswarm/stages/analyse.md` and rule 12 of `.mintswarm/stages/plan.md`). `size.py` reads it:
+
+- After every analyse job, of any kind, whose base includes `size.py`, the session runs `python3 -I .mintswarm/dogfood/plan-approval/size.py analysis <analysis>` on the saved analysis before publishing it. Exit 0 prints `size: <value>`. Exit 1 means the section is missing or malformed: the analysis is unusable, and the analyse stage reruns. Exit 2 stops the job until the cause is fixed.
+- For every plan that goes to the maintainer, the session runs `python3 -I .mintswarm/dogfood/plan-approval/size.py plan .mintswarm/job/inputs/artefacts/plan.md` in the assess job's worktree. It prints the size, raised to the lines floor of the footprint's `production_lines` when the judged size is below it, with the line `size raised from <judged> to <floor> by planned lines`, or the lines floor and a line saying the plan states no usable size. A missing or malformed section in a plan is also an assessment finding.
+
 ## The plan's dependency screen
 
 For every plan the plan stage returns, revisions included and in every mode, the session screens the packages the plan declares, right after laying out the assess job (step 2) and before the floor (step 3). It runs, at the root of the assess job's worktree:
@@ -86,6 +93,7 @@ It runs with network access to `crates.io`, `index.crates.io`, `static.crates.io
 For every plan that goes to the maintainer, the session posts the approval package as one comment on the implementation issue through `bot-gh.sh` (`-F body=@<file>`). It gives the full URLs GitHub returned (`html_url`) of the plan artifact, the TL;DR comment for that plan (step 1), the `Plan assessment` artifact, the decision artifact and, in `shadow` mode, the shadow-record comment, and holds:
 
 - the plan artifact, with its approach and footprint in brief;
+- the size: the lines `size.py plan` printed, unchanged, or, when it exits 2, a line saying the size could not be read;
 - the floor verdict: hit rules with their reasons, or clean;
 - the band and confidence with the threshold, the hard triggers, the reason and the doubts, and the `Plan assessment` artifact;
 - the mode and the decision, with `judged_decision` and the decision artifact;

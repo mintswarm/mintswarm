@@ -40,6 +40,10 @@ You plan one implementation issue so that the implement stage can carry it out w
     - It holds three to six `- ` bullets and nothing else. Together they name what changes (files or areas), the approach in one line, what the plan deliberately leaves out, and what the maintainer must do or decide. The maintainer bullet is always there; when nothing but approval is needed, it says approval only.
     - It restates the plan: it adds no step, file or decision that the rest of the plan does not hold.
     - The session posts it unchanged as a comment on the issue, and posts only a link to the plan instead if the section breaks this rule. Each bullet is one line, with no continuation lines. Outside inline code spans it holds no `@`, `<` or `>` (so no HTML and no arrows), Markdown link or bare GitHub reference (`#N`, `owner/repo#N`, `GH-N`, a full commit SHA); nowhere, not even in a code span, does it hold a URL. Write names, paths, issue and PR numbers and commits in backticks.
+12. Add a `## Size` section right after `## Footprint`, before `## Verification`. It opens no fence. It refines the analysis's `## Size` and gives the expected cost of the issue's phase 2: implement, the gates, review and address rounds, and landing; it states no wall-clock time.
+    - **Format:** ignoring blank lines, the first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text). Then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence.
+    - **Lines floor:** the footprint's `production_lines` (`estimated_lines` in a footprint without it) gives the smallest size the plan can have: `XS` up to 25 lines, `S` up to 75, `M` up to 200, `L` up to 500, `XL` up to 1200, `2XL` up to 3000, `3XL` up to 7000 and `4XL` above. A judged size below that floor is raised to it in the approval package, which says so.
+    - **Assessment:** a missing or malformed section is an assessment finding.
 
 ## Footprint
 
@@ -103,6 +107,9 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 }
 ```
 
+## Size
+size: M
+- <reason>
 ## Verification
 | Acceptance criterion | Test or check |
 | --- | --- |
