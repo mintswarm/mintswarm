@@ -6,6 +6,7 @@
 
 mod catalogue;
 mod config;
+mod etag;
 mod fields;
 mod jwt;
 mod key_store;
