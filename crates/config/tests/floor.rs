@@ -448,10 +448,11 @@ fn tracker_state_values() {
         map.remove("field_id");
     })
     .expect("labels mode needs neither field nor field_id");
-    let rejected: [(&str, &str, Option<Value>); 11] = [
+    let rejected: [(&str, &str, Option<Value>); 12] = [
         ("source", "source", Some(json!("project"))),
         ("source", "source", None),
         ("field", "field", Some(json!(""))),
+        ("field", "field", Some(json!("  "))),
         ("field", "field", None),
         ("field_id", "field_id", Some(json!(0))),
         ("field_id", "field_id", Some(json!(true))),

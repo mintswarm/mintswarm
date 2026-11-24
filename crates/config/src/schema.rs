@@ -4,8 +4,8 @@
 //! validate are checked as they check them, one check for each of theirs:
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve` and
-//! `github/msw-state.py` `settings`. A change to any
-//! of those, or to the config's keys, changes this module in the same change.
+//! `github/msw-state.py` `settings`. A change to any of those, or to the config's keys, changes
+//! this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
 //! some mismatched types; this module checks every key and rejects each mismatch instead. A
@@ -422,7 +422,7 @@ fn check_state(value: &Value, path: &Path) -> Result<(), Error> {
     };
     if one_of("source", ["field", "labels"])? == "field" {
         match state.get("field") {
-            Some(Value::String(field)) if !field.is_empty() => {}
+            Some(Value::String(field)) if !field.trim().is_empty() => {}
             _ => return Err(Error::schema(&path.key("field"), "must be a field name")),
         }
         match state.get("field_id") {
