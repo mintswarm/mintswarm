@@ -81,6 +81,7 @@ TITLES = {
 SKELETONS = {
     "analyse": ["analysis"],
     "assess": ["assessment"],
+    "assess-decomposition": ["assessment"],
     "decompose": ["decomposition"],
     "design": ["design"],
     "gates": ["gates"],
