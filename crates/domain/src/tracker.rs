@@ -73,7 +73,7 @@ pub struct Artifact {
 /// Why people are assigned to an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AssignReason {
+pub enum AssignmentReason {
     Plan,
     NeedsInput,
     Pr,
@@ -179,7 +179,7 @@ pub trait Tracker: Send + Sync {
         &self,
         issue: IssueNumber,
         who: Vec<Login>,
-        reason: AssignReason,
+        reason: AssignmentReason,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Release the bot's own assignments of an item.
