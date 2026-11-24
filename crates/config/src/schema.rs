@@ -16,6 +16,8 @@
 //! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
 //! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
 //! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores.
+//!
+//! The `gates.format` check is the loader's own: no dogfood tool checks it.
 
 use std::collections::BTreeMap;
 
@@ -128,6 +130,20 @@ pub struct Landing {
     pub min_confidence: u64,
 }
 
+/// One `gates.format` entry: a formatter and the paths it formats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Formatter {
+    /// `name`, unique among the entries.
+    pub name: String,
+    /// `command`, a non-empty string that splits as a shell command.
+    pub command: String,
+    /// `paths`, a non-empty list of path globs.
+    pub paths: Vec<String>,
+    /// `gate`, the name of the `gates.run` entry that checks the formatting. A `gates.run`
+    /// entry without a string `name` cannot be named here.
+    pub gate: String,
+}
+
 /// A validated repository config.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoConfig {
@@ -137,6 +153,7 @@ pub struct RepoConfig {
     dependency_review: DependencyReview,
     review_max_rounds: Option<u64>,
     gates_summary: GatesSummary,
+    formatters: Vec<Formatter>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -214,7 +231,10 @@ impl RepoConfig {
         let landing = check_landing(pipeline, &pipeline_path, components)?;
         let dependency_review = check_dependencies(pipeline, &pipeline_path)?;
         let review_max_rounds = check_review(pipeline, &pipeline_path)?;
-        let gates_summary = check_gates(top.get("gates"), &root.key("gates"))?;
+        let Gates {
+            summary: gates_summary,
+            formatters,
+        } = check_gates(top.get("gates"), &root.key("gates"))?;
 
         Ok(RepoConfig {
             value,
@@ -223,6 +243,7 @@ impl RepoConfig {
             dependency_review,
             review_max_rounds,
             gates_summary,
+            formatters,
         })
     }
 
@@ -254,6 +275,11 @@ impl RepoConfig {
     /// `gates.summary`, `off` when absent.
     pub fn gates_summary(&self) -> GatesSummary {
         self.gates_summary
+    }
+
+    /// `gates.format`, empty when absent, null or empty.
+    pub fn formatters(&self) -> &[Formatter] {
+        &self.formatters
     }
 }
 
@@ -718,12 +744,27 @@ fn check_review(pipeline: &Map<String, Value>, pipeline_path: &Path) -> Result<O
     }
 }
 
-fn check_gates(value: Option<&Value>, path: &Path) -> Result<GatesSummary, Error> {
+/// What `check_gates` reads from `gates`.
+struct Gates {
+    summary: GatesSummary,
+    formatters: Vec<Formatter>,
+}
+
+fn check_gates(value: Option<&Value>, path: &Path) -> Result<Gates, Error> {
     let gates = match value {
-        None | Some(Value::Null) => return Ok(GatesSummary::Off),
+        None | Some(Value::Null) => {
+            return Ok(Gates {
+                summary: GatesSummary::Off,
+                formatters: Vec::new(),
+            });
+        }
         Some(value) => mapping(value, path)?,
     };
-    known(gates, path, &["tests", "run", "summary", "report"])?;
+    known(
+        gates,
+        path,
+        &["tests", "run", "summary", "report", "format"],
+    )?;
     match gates.get("tests") {
         None | Some(Value::Null) => {}
         Some(value) => {
@@ -747,15 +788,117 @@ fn check_gates(value: Option<&Value>, path: &Path) -> Result<GatesSummary, Error
     if let Some(report) = gates.get("report") {
         check_report(report, &path.key("report"))?;
     }
-    match gates.get("summary") {
-        None | Some(Value::Null) => Ok(GatesSummary::Off),
-        Some(Value::String(value)) if value == "off" => Ok(GatesSummary::Off),
-        Some(Value::String(value)) if value == "agent" => Ok(GatesSummary::Agent),
-        Some(value) => Err(Error::schema(
-            &path.key("summary"),
-            format!("must be agent or off, not {value}"),
-        )),
+    let formatters = check_formatters(gates.get("format"), &path.key("format"), run)?;
+    let summary = match gates.get("summary") {
+        None | Some(Value::Null) => GatesSummary::Off,
+        Some(Value::String(value)) if value == "off" => GatesSummary::Off,
+        Some(Value::String(value)) if value == "agent" => GatesSummary::Agent,
+        Some(value) => {
+            return Err(Error::schema(
+                &path.key("summary"),
+                format!("must be agent or off, not {value}"),
+            ));
+        }
+    };
+    Ok(Gates {
+        summary,
+        formatters,
+    })
+}
+
+/// `gates.format`, absent or null reading as empty, each entry naming a `gates.run` entry.
+fn check_formatters(
+    value: Option<&Value>,
+    path: &Path,
+    run: &[Value],
+) -> Result<Vec<Formatter>, Error> {
+    let entries = match value {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries,
+        Some(value) => {
+            return Err(Error::schema(
+                path,
+                format!("must be a list, not {}", kind(value)),
+            ));
+        }
+    };
+    let gates: Vec<&str> = run
+        .iter()
+        .filter_map(|gate| gate.get("name").and_then(Value::as_str))
+        .collect();
+    let mut formatters: Vec<Formatter> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let formatter = check_formatter(entry, path, index, &formatters, &gates)?;
+        formatters.push(formatter);
     }
+    Ok(formatters)
+}
+
+fn check_formatter(
+    entry: &Value,
+    list: &Path,
+    index: usize,
+    earlier: &[Formatter],
+    gates: &[&str],
+) -> Result<Formatter, Error> {
+    let path = &list.index(index);
+    let map = mapping(entry, path)?;
+    known(map, path, &["name", "command", "paths", "gate"])?;
+    let required = |key: &str| {
+        map.get(key)
+            .ok_or_else(|| Error::schema(&path.key(key), "is missing"))
+    };
+
+    let name_path = path.key("name");
+    let name = match required("name")? {
+        Value::String(name) if !name.trim().is_empty() => name.clone(),
+        _ => return Err(Error::schema(&name_path, "must be a non-empty string")),
+    };
+    if let Some(other) = earlier.iter().position(|f| f.name == name) {
+        return Err(Error::schema(
+            &name_path,
+            format!("{name} is already the name of {}", list.index(other)),
+        ));
+    }
+
+    let command_path = path.key("command");
+    let command = match required("command")? {
+        Value::String(command) if !command.trim().is_empty() => command.clone(),
+        _ => return Err(Error::schema(&command_path, "must be a non-empty string")),
+    };
+    shell_split_ok(&command)
+        .map_err(|problem| Error::schema(&command_path, format!("does not split: {problem}")))?;
+
+    let paths_path = path.key("paths");
+    let paths_error =
+        || Error::schema(&paths_path, "must be a non-empty list of non-empty strings");
+    let paths = map
+        .get("paths")
+        .and_then(Value::as_array)
+        .filter(|paths| !paths.is_empty())
+        .ok_or_else(paths_error)?
+        .iter()
+        .map(|glob| match glob {
+            Value::String(glob) if !glob.is_empty() => Ok(glob.clone()),
+            _ => Err(paths_error()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let gate_path = path.key("gate");
+    let gate = string(required("gate")?, &gate_path)?.to_owned();
+    if !gates.contains(&gate.as_str()) {
+        return Err(Error::schema(
+            &gate_path,
+            format!("formatter {name} names gate {gate}, which is no gates.run entry"),
+        ));
+    }
+
+    Ok(Formatter {
+        name,
+        command,
+        paths,
+        gate,
+    })
 }
 
 fn check_gate(gate: &Value, path: &Path) -> Result<(), Error> {
