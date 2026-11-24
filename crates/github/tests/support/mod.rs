@@ -73,6 +73,10 @@ impl Fakes {
     /// The first exec of a freshly written script can stall for seconds under a loaded, parallel
     /// test run (macOS assesses new executables), so no test may time it. The warm-up run exits
     /// before logging, so it is not among [`Fakes::calls`].
+    ///
+    /// A child `/bin/sh` writes and chmods the script, so the test process never holds a fake open
+    /// for writing. If it did, a sibling test thread's fork would inherit that write descriptor
+    /// until its own exec, and an exec of the fake in that window would fail with `ETXTBSY`.
     pub fn write(&self, name: &str, body: &str) {
         let path = self.dir.path().join(name);
         let log = self.log_path();
@@ -81,9 +85,16 @@ impl Fakes {
              printf '%s\\n' \"{name} $*\" >> '{}'\n{body}\n",
             log.display()
         );
-        std::fs::write(&path, script).expect("cannot write a fake CLI");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("cannot make a fake CLI executable");
+        let written = Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(&path)
+            .arg(&script)
+            .status()
+            .expect("cannot run a shell to write a fake CLI");
+        assert!(
+            written.success(),
+            "writing the fake {name} failed: {written}"
+        );
         let warmed = Command::new(&path)
             .arg(WARM_UP)
             .status()
