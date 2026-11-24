@@ -7,4 +7,5 @@
 pub mod binding;
 pub mod exit;
 pub mod field;
+pub mod glob;
 pub mod size;
