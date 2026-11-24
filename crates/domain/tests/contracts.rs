@@ -5,15 +5,15 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 
 use mintswarm_domain::ids::{AttemptId, IssueNumber, JobId, RevId, RunnerId, Seq, WorkerId};
-use mintswarm_domain::job::{
-    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, Step, StepJob, Tokens, Usage,
-};
 use mintswarm_domain::plane::{
     Assignment, Credential, Directive, DirectiveKind, HarnessInfo, Heartbeat, HelloAck, JobEvent,
     JobOutcome, Lease, ProbeSummary, Record, RecordKind, RunnerInfo, StepStatus, Work,
 };
 use mintswarm_domain::records::{
     Bound, DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
+};
+use mintswarm_domain::work::{
+    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, Step, StepJob, Tokens, Usage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;

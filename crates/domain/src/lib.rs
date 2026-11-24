@@ -7,6 +7,7 @@ pub mod plane;
 pub mod records;
 pub mod tracker;
 pub mod vcs;
+pub mod work;
 
 /// The name of this crate, as Cargo knows it.
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");

@@ -10,8 +10,8 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AttemptId, JobId, RevId, RunnerId, Seq, WorkerId};
-use crate::job::{StageJob, StageOutcome, Step, StepJob, Usage};
 use crate::records::Bound;
+use crate::work::{StageJob, StageOutcome, Step, StepJob, Usage};
 
 /// A harness a runner can drive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
