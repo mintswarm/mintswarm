@@ -842,6 +842,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mintswarm-rules"
+version = "0.1.0"
+dependencies = [
+ "mintswarm-domain",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
