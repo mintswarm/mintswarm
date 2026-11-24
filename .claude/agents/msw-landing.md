@@ -56,7 +56,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
 - **Acceptance criteria.** For each acceptance criterion in `issue.md`, quoted as the issue has it: the evidence for it in the change (the diff, the code around it, a test the gates ran), and whether the change meets it, `yes`, `partly` or `no`. A criterion the change leaves out, or meets only in part, is `no` or `partly`; a criterion the issue's maintainer decisions amend is judged as amended.
 - **Conformance.** Each of the footprint fields against the diff, counted as `msw-vcs diff --job --numstat`:
   - the changed paths against `files`, and the added paths against `new_files`;
-  - the numstat total, added plus deleted lines, against `estimated_lines` and the limit floor(`estimated_lines` × `lines_factor`), and the production lines, those of the paths that match no `pipeline.plan_approval.non_production` glob (the plan floor's defaults when the key is absent), against `production_lines` and the limit floor(`production_lines` × `lines_factor`), a footprint without `production_lines` counting it as `estimated_lines`; an entry the numstat cannot measure, a binary file (`-` counts) or a gitlink (mode `160000` on either side in `msw-vcs diff --job --raw`), means the diff is not within the footprint;
+  - the numstat total, added plus deleted lines, against `estimated_lines` and the limit floor(`estimated_lines` × `lines_factor`), and the production lines, those of the paths that match no `pipeline.plan_approval.non_production` glob (the plan floor's defaults when the key is absent), against `production_lines` and the limit floor(`production_lines` × `lines_factor`), a footprint without `production_lines` counting it as `estimated_lines`; a total or production count over its limit is a doubt (see Bands), not a breach of the footprint; an entry the numstat cannot measure, a binary file (`-` counts) or a gitlink (mode `160000` on either side in `msw-vcs diff --job --raw`), still means the diff is not within the footprint;
   - added dependencies, and the manifests that declare them, against `new_dependencies`;
   - any change to `.mintswarm/config.yaml`, or to a file that a base or head `gates.run` command names, against `gate_changes`;
   - for `external_steps` and `overridden_assumptions`, only the signs in the diff (new secrets, settings, manual steps); state that they are unverifiable otherwise.
@@ -64,29 +64,42 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - new dependencies;
   - disabled checks: skip or ignore attributes, lint allowances, removed or loosened gates, `--no-verify`;
   - broad catch-alls: catch-everything handlers, swallowed errors, `|| true`;
-  - test changes that weaken assertions: deleted tests or asserts, loosened expected values.
+  - test changes that weaken assertions: deleted tests or asserts, loosened expected values;
+  - stray files: debug output, scratch or generated files, anything the plan's steps do not call for, and secrets;
+  - unexplained behaviour: anything the change does beyond the plan's steps and declared changes that neither the plan nor the code around it explains.
 - **Process:**
   - the review rounds, with their verdicts, finding counts and the address answers;
+  - in each address answer, every blocker or major finding that was disputed rather than fixed, and every fix that does not match what its finding asked, read against the diff;
   - the gate history, with the failed rounds and their failed tests;
   - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
   - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
-- **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present. It is reported only, and does not change the confidence except through the plan sha256 check, which is a consistency check.
+- **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present, and whether the plan was approved by a human, as Bands defines it. That bears on the bands, and the plan sha256 check is a consistency check.
 
 ## Bands
 
 The confidence is your estimate, from 0 to 100, that landing this change without a person is right: that a careful maintainer would approve the PR as it stands, that it does what the approved plan says and nothing else, and that nothing it does is outside what the landing floor and the hard triggers allow. Rate by impact on the product and by reversibility: what a mistake would change, how far it would reach, and whether a plain revert undoes it.
 
-A path under `pipeline.landing.require_human` is left to the landing floor, which sends such a change to a person whatever you rate; it is not a hard trigger, and you do not read that setting. Rate every change on its merits.
+Your confidence rests on three grounds:
+
+- **Plan compliance:** the change complies with the approved plan: its footprint, its steps and the changes it declares.
+- **Reviews passed:** the last review round is `pass` and `current`, no blocker or major finding is left open or was disputed in an address answer, and each fix matches what its finding asked.
+- **Care:** the change does nothing careless: no disabled or weakened checks or tests other than a removed or loosened gate that a plan approved by a human declared, no swallowed errors or catch-alls, no stray files or secrets, and no unexplained behaviour beyond the plan.
+
+What the plan declared and a human approved, such as gate changes, config edits, a loosened or raised floor limit or rule, protected paths and a size within the line limits, is not a doubt in itself, and neither is the number of review rounds before a pass. Such a declared safeguard change, a removed or loosened gate or a loosened or raised floor limit or rule, is not the `weakens-safeguard` trigger either: the maintainer approved it at plan approval and is not asked twice. Declared means a plan step that names the safeguard and states its removal or loosening, with the new limit or rule where there is one, and, for `.mintswarm/config.yaml` or a gate-named file, also its `gate_changes` entry; a step that names the file but not the weakening does not declare it. Of these, only a removed or loosened gate or floor limit or rule that the plan did not declare, or that goes beyond what it declared, is the trigger or a doubt; every other weakening the trigger names stays the trigger whether the plan declared it or not. The plan was approved by a human when `approval.approver` is a login that does not end in `[bot]`, and `approval.decision` is present, with a `record.tool` of `mintswarm-approval-decision`, a `record.approval` of `plan`, a `record.decision` of `human` and a `record.subject.plan.sha256` equal to the sha256 of `artefacts/plan.md`; with no decision record, the approval is not tied to this plan. Without that, declared gate and config changes and more than one review round still count, as the bands below say, and a declared weakening is still the `weakens-safeguard` trigger.
+
+Going over either line limit, the numstat total over floor(`estimated_lines` × `lines_factor`) or the production lines over floor(`production_lines` × `lines_factor`), is not a hard trigger: it is always a doubt, so the envelope is `likely-safe` at best. State each overrun in `doubts`, with how far over the limit it is, and with whether the kept review rounds' address answers explain the extra lines as fixes for findings. Extra lines that no plan step or review finding explains are unexplained behaviour under Care, and the band follows their concrete consequence.
+
+A path under `pipeline.landing.require_human` is left to the landing floor, which sends to a person only what the approved plan did not cover: a matching path the footprint does not declare, a gate change without its `gate_changes` entry, or any matching path when the plan was not approved by a human. It is not a hard trigger, and you do not read that setting. Rate every change on its merits.
 
 Pick exactly one band. Check them in this order and take the first whose conditions hold:
 
 1. `blocked` (shown as Blocked), confidence 0, when any hard trigger holds. Name every trigger that holds in `hard_triggers`. A trigger is never weighed against anything: it forces `confidence: 0`, whatever else the change does well. The hard triggers:
    - `criterion-not-met`: an acceptance criterion is `no`.
-   - `outside-footprint`: a changed path is outside `files`, or an added path is outside `new_files`; or the numstat total is over floor(`estimated_lines` × `lines_factor`), or the production lines over floor(`production_lines` × `lines_factor`), or an entry cannot be measured (a binary file or a gitlink); or a dependency appears that `new_dependencies` does not declare; or `.mintswarm/config.yaml` or a gate-named file changed without a `gate_changes` entry for it.
+   - `outside-footprint`: a changed path is outside `files`, or an added path is outside `new_files`; or an entry cannot be measured (a binary file or a gitlink); or a dependency appears that `new_dependencies` does not declare; or `.mintswarm/config.yaml` or a gate-named file changed without a `gate_changes` entry for it.
    - `footprint-unusable`: the plan has no `## Footprint`, or it does not parse.
-   - `weakens-safeguard`: the diff disables a check (a skip or ignore attribute, a lint allowance, `--no-verify`), weakens an assertion (a deleted test or assert, a loosened expected value), removes or loosens a gate or a floor rule, or widens permissions or network or file access; or a gate failed and was then changed, read conservatively as Process says.
+   - `weakens-safeguard`: the diff disables a check (a skip or ignore attribute, a lint allowance, `--no-verify`), weakens an assertion (a deleted test or assert, a loosened expected value), removes or loosens a gate or a floor rule, or widens permissions or network or file access; or a gate failed and was then changed, read conservatively as Process says. The exception lifts only the clause on removing or loosening a gate or a floor rule: that is not this trigger when a plan approved by a human declared it, as the paragraph on what the plan declared says, and a gate that failed and was then changed stays this trigger even when the change was declared.
    - `credentials`: the diff reads, uses, stores or exposes a credential, or widens access to where credentials live; there is no exception to this trigger.
    - `not-revertible`: the change cannot be undone by a plain revert: it migrates or rewrites persisted data, changes a published or wire format others read, or changes state outside the repository (remote or tracker settings, credentials, published artefacts or packages, data), as the diff shows it or signs of it in the diff suggest.
    - `process-not-passed`: there is no gate round, or the latest one is `failed` or not `current`; or there is no review round, or the latest one is `changes_required` or not `current`; or a check completed with a conclusion other than `success`.
@@ -97,31 +110,31 @@ Pick exactly one band. Check them in this order and take the first whose conditi
    - a review is re-requested and not yet given: `review_requests` is not `[]`;
    - an unresolved doubt would change whether the change does what the plan says.
 3. `needs-review` (shown as Needs review), confidence 50 to 79, when none of the above holds and any of these holds:
-   - there is more than one review round;
+   - an earlier blocker or major finding was disputed, or its fix does not match what was asked;
    - an earlier gate round failed;
    - a steer is listed: `steers` is not `[]`;
    - a broad catch-all appears: a catch-everything handler, a swallowed error, `|| true`;
-   - `gate_changes` or `external_steps` is not empty;
-   - the diff makes a declared change to `.mintswarm/config.yaml` or to a gate-named file.
+   - `external_steps` is not empty;
+   - for a plan not approved by a human only: there is more than one review round, `gate_changes` is not empty, or the diff makes a declared change to `.mintswarm/config.yaml` or to a gate-named file.
 4. `likely-safe` (shown as Likely safe), confidence 80 to 94, when none of the above holds, every condition below holds, and you state at least one doubt.
 5. `safe` (shown as Safe), confidence 95 to 100, when none of the above holds, every condition below holds, and you have no doubt to state.
 
 The conditions of `likely-safe` and `safe`:
 
 - every acceptance criterion is `yes`;
-- the diff is within the footprint;
-- no undeclared dependency, disabled check, broad catch-all or weakened assertion appears;
-- review passed in its first round: exactly one review round, verdict `pass`, and it is `current`;
+- the diff is within the footprint, apart from going over a line limit, which is a stated doubt;
+- no undeclared dependency, no disabled check or weakened assertion other than a removed or loosened gate that a plan approved by a human declared, and no broad catch-all appears;
+- review passed: the last review round is `pass` and `current`, and no blocker or major finding is left open or disputed; for a plan not approved by a human, also in its first round: exactly one review round;
 - every gate round passed, and the latest is `current`;
 - there is no steer: `steers` is `[]`;
 - no review is re-requested: `review_requests` is `[]`;
 - every consistency check holds;
 - every listed check concluded `success`;
-- `gate_changes` and `external_steps` are empty, and the diff changes no config or gate-named file.
+- `external_steps` is empty; for a plan not approved by a human, also `gate_changes` is empty and the diff changes no config or gate-named file.
 
 When none of the bands' conditions is met exactly, take `needs-review`.
 
-The value inside a band starts at the band's lowest value. Raise it only for reasons you state in the section they concern, and never past the band's highest value. When in doubt between two bands, state the doubt in the section it concerns and take the band its concrete consequence supports: what the doubted mistake would change, how far it would reach, and whether a revert undoes it.
+The value inside a band starts at the band's highest value and only goes down, never below the band's lowest value. Each step down is tied to a doubt or an unverified part that you state in the section it concerns; an unverified part is something you could not check, such as code you did not read, a check that had not finished, behaviour shown only with stubs, or a size that kept you from reading every line. An unverified part lowers the value within the band; it is a doubt, and so moves the band, only when it meets the definition of a doubt below. State no reasons for raising the value, and none for why the change is good: your work is finding flaws and saying what you could not check, and the value follows from those. The envelope `reason` names what decided the band and the value. When in doubt between two bands, state the doubt in the section it concerns and take the band its concrete consequence supports: what the doubted mistake would change, how far it would reach, and whether a revert undoes it.
 
 A doubt is something that, if wrong, would make landing without a person the wrong call. Each doubt names the `statement` you doubt, its `consequence` if wrong, and the `resolution` that would settle it. Every doubt you state in any section is also an entry in `doubts`, and `safe` means you state no doubt anywhere in the landing document. State at most 10.
 

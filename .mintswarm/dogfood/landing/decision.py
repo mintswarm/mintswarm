@@ -81,7 +81,7 @@ or Infinity) holding an object with `tool` `mintswarm-landing-facts`,
 
 The floor layer is usable only if the facts are, and the verdict is strict
 JSON and all of these hold: its keys are landing/floor.py's, in order;
-`tool` is `mintswarm-landing-floor` and `version` 1; `plan.sha256` is the
+`tool` is `mintswarm-landing-floor` and `version` 2; `plan.sha256` is the
 sha256 of the plan and `facts.sha256` that of the facts; `base.commit` and
 `head.commit` are the resolved commits and `merge_base` the merge base;
 `component` is NAME, `mode` the base config's mode and `config`
@@ -89,7 +89,10 @@ sha256 of the plan and `facts.sha256` that of the facts; `base.commit` and
 `result` `hit` or `clean` and string reasons exactly when it is a hit; the
 identifiers follow landing/floor.py's RULES across `rules` and
 `not_evaluated`, and `not_evaluated` is empty, or exactly the diff rules
-after a `footprint` hit; and `verdict` agrees with the rules. The verdict
+after a `footprint` hit; `evidence` is a list of strings, empty after a
+`footprint` hit; and `verdict` agrees with the rules. Evidence (the floor's
+line-limit overruns) never makes a hit; it is carried in the layer and
+shown in the reasons and the comment. The verdict
 is checked for shape and bindings, not recomputed. A missing verdict (the
 floor exited 2) makes the layer unusable.
 
@@ -128,7 +131,7 @@ record's, with its `judged_decision` and `decision` named `would_be` and
 `effective`, and `acts`, `inputs` and `agents` added:
 
   tool             `mintswarm-landing-decision`
-  version          2
+  version          3
   approval         `landing`
   subject          {`pr`, `issue` (from the facts, null when they are
                    unusable), `component`, `plan` {`path`, `sha256`}, `base`
@@ -136,13 +139,15 @@ record's, with its `judged_decision` and `decision` named `would_be` and
                    {`path`, `commit`, the resolved base}}
   mode, min_confidence
   layers           `floor` {`status`, `problems`, `path`, `sha256`,
-                   `verdict`, `rules`, `not_evaluated`} and `judgement`
+                   `verdict`, `rules`, `not_evaluated`, `evidence`} and
+                   `judgement`
                    {`status`, `problems`, `stage`, `path`, `sha256`,
                    `confidence`, `band`, `hard_triggers`, `doubts`,
                    `reasons`}
   would_be, effective
   reasons          the mode's rule; the floor's outcome and each hit rule
-                   with its reasons, or its problems; the judgement's band,
+                   with its reasons, or its problems; each evidence entry;
+                   the judgement's band,
                    confidence and decisive reason, then each hard trigger
                    or a confidence below min_confidence, or its problems;
                    `would_be` and `effective`
@@ -210,11 +215,11 @@ LANDING_FLOOR = HERE / "floor.py"
 JUDGEMENT = HERE / "judgement.py"
 RECORD = Path(".mintswarm/job/outputs/landing.json")
 TOOL = "mintswarm-landing-decision"
-VERSION = 2
+VERSION = 3
 STAGE = "landing"
 CONFIG = ".mintswarm/config.yaml"
 FLOOR_TOOL = "mintswarm-landing-floor"
-FLOOR_VERSION = 1
+FLOOR_VERSION = 2
 FLOOR_KEYS = [
     "tool",
     "version",
@@ -229,6 +234,7 @@ FLOOR_KEYS = [
     "verdict",
     "rules",
     "not_evaluated",
+    "evidence",
 ]
 FACTS_TOOL = "mintswarm-landing-facts"
 FACTS_VERSION = 3
@@ -479,6 +485,11 @@ def verdict_problems(verdict, expected: dict) -> list:
         return problems
     if bool(skipped) != (rules[0]["result"] == "hit"):
         problems.append("the floor verdict's not_evaluated does not follow its footprint result")
+    evidence = verdict["evidence"]
+    if not isinstance(evidence, list) or not all(isinstance(e, str) for e in evidence):
+        problems.append("the floor verdict's evidence is not a list of strings")
+    elif evidence and rules[0]["result"] == "hit":
+        problems.append("the floor verdict's evidence is not empty after a footprint hit")
     hit = any(r["result"] == "hit" for r in rules)
     if verdict["verdict"] != ("hit" if hit else "clean"):
         problems.append("the floor verdict's verdict does not agree with its rules")
@@ -494,6 +505,7 @@ def floor_layer(expected: dict, facts_problems: list) -> dict:
         "verdict": None,
         "rules": [],
         "not_evaluated": [],
+        "evidence": [],
     }
     try:
         data = floor.VERDICT.read_bytes()
@@ -514,7 +526,11 @@ def floor_layer(expected: dict, facts_problems: list) -> dict:
         layer["problems"] = problems
         return layer
     layer.update(
-        status="usable", verdict=verdict["verdict"], rules=verdict["rules"], not_evaluated=verdict["not_evaluated"]
+        status="usable",
+        verdict=verdict["verdict"],
+        rules=verdict["rules"],
+        not_evaluated=verdict["not_evaluated"],
+        evidence=verdict["evidence"],
     )
     return layer
 
@@ -574,6 +590,7 @@ def decide(mode: str, min_confidence: int, floor_: dict, judged: dict) -> tuple:
     else:
         reasons.append("floor: unusable")
         reasons += [f"floor: {problem}" for problem in floor_["problems"]]
+    reasons += [f"floor evidence: {entry}" for entry in floor_["evidence"]]
     if judged["status"] == "usable":
         reasons.append(f"judgement: {judged['band']} {judged['confidence']}: {judged['reasons'][0]}")
         if judged["hard_triggers"]:
@@ -611,6 +628,8 @@ def floor_rows(layer: dict) -> list:
         rows = [f"- **Floor:** hit on {names}"]
         for rule in hits:
             rows.append(f"- **Floor hit `{rule['rule']}`:** " + "; ".join(span(reason) for reason in rule["reasons"]))
+    if layer["evidence"]:
+        rows.append("- **Floor evidence:** " + "; ".join(span(entry) for entry in layer["evidence"]))
     if layer["not_evaluated"]:
         rows.append("- **Not evaluated:** " + ", ".join(f"`{name}`" for name in layer["not_evaluated"]))
     return rows

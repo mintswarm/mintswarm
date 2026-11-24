@@ -1,44 +1,37 @@
 #!/usr/bin/env bash
 # Create a GitHub App from its manifest, or rotate an App's private key.
 #
-#   store-credentials.sh create MANIFEST [--unconfirmed-key]
+#   store-credentials.sh create MANIFEST
 #       Run the whole manifest flow for the App that MANIFEST (a JSON file, see
 #       manifests/) describes. Its name picks the App's profile in common.sh
-#       (msw_app_profile): its own config file, key service, key label and
-#       whether every use of the key needs confirmation. Before anything is
-#       shown it checks the manifest (a known name, public false, redirect_url
-#       http://127.0.0.1:PORT/ with PORT from 1024 to 65535), that the App's
-#       config does not exist yet and is not the other App's, that
-#       MSW_MANIFEST_TIMEOUT (seconds, default 600) is valid and that a key
-#       store is available. For an App whose key needs confirmation: where the
-#       keychain store is available, the key goes there with confirmation and
-#       --unconfirmed-key is refused; elsewhere create is refused unless
-#       --unconfirmed-key is given, which records key_confirm none.
-#       It then writes ~/.config/mintswarm/create-NAME.html (removed on exit),
-#       which posts the manifest to GitHub with a random state, and starts
-#       manifest-listener.py on 127.0.0.1:PORT. Once the listener says it is
-#       listening, open the page it names in a browser signed in as an owner of
-#       the organisation. The listener takes the first
-#       redirect whose state matches and hands the code over on a pipe; curl
+#       (msw_app_profile): its own config file, key service and key label.
+#       Before anything is shown it checks the manifest (a known name, public
+#       false, redirect_url http://127.0.0.1:PORT/ with PORT from 1024 to
+#       65535), that the App's config does not exist yet and is not the other
+#       App's, that MSW_MANIFEST_TIMEOUT (seconds, default 600) is valid and
+#       that a key store is available. It then writes
+#       ~/.config/mintswarm/create-NAME.html (removed on exit), which posts the
+#       manifest to GitHub with a random state, and starts manifest-listener.py
+#       on 127.0.0.1:PORT. Once the listener says it is listening, open the page
+#       it names in a browser signed in as an owner of the organisation. The
+#       listener takes the first redirect whose state matches and hands the code over on a pipe; curl
 #       exchanges it for the App's credentials, reading the URL from its stdin
 #       (-K -). The App must come back with the manifest's name as slug and
 #       the organisation as owner, or nothing is stored. The private key goes
-#       to the App's own key-store item (key-store.sh: $MSW_KEY_STORE, or the
-#       first available; with put --confirm when the profile asks for it) and
-#       the public identifiers to the App's own config. The client secret and
-#       webhook secret are discarded.
+#       to the App's own key-store item (key-store.sh put: $MSW_KEY_STORE, or
+#       the first available), without per-use confirmation, and the public
+#       identifiers to the App's own config, with key_confirm none. The
+#       client secret and webhook secret are discarded.
 #   store-credentials.sh rotate PEM_PATH [--keep]
 #       Store a private key downloaded from the App's settings under the same
 #       service and account, for the App whose config $MSW_APP_CONFIG names
 #       (default ~/.config/mintswarm/dev-app.json), in $MSW_KEY_STORE when set
 #       and otherwise in the key store recorded there; update key_fingerprint,
-#       key_store and key_confirm and delete the downloaded file unless --keep.
-#       The label and the confirmation come from the App's profile, found by
-#       the config's slug. A key that needs confirmation stays in the keychain,
-#       whose existing item must be deleted first; where the keychain store is
-#       available, such an App's key always goes there with confirmation, even
-#       when its config says none. Moving to another key store
-#       leaves the old item where it is.
+#       key_store and key_confirm (none) and delete the downloaded file unless
+#       --keep. The label comes from the App's profile, found by the config's
+#       slug. The key is stored without per-use confirmation; a config whose
+#       key_confirm is neither none nor absent is refused, storing nothing.
+#       Moving to another key store leaves the old item where it is.
 #
 # The code passes only through a pipe, a shell variable and curl's stdin; it is
 # never in argv, a file or the output. The key passes only through shell
@@ -47,8 +40,8 @@
 # curl runs with -q first, so ~/.curlrc cannot trace the conversion response.
 # An App's config holds no secret: app_id, slug, client_id, keychain_service
 # (the key's service name in every key store), key_store, key_fingerprint,
-# key_confirm (keychain-acl or none; a config without it means none, which only
-# mintswarm-dev may have).
+# key_confirm (always none: no App's key needs per-use confirmation; a config
+# without it means none).
 set -euo pipefail
 
 # shellcheck source=common.sh
@@ -57,7 +50,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-  printf '%s\n' "usage: store-credentials.sh create MANIFEST [--unconfirmed-key] | rotate PEM_PATH [--keep]" >&2
+  printf '%s\n' "usage: store-credentials.sh create MANIFEST | rotate PEM_PATH [--keep]" >&2
   exit 2
 }
 
@@ -83,22 +76,16 @@ canon() {  # canon PATH: PATH with its existing directories resolved, for compar
   printf '%s/%s\n' "${p%/}" "$rest"
 }
 
-keychain_here() {  # the keychain store is available here; runs no backend command
-  MSW_KEY_STORE=keychain "$MSW_HERE/key-store.sh" backend >/dev/null 2>&1
-}
-
 KEY_FINGERPRINT=""
 KEY_PUT=""  # after a successful put: the command that deletes the item again
-import_key() {  # import_key SERVICE CLIENT_ID PEM STORE LABEL CONFIRM(0|1); sets KEY_FINGERPRINT
+import_key() {  # import_key SERVICE CLIENT_ID PEM STORE LABEL; sets KEY_FINGERPRINT
   local service="$1" client_id="$2" pem="$3" store="$4" label="$5" stored
-  local put=(put)
   check_word "keychain service" "$service"
   check_word "client id" "$client_id"
-  if [ "$6" = 1 ]; then put=(put --confirm); fi
   printf '%s\n' "$pem" | openssl pkey -passin pass: -noout 2>/dev/null \
     || msw_die "not an unencrypted private key"
   KEY_FINGERPRINT="$(printf '%s\n' "$pem" | fingerprint)"
-  printf '%s\n' "$pem" | MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" "${put[@]}" "$service" "$client_id" "$label" \
+  printf '%s\n' "$pem" | MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" put "$service" "$client_id" "$label" \
     || msw_die "storing the key in the $store key store failed"
   KEY_PUT="MSW_KEY_STORE=$store $MSW_HERE/key-store.sh delete $service $client_id"
   stored="$(MSW_KEY_STORE="$store" "$MSW_HERE/key-store.sh" get "$service" "$client_id" | fingerprint)" \
@@ -124,9 +111,9 @@ on_exit() {
 }
 
 create() {
-  local manifest="$1" unconfirmed="$2"
-  local name redirect port cfg other timeout store confirm put_confirm state compact
-  local code conv id slug owner client_id pem perms_ok events_ok
+  local manifest="$1"
+  local name redirect port cfg other timeout state compact
+  local code conv id slug owner client_id pem perms_ok events_ok store
 
   # Everything that can fail before GitHub is involved fails here.
   [ -f "$manifest" ] || msw_die "no such manifest: $manifest"
@@ -168,23 +155,7 @@ create() {
   esac
 
   # A code works once: fail before asking for one when there is nowhere to keep the key.
-  store="$("$MSW_HERE/key-store.sh" backend)" || exit 1
-  confirm="$MSW_PROFILE_CONFIRM"
-  if [ "$unconfirmed" = 1 ] && keychain_here; then
-    msw_die "--unconfirmed-key is only for a machine without the keychain store; here every use of the key can be confirmed: leave it out"
-  fi
-  if [ "$confirm" = keychain-acl ]; then
-    if keychain_here; then
-      [ "$store" = keychain ] \
-        || msw_die "every use of $name's key must be confirmed, which only the keychain store does, and it is available here: unset MSW_KEY_STORE or set it to keychain (not $store)"
-    elif [ "$unconfirmed" = 1 ]; then
-      confirm=none
-    else
-      msw_die "every use of $name's key must be confirmed, which only the keychain store does, and the key would go to the $store store: on this machine add --unconfirmed-key to accept a key without confirmation"
-    fi
-  fi
-  put_confirm=0
-  if [ "$confirm" = keychain-acl ]; then put_confirm=1; fi
+  "$MSW_HERE/key-store.sh" backend >/dev/null || exit 1
 
   # The page that posts the manifest, with a state held only here and in it.
   state="$(openssl rand -hex 16)"
@@ -250,10 +221,7 @@ create() {
     || printf '%s\n' "warning: $slug's events differ from the manifest's; check them in the App's settings" >&2
 
   store="$("$MSW_HERE/key-store.sh" backend "$MSW_PROFILE_SERVICE" "$client_id")" || exit 1
-  if [ "$put_confirm" = 1 ] && [ "$store" != keychain ]; then
-    msw_die "the key store is now $store, not keychain"
-  fi
-  import_key "$MSW_PROFILE_SERVICE" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL" "$put_confirm"
+  import_key "$MSW_PROFILE_SERVICE" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL"
   pem=""
 
   mkdir -p "$(dirname "$cfg")"
@@ -261,14 +229,14 @@ create() {
   ( set -C
     jq -n --arg id "$id" --arg slug "$slug" --arg client_id "$client_id" \
           --arg keychain_service "$MSW_PROFILE_SERVICE" --arg key_store "$store" \
-          --arg fingerprint "SHA256:$KEY_FINGERPRINT" --arg key_confirm "$confirm" \
+          --arg fingerprint "SHA256:$KEY_FINGERPRINT" --arg key_confirm none \
           '{app_id: ($id|tonumber), slug: $slug, client_id: $client_id, keychain_service: $keychain_service, key_store: $key_store, key_fingerprint: $fingerprint, key_confirm: $key_confirm}' \
       > "$cfg"
   ) || msw_die "cannot write $cfg"
   PENDING=""
 
   printf '%s\n' "created: app $slug (id $id, client $client_id)"
-  printf '%s\n' "key in the $store key store, confirmation: $confirm"
+  printf '%s\n' "key in the $store key store, confirmation: none"
   printf '%s\n' "key fingerprint SHA256:$KEY_FINGERPRINT (compare with the App's settings page)"
   printf '%s\n' "identifiers: $cfg"
   case "$name" in
@@ -282,7 +250,7 @@ create() {
 # --- rotate ------------------------------------------------------------------
 
 rotate() {
-  local path="$1" keep="$2" pem service client_id slug confirm updated store old put_confirm=0
+  local path="$1" keep="$2" pem service client_id slug confirm updated store old
   [ -f "$path" ] || msw_die "no such file: $path"
   [ -f "$MSW_APP_CONFIG" ] || msw_die "no App config at $MSW_APP_CONFIG: rotate needs an existing App"
   slug="$(jq -r '.slug // empty' "$MSW_APP_CONFIG")"
@@ -293,39 +261,24 @@ rotate() {
     || msw_die "$MSW_APP_CONFIG gives the keychain service '$service', but $slug's is $MSW_PROFILE_SERVICE"
   client_id="$(jq -r '.client_id // empty' "$MSW_APP_CONFIG")"
   confirm="$(jq -r '.key_confirm // empty' "$MSW_APP_CONFIG")"
-  if [ -z "$confirm" ]; then
-    [ "$MSW_PROFILE_CONFIRM" = none ] \
-      || msw_die "$MSW_APP_CONFIG has no key_confirm, which $slug's config always records"
-    confirm=none
-  fi
+  case "$confirm" in
+    ''|none) ;;
+    *) msw_die "$MSW_APP_CONFIG records key_confirm '$confirm', but no App's key needs per-use confirmation any more: delete the key-store item (key-store.sh delete $service $client_id) and set key_confirm to none in $MSW_APP_CONFIG, then rotate again" ;;
+  esac
   old="$(msw_recorded_key_store 2>/dev/null)" || old=""
   store="${MSW_KEY_STORE:-}"
   if [ -z "$store" ]; then
     store="$(msw_recorded_key_store)" || exit 1
   fi
-  if [ "$MSW_PROFILE_CONFIRM" = keychain-acl ] && keychain_here; then
-    # Where the keychain can confirm every use, this App's key never goes without it.
-    [ "$store" = keychain ] \
-      || msw_die "every use of $slug's key must be confirmed, which only the keychain store does, and it is available here: not $store"
-    confirm=keychain-acl
-  fi
-  case "$confirm" in
-    none) ;;
-    keychain-acl)
-      [ "$store" = keychain ] \
-        || msw_die "every use of $slug's key must be confirmed, which only the keychain store does: not $store"
-      put_confirm=1 ;;
-    *) msw_die "unknown key_confirm '$confirm' in $MSW_APP_CONFIG" ;;
-  esac
   pem="$(cat "$path")"
 
-  import_key "$service" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL" "$put_confirm"
+  import_key "$service" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL"
   pem=""
 
-  updated="$(jq --arg fp "SHA256:$KEY_FINGERPRINT" --arg ks "$store" --arg kc "$confirm" \
+  updated="$(jq --arg fp "SHA256:$KEY_FINGERPRINT" --arg ks "$store" --arg kc none \
     '.key_fingerprint = $fp | .key_store = $ks | .key_confirm = $kc' "$MSW_APP_CONFIG")"
   printf '%s\n' "$updated" > "$MSW_APP_CONFIG"
-  printf '%s\n' "key stored in the $store key store, confirmation: $confirm"
+  printf '%s\n' "key stored in the $store key store, confirmation: none"
   if [ -n "$old" ] && [ "$old" != "$store" ]; then
     printf '%s\n' "the previous key is still in the $old key store; once the new one works, delete it with:"
     printf '%s\n' "  MSW_KEY_STORE=$old $MSW_HERE/key-store.sh delete $service $client_id"
@@ -343,13 +296,9 @@ rotate() {
 
 case "${1:-}" in
   create)
-    case "$#:${3:-}" in
-      2:) ;;
-      3:--unconfirmed-key) ;;
-      *) usage ;;
-    esac
+    [ $# -eq 2 ] || usage
     trap on_exit EXIT
-    if [ $# -eq 3 ]; then create "$2" 1; else create "$2" 0; fi ;;
+    create "$2" ;;
   rotate)
     case "$#:${3:-}" in
       2:) rotate "$2" 0 ;;

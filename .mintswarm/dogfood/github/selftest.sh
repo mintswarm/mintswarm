@@ -17,14 +17,20 @@
 # creation with store-credentials.sh create, whose listener is driven over
 # 127.0.0.1 (matching and wrong states, loopback only, the timeout, a client that
 # trickles bytes, a held port) with the conversion answered by the curl stub;
-# the JWT and the installation token; key rotation, with and without per-use confirmation; every key store
-# backend (selection, round trips, put --confirm, the file backend's modes and
-# refusals, rotate and jwt through each); the bot identity include; push.sh
-# pushes and refusals; the inline credential helper; bot-gh.sh; reviewer
-# resolution; assignment and release of approvers; re-classification of a split
-# issue and the parent check before children are filed. Secrets and the manifest
-# code must appear in no recorded argv, nothing may be left in TMPDIR, each
-# create adds only its own App's config to HOME, and .git/config stays
+# the JWT and the installation token; key rotation for both Apps, with no
+# per-use confirmation; every key store backend (selection, round trips, put
+# --confirm, the file backend's modes and refusals, rotate and jwt through
+# each); the bot identity include; push.sh pushes and refusals; the inline
+# credential helper; bot-gh.sh; reviewer resolution; assignment and release of
+# approvers; re-classification of a split issue and the parent check before
+# children are filed; landing a PR as the steward with land.py, and each of its
+# refusals; msw-state.py in field and labels mode (exact bodies, no-op re-runs,
+# a foreign field id, unavailable fields, ignored writes, a single label swapped
+# in one PUT, label names in any case) and the issue status it maps to (reset
+# after GitHub moves it, none and status: off leave it alone), and the README's
+# msw-state tables against the script's VALUES and STATUS. Secrets and the
+# manifest code must appear in no recorded argv, nothing may be left in TMPDIR,
+# each create adds only its own App's config to HOME, and .git/config stays
 # byte-identical across pushes. Every background process runs in its own
 # process group, every wait is bounded, and any group still there is killed on
 # exit.
@@ -59,7 +65,7 @@ unset MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_EN
       MSW_KEY_STORE DBUS_SESSION_BUS_ADDRESS PASSWORD_STORE_DIR GNUPGHOME CREDENTIALS_DIRECTORY \
       MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION MSW_STUB_SECRET_TOOL_HANG MSW_KEY_STORE_TIMEOUT \
       MSW_STEWARD_CONFIG MSW_MANIFEST_TIMEOUT MSW_STUB_CONV_SLUG MSW_STUB_CONV_MANIFEST MSW_STUB_CURL_FAIL \
-      MSW_STUB_SECURITY_READ_FAIL
+      MSW_STUB_SECURITY_READ_FAIL MSW_STUB_SECURITY_WRITE_FAIL MSW_LAND_RETRY_DELAY
 export HOME="$sandbox/home"
 export TMPDIR="$sandbox/tmp"
 export XDG_RUNTIME_DIR="$sandbox/run"
@@ -120,6 +126,10 @@ kc = json.load(open(path)) if os.path.exists(path) else {}
 if argv == ["-i"]:
     data = sys.stdin.read()
     record_stdin("security", data)
+    if os.environ.get("MSW_STUB_SECURITY_WRITE_FAIL"):
+        # As when the keychain refuses the write.
+        print("security: SecKeychainItemCreateFromContent: Write permissions error.", file=sys.stderr)
+        sys.exit(1)
     for line in data.splitlines():
         words = shlex.split(line)
         if not words:
@@ -147,7 +157,7 @@ if argv and argv[0] in ("find-generic-password", "delete-generic-password"):
         json.dump(kc, open(path, "w"))
         sys.exit(0)
     if "-w" in argv and os.environ.get("MSW_STUB_SECURITY_READ_FAIL"):
-        # As when the confirmation prompt is denied, or there is no GUI session.
+        # As when the item cannot be read, for example from a locked keychain.
         print("security: User interaction is not allowed.", file=sys.stderr)
         sys.exit(36)
     print(kc[key] if "-w" in argv else 'keychain: "stub"')
@@ -364,14 +374,47 @@ cat > "$stubs/gh" <<'EOF'
 # Issues, their assignees, events, type and comments are kept in issues.json in
 # the stub state: {"<n>": {"assignees": [...], "events": [...], "unassignable":
 # [...], "type": "<name>" or null, "comments": [...], "untypeable": bool,
-# "comment_failures": n}}; a PATCH of the issue sets its type unless it is
-# untypeable; a comment POST fails while comment_failures is above 0, counting
-# it down; a PR's reviews,
-# served for pulls/<n>/reviews, in reviews.json: {"<n>": [...]}.
+# "comment_failures": n, "comment_reads": [[...], ...]}}; a PATCH of the issue
+# sets its type unless it is untypeable; a comment POST fails while
+# comment_failures is above 0, counting it down; a GET of the comments serves
+# one list of comment_reads per read, the last repeating, when it is set,
+# counted in comments-reads.json; a PR's reviews and inline review comments,
+# served for pulls/<n>/reviews and pulls/<n>/comments, in reviews.json and
+# review-comments.json: {"<n>": [...]} or {"<n>": {"reads": [[...], ...]}},
+# one list per read, the last repeating, counted in reviews-reads.json and
+# review-comments-reads.json.
+# For land.py: pulls/<n> from pulls.json, {"<n>": [read 1, read 2, ...]}, the
+# last read repeating, counted in pulls-reads.json; check runs, check suites
+# and statuses per commit in commits.json, {"<sha>": {"check_runs": [...],
+# "check_suites": [...], "statuses": [...], "status_total": n}} or
+# {"<sha>": {"reads": [{...}, ...]}}, one per read of each of check-runs,
+# check-suites and status, the last repeating, counted per "<sha>/<kind>" in
+# commits-reads.json, check runs and suites two to a page; review threads for
+# "api graphql" with no body on stdin in threads.json,
+# {"<n>": [isResolved, ...]} or {"<n>": {"reads": [[isResolved, ...], ...]}},
+# one list per read of the first page, the last repeating, counted in
+# threads-reads.json, two to a page with the index as cursor; and PUT
+# pulls/<n>/merge, recorded in merges.json and answered 405 while merges.json
+# has "merge_refused": true, after which pulls/<n> answers merged, by
+# mintswarm-dev-steward[bot].
+# For msw-state.py an issue also keeps "fields" (its issue-field values, served
+# and POSTed at issues/<n>/issue-field-values; a POST replaces the value of each
+# field id given, named msw-state, unless "field_ignores_post"; with
+# "fields_unavailable" both answer HTTP 404), "labels" (names, served and PUT at
+# issues/<n>/labels) and "status" (a status name or null; the issue GET returns
+# it with node_id I_<n>). The repository's labels are in labels.json (served and
+# POSTed at repos/.../labels) and its issue statuses in statuses.json
+# ([{"id", "name", "category"}], four by default); api graphql with --input -
+# answers the planningStatuses query from them and applies setIssueStatus to the issue whose
+# node id is I_<n>, unless that issue has "status_ignores_set".
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
 
+STATUSES = [{"id": "S_todo", "name": "Todo", "category": "TODO"},
+            {"id": "S_progress", "name": "In progress", "category": "IN_PROGRESS"},
+            {"id": "S_review", "name": "In review", "category": "IN_PROGRESS"},
+            {"id": "S_done", "name": "Done", "category": "DONE"}]
 argv = sys.argv[1:]
 record("gh", argv)
 names = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
@@ -382,13 +425,149 @@ data = ""
 if any(argv[i] == "--input" and argv[i + 1] == "-" for i in range(len(argv) - 1)):
     data = sys.stdin.read()
     record_stdin("gh", data)
-if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/reviews", a) for a in argv):
-    store = os.path.join(STATE, "reviews.json")
+if argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/(reviews|comments)", a) for a in argv):
+    n, kind = re.search(r"/pulls/(\d+)/(reviews|comments)", next(a for a in argv if a.startswith("repos/"))).groups()
+    name = "reviews" if kind == "reviews" else "review-comments"
+    store = os.path.join(STATE, name + ".json")
+    reviews = (json.load(open(store)) if os.path.exists(store) else {}).get(n, [])
+    if isinstance(reviews, dict):
+        reads_path = os.path.join(STATE, name + "-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(n, 0)
+        reads[n] = seen + 1
+        json.dump(reads, open(reads_path, "w"))
+        reviews = reviews["reads"][min(seen, len(reviews["reads"]) - 1)]
+    print(json.dumps([reviews] if "--slurp" in argv else reviews))
+elif argv[:2] == ["api", "graphql"] and not data:
+    store = os.path.join(STATE, "threads.json")
+    n = (opt(argv, "-F") or "number=0").split("=", 1)[1]
+    after = [a.split("=", 1)[1] for i, a in enumerate(argv) if argv[i - 1] == "-f" and a.startswith("after=")]
+    start = int(after[0]) if after else 0
+    threads = (json.load(open(store)) if os.path.exists(store) else {}).get(n)
+    if isinstance(threads, dict):
+        reads_path = os.path.join(STATE, "threads-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(n, 0) - (0 if start == 0 else 1)
+        if start == 0:
+            reads[n] = seen + 1
+            json.dump(reads, open(reads_path, "w"))
+        threads = threads["reads"][min(seen, len(threads["reads"]) - 1)]
+    if threads is None:
+        print(json.dumps({"data": {"repository": {"pullRequest": None}}}))
+        sys.exit(0)
+    page = threads[start:start + 2]
+    more = start + 2 < len(threads)
+    print(json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "nodes": [{"isResolved": r} for r in page],
+        "pageInfo": {"hasNextPage": more, "endCursor": str(start + 2) if more else None}}}}}}))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+/merge", a) for a in argv):
+    store = os.path.join(STATE, "merges.json")
+    merges = json.load(open(store)) if os.path.exists(store) else {}
     n = re.search(r"/pulls/(\d+)/", next(a for a in argv if a.startswith("repos/"))).group(1)
-    print(json.dumps((json.load(open(store)) if os.path.exists(store) else {}).get(n, [])))
+    merges.setdefault("calls", []).append({"pr": n, "method": opt(argv, "--method"), "body": json.loads(data or "null")})
+    if merges.get("merge_refused"):
+        json.dump(merges, open(store, "w"))
+        print("gh: Repository rule violations found (HTTP 405)", file=sys.stderr)
+        sys.exit(1)
+    merges.setdefault("merged", []).append(n)
+    json.dump(merges, open(store, "w"))
+    print(json.dumps({"sha": "f" * 40, "merged": True, "message": "Pull Request successfully merged"}))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/\d+", a) for a in argv):
+    n = re.search(r"/pulls/(\d+)$", next(a for a in argv if a.startswith("repos/"))).group(1)
+    reads_path = os.path.join(STATE, "pulls-reads.json")
+    reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+    seen = reads.get(n, 0)
+    reads[n] = seen + 1
+    json.dump(reads, open(reads_path, "w"))
+    versions = json.load(open(os.path.join(STATE, "pulls.json")))[n]
+    pr = dict(versions[min(seen, len(versions) - 1)])
+    merges_path = os.path.join(STATE, "merges.json")
+    if os.path.exists(merges_path) and n in json.load(open(merges_path)).get("merged", []):
+        pr.update({"state": "closed", "merged": True, "merge_commit_sha": "f" * 40,
+                   "merged_by": {"login": "mintswarm-dev-steward[bot]"}})
+    print(json.dumps(pr))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/commits/[0-9a-f]+/(check-runs|check-suites|status)(\?.*)?", a) for a in argv):
+    sha, kind = re.search(r"/commits/([0-9a-f]+)/(check-runs|check-suites|status)", next(a for a in argv if a.startswith("repos/"))).groups()
+    store = os.path.join(STATE, "commits.json")
+    commit = (json.load(open(store)) if os.path.exists(store) else {}).get(sha, {})
+    if "reads" in commit:
+        reads_path = os.path.join(STATE, "commits-reads.json")
+        reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+        seen = reads.get(sha + "/" + kind, 0)
+        reads[sha + "/" + kind] = seen + 1
+        json.dump(reads, open(reads_path, "w"))
+        commit = commit["reads"][min(seen, len(commit["reads"]) - 1)]
+    if kind == "status":
+        statuses = commit.get("statuses", [])
+        print(json.dumps({"state": "success", "total_count": commit.get("status_total", len(statuses)),
+                          "statuses": statuses}))
+    else:
+        key = kind.replace("-", "_")
+        items = commit.get(key, [])
+        pages = [{"total_count": len(items), key: items[i:i + 2]} for i in range(0, len(items), 2)]
+        pages = pages or [{"total_count": 0, key: []}]
+        print(json.dumps(pages if "--slurp" in argv else pages[0]))
 elif argv[:1] == ["api"] and any(a.endswith("/requested_reviewers") for a in argv):
     reviewers = json.loads(data)["reviewers"]
     print(json.dumps({"number": 7, "requested_reviewers": [{"login": r} for r in reviewers]}))
+elif argv[:2] == ["api", "graphql"]:
+    store = os.path.join(STATE, "issues.json")
+    issues = json.load(open(store)) if os.path.exists(store) else {}
+    spath = os.path.join(STATE, "statuses.json")
+    statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
+    req = json.loads(data)
+    if "planningStatuses" in req["query"]:
+        print(json.dumps({"data": {"node": {"repository": {"planningStatuses": {"nodes": statuses}}}}}))
+    elif "setIssueStatus" in req["query"]:
+        n = req["variables"]["issue"][len("I_"):]
+        item = issues.setdefault(n, {})
+        match = [s for s in statuses if s["id"] == req["variables"]["status"]]
+        if not match:
+            print(json.dumps({"data": None, "errors": [{"message": "no such status"}]}))
+            sys.exit(1)
+        if not item.get("status_ignores_set"):
+            item["status"] = match[0]["name"]
+        json.dump(issues, open(store, "w"))
+        print(json.dumps({"data": {"setIssueStatus": {"clientMutationId": None}}}))
+    else:
+        sys.exit(1)
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/(issue-field-values|labels)", a) for a in argv):
+    path = next(a for a in argv if a.startswith("repos/"))
+    n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)/(.*)", path).groups()
+    method = opt(argv, "--method") or "GET"
+    store = os.path.join(STATE, "issues.json")
+    issues = json.load(open(store)) if os.path.exists(store) else {}
+    item = issues.setdefault(n, {})
+    if tail == "issue-field-values":
+        if item.get("fields_unavailable"):
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
+            sys.exit(1)
+        fields = item.setdefault("fields", [])
+        if method == "POST" and not item.get("field_ignores_post"):
+            for fv in json.loads(data)["issue_field_values"]:
+                fields[:] = [f for f in fields if f["issue_field_id"] != fv["field_id"]]
+                fields.append({"issue_field_id": fv["field_id"], "node_id": "IFV_%d" % fv["field_id"],
+                               "data_type": "single_select", "issue_field_name": "msw-state", "value": fv["value"],
+                               "single_select_option": {"id": 1, "name": fv["value"], "color": "GRAY"}})
+        out = fields
+    else:
+        if method == "PUT":
+            item["labels"] = list(json.loads(data)["labels"])
+        out = [{"name": name} for name in item.setdefault("labels", [])]
+        if "--slurp" in argv:
+            out = [out]
+    json.dump(issues, open(store, "w"))
+    print(json.dumps(out))
+elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/labels", a) for a in argv):
+    store = os.path.join(STATE, "labels.json")
+    labels = json.load(open(store)) if os.path.exists(store) else []
+    if opt(argv, "--method") == "POST":
+        label = json.loads(data)
+        labels.append(label)
+        json.dump(labels, open(store, "w"))
+        print(json.dumps(label))
+    else:
+        print(json.dumps([labels] if "--slurp" in argv else labels))
 elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/assignees|/events|/comments)?", a) for a in argv):
     path = next(a for a in argv if a.startswith("repos/"))
     n, tail = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)(.*)", path).groups()
@@ -428,12 +607,25 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         json.dump(issues, open(store, "w"))
         out = comment
     elif tail == "/comments":
-        out = [item["comments"]] if "--slurp" in argv else item["comments"]
+        comments = item["comments"]
+        if "comment_reads" in item:
+            reads_path = os.path.join(STATE, "comments-reads.json")
+            reads = json.load(open(reads_path)) if os.path.exists(reads_path) else {}
+            seen = reads.get(n, 0)
+            reads[n] = seen + 1
+            json.dump(reads, open(reads_path, "w"))
+            comments = item["comment_reads"][min(seen, len(item["comment_reads"]) - 1)]
+        out = [comments] if "--slurp" in argv else comments
     elif tail == "/events":
         out = [item["events"]] if "--slurp" in argv else item["events"]
     else:
-        out = {"number": int(n), "assignees": [{"login": a} for a in item["assignees"]],
-               "type": {"name": item["type"]} if item["type"] else None}
+        spath = os.path.join(STATE, "statuses.json")
+        statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
+        status = next((s for s in statuses if s["name"] == item.get("status")), None)
+        out = {"number": int(n), "node_id": "I_%s" % n, "assignees": [{"login": a} for a in item["assignees"]],
+               "type": {"name": item["type"]} if item["type"] else None,
+               "status": {"category": status["category"], "id": status["id"], "name": status["name"]}
+               if status else None}
     print(json.dumps(out))
 else:
     print(json.dumps({"full_name": "mintswarm/mintswarm"}))
@@ -547,15 +739,15 @@ profile_of() {  # profile_of NAME: MSW_PROFILE_* for NAME, |-separated
     # shellcheck source=common.sh
     . "$here/common.sh"
     msw_app_profile "$1" || exit 1
-    printf '%s|%s|%s|%s\n' "$MSW_PROFILE_CONFIG" "$MSW_PROFILE_SERVICE" "$MSW_PROFILE_LABEL" "$MSW_PROFILE_CONFIRM"
+    printf '%s|%s|%s\n' "$MSW_PROFILE_CONFIG" "$MSW_PROFILE_SERVICE" "$MSW_PROFILE_LABEL"
   )
 }
-check "the mintswarm-dev profile: dev-app.json, its service and label, no confirmation" \
+check "the mintswarm-dev profile: dev-app.json, its service and label" \
   eq "$(profile_of mintswarm-dev)" \
-     "$MSW_APP_CONFIG|mintswarm-dev-private-key|mintswarm-dev GitHub App private key|none"
-check "the steward profile: steward-app.json, its own service and label, Keychain confirmation" \
+     "$MSW_APP_CONFIG|mintswarm-dev-private-key|mintswarm-dev GitHub App private key"
+check "the steward profile: steward-app.json, its own service and label" \
   eq "$(profile_of mintswarm-dev-steward)" \
-     "$HOME/.config/mintswarm/steward-app.json|mintswarm-dev-steward-private-key|mintswarm-dev-steward GitHub App private key|keychain-acl"
+     "$HOME/.config/mintswarm/steward-app.json|mintswarm-dev-steward-private-key|mintswarm-dev-steward GitHub App private key"
 steward_config_from_env() {
   (
     MSW_STEWARD_CONFIG="$sandbox/elsewhere.json"
@@ -759,6 +951,8 @@ create_gh_start="$(gh_calls)"
 # Usage and the manifest, the config and the key store, all checked before listening.
 check "create without a manifest is bad usage" exits_2 "$S" create
 check "create with an unknown option is bad usage" exits_2 "$S" create "$here/manifests/mintswarm-dev.json" --confirm
+check "create with --unconfirmed-key is bad usage" \
+  exits_2 "$S" create "$here/manifests/mintswarm-dev-steward.json" --unconfirmed-key
 check "prepare is gone" exits_2 "$S" prepare
 check "convert is gone" exits_2 "$S" convert "$CODE" 0123
 check "create refuses a missing manifest" refused_early "no such manifest" "$S" create "$sandbox/manifests/none.json"
@@ -832,6 +1026,8 @@ check "TMPDIR is empty after create" tmp_empty
 
 # mintswarm-dev-steward: the listener, and an item and a config of its own.
 cp "$MSW_APP_CONFIG" "$sandbox/dev-app.before"
+dev_item() { jq -r --arg k "mintswarm-dev-private-key/$CLIENT_ID" '.[$k]' "$MSW_STUB_STATE/keychain.json"; }
+dev_item_before="$(dev_item)"
 steward_cfg="$HOME/.config/mintswarm/steward-app.json"
 m_st="$(manifest_copy mintswarm-dev-steward)"
 lport="$(port_of "$m_st")"
@@ -870,31 +1066,33 @@ home_files > "$sandbox/home-after"
 check "HOME gains only steward-app.json" \
   eq "$(LC_ALL=C comm -13 "$sandbox/home-before" "$sandbox/home-after")" "./.config/mintswarm/steward-app.json"
 check "dev-app.json is byte-identical" cmp "$sandbox/dev-app.before" "$MSW_APP_CONFIG"
+check "mintswarm-dev's Keychain item is unchanged" eq "$(dev_item)" "$dev_item_before"
 check "steward-app.json holds exactly the identifiers, the key store and the confirmation kind" \
   eq "$(jq -c 'keys' "$steward_cfg")" '["app_id","client_id","key_confirm","key_fingerprint","key_store","keychain_service","slug"]'
-check "steward-app.json: the steward's slug and service, the keychain, Keychain confirmation" \
+check "steward-app.json: the steward's slug and service, the keychain, no confirmation" \
   eq "$(jq -r '[.slug, .keychain_service, .key_store, .key_confirm] | join(" ")' "$steward_cfg")" \
-     "mintswarm-dev-steward mintswarm-dev-steward-private-key keychain keychain-acl"
+     "mintswarm-dev-steward mintswarm-dev-steward-private-key keychain none"
 check "steward-app.json records the key's fingerprint" \
   eq "$(jq -r .key_fingerprint "$steward_cfg")" "SHA256:$(fingerprint_of "$keys/key1.pem")"
 check "the stub keychain holds the key under the steward's service" \
   eq "$(jq -r --arg k "mintswarm-dev-steward-private-key/$CLIENT_ID" '.[$k]' "$MSW_STUB_STATE/keychain.json")" "$key1_b64"
-steward_kc_line() {  # the steward's item: its label, -T "" and no -U
+steward_kc_line() {  # the steward's item: its label, -U and no -T, as mintswarm-dev's
   local l
   l="$(kc_adds ' -s mintswarm-dev-steward-private-key ')"
   printf '%s\n' "$l"
   [ "$(printf '%s\n' "$l" | grep -c .)" = 1 ] || return 1
-  printf '%s\n' "$l" | grep -qF -- ' -l "mintswarm-dev-steward GitHub App private key" -T "" -w ' || return 1
-  ! printf '%s\n' "$l" | grep -qF -- ' -U '
+  printf '%s\n' "$l" | grep -qF -- '-U -s mintswarm-dev-steward-private-key ' || return 1
+  printf '%s\n' "$l" | grep -qF -- ' -l "mintswarm-dev-steward GitHub App private key" -w ' || return 1
+  ! printf '%s\n' "$l" | grep -qF -- ' -T '
 }
-check "the steward's Keychain item has no trusted application: -T \"\", its label, no -U" steward_kc_line
+check "the steward's Keychain item: its own label quoted, -U and no -T" steward_kc_line
 check "create's output holds no key line" absent "$key1_line" "$sandbox/c-dev.out" "$sandbox/c-dev.err" "$sandbox/c-st.out" "$sandbox/c-st.err"
 check "create's output holds no PRIVATE KEY" absent "PRIVATE KEY" "$sandbox/c-dev.out" "$sandbox/c-dev.err" "$sandbox/c-st.out" "$sandbox/c-st.err"
 check "create's output holds no client or webhook secret" \
   sh -c '! grep -qE "selftest-client-secret|selftest-webhook" "$@"' sh "$sandbox"/c-dev.* "$sandbox"/c-st.*
 check "create prints the slug, id, client id, store, confirmation, fingerprint and config" \
   sh -c 'grep -qF "created: app mintswarm-dev-steward (id 5874301, client $2)" "$1" \
-         && grep -qF "key in the keychain key store, confirmation: keychain-acl" "$1" \
+         && grep -qF "key in the keychain key store, confirmation: none" "$1" \
          && grep -qF "key fingerprint SHA256:" "$1" && grep -qF "identifiers: $3" "$1" \
          && grep -qF "README.md, Steward" "$1"' sh "$sandbox/c-st.out" "$CLIENT_ID" "$steward_cfg"
 
@@ -940,18 +1138,18 @@ check "and writes its config" test -f "$sandbox/warn/dev-app.json"
 # Failures after the conversion say what is left behind.
 m_put="$(manifest_copy mintswarm-dev-steward)"
 lport="$(port_of "$m_put")"
-check "create while the steward's item exists: the listener starts" \
-  start_create c-put env MSW_STEWARD_CONFIG="$sandbox/put/steward-app.json" MSW_STUB_CONV_SLUG=mintswarm-dev-steward \
+check "create whose key store refuses the key: the listener starts" \
+  start_create c-put env MSW_STUB_SECURITY_WRITE_FAIL=1 MSW_STEWARD_CONFIG="$sandbox/put/steward-app.json" \
+  MSW_STUB_CONV_SLUG=mintswarm-dev-steward \
   MSW_STUB_CONV_MANIFEST="$m_put" "$S" create "$m_put"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept put
 check "it fails, saying the App exists and its key was not stored" \
   failed_saying "the App mintswarm-dev-steward (id 5874301) exists on GitHub, but its key was not stored."
 check "and writes no config" test ! -e "$sandbox/put/steward-app.json"
-"$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
 m_rb="$(manifest_copy mintswarm-dev-steward)"
 lport="$(port_of "$m_rb")"
-check "create whose read-back fails (as on Deny): the listener starts" \
+check "create whose read-back fails (as from a locked keychain): the listener starts" \
   start_create c-rb env MSW_STUB_SECURITY_READ_FAIL=1 MSW_STEWARD_CONFIG="$sandbox/rb/steward-app.json" \
   MSW_STUB_CONV_SLUG=mintswarm-dev-steward MSW_STUB_CONV_MANIFEST="$m_rb" "$S" create "$m_rb"
 state="$(create_state)" || state=""
@@ -1025,29 +1223,30 @@ check "with the port held, create fails before listening" \
 kill -TERM -- "-$held_pid" 2>/dev/null || true
 wait "$held_pid" 2>/dev/null || true
 
-# macOS: the keychain can confirm every use, so the steward's key never goes without it.
-check "on macOS the steward's create refuses --unconfirmed-key" \
-  refused_early "--unconfirmed-key is only for a machine without the keychain store" \
-  env MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" "$S" create "$(manifest_copy mintswarm-dev-steward)" --unconfirmed-key
-check "on macOS the steward's create refuses another key store" \
-  refused_early "it is available here: unset MSW_KEY_STORE or set it to keychain (not file)" \
-  env MSW_KEY_STORE=file MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" "$S" create "$(manifest_copy mintswarm-dev-steward)"
-check "even with --unconfirmed-key" \
-  refused_early "--unconfirmed-key is only for a machine without the keychain store" \
-  env MSW_KEY_STORE=file MSW_STEWARD_CONFIG="$sandbox/mac/steward-app.json" \
-  "$S" create "$(manifest_copy mintswarm-dev-steward)" --unconfirmed-key
-check "the refusals wrote no key file" test ! -e "$HOME/.config/mintswarm/keys"
+# macOS: another key store is taken for the steward as for mintswarm-dev.
+mf_env=(HOME="$sandbox/macfile" MSW_KEY_STORE=file)
+mkdir -p "$sandbox/macfile"
+m_mf="$(manifest_copy mintswarm-dev-steward)"
+lport="$(port_of "$m_mf")"
+check "on macOS the steward's create with MSW_KEY_STORE=file: the listener starts" \
+  start_create c-mf env "${mf_env[@]}" MSW_STUB_CONV_SLUG=mintswarm-dev-steward MSW_STUB_CONV_MANIFEST="$m_mf" \
+  "$S" create "$m_mf"
+state="$(create_state)" || state=""
+check "its redirect is accepted" accept mf
+check "it succeeds" created
+check "and records the file store and no confirmation" \
+  eq "$(jq -r '[.key_store, .key_confirm] | join(" ")' "$sandbox/macfile/.config/mintswarm/steward-app.json")" "file none"
+check "the key is in the file store under the steward's service" \
+  cmp "$keys/key1.pem" "$sandbox/macfile/.config/mintswarm/keys/mintswarm-dev-steward-private-key@$CLIENT_ID"
 
-# Linux: no per-use confirmation, so the steward needs --unconfirmed-key.
+# Linux: the steward is created as on macOS, into the first available store.
 lx_env=(HOME="$sandbox/lx" MSW_STUB_UNAME=Linux DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent)
 mkdir -p "$sandbox/lx"
 m_lx="$(manifest_copy mintswarm-dev-steward)"
 lport="$(port_of "$m_lx")"
-check "on Linux the steward's create is refused without --unconfirmed-key" \
-  refused_early "add --unconfirmed-key" env "${lx_env[@]}" "$S" create "$m_lx"
-check "on Linux with --unconfirmed-key: the listener starts" \
+check "on Linux the steward's create: the listener starts" \
   start_create c-lx env "${lx_env[@]}" MSW_STUB_CONV_SLUG=mintswarm-dev-steward MSW_STUB_CONV_MANIFEST="$m_lx" \
-  "$S" create "$m_lx" --unconfirmed-key
+  "$S" create "$m_lx"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept lx
 check "it succeeds" created
@@ -1064,7 +1263,7 @@ check "and the only URL curl got is the conversion's" \
 check "the code reached curl on stdin" present "app-manifests/$CODE/conversions" "$MSW_STUB_STATE/stdin-curl.log"
 check "create made no gh call" eq "$(gh_calls)" "$create_gh_start"
 check "the code is in no output of create, no argv, no response and nothing under HOME or TMPDIR" \
-  absent "$CODE" "$sandbox"/c-*.out "$sandbox"/c-*.err "$argv_log" "$sandbox/probe" "$HOME" "$sandbox/lx" "$TMPDIR"
+  absent "$CODE" "$sandbox"/c-*.out "$sandbox"/c-*.err "$argv_log" "$sandbox/probe" "$HOME" "$sandbox/lx" "$sandbox/macfile" "$TMPDIR"
 check "TMPDIR is empty after the create runs" tmp_empty
 
 # --- JWT and installation token ----------------------------------------------
@@ -1134,47 +1333,46 @@ dev_rotated_line() {
 }
 check "rotate keeps mintswarm-dev's label, -U and no -T" dev_rotated_line
 
-# The steward's key: confirmation is kept, and its existing item must be deleted first.
+# The steward's key: no confirmation, its own item and config, rotated while the item exists.
+cp "$MSW_APP_CONFIG" "$sandbox/dev-app.before"
+dev_item_before="$(dev_item)"
 st_rotate() { env MSW_APP_CONFIG="$steward_cfg" "$S" rotate "$@"; }
 cp "$keys/key2.pem" "$sandbox/steward-new.pem"
-check "rotating the steward's key while its item exists is refused and says to delete it first" \
-  fails_saying "delete it first" st_rotate "$sandbox/steward-new.pem"
-check "the refused rotation kept the file and the fingerprint" \
-  sh -c 'test -f "$1" && test "$(jq -r .key_fingerprint "$2")" = "SHA256:$3"' sh \
-  "$sandbox/steward-new.pem" "$steward_cfg" "$(fingerprint_of "$keys/key1.pem")"
-check "rotating the steward's key into the file store is refused" \
-  fails_saying "only the keychain store does, and it is available here: not file" env MSW_KEY_STORE=file MSW_APP_CONFIG="$steward_cfg" \
-  "$S" rotate "$sandbox/steward-new.pem"
-check "and wrote no key file" test ! -e "$HOME/.config/mintswarm/keys"
-"$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
-check "after deleting the item, rotating the steward's key succeeds" st_rotate "$sandbox/steward-new.pem"
+check "rotating the steward's key succeeds while its item exists" st_rotate "$sandbox/steward-new.pem"
 steward_rotated_line() {
   local l
   l="$(kc_adds ' -s mintswarm-dev-steward-private-key ' | tail -n 1)"
   printf '%s\n' "$l"
-  printf '%s\n' "$l" | grep -qF -- ' -l "mintswarm-dev-steward GitHub App private key" -T "" -w '"$key2_b64" || return 1
-  ! printf '%s\n' "$l" | grep -qF -- ' -U '
+  printf '%s\n' "$l" | grep -qF -- '-U -s mintswarm-dev-steward-private-key ' || return 1
+  printf '%s\n' "$l" | grep -qF -- ' -l "mintswarm-dev-steward GitHub App private key" -w '"$key2_b64" || return 1
+  ! printf '%s\n' "$l" | grep -qF -- ' -T '
 }
-check "it sends -T \"\" with the steward's label and no -U" steward_rotated_line
-check "it keeps keychain-acl and records the new fingerprint" \
+check "it sends -U with the steward's label and no -T" steward_rotated_line
+check "it records none and the new fingerprint" \
   eq "$(jq -r '[.key_confirm, .key_store, .key_fingerprint] | join(" ")' "$steward_cfg")" \
-     "keychain-acl keychain SHA256:$(fingerprint_of "$keys/key2.pem")"
+     "none keychain SHA256:$(fingerprint_of "$keys/key2.pem")"
 steward_jwt() { ( export MSW_APP_CONFIG="$steward_cfg"; verify_jwt "$keys/pub2.pem" ); }
 check "the steward's rotated key signs its JWT" steward_jwt
-jq '.key_confirm = "none"' "$steward_cfg" > "$sandbox/steward-none.json"
-cp "$keys/key2.pem" "$sandbox/steward-none.pem"
-check "on macOS a steward config saying none still rotates with confirmation, so its item must go first" \
-  fails_saying "delete it first" env MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
-check "and another key store is refused" \
-  fails_saying "it is available here: not file" \
-  env MSW_KEY_STORE=file MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
-"$here/key-store.sh" delete mintswarm-dev-steward-private-key "$CLIENT_ID"
-check "after deleting the item it rotates" env MSW_APP_CONFIG="$sandbox/steward-none.json" "$S" rotate "$sandbox/steward-none.pem"
-check "with -T \"\" and the steward's label" steward_rotated_line
-check "and upgrades the config to keychain-acl" eq "$(jq -r .key_confirm "$sandbox/steward-none.json")" keychain-acl
+jq 'del(.key_confirm)' "$steward_cfg" > "$sandbox/steward-no-confirm.json"
+cp "$keys/key2.pem" "$sandbox/steward-no-confirm.pem"
+check "a steward config without key_confirm rotates" \
+  env MSW_APP_CONFIG="$sandbox/steward-no-confirm.json" "$S" rotate "$sandbox/steward-no-confirm.pem"
+check "as none" eq "$(jq -r .key_confirm "$sandbox/steward-no-confirm.json")" none
+jq '.key_confirm = "keychain-acl"' "$steward_cfg" > "$sandbox/steward-acl.json"
+cp "$sandbox/steward-acl.json" "$sandbox/steward-acl.before"
+cp "$MSW_STUB_STATE/keychain.json" "$sandbox/keychain.before"
+cp "$keys/key1.pem" "$sandbox/steward-acl.pem"
+check "a config recording keychain-acl is refused, saying to delete the item and set none" \
+  fails_saying "delete the key-store item (key-store.sh delete mintswarm-dev-steward-private-key $CLIENT_ID) and set key_confirm to none" \
+  env MSW_APP_CONFIG="$sandbox/steward-acl.json" "$S" rotate "$sandbox/steward-acl.pem"
+check "and stores nothing, leaving the item, the config and the file" \
+  sh -c 'cmp "$1" "$2" && cmp "$3" "$4" && test -f "$5"' sh "$sandbox/keychain.before" "$MSW_STUB_STATE/keychain.json" \
+  "$sandbox/steward-acl.before" "$sandbox/steward-acl.json" "$sandbox/steward-acl.pem"
+check "after the steward's create and rotate, dev-app.json is unchanged" cmp "$sandbox/dev-app.before" "$MSW_APP_CONFIG"
+check "and so is mintswarm-dev's Keychain item" eq "$(dev_item)" "$dev_item_before"
 lx_cfg="$sandbox/lx/.config/mintswarm/steward-app.json"
 cp "$keys/key2.pem" "$sandbox/lx-new.pem"
-check "on Linux the steward's unconfirmed key rotates as none" \
+check "on Linux the steward's key rotates as none" \
   env "${lx_env[@]}" MSW_APP_CONFIG="$lx_cfg" "$S" rotate "$sandbox/lx-new.pem"
 check "and stays in secret-service with no confirmation" \
   eq "$(jq -r '[.key_store, .key_confirm] | join(" ")' "$lx_cfg")" "secret-service none"
@@ -1189,9 +1387,6 @@ jq '.keychain_service = "mintswarm-dev-private-key"' "$steward_cfg" > "$sandbox/
 check "rotate refuses a keychain_service that is not the App's" \
   fails_saying "but mintswarm-dev-steward's is mintswarm-dev-steward-private-key" \
   env MSW_APP_CONFIG="$sandbox/wrong-service.json" "$S" rotate "$sandbox/any.pem"
-jq 'del(.key_confirm)' "$steward_cfg" > "$sandbox/steward-no-confirm.json"
-check "rotate refuses a steward config without key_confirm" \
-  fails_saying "has no key_confirm" env MSW_APP_CONFIG="$sandbox/steward-no-confirm.json" "$S" rotate "$sandbox/any.pem"
 jq 'del(.key_confirm)' "$MSW_APP_CONFIG" > "$sandbox/dev-no-confirm.json"
 cp "$keys/key2.pem" "$sandbox/same.pem"   # the key mintswarm-dev already has, so the later checks still sign with key2
 dev_no_confirm() {
@@ -2147,6 +2342,542 @@ check "check-parent refuses an untyped parent" fails_saying \
 refused_with_1() { local rc=0; rc check-parent 33 --base "$real_base" >/dev/null 2>&1 || rc=$?; eq "$rc" 1; }
 check "the refusal exits 1" refused_with_1
 check "check-parent with a bad number exits 2" exits_2 rc check-parent 0 --base "$real_base"
+
+# --- land.py -----------------------------------------------------------------
+
+L="$here/land.py"
+check "land.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$L" "$sandbox/land.pyc"
+sha_of() { printf '%040x' "$1"; }
+OTHER_SHA="$(sha_of 4095)"
+for f in pulls commits threads issues merges reviews review-comments; do
+  [ -f "$MSW_STUB_STATE/$f.json" ] || printf '{}\n' > "$MSW_STUB_STATE/$f.json"
+done
+stub_update() {  # stub_update FILE JQ ARGS...: rewrite FILE.json in the gh stub's state with JQ
+  local f="$MSW_STUB_STATE/$1.json" filter="$2"; shift 2
+  jq "$@" "$filter" "$f" > "$f.new" && mv "$f.new" "$f"
+}
+fixture() {  # fixture N [PULL_JQ [COMMIT_JQ [THREADS_JSON [COMMENTS_JQ]]]]: PR N, ready to land at $(sha_of N)
+  local n="$1" sha
+  sha="$(sha_of "$1")"
+  stub_update pulls ".[\$n] = ([{number: (\$n | tonumber), title: \"feat(agents): land \(\$n)\", state: \"open\",
+      draft: false, base: {ref: \"master\"}, labels: [{name: \"mintswarm\"}],
+      head: {ref: \"mintswarm/\(\$n)-land\", sha: \$sha, repo: {full_name: \"mintswarm/mintswarm\"}},
+      mergeable: true, mergeable_state: \"blocked\", merged: false}] | ${2:-.})" --arg n "$n" --arg sha "$sha"
+  stub_update commits ".[\$sha] = ({check_runs: ([\"gates-matrix\", \"gates (ubuntu)\", \"gates (macos)\"]
+        | map({name: ., status: \"completed\", conclusion: \"success\", app: {slug: \"github-actions\"}, check_suite: {id: 7}})),
+      check_suites: [
+        {id: 7, app: {slug: \"github-actions\"}, status: \"completed\", conclusion: \"success\", latest_check_runs_count: 3},
+        {id: 8, app: {slug: \"some-app\"}, status: \"queued\", conclusion: null, latest_check_runs_count: 0},
+        {id: 9, app: {slug: \"github-actions\"}, status: \"completed\", conclusion: \"skipped\", latest_check_runs_count: 0}],
+      statuses: [{context: \"ci/legacy\", state: \"success\"}]} | ${3:-.})" --arg sha "$sha"
+  stub_update threads '.[$n] = $t' --arg n "$n" --argjson t "${4:-[true, true, true]}"
+  stub_update issues ".[\$n] = {assignees: [], events: [], unassignable: [], type: null,
+      comments: ([{id: 500, created_at: \"2026-11-23T12:00:00Z\", user: {login: \"mintswarm-dev[bot]\"}, html_url: \"https://github.com/x\",
+        body: \"<!-- mintswarm: steer -->\n<!-- mintswarm: steer approval -->\nApproved head: \(\$sha)\nTime: 2026-11-23T12:00:00Z\n\nThe maintainer approved this PR in the session:\n\n> I approve PR #\(\$n)\n\"}] | ${5:-.})}" \
+    --arg n "$n" --arg sha "$sha"
+}
+land() { env MSW_LAND_RETRY_DELAY=0 "$L" "$@"; }
+merge_calls() { jq --arg n "$1" '[.calls // [] | .[] | select(.pr == $n)] | length' "$MSW_STUB_STATE/merges.json"; }
+mints() { jq -r 'select(.cmd == "curl") | .argv | select(index("https://api.github.com/app/installations/4242/access_tokens")) | "x"' "$argv_log" | wc -l | tr -d ' '; }
+refused_land() {  # refused_land TEXT N [ARGS...]: land.py N --sha $(sha_of N) exits 1 saying TEXT, with no merge call for N
+  local text="$1" n="$2" rc=0; shift 2
+  land "$n" --sha "$(sha_of "$n")" "$@" >"$sandbox/land.out" 2>&1 || rc=$?
+  cat "$sandbox/land.out"
+  eq "$rc" 1 || return 1
+  grep -qF -- "$text" "$sandbox/land.out" || { echo "no line: $text"; return 1; }
+  eq "$(merge_calls "$n")" 0
+}
+
+# A PR that passes every check is merged as the steward, at the approved head.
+fixture 90
+land_argv_start="$(wc -l < "$argv_log" | tr -d ' ')"
+land_gh_start="$(gh_calls)"
+land_mints_before="$(mints)"
+land_merged() {
+  env MSW_TOKEN="$DUMMY" MSW_LAND_RETRY_DELAY=0 "$L" 90 --sha "$(sha_of 90)" > "$sandbox/land90.out" 2>&1 || { cat "$sandbox/land90.out"; return 1; }
+  cat "$sandbox/land90.out"
+  grep -qxF "merged #90 at $(sha_of 90)" "$sandbox/land90.out" || return 1
+  grep -qxF "merge_commit_sha: $(printf 'f%.0s' $(seq 40))" "$sandbox/land90.out" || return 1
+  grep -qxF "merged_by: mintswarm-dev-steward[bot]" "$sandbox/land90.out"
+}
+check "land.py merges a PR that passes every check and prints the merge commit and merged_by" land_merged
+check "with one PUT to pulls/90/merge" eq "$(merge_calls 90)" 1
+check "whose body is squash at the approved sha, titled with the PR title and number" \
+  eq "$(jq -cS '.calls[-1] | [.method, .body]' "$MSW_STUB_STATE/merges.json")" \
+     "$(jq -cnS --arg sha "$(sha_of 90)" '["PUT", {merge_method: "squash", sha: $sha, commit_title: "feat(agents): land 90 (#90)"}]')"
+check "it read pulls/90 three times (settled, again right before the PUT, after it)" \
+  eq "$(jq -r '.["90"]' "$MSW_STUB_STATE/pulls-reads.json")" 3
+check "it asked for the commit's check suites" \
+  sh -c 'jq -e "select(.cmd == \"gh\") | .argv | select(index(\"--paginate\") and index(\"--slurp\")) | .[-1] | select(test(\"commits/$2/check-suites\"))" "$1" >/dev/null' \
+  sh "$argv_log" "$(sha_of 90)"
+check "exactly one access token was minted" eq "$(( $(mints) - land_mints_before ))" 1
+land_argv() { tail -n "+$((land_argv_start + 1))" "$argv_log"; }
+check "it asked for contents and pull_requests write, checks, statuses and metadata read" \
+  eq "$(land_argv | jq -r 'select(.cmd == "curl") | .argv | index("-d") as $i | if $i then .[$i + 1] else empty end' | jq -cS .permissions)" \
+     '{"checks":"read","contents":"write","metadata":"read","pull_requests":"write","statuses":"read"}'
+check "it read the steward's key, and only from the recorded keychain store, with no other security call" \
+  eq "$(land_argv | jq -c 'select(.cmd == "security") | .argv' | sort -u)" \
+     "[\"find-generic-password\",\"-s\",\"mintswarm-dev-steward-private-key\",\"-a\",\"$CLIENT_ID\",\"-w\"]"
+land_gh_env() { tail -n "+$((land_gh_start + 1))" "$MSW_STUB_STATE/gh-env.log"; }
+check "every gh call ran with the minted steward token, not the caller's MSW_TOKEN" \
+  eq "$(land_gh_env | jq -r '[.GH_TOKEN == $t, .MSW_TOKEN == null] | @text' --arg t "$MINTED" | sort -u)" "[true,true]"
+check "the token is in no argv" absent "$MINTED" "$argv_log"
+check "and not in land.py's output" absent "$MINTED" "$sandbox/land90.out"
+check "the check runs and review threads were read over more than one page" \
+  sh -c 'jq -e "select(.cmd == \"gh\") | .argv | select(index(\"--paginate\") and index(\"--slurp\")) | .[-1] | select(test(\"check-runs[?]filter=latest\"))" "$1" >/dev/null \
+         && jq -e "select(.cmd == \"gh\") | .argv | select(index(\"after=2\"))" "$1" >/dev/null' sh "$argv_log"
+
+fixture 91
+land_dry() {
+  land 91 --sha "$(sha_of 91)" --dry-run > "$sandbox/land91.out" 2>&1 || { cat "$sandbox/land91.out"; return 1; }
+  grep -qF "passes every check; nothing merged (--dry-run)" "$sandbox/land91.out"
+}
+check "--dry-run passes every check" land_dry
+check "and sends no PUT" eq "$(merge_calls 91)" 0
+fixture 113 '[(.[0] | .mergeable = null), (.[0] | .mergeable = null), .[0]]'
+check "a mergeable that GitHub works out on the third read passes (--dry-run)" land 113 --sha "$(sha_of 113)" --dry-run
+
+# Each refusal merges nothing.
+fixture 92 ".[0].head.sha = \"$OTHER_SHA\""
+check "refused: the head moved since the approval" refused_land "it moved since the approval" 92
+fixture 93 . '.check_runs[1].conclusion = "failure"'
+check "refused: a failing check run" refused_land "the check run gates (ubuntu) concluded failure, not success" 93
+fixture 94 . '.check_runs[2] |= (.status = "in_progress" | .conclusion = null)'
+check "refused: a pending check run" refused_land "the check run gates (macos) is in_progress, not completed" 94
+fixture 95 . '.statuses[0].state = "failure"'
+check "refused: a failing status" refused_land "the status ci/legacy is failure, not success" 95
+fixture 96 . '.statuses[0].state = "pending"'
+check "refused: a pending status" refused_land "the status ci/legacy is pending, not success" 96
+fixture 114 . '.status_total = 101'
+check "refused: more statuses than one page holds" refused_land "more than one page of 100" 114
+fixture 97 . '.check_runs |= map(select(.name != "gates-matrix"))'
+check "refused: no gates-matrix check run" refused_land "no gates-matrix check run by github-actions" 97
+fixture 117 . '.check_runs |= map(select(.name == "gates-matrix")) | .check_suites[0] |= (.status = "in_progress" | .conclusion = null | .latest_check_runs_count = 1)'
+check "refused: only gates-matrix has run, the gate runs not created yet" \
+  refused_land "the check suite 7 of github-actions is in_progress, not completed" 117
+check "which also says the gates have not run" present "has no gate check run yet: the gates have not run" "$sandbox/land.out"
+fixture 118 . '.check_runs |= map(select(.name == "gates-matrix")) | .check_suites[0].latest_check_runs_count = 1'
+check "refused: gates-matrix alone, even in a completed suite" refused_land "has no gate check run yet: the gates have not run" 118
+fixture 119 . '.check_suites[0] |= (.status = "completed" | .conclusion = "failure")'
+check "refused: a check suite that concluded failure" refused_land "the check suite 7 of github-actions concluded failure, not success" 119
+fixture 120 . '.check_suites |= map(select(.id != 7))'
+check "refused: the gates-matrix run's check suite is missing" refused_land "the check suite 7 of gates-matrix is not among the check suites" 120
+fixture 140 . '.check_runs |= map(del(.check_suite)) | .check_runs[1].app.slug = "impostor"'
+check "refused: a gates-matrix run with no check suite" refused_land "the check suite None of gates-matrix is not among" 140
+check "with no gate lookup among runs that have no suite either" absent "in check suite None" "$sandbox/land.out"
+fixture 121 . '.check_suites += [{id: 10, app: {slug: "other-ci"}, status: "in_progress", conclusion: null, latest_check_runs_count: 1}]'
+check "refused: another App's check suite still running" refused_land "the check suite 10 of other-ci is in_progress, not completed" 121
+fixture 122 . '.check_runs[0].app.slug = "impostor"'
+check "refused: a gates-matrix run created by another App" refused_land "no gates-matrix check run by github-actions" 122
+fixture 123 . '.check_runs[1].app.slug = "impostor"'
+check "refused: a gate run in the gates suite created by another App" \
+  refused_land "the check run gates (ubuntu) in check suite 7 is by 'impostor', not github-actions" 123
+fixture 124 . '.check_runs[2].conclusion = "skipped"'
+check "refused: a skipped check run (only success passes)" refused_land "the check run gates (macos) concluded skipped, not success" 124
+fixture 125 . '.check_runs[2].conclusion = "neutral"'
+check "refused: a neutral check run" refused_land "the check run gates (macos) concluded neutral, not success" 125
+fixture 98 . . '[true, true, false]'
+check "refused: an unresolved review thread, on the second page" refused_land "1 review thread(s) unresolved" 98
+fixture 99 '.[0].mergeable_state = "dirty"'
+check "refused: the PR conflicts" refused_land "the PR conflicts with master" 99
+fixture 100 '.[0].mergeable = null'
+check "refused: mergeable is still null after the retries" refused_land "has not worked out whether the PR is mergeable" 100
+check "after reading pulls/100 six times" eq "$(jq -r '.["100"]' "$MSW_STUB_STATE/pulls-reads.json")" 6
+fixture 101 '.[0].draft = true'
+check "refused: a draft" refused_land "the PR is a draft" 101
+fixture 102 '.[0].state = "closed"'
+check "refused: a closed PR" refused_land "the PR is closed, not open" 102
+fixture 103 '.[0].base.ref = "release"'
+check "refused: a base other than master" refused_land "the PR targets 'release', not master" 103
+fixture 104 '.[0].head.ref = "feat/104-land"'
+check "refused: a head that is not a mintswarm/* branch" refused_land "is not a mintswarm/* branch" 104
+fixture 105 '.[0].head.repo.full_name = "someone/mintswarm"'
+check "refused: a head in a fork" refused_land "the head branch is in 'someone/mintswarm', not mintswarm/mintswarm" 105
+fixture 106 '.[0].labels += [{name: "hold"}]'
+check "refused: the hold label" refused_land "the PR carries the hold label" 106
+fixture 107 . . '[true, true, true]' '[]'
+check "refused: no approval steer" refused_land "no approval steer by mintswarm-dev[bot] names the head" 107
+fixture 108 . . '[true, true, true]' ".[0].body |= sub(\"Approved head: [0-9a-f]+\"; \"Approved head: $OTHER_SHA\")"
+check "refused: a steer naming another sha" refused_land "no approval steer by mintswarm-dev[bot] names the head" 108
+fixture 109 . . '[true, true, true]' '.[0].user.login = "zmij"'
+check "refused: a steer by another author" refused_land "no approval steer by mintswarm-dev[bot] names the head" 109
+fixture 115 . . '[true, true, true]' '.[0].body |= sub("<!-- mintswarm: steer -->"; "<!-- mintswarm: steer --> approved")'
+check "refused: a steer without the exact marker line" refused_land "no approval steer by mintswarm-dev[bot] names the head" 115
+fixture 126 . . '[true, true, true]' '.[0].body |= sub("<!-- mintswarm: steer approval -->\n"; "")'
+check "refused: a steer without the approval marker line" refused_land "no approval steer by mintswarm-dev[bot] names the head" 126
+fixture 127 . . '[true, true, true]' '.[0].body |= "Round 2 summary, relaying the stage:\n\n" + . + "\nEnd of the stage output.\n"'
+check "refused: the approval lines embedded in a longer bot comment" refused_land "no approval steer by mintswarm-dev[bot] names the head" 127
+fixture 128 . . '[true, true, true]' '.[0].body |= sub("Approved head: "; "Time: 2026-11-23T12:00:00Z\nApproved head: ")'
+check "refused: the approved-head line not third" refused_land "no approval steer by mintswarm-dev[bot] names the head" 128
+fixture 129 . . '[true, true, true]' '. + [{id: 501, created_at: "2026-11-23T12:05:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked to wait for the rebase first.\n"}]'
+check "refused: a later steer withdraws the approval" refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 129
+fixture 130 . . '[true, true, true]' '[{id: 499, created_at: "2026-11-23T11:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked for a rebase.\n"}] + . + [{id: 502, created_at: "2026-11-23T12:10:00Z",
+  user: {login: "mintswarm-dev[bot]"}, body: "Round summary.\n\n<!-- mintswarm: steer -->\n"}]'
+check "refused: a later bot comment with the steer marker on a later line withdraws the approval" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 130
+fixture 136 . . '[true, true, true]' '. + [{id: 504, created_at: "2026-11-23T12:05:00Z", user: {login: "zmij", type: "User"},
+  body: "wait"}]'
+check "refused: a later comment by a person withdraws the approval" refused_land "a later steer by zmij withdraws the approval" 136
+fixture 137 . . '[true, true, true]' '[{id: 499, created_at: "2026-11-23T11:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked for a rebase.\n"}] + . + [
+  {id: 505, created_at: "2026-11-23T12:10:00Z", user: {login: "mintswarm-dev[bot]"}, body: "Round summary.\n"},
+  {id: 506, created_at: "2026-11-23T12:11:00Z", user: {login: "github-actions[bot]"}, body: "<!-- mintswarm: steer -->\n"},
+  {id: 507, created_at: "2026-11-23T12:12:00Z", user: {login: "some-app", type: "Bot"}, body: "<!-- mintswarm: steer -->\n"}]'
+check "an approval after an earlier steer, followed by bot comments that are not steers, passes (--dry-run)" \
+  land 137 --sha "$(sha_of 137)" --dry-run
+fixture 138 . . '[true, true, true]' '. + [{id: 508, created_at: "2026-11-23T12:05:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "Relayed decision:\n  <!-- mintswarm: steer -->  \nHold this one.\n"}]'
+check "refused: a later steer whose marker line has surrounding whitespace withdraws the approval" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 138
+fixture 131 . . '[true, true, true]' '[{id: 503, created_at: "2026-11-23T13:00:00Z", user: {login: "mintswarm-dev[bot]"},
+  body: "<!-- mintswarm: steer -->\nThe maintainer asked to wait.\n"}] + .'
+check "refused: the latest steer by created_at wins, whatever the comment order" \
+  refused_land "a later steer by mintswarm-dev[bot] withdraws the approval" 131
+
+fixture 141
+stub_update reviews '.["141"] = [{id: 9001, user: {login: "zmij", type: "User"}, state: "CHANGES_REQUESTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Not like this."}]'
+check "refused: a later review by a person requesting changes withdraws the approval" \
+  refused_land "a later review by zmij (CHANGES_REQUESTED) withdraws the approval" 141
+fixture 142
+stub_update reviews '.["142"] = [{id: 9002, user: {login: "zmij", type: "User"}, state: "COMMENTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Hold on."}]'
+check "refused: a later comment-only review by a person withdraws the approval" \
+  refused_land "a later review by zmij (COMMENTED) withdraws the approval" 142
+fixture 143
+stub_update reviews '.["143"] = [
+  {id: 9003, user: {login: "zmij", type: "User"}, state: "APPROVED", submitted_at: "2026-11-23T11:00:00Z", body: ""},
+  {id: 9004, user: {login: "zmij", type: "User"}, state: "PENDING", body: "draft"},
+  {id: 9005, user: {login: "mintswarm-dev[bot]", type: "Bot"}, state: "COMMENTED", submitted_at: "2026-11-23T12:05:00Z",
+    body: "Review round summary."},
+  {id: 9006, user: {login: "copilot[bot]", type: "Bot"}, state: "COMMENTED", submitted_at: "2026-11-23T12:06:00Z",
+    body: "<!-- mintswarm: steer -->"}]'
+check "an earlier review, a pending review and later bot reviews that are not steers pass (--dry-run)" \
+  land 143 --sha "$(sha_of 143)" --dry-run
+fixture 144 . . '[true, true, true]' '[{id: 498, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T12:05:00Z",
+  user: {login: "zmij", type: "User"}, body: "wait"}] + .'
+check "refused: an earlier comment edited after the approval withdraws it" \
+  refused_land "a steer by zmij edited after the approval withdraws the approval" 144
+fixture 145 . . '[true, true, true]' '[{id: 497, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T11:30:00Z",
+  user: {login: "zmij", type: "User"}, body: "looks good"}] + .'
+check "an earlier comment edited before the approval passes (--dry-run)" land 145 --sha "$(sha_of 145)" --dry-run
+fixture 147
+stub_update review-comments '.["147"] = [{id: 9101, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T11:00:00Z",
+  updated_at: "2026-11-23T12:05:00Z", body: "Not this way."}]'
+check "refused: an earlier inline review comment edited after the approval withdraws it" \
+  refused_land "an inline review comment by zmij edited after the approval withdraws the approval" 147
+check "having read pulls/147/comments over every page" \
+  sh -c 'jq -e "select(.cmd == \"gh\") | .argv | select(index(\"--paginate\") and index(\"--slurp\")) | .[-1] | select(test(\"pulls/147/comments\"))" "$1" >/dev/null' \
+  sh "$argv_log"
+fixture 148
+stub_update review-comments '.["148"] = [{id: 9102, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T12:05:00Z",
+  updated_at: "2026-11-23T12:05:00Z", body: "One more thing."}]'
+check "refused: a later inline review comment withdraws the approval" \
+  refused_land "a later inline review comment by zmij withdraws the approval" 148
+fixture 149
+stub_update review-comments '.["149"] = [
+  {id: 9103, user: {login: "zmij", type: "User"}, created_at: "2026-11-23T11:00:00Z", updated_at: "2026-11-23T11:30:00Z", body: "nit"},
+  {id: 9104, user: {login: "copilot[bot]", type: "Bot"}, created_at: "2026-11-23T12:05:00Z", updated_at: "2026-11-23T12:06:00Z",
+    body: "<!-- mintswarm: steer -->"}]'
+check "an inline comment edited before the approval and a later bot one that is not a steer pass (--dry-run)" \
+  land 149 --sha "$(sha_of 149)" --dry-run
+
+# Right before the merge, pulls/N and the threads are read again.
+fixture 132 '[.[0], (.[0] | .labels += [{name: "hold"}])]'
+check "refused: the hold label added during the checks" refused_land "the PR carries the hold label" 132
+check "which says the labels changed" present "the PR's labels changed during the checks" "$sandbox/land.out"
+fixture 133 . . '{"reads": [[true, true, true], [true, true, false]]}'
+check "refused: a review thread opened during the checks" refused_land "1 review thread(s) unresolved" 133
+fixture 134 '[.[0], (.[0] | .mergeable_state = "dirty")]'
+check "refused: a conflict that appeared during the checks" refused_land "the PR conflicts with master" 134
+fixture 135 '[.[0], (.[0] | .title = "feat(agents): something else")]'
+check "refused: the title changed during the checks" refused_land "the PR's title changed during the checks" 135
+fixture 139
+stub_update issues '.["139"].comment_reads = [.["139"].comments, (.["139"].comments + [{id: 509, created_at: "2026-11-23T12:05:00Z",
+  user: {login: "zmij", type: "User"}, body: "wait, not yet"}])]'
+check "refused: a steer posted during the checks withdraws the approval" \
+  refused_land "a later steer by zmij withdraws the approval" 139
+check "after reading the comments twice" eq "$(jq -r '.["139"]' "$MSW_STUB_STATE/comments-reads.json")" 2
+fixture 146
+stub_update reviews '.["146"] = {reads: [[], [{id: 9007, user: {login: "zmij", type: "User"}, state: "CHANGES_REQUESTED",
+  submitted_at: "2026-11-23T12:05:00Z", body: "Stop."}]]}'
+check "refused: a review submitted during the checks withdraws the approval" \
+  refused_land "a later review by zmij (CHANGES_REQUESTED) withdraws the approval" 146
+check "after reading the reviews twice" eq "$(jq -r '.["146"]' "$MSW_STUB_STATE/reviews-reads.json")" 2
+fixture 150
+stub_update review-comments '.["150"] = {reads: [[], [{id: 9105, user: {login: "zmij", type: "User"},
+  created_at: "2026-11-23T12:05:00Z", updated_at: "2026-11-23T12:05:00Z", body: "Stop."}]]}'
+check "refused: an inline review comment posted during the checks withdraws the approval" \
+  refused_land "a later inline review comment by zmij withdraws the approval" 150
+check "after reading the inline review comments twice" \
+  eq "$(jq -r '.["150"]' "$MSW_STUB_STATE/review-comments-reads.json")" 2
+fixture 151 . '{reads: [., (.check_runs[1] |= (.status = "in_progress" | .conclusion = null))]}'
+check "refused: a check run re-run during the checks" refused_land "the check run gates (ubuntu) is in_progress, not completed" 151
+check "after reading the check runs twice" \
+  eq "$(jq -r --arg k "$(sha_of 151)/check-runs" '.[$k]' "$MSW_STUB_STATE/commits-reads.json")" 2
+fixture 152 . '{reads: [., (.check_suites[0] |= (.status = "in_progress" | .conclusion = null))]}'
+check "refused: a check suite re-run during the checks" \
+  refused_land "the check suite 7 of github-actions is in_progress, not completed" 152
+fixture 153 . '{reads: [., (.statuses[0].state = "failure")]}'
+check "refused: a status that failed during the checks" refused_land "the status ci/legacy is failure, not success" 153
+check "after reading the statuses twice" \
+  eq "$(jq -r --arg k "$(sha_of 153)/status" '.[$k]' "$MSW_STUB_STATE/commits-reads.json")" 2
+fixture 116 '.[0].mergeable = false | .[0].mergeable_state = "unknown"'
+check "refused: GitHub reports the PR not mergeable" refused_land "GitHub reports the PR not mergeable" 116
+
+check "a refusal says the PR was not merged" present "#116 was not merged" "$sandbox/land.out"
+
+# Only the steward: a config naming mintswarm-dev or its key is refused before anything is minted.
+with_cfg() { local cfg="$1"; shift; ( export MSW_STEWARD_CONFIG="$cfg"; "$@" ); }
+fixture 110
+mints_before="$(mints)"
+check "refused: a steward config that is mintswarm-dev's" \
+  with_cfg "$MSW_APP_CONFIG" refused_land "names the App 'mintswarm-dev', not mintswarm-dev-steward" 110
+jq '.keychain_service = "mintswarm-dev-private-key"' "$steward_cfg" > "$sandbox/steward-dev-service.json"
+check "refused: a steward config naming mintswarm-dev's key service" \
+  with_cfg "$sandbox/steward-dev-service.json" refused_land "not mintswarm-dev-steward-private-key" 110
+check "refused: no steward config" with_cfg "$sandbox/no-steward.json" refused_land "no steward config at" 110
+check "and none of them minted a token" eq "$(mints)" "$mints_before"
+check "a sha that is not 40 lowercase hex characters is bad usage" exits_2 land 110 --sha "$(sha_of 110 | tr a-f A-F)A"
+check "a short sha is bad usage" exits_2 land 110 --sha abc1234
+check "a PR number of 0 is bad usage" exits_2 land 0 --sha "$(sha_of 110)"
+check "no --sha is bad usage" exits_2 land 110
+check "and none of them minted a token either" eq "$(mints)" "$mints_before"
+
+# The kill switch: without the bypass GitHub refuses the merge, and land.py exits 1.
+fixture 112
+stub_update merges '.merge_refused = true'
+kill_switch() {
+  local rc=0
+  land 112 --sha "$(sha_of 112)" > "$sandbox/land.out" 2>&1 || rc=$?
+  cat "$sandbox/land.out"
+  eq "$rc" 1 && grep -qF "nothing was merged" "$sandbox/land.out"
+}
+check "refused merge call (the bypass removed): land.py exits 1, saying nothing was merged" kill_switch
+check "after one merge call, and #112 is not merged" \
+  eq "$(merge_calls 112) $(jq -r '.merged // [] | index("112")' "$MSW_STUB_STATE/merges.json")" "1 null"
+stub_update merges 'del(.merge_refused)'
+check "TMPDIR is empty after land.py" tmp_empty
+
+# --- msw-state.py ------------------------------------------------------------
+
+MS="$here/msw-state.py"
+check "msw-state.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$MS" "$sandbox/msw-state.pyc"
+ms() { python3 -I "$MS" "$@"; }
+field_posts() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST")) | select(any(.[]; endswith("/issue-field-values")))' "$argv_log" | wc -l | tr -d ' '; }
+label_writes() { jq -c 'select(.cmd == "gh") | .argv | select(index("POST") or index("PUT")) | select(any(.[]; endswith("/labels")))' "$argv_log" | wc -l | tr -d ' '; }
+graphql_calls() { jq -c 'select(.cmd == "gh") | .argv | select(.[1] == "graphql")' "$argv_log" | wc -l | tr -d ' '; }
+mutations() { grep -c setIssueStatus "$MSW_STUB_STATE/stdin-gh.log" || true; }
+field_of() { jq -r --arg n "$1" '[.[$n].fields // [] | .[] | select(.issue_field_id == 50325307) | .value] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+status_of() { jq -r --arg n "$1" '.[$n].status // "unset"' "$MSW_STUB_STATE/issues.json"; }
+labels_of() { jq -r --arg n "$1" '.[$n].labels // [] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+repo_label_count() { jq -r --arg l "$1" '[.[] | select(.name == $l)] | length' "$MSW_STUB_STATE/labels.json"; }
+ms_rc() {  # ms_rc RC ARGS...: msw-state.py exits RC
+  local want="$1" rc=0; shift
+  ms "$@" >"$sandbox/ms.out" 2>&1 || rc=$?
+  cat "$sandbox/ms.out"
+  eq "$rc" "$want"
+}
+state_cfg() {  # state_cfg SOURCE STATUS: a config with tracker.state only
+  printf 'tracker: {state: {source: %s, field: msw-state, field_id: 50325307, label: "msw-state:{value}", status: %s}}' "$1" "$2"
+}
+bad_source_base="$(commit_config "$(state_cfg other issue_status)")"
+bad_status_base="$(commit_config "$(state_cfg field on)")"
+bad_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
+bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, field_id: 50325307, label: "msw-state", status: off}}')"
+off_base="$(commit_config "$(state_cfg field off)")"
+labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
+labels_base="$(commit_config "$(state_cfg labels off)")"
+labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
+
+check "an unknown value exits 2" exits_2 ms set 41 bogus --base "$real_base"
+check "a source other than field or labels exits 2" exits_2 ms set 41 queued --base "$bad_source_base"
+check "a status other than issue_status or off exits 2" exits_2 ms set 41 queued --base "$bad_status_base"
+check "a field_id that is not an integer exits 2" exits_2 ms set 41 queued --base "$bad_id_base"
+check "a label without {value} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
+check "number 0 exits 2" exits_2 ms set 0 queued --base "$real_base"
+
+seed 41 '{"status": "Todo"}'
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "set on an unset issue sets the field and the mapped status" eq "$out" "set #41 msw-state to implementing (was none)
+set #41 status to In progress (was Todo)"
+check "it POSTs the issue's field values through bot-gh.sh" \
+  gh_argv_seen '["api","--method","POST","repos/{owner}/{repo}/issues/41/issue-field-values","--input","-"]'
+check "with exactly the field id and the value on stdin" \
+  present '{"issue_field_values": [{"field_id": 50325307, "value": "implementing"}]}' "$MSW_STUB_STATE/stdin-gh.log"
+check "one field POST and one setIssueStatus with the In progress id" \
+  eq "$(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before )) $(tail -n 2 "$MSW_STUB_STATE/stdin-gh.log" | head -n 1 | jq -r .variables.status)" \
+  "1 1 S_progress"
+check "issue 41 now has implementing and In progress" eq "$(field_of 41) $(status_of 41)" "implementing In progress"
+out="$(ms get 41 --base "$real_base" 2>&1)" || out="(failed) $out"
+check "get prints the value and the status" eq "$out" "msw-state: implementing
+status: In progress"
+
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "the same value again writes nothing" eq "$out $(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before ))" \
+  "#41 msw-state is already implementing
+#41 status is already In progress 0 0"
+seed 41 "$(jq -c '.["41"] | .status = "In review"' "$MSW_STUB_STATE/issues.json")"
+out="$(ms set 41 implementing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a status moved by GitHub is reset with no field POST" \
+  eq "$out $(( $(field_posts) - posts_before )) $(status_of 41)" "#41 msw-state is already implementing
+set #41 status to In progress (was In review) 0 In progress"
+
+seed 47 '{"status": "In progress"}'
+mut_before="$(mutations)"
+out="$(ms set 47 analysing --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a status that already matches makes no mutation" eq "$out $(( $(mutations) - mut_before ))" \
+  "set #47 msw-state to analysing (was none)
+#47 status is already In progress 0"
+
+seed 48 '{"status": "Todo", "fields": [{"issue_field_id": 50325307, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+gql_before="$(graphql_calls)"
+check "none sets the field" eq "$(ms set 48 none --base "$real_base" 2>&1)" "set #48 msw-state to none (was queued)"
+check "and makes no GraphQL call, leaving the status alone" eq "$(( $(graphql_calls) - gql_before )) $(status_of 48)" "0 Todo"
+
+seed 42 '{"fields": [{"issue_field_id": 999, "issue_field_name": "msw-state", "value": "queued", "single_select_option": {"name": "queued"}}]}'
+posts_before="$(field_posts)"
+check "a msw-state field with another id exits 1" ms_rc 1 set 42 implementing --base "$real_base"
+check "and names the id and writes nothing" \
+  eq "$(grep -c 'with id 999, not 50325307' "$sandbox/ms.out") $(( $(field_posts) - posts_before ))" "1 0"
+
+seed 43 '{"fields_unavailable": true}'
+check "unavailable issue fields exit 1" ms_rc 1 set 43 implementing --base "$real_base"
+check "and point to the labels fallback" present "tracker.state.source: labels" "$sandbox/ms.out"
+seed 44 '{"field_ignores_post": true, "status": "Todo"}'
+mut_before="$(mutations)"
+check "a POST that GitHub ignores exits 1" ms_rc 1 set 44 implementing --base "$real_base"
+check "before any status write" eq "$(( $(mutations) - mut_before )) $(status_of 44)" "0 Todo"
+
+seed 45 '{"status": "Todo"}'
+posts_before="$(field_posts)" mut_before="$(mutations)"
+out="$(ms set 45 planning --base "$real_base" --dry-run 2>&1)" || out="(failed) $out"
+check "set --dry-run prints both lines" eq "$out" "set #45 msw-state to planning (was none)
+set #45 status to In progress (was Todo)"
+check "and writes nothing" \
+  eq "$(( $(field_posts) - posts_before )) $(( $(mutations) - mut_before )) $(field_of 45)/$(status_of 45)" "0 0 /Todo"
+
+state_cfg labels off > .mintswarm/config.yaml
+seed 46 '{}'
+ms set 46 queued --base "$real_base" >/dev/null 2>&1 || true
+check "an uncommitted config edit changes nothing" eq "$(field_of 46) $(labels_of 46)" "queued "
+git checkout -q -- .mintswarm/config.yaml
+
+printf '%s\n' '[{"id": "S_todo", "name": "Todo", "category": "TODO"}]' > "$MSW_STUB_STATE/statuses.json"
+seed 49 '{"status": "Todo"}'
+check "a status name the repository lacks exits 1" ms_rc 1 set 49 "done" --base "$real_base"
+check "and points to tracker.state.status: off" present "tracker.state.status: off" "$sandbox/ms.out"
+rm -f "$MSW_STUB_STATE/statuses.json"
+seed 50 '{"status": "Todo", "status_ignores_set": true}'
+check "a setIssueStatus that GitHub ignores exits 1" ms_rc 1 set 50 implementing --base "$real_base"
+check "and says so" present "did not set #50's status to In progress (it reports Todo)" "$sandbox/ms.out"
+seed 51 '{"status": "Todo"}'
+gql_before="$(graphql_calls)"
+check "with status: off committed, set prints only the field line" \
+  eq "$(ms set 51 implementing --base "$off_base" 2>&1)" "set #51 msw-state to implementing (was none)"
+check "and makes no GraphQL call" eq "$(( $(graphql_calls) - gql_before )) $(status_of 51)" "0 Todo"
+check "get with status: off prints only the value" eq "$(ms get 51 --base "$off_base" 2>&1)" "msw-state: implementing"
+
+seed 61 '{"labels": ["bug"]}'
+out="$(ms set 61 implementing --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "labels mode: set on an issue with no msw-state label" eq "$out" "set #61 msw-state to implementing (was none)"
+check "creates the missing label once, colour ededed" \
+  eq "$(repo_label_count msw-state:implementing) $(jq -r '.[0].color + " " + .[0].description' "$MSW_STUB_STATE/labels.json")" \
+  "1 ededed mintswarm state"
+check "and PUTs the issue's labels in one request, keeping the unrelated one" \
+  gh_argv_seen '["api","--method","PUT","repos/{owner}/{repo}/issues/61/labels","--input","-"]'
+check "the issue has bug and exactly one msw-state label" eq "$(labels_of 61)" "bug,msw-state:implementing"
+out="$(ms set 61 'in review' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "a new value swaps the label" eq "$out $(labels_of 61)" "set #61 msw-state to in review (was implementing) bug,msw-state:in review"
+writes_before="$(label_writes)"
+out="$(ms set 61 'in review' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "the same value writes nothing" eq "$out $(( $(label_writes) - writes_before ))" "#61 msw-state is already in review 0"
+check "get reads the value from the label" eq "$(ms get 61 --base "$labels_base" 2>&1)" "msw-state: in review"
+seed 62 '{"labels": ["msw-state:queued", "msw-state:planning", "docs"]}'
+out="$(ms set 62 "done" --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "an issue with two msw-state labels ends with one" eq "$out $(labels_of 62)" \
+  "set #62 msw-state to done (was queued, planning) docs,msw-state:done"
+seed 63 '{"labels": []}'
+check "none sets msw-state:none" eq "$(ms set 63 none --base "$labels_base" 2>&1) $(labels_of 63)" \
+  "set #63 msw-state to none (was none) msw-state:none"
+seed 64 '{"labels": []}'
+ms set 64 implementing --base "$labels_base" >/dev/null 2>&1 || true
+check "an existing label is not created again" eq "$(repo_label_count msw-state:implementing) $(labels_of 64)" "1 msw-state:implementing"
+seed 66 '{"labels": ["bug"]}'
+check "labels mode needs no field or field_id" \
+  eq "$(ms set 66 designing --base "$labels_only_base" 2>&1) $(labels_of 66)" \
+  "set #66 msw-state to designing (was none) bug,msw-state:designing"
+check "but field mode without field_id exits 2" exits_2 ms set 66 designing \
+  --base "$(commit_config 'tracker: {state: {source: field, field: msw-state, label: "msw-state:{value}", status: off}}')"
+jq -c '. + [{"name": "MSW-State:Awaiting Merge", "color": "ededed"}]' "$MSW_STUB_STATE/labels.json" > "$sandbox/labels.json"
+mv "$sandbox/labels.json" "$MSW_STUB_STATE/labels.json"
+seed 67 '{"labels": []}'
+writes_before="$(label_writes)"
+out="$(ms set 67 'awaiting merge' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "a label that exists in another case is not created again" \
+  eq "$out $(( $(label_writes) - writes_before )) $(repo_label_count 'msw-state:awaiting merge')" \
+  "set #67 msw-state to awaiting merge (was none) 1 0"
+seed 68 '{"labels": ["MSW-State:Awaiting Merge"]}'
+writes_before="$(label_writes)"
+out="$(ms set 68 'awaiting merge' --base "$labels_base" 2>&1)" || out="(failed) $out"
+check "an issue label in another case is already the value" eq "$out $(( $(label_writes) - writes_before ))" \
+  "#68 msw-state is already awaiting merge 0"
+seed 65 '{"labels": [], "status": "Todo"}'
+check "labels mode sets the status too" eq "$(ms set 65 analysing --base "$labels_status_base" 2>&1) $(status_of 65)" \
+  "set #65 msw-state to analysing (was none)
+set #65 status to In progress (was Todo) In progress"
+
+cat > "$sandbox/mscheck.py" <<'PY'
+# mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
+import importlib.util, re, sys
+
+sys.dont_write_bytecode = True  # no __pycache__ next to the script
+spec = importlib.util.spec_from_file_location("msw_state", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+text = open(sys.argv[1], encoding="utf-8").read()
+section = text.split("\n## msw-state\n", 1)[1].split("\n## ", 1)[0]
+tables, rows = {}, None
+for line in section.split("\n"):
+    if not line.startswith("|"):
+        rows = None
+        continue
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if rows is None:
+        rows = tables[tuple(cells)] = []
+    elif not set("".join(cells)) <= set("-: "):
+        rows.append(cells)
+errors = []
+ticked = lambda cell: re.findall(r"`([^`]*)`", cell)
+values = [ticked(r[0])[0] for r in tables.pop(("Value", "When it applies"))]
+if values != list(mod.VALUES):
+    errors.append("the Values table lists %s, not VALUES %s" % (values, list(mod.VALUES)))
+status = {ticked(r[0])[0]: r[1] for r in tables.pop(("msw-state", "Issue status"))}
+if status != dict(mod.STATUS, none="left alone"):
+    errors.append("the Issue status table %s differs from STATUS" % status)
+for head in (("Runner state", "msw-state"), ("Pipeline state", "msw-state")):
+    for r in tables.pop(head):
+        got = ticked(r[-1])
+        if got and not all(v in mod.VALUES for v in got) or not got and r[-1] != "the value of the state it pauses":
+            errors.append("%s row %s maps to no value in VALUES" % (head[0], r))
+if tables:
+    errors.append("unexpected tables: %s" % list(tables))
+print("\n".join(errors))
+sys.exit(1 if errors else 0)
+PY
+check "the README's msw-state tables match the script's VALUES and STATUS" python3 -I "$sandbox/mscheck.py" "$here/README.md" "$MS"
+sed 's/| `escalated` | In review |/| `escalated` | Done |/' "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and the cross-check catches a status that differs" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
+sed 's/| `ready`, `merging`, `releasing` | `awaiting merge` |/| `ready`, `merging`, `releasing` | `waiting` |/' "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and a runner state mapped to an unknown value" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
 
 # --- summary -----------------------------------------------------------------
 
