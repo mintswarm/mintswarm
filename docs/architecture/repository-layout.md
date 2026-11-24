@@ -1,6 +1,6 @@
 # Repository layout
 
-One repository holds the Rust workspace, the TypeScript web UI, the API contracts and the Docker definitions. Directories appear as the work that needs them lands; this document says where each thing goes.
+One repository holds the Rust workspace, the TypeScript web UI, the API contracts and the Docker definitions. Directories appear as the work that needs them lands; this document says where each thing goes. Entries marked `(planned)` do not exist yet: they show where that work will put them, and everything under a planned entry is planned too.
 
 ```
 mintswarm/
@@ -9,9 +9,9 @@ mintswarm/
 ├── rust-toolchain.toml     # pinned toolchain + rustfmt, clippy
 ├── rustfmt.toml
 ├── clippy.toml             # clippy settings for the workspace
-├── deny.toml               # cargo-deny: licences, advisories, duplicates
-├── compose.yaml            # development: Postgres; profile `image` builds and runs the local image
-├── .dockerignore           # build context is the repo root
+├── deny.toml               # (planned) cargo-deny: licences, advisories, duplicates
+├── compose.yaml            # (planned) development: Postgres; profile `image` builds and runs the local image
+├── .dockerignore           # (planned) build context is the repo root
 ├── AGENTS.md               # conventions for any coding agent
 ├── CLAUDE.md               # Claude Code entry point
 ├── CONTRIBUTING.md
@@ -32,24 +32,26 @@ mintswarm/
 │
 ├── api/                    # every contract, language-neutral
 │   ├── proto/              # the only hand-written API contract
-│   │   ├── buf.yaml        # module root; lint (STANDARD) and breaking-change (FILE) rules
+│   │   ├── buf.yaml        # module root; lint (STANDARD) and breaking-change (FILE) rules; the googleapis dependency (google.api.http) comes with control/v1
 │   │   ├── buf.gen.yaml    # generator plugins; none yet, Rust comes from crates/proto/build.rs
 │   │   └── mintswarm/
-│   │       └── runner/v1/  # runner ⇄ plane stream (gRPC only)
-│   ├── openapi/            # generated from proto; committed so PRs show JSON-level changes
-│   └── schemas/            # JSON Schemas generated from Rust types (config, ticket, StageJob, plan.json, findings); committed
+│   │       ├── runner/v1/  # runner ⇄ plane stream (gRPC only)
+│   │       ├── control/v1/ # (planned) Control API (CLI, console MCP; browser-facing RPCs annotated for HTTP)
+│   │       └── ui/v1/      # (planned) UI-only services, if any (aggregations for screens), HTTP-annotated
+│   ├── openapi/            # (planned) generated from proto; committed so PRs show JSON-level changes
+│   └── schemas/            # (planned) JSON Schemas generated from Rust types (config, ticket, StageJob, plan.json, findings); committed
 │
 ├── crates/                 # Rust, Cargo workspace members
 │   ├── domain/             # ids; job states, events and the transition table; StageJob, StepJob, Usage; pipeline records; PlaneLink, Vcs, Tracker and CodeHost traits; scales, field maps, cost model
 │   ├── config/             # repository config (.mintswarm/config.yaml) and runner config; native YAML loader matching yq
 │   ├── github/             # the runner's GitHub App access: App JWT, installation tokens scoped to one repository, private-key store
 │   ├── proto/              # Rust generated from api/proto by build.rs (protox) into OUT_DIR, not committed; `fakes` feature for test fakes
-│   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
-│   │   └── migrations/     # SQL, append-only
-│   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
-│   ├── runner/             # `mintswarm-runner` binary + library
-│   ├── console-mcp/        # console MCP server (library)
-│   └── cli/                # `mintswarm` binary: CLI and `mcp console`
+│   ├── core/               # (planned) control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
+│   │   └── migrations/     # (planned) SQL, append-only
+│   ├── server/             # (planned) `mintswarm-server` binary: serve, migrate (the image's entry point)
+│   ├── runner/             # (planned) `mintswarm-runner` binary + library; today only tests/harness/ fixtures, not yet a workspace member
+│   ├── console-mcp/        # (planned) console MCP server (library)
+│   └── cli/                # (planned) `mintswarm` binary: CLI and `mcp console`
 │
 ├── web/                    # TypeScript, pnpm workspace; its root is here, not at the repo root
 │   ├── package.json        # workspace scripts; packageManager pins pnpm
@@ -63,39 +65,39 @@ mintswarm/
 │   ├── .prettierignore
 │   ├── apps/
 │   │   └── ui/             # React + Vite; builds static files for the image
-│   └── packages/
-│       └── api/            # @mintswarm/api: TS types and client generated from api/openapi
+│   └── packages/           # (planned)
+│       └── api/            # (planned) @mintswarm/api: TS types and client generated from api/openapi
 │
-├── docker/
-│   ├── control-plane/
-│   │   ├── Dockerfile      # stages: rust build → web build → runtime (nginx + core + UI)
-│   │   ├── nginx/          # nginx.conf: TLS, static UI, /api + SSE, grpc_pass for runners
-│   │   └── s6/             # s6-overlay service definitions: nginx, core
-│   └── compose.yaml        # self-hosting example: released image + Postgres
+├── docker/                 # (planned)
+│   ├── control-plane/      # (planned)
+│   │   ├── Dockerfile      # (planned) stages: rust build → web build → runtime (nginx + core + UI)
+│   │   ├── nginx/          # (planned) nginx.conf: TLS, static UI, /api + SSE, grpc_pass for runners
+│   │   └── s6/             # (planned) s6-overlay service definitions: nginx, core
+│   └── compose.yaml        # (planned) self-hosting example: released image + Postgres
 │
-├── packaging/              # native runner distribution
-│   ├── systemd/            # user unit template
-│   ├── launchd/            # agent plist template
-│   └── macos/              # .pkg build, entitlements for notarisation
+├── packaging/              # (planned) native runner distribution
+│   ├── systemd/            # (planned) user unit template
+│   ├── launchd/            # (planned) agent plist template
+│   └── macos/              # (planned) .pkg build, entitlements for notarisation
 │
 ├── defaults/               # data embedded into binaries at build time
-│   ├── probes/             # built-in capability probes
-│   ├── lsp/                # language-server definitions
-│   └── prompts/            # stage instructions and artefact templates, versioned
+│   ├── probes/             # (planned) built-in capability probes
+│   ├── lsp/                # (planned) language-server definitions
+│   └── prompts/            # (planned) stage instructions and artefact templates, versioned
 │
-├── tests/
-│   └── e2e/                # end-to-end: plane + runner + Postgres + a scratch repo
-├── xtask/                  # cargo xtask: codegen, schema export, drift checks, release helpers
+├── tests/                  # (planned)
+│   └── e2e/                # (planned) end-to-end: plane + runner + Postgres + a scratch repo
+├── xtask/                  # (planned) cargo xtask: codegen, schema export, drift checks, release helpers
 │
 ├── docs/
 │   ├── architecture/       # how the system is built, as it stands now
 │   ├── conventions/        # Rust, TypeScript and React conventions copied from the guideline packs
-│   └── guides/             # user-facing: setup, credentials and usage policy, …
+│   └── guides/             # (planned) user-facing: setup, credentials and usage policy, …
 │
 └── .github/
-    ├── workflows/          # gates.yml (one check per gates.run entry), image.yml (path-filtered), release.yml
+    ├── workflows/          # gates.yml (one check per gates.run entry); (planned) image.yml (path-filtered), release.yml
     ├── CODEOWNERS
-    └── pull_request_template.md
+    └── pull_request_template.md  # (planned)
 ```
 
 Not in this repository: the commercial crates, the Node BFF and the deployment config of our own hosted instance; they live in the private repository.
@@ -104,7 +106,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
-- **Dependency direction is one-way:** `domain` ← {`config`, `github`} ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}. `core` and `runner` never depend on each other; anything they share goes down a level. Today `domain`, `config`, `github` and `proto` depend on no other workspace crate.
+- **Dependency direction is one-way:** `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}, and beside it `domain` ← `github` ← {`core`, `runner`}; `proto` never depends on `github`. `core` and `runner` never depend on each other; anything they share goes down a level. Today `domain`, `config`, `github` and `proto` depend on no other workspace crate.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
