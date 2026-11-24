@@ -734,7 +734,10 @@ def check_approval(r: Runner) -> None:
             T.check(
                 f"approval: {name}: in the comment as an input the floor uses for coverage",
                 mode_line[0]
-                == "- **Plan approval (input; the landing floor uses it for coverage):** approver `zmij`, approved at `2026-11-20T10:00:00Z`",
+                == (
+                    "- **Plan approval (input; the landing floor uses it for coverage):** "
+                    "approver `zmij`, approved at `2026-11-20T10:00:00Z`"
+                ),
                 mode_line[0],
             )
     a, b = results["human, no kickoff record"], results["with kickoff records"]
@@ -864,7 +867,10 @@ def check_comment(r: Runner, real: dict) -> None:
         "- **Hard triggers:** none",
         "- **Would-be decision:** `human`",
         "- **Effective decision:** `human`",
-        "- **Plan approval (input; the landing floor uses it for coverage):** approver `maintainer`, approved at `2026-01-01T00:00:00Z`",
+        (
+            "- **Plan approval (input; the landing floor uses it for coverage):** "
+            "approver `maintainer`, approved at `2026-01-01T00:00:00Z`"
+        ),
         "- **Agents (harness, model, effort):** "
         + "; ".join(
             f"{stage} `{a['harness']}` `{a['model']}` `{a['effort']}`" for stage, a in expected_agents(real).items()
