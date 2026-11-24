@@ -41,6 +41,10 @@ You plan one implementation issue so that the implement stage can carry it out w
     - It holds three to six `- ` bullets and nothing else. Together they name what changes (files or areas), the approach in one line, what the plan deliberately leaves out, and what the maintainer must do or decide. The maintainer bullet is always there; when nothing but approval is needed, it says approval only.
     - It restates the plan: it adds no step, file or decision that the rest of the plan does not hold.
     - The session posts it unchanged as a comment on the issue, and posts only a link to the plan instead if the section breaks this rule. Each bullet is one line, with no continuation lines. Outside inline code spans it holds no `@`, `<` or `>` (so no HTML and no arrows), Markdown link or bare GitHub reference (`#N`, `owner/repo#N`, `GH-N`, a full commit SHA); nowhere, not even in a code span, does it hold a URL. Write names, paths, issue and PR numbers and commits in backticks.
+12. Add a `## Size` section right after `## Footprint`, before `## Verification`. It opens no fence. It refines the analysis's `## Size` and gives the expected cost of the issue's phase 2: implement, the gates, review and address rounds, and landing; it states no wall-clock time.
+    - **Format:** ignoring blank lines, the first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text; trailing spaces and tabs on any line of the section are ignored). Then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence.
+    - **Lines floor:** the footprint's `production_lines` (`estimated_lines` in a footprint without it) gives the smallest size the plan can have: `XS` up to 25 lines, `S` up to 75, `M` up to 200, `L` up to 500, `XL` up to 1200, `2XL` up to 3000, `3XL` up to 7000 and `4XL` above. A judged size below that floor is raised to it in the approval package, which says so.
+    - **Assessment:** a missing or malformed section is an assessment finding.
 
 ## Footprint
 
@@ -65,7 +69,7 @@ The footprint declares what the change will touch, for the plan-approval floor a
 | `new_files` | list of paths | the paths in `files` that do not exist at the base commit |
 | `estimated_lines` | integer, 0 or more | the total: added plus deleted lines over all of `files`, as `msw-vcs diff --job --numstat` would count them |
 | `production_lines` | integer, 0 to `estimated_lines` | added plus deleted lines over the paths in `files` that no `pipeline.plan_approval.non_production` glob of the base config matches (test files and directories, fixtures, lockfiles and generated files), counted as for `estimated_lines`; the plan floor's `lines` limit counts it when a path in `files` matches one of those globs, and `estimated_lines` otherwise |
-| `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml`; one entry per manifest. The plan floor counts distinct packages per ecosystem (`Cargo.toml` is cargo, `package.json` npm, any other manifest name its own), leaving out those already in the base's root `Cargo.lock` or root `[workspace.dependencies]` (cargo) or in the nearest base `pnpm-lock.yaml` at or above the manifest (npm) |
+| `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml`; one entry per manifest. The plan floor reads the session's screen of every entry, and an entry that is unscreened or disqualified (a known advisory, a yanked or deprecated version, a likely typosquat) is a hit; the number of entries is not limited |
 | `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates). A required tool version (for example an exact formatter release) is not an external step; it goes under Gates or Risks, or in `## Mechanical check` under rule 10 |
 | `gate_changes` | list of strings | every change to `.mintswarm/config.yaml` and to any file a `gates.run` command names, including edits outside the `gates` block, for example in `pipeline`; one line per such file, naming the file and what changes in it, and saying so when no gate is added, removed or altered, for example `.mintswarm/config.yaml: pipeline.plan_approval.mode changes; no gate is added, removed or altered`; `[]` means the change touches no such file |
 | `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Non-blocking (assumed)` assumption of the analysis the plan departs from: `assumption` is the text after the first `→` of that analysis bullet, verbatim with leading and trailing whitespace removed; `reason` says what the plan does instead and why |
@@ -104,6 +108,9 @@ Return `plan.md` as `.mintswarm/stages.md` describes:
 }
 ```
 
+## Size
+size: M
+- <reason>
 ## Verification
 | Acceptance criterion | Test or check |
 | --- | --- |

@@ -95,7 +95,7 @@ pipeline:
     require_human:                   # any declared match sends the plan to a human
       components: [agents]
       paths: [".mintswarm/config.yaml", ".mintswarm/dogfood/github/**", "AGENTS.md", "CLAUDE.md", ".github/workflows/**"]
-    limits: { files: 10, lines: 300, new_files: 3, new_dependencies: 0 }
+    limits: { files: 10, lines: 300, new_files: 3 }
     limits_by_component: { domain: { lines: 2000, files: 15, new_files: 12 }, runner: { lines: 2000, files: 15, new_files: 12 } }  # <component>: { <limit>: N }; per-component values override the flat limits key by key
     non_production:                  # paths whose lines are not production lines: limits.lines counts production_lines when a declared file matches
       - "**/tests/**"
@@ -162,6 +162,10 @@ gates:
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
       command: "cargo nextest run --workspace && cargo test --doc --workspace"
+    - name: proto-lint
+      command: "buf lint api/proto"
+    - name: proto-breaking
+      command: "git rev-parse --verify -q origin/master >/dev/null || { echo 'proto-breaking: origin/master not found; fetch it before running this gate'; exit 1; }; if git cat-file -e origin/master:api/proto/buf.yaml 2>/dev/null; then buf breaking api/proto --against '.git#ref=origin/master,subdir=api/proto'; else echo 'proto-breaking: origin/master has no api/proto yet; nothing to compare'; fi"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
