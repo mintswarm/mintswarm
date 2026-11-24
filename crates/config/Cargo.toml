@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mintswarm-domain = { path = "../domain" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 yaml-rust2 = { workspace = true }

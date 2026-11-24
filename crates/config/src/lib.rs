@@ -13,7 +13,7 @@ use std::fmt;
 pub use runner::{DEFAULT_WALL_CLOCK, RunnerConfig, Stage, load_runner_config};
 pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
-    RepoConfig, RequireHuman, ReviewClear, load_repo_config,
+    RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
 };
 pub use yaml::parse_yaml;
 

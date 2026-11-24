@@ -61,8 +61,9 @@ pub struct Drift {
 /// Compare `map` with the options the tracker lists for its field, design §4.3.
 ///
 /// Options are compared by name. The findings come in this order:
-/// 1. one `field_recreated` if any observed value carries a field id other than the one recorded
-///    for the map (field source only; the field is still the one of the mapped name);
+/// 1. one `field_recreated` if any observed value carries a field id other than `field_id`, the
+///    id the tracker edge resolved from the map's field name (field source only; the field is
+///    still the one of the mapped name);
 /// 2. `option_missing` for each map option, in config order, that no observed value names;
 /// 3. `option_unmapped` for each observed value, in observed order, whose name the map does not
 ///    list.
@@ -70,12 +71,16 @@ pub struct Drift {
 /// A matching set gives no findings. A renamed option shows as the old name missing and the new
 /// one unmapped; telling it apart as `option_renamed` needs the recorded option ids, which this
 /// function does not have.
-pub fn findings<S: Scale>(map: &FieldMap<S>, observed: &[FieldValue]) -> Vec<Drift> {
+pub fn findings<S: Scale>(
+    map: &FieldMap<S>,
+    field_id: Option<u64>,
+    observed: &[FieldValue],
+) -> Vec<Drift> {
     let mut drift = Vec::new();
-    if let FieldSource::Field { field_id, .. } = map.source() {
+    if let (FieldSource::Field { .. }, Some(field_id)) = (map.source(), field_id) {
         let recreated = observed
             .iter()
-            .any(|value| value.field_id.is_some_and(|id| id != *field_id));
+            .any(|value| value.field_id.is_some_and(|id| id != field_id));
         if recreated {
             drift.push(Drift {
                 finding: FieldFinding::FieldRecreated,

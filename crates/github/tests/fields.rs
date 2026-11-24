@@ -20,6 +20,11 @@ const LABELS_CONFLICT: &str = include_str!("fixtures/fields/issue-labels-conflic
 const ORG_FIELD: &str = include_str!("fixtures/fields/org-field.json");
 const VALUES_PATH: &str = "/repos/acme/widgets/issues/7/issue-field-values";
 const ISSUE: IssueNumber = IssueNumber(7);
+/// The ids the caller resolved for the Effort and Priority fields by name.
+const EFFORT_ID: Option<u64> = Some(101);
+const PRIORITY_ID: Option<u64> = Some(202);
+/// The organisation's issue fields, as the catalogue lists them to resolve an id by name.
+const ORG_FIELDS: &str = r#"[{"id":202,"name":"Priority"},{"id":101,"name":"Effort"}]"#;
 
 fn token() -> Token {
     Token::new(TOKEN.to_owned(), 0)
@@ -33,7 +38,6 @@ fn size() -> FieldRef {
     FieldRef {
         source: FieldSource::Field {
             name: "Effort".into(),
-            field_id: 101,
         },
         options: names(&["XS", "S", "M", "L"]),
     }
@@ -43,7 +47,6 @@ fn priority() -> FieldRef {
     FieldRef {
         source: FieldSource::Field {
             name: "Priority".into(),
-            field_id: 202,
         },
         options: names(&["P0", "P1", "P2"]),
     }
@@ -94,7 +97,10 @@ async fn reads_an_effort_value() {
     let responder = Responder::start().await;
     responder.reply(200, VALUES);
     let client = client(&responder);
-    let read = client.pass(&token()).read_field(ISSUE, &size()).await;
+    let read = client
+        .pass(&token())
+        .read_field(ISSUE, &size(), EFFORT_ID)
+        .await;
     assert_eq!(
         read,
         Ok(FieldRead::Value(value(Some(101), Some(1003), "M")))
@@ -117,7 +123,7 @@ async fn a_same_named_field_with_another_id_is_recreated() {
     let client = client(&responder);
     let error = client
         .pass(&token())
-        .read_field(ISSUE, &size())
+        .read_field(ISSUE, &size(), EFFORT_ID)
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::FieldRecreated));
@@ -132,7 +138,7 @@ async fn an_effort_value_the_map_does_not_list_is_unmapped() {
     field.options = names(&["Low", "High"]);
     let read = client(&responder)
         .pass(&token())
-        .read_field(ISSUE, &field)
+        .read_field(ISSUE, &field, EFFORT_ID)
         .await;
     assert_eq!(read, Err(FieldError::Field(FieldFinding::OptionUnmapped)));
 }
@@ -143,7 +149,7 @@ async fn an_issue_without_the_field_is_unset() {
     responder.reply(200, "[]");
     let read = client(&responder)
         .pass(&token())
-        .read_field(ISSUE, &size())
+        .read_field(ISSUE, &size(), EFFORT_ID)
         .await;
     assert_eq!(read, Ok(FieldRead::Unset));
 }
@@ -155,11 +161,11 @@ async fn size_and_priority_share_one_request() {
     let client = client(&responder);
     let pass = client.pass(&token());
     assert_eq!(
-        pass.read_field(ISSUE, &size()).await,
+        pass.read_field(ISSUE, &size(), EFFORT_ID).await,
         Ok(FieldRead::Value(value(Some(101), Some(1003), "M")))
     );
     assert_eq!(
-        pass.read_field(ISSUE, &priority()).await,
+        pass.read_field(ISSUE, &priority(), PRIORITY_ID).await,
         Ok(FieldRead::Value(value(Some(202), Some(2002), "P1")))
     );
     assert_eq!(responder.requests().len(), 1);
@@ -173,10 +179,13 @@ async fn a_second_pass_revalidates_with_the_etag() {
     let client = client(&responder);
     client
         .pass(&token())
-        .read_field(ISSUE, &size())
+        .read_field(ISSUE, &size(), EFFORT_ID)
         .await
         .unwrap();
-    let read = client.pass(&token()).read_field(ISSUE, &priority()).await;
+    let read = client
+        .pass(&token())
+        .read_field(ISSUE, &priority(), PRIORITY_ID)
+        .await;
     assert_eq!(
         read,
         Ok(FieldRead::Value(value(Some(202), Some(2002), "P1")))
@@ -194,7 +203,7 @@ async fn writes_an_option_by_name() {
     let client = client(&responder);
     client
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("M"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("M"))
         .await
         .unwrap();
     let requests = responder.requests();
@@ -214,7 +223,7 @@ async fn a_write_answered_with_another_value_is_rejected() {
     responder.reply(200, VALUES);
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("L"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("L"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
@@ -229,7 +238,7 @@ async fn a_write_answered_with_an_unmapped_value_is_rejected() {
     field.options = names(&["L"]);
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &field, Some("L"))
+        .set_field(ISSUE, &field, EFFORT_ID, Some("L"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
@@ -242,7 +251,7 @@ async fn a_write_answered_under_another_field_id_is_recreated() {
     responder.reply(200, RECREATED);
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("M"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("M"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::FieldRecreated));
@@ -254,7 +263,7 @@ async fn an_unmapped_option_is_refused_before_any_request() {
     let responder = Responder::start().await;
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("XXL"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("XXL"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::OptionUnmapped));
@@ -267,7 +276,7 @@ async fn an_unknown_option_on_write_is_option_missing() {
     responder.reply(422, OPTION_MISSING);
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("L"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("L"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::OptionMissing));
@@ -283,7 +292,7 @@ async fn a_forbidden_write_without_rate_limit_headers_is_rejected() {
     );
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), Some("M"))
+        .set_field(ISSUE, &size(), EFFORT_ID, Some("M"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
@@ -305,7 +314,7 @@ async fn bad_gateway_and_rate_limits_are_transport() {
     for _ in 0..3 {
         let error = client
             .pass(&token())
-            .set_field(ISSUE, &size(), Some("M"))
+            .set_field(ISSUE, &size(), EFFORT_ID, Some("M"))
             .await
             .unwrap_err();
         assert!(matches!(error, FieldError::Transport(_)), "{error}");
@@ -314,7 +323,7 @@ async fn bad_gateway_and_rate_limits_are_transport() {
     }
     let error = client
         .pass(&token())
-        .read_field(ISSUE, &size())
+        .read_field(ISSUE, &size(), EFFORT_ID)
         .await
         .unwrap_err();
     assert!(matches!(error, FieldError::Transport(_)), "{error}");
@@ -326,7 +335,7 @@ async fn an_unrelated_not_found_is_transport() {
     responder.reply(404, r#"{"message":"Not Found"}"#);
     let error = client(&responder)
         .pass(&token())
-        .read_field(ISSUE, &size())
+        .read_field(ISSUE, &size(), EFFORT_ID)
         .await
         .unwrap_err();
     assert_eq!(
@@ -341,7 +350,7 @@ async fn a_clear_deletes_the_field_value() {
     responder.reply(204, "");
     client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &size(), None)
+        .set_field(ISSUE, &size(), EFFORT_ID, None)
         .await
         .unwrap();
     let requests = responder.requests();
@@ -358,9 +367,14 @@ async fn a_write_makes_the_next_read_fetch_again() {
     responder.reply(200, "[]");
     let client = client(&responder);
     let pass = client.pass(&token());
-    pass.read_field(ISSUE, &size()).await.unwrap();
-    pass.set_field(ISSUE, &size(), None).await.unwrap();
-    assert_eq!(pass.read_field(ISSUE, &size()).await, Ok(FieldRead::Unset));
+    pass.read_field(ISSUE, &size(), EFFORT_ID).await.unwrap();
+    pass.set_field(ISSUE, &size(), EFFORT_ID, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        pass.read_field(ISSUE, &size(), EFFORT_ID).await,
+        Ok(FieldRead::Unset)
+    );
     let requests = responder.requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[2].header("if-none-match"), None);
@@ -372,7 +386,7 @@ async fn two_effort_labels_conflict() {
     responder.reply(200, LABELS_CONFLICT);
     let read = client(&responder)
         .pass(&token())
-        .read_field(ISSUE, &effort_labels())
+        .read_field(ISSUE, &effort_labels(), None)
         .await;
     assert_eq!(
         read,
@@ -393,12 +407,12 @@ async fn one_effort_label_reads_as_its_option() {
     let client = client(&responder);
     let read = client
         .pass(&token())
-        .read_field(ISSUE, &effort_labels())
+        .read_field(ISSUE, &effort_labels(), None)
         .await;
     assert_eq!(read, Ok(FieldRead::Value(value(None, None, "M"))));
     let read = client
         .pass(&token())
-        .read_field(ISSUE, &effort_labels())
+        .read_field(ISSUE, &effort_labels(), None)
         .await;
     assert_eq!(read, Err(FieldError::Field(FieldFinding::OptionUnmapped)));
 }
@@ -429,7 +443,7 @@ async fn a_label_swap_adds_the_option_and_removes_only_the_roles_labels() {
     responder.reply(204, "");
     client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), Some("M"))
+        .set_field(ISSUE, &effort_labels(), None, Some("M"))
         .await
         .unwrap();
     assert_eq!(
@@ -455,7 +469,7 @@ async fn a_label_already_there_is_kept_and_the_others_removed() {
     responder.reply(204, "");
     client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), Some("L"))
+        .set_field(ISSUE, &effort_labels(), None, Some("L"))
         .await
         .unwrap();
     assert_eq!(writes(&responder), [write("DELETE", "/effort%3AS")]);
@@ -467,7 +481,7 @@ async fn a_label_value_set_already_sends_nothing() {
     responder.reply(200, r#"{"labels":[{"name":"Effort:m"},{"name":"bug"}]}"#);
     client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), Some("M"))
+        .set_field(ISSUE, &effort_labels(), None, Some("M"))
         .await
         .unwrap();
     assert!(writes(&responder).is_empty());
@@ -481,7 +495,7 @@ async fn a_label_clear_removes_the_roles_labels_already_gone_or_not() {
     responder.reply(200, "[]");
     client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), None)
+        .set_field(ISSUE, &effort_labels(), None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -503,7 +517,7 @@ async fn a_refused_label_add_removes_nothing() {
     );
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), Some("M"))
+        .set_field(ISSUE, &effort_labels(), None, Some("M"))
         .await
         .unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
@@ -517,7 +531,7 @@ async fn a_label_removal_on_a_missing_issue_is_transport() {
     responder.reply(404, r#"{"message":"Not Found"}"#);
     let error = client(&responder)
         .pass(&token())
-        .set_field(ISSUE, &effort_labels(), None)
+        .set_field(ISSUE, &effort_labels(), None, None)
         .await
         .unwrap_err();
     assert!(matches!(error, FieldError::Transport(_)), "{error}");
@@ -527,6 +541,7 @@ async fn a_label_removal_on_a_missing_issue_is_transport() {
 #[tokio::test]
 async fn catalogue_sends_its_token_and_lists_every_option() {
     let responder = Responder::start().await;
+    responder.reply(200, ORG_FIELDS);
     responder.reply(200, ORG_FIELD);
     let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
     let options = catalogue.options(&size()).await.unwrap();
@@ -541,9 +556,13 @@ async fn catalogue_sends_its_token_and_lists_every_option() {
         ]
     );
     let requests = responder.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].path, "/orgs/acme/issue-fields/101");
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "GET"));
+    assert_eq!(
+        requests[0].path,
+        "/orgs/acme/issue-fields?per_page=100&page=1"
+    );
+    assert_eq!(requests[1].path, "/orgs/acme/issue-fields/101");
     assert_token_only_in_authorization(&requests);
 }
 
@@ -585,11 +604,44 @@ async fn catalogue_reads_a_missing_field_as_field_missing() {
     responder.reply(404, r#"{"message":"Not Found"}"#);
     responder.reply(502, "");
     let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
-    let error = catalogue.options(&size()).await.unwrap_err();
+    let error = catalogue.field_options(101).await.unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::FieldMissing));
     assert!(error.should_resolve_again());
-    let error = catalogue.options(&size()).await.unwrap_err();
+    let error = catalogue.field_options(101).await.unwrap_err();
     assert!(matches!(error, FieldError::Transport(_)), "{error}");
+}
+
+#[tokio::test]
+async fn catalogue_resolves_a_field_id_by_name() {
+    let responder = Responder::start().await;
+    responder.reply(200, ORG_FIELDS);
+    responder.reply(200, ORG_FIELDS);
+    responder.reply(502, "");
+    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    assert_eq!(catalogue.field_id("Effort").await, Ok(101));
+    let error = catalogue.field_id("Size").await.unwrap_err();
+    assert_eq!(error, FieldError::Field(FieldFinding::FieldMissing));
+    assert!(error.should_resolve_again());
+    let error = catalogue.field_id("Effort").await.unwrap_err();
+    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+    assert_token_only_in_authorization(&responder.requests());
+}
+
+#[tokio::test]
+async fn a_field_source_without_a_resolved_id_is_missing_before_any_request() {
+    let responder = Responder::start().await;
+    let client = client(&responder);
+    let pass = client.pass(&token());
+    let missing = FieldError::Field(FieldFinding::FieldMissing);
+    assert_eq!(
+        pass.read_field(ISSUE, &size(), None).await,
+        Err(missing.clone())
+    );
+    assert_eq!(
+        pass.set_field(ISSUE, &size(), None, Some("M")).await,
+        Err(missing)
+    );
+    assert!(responder.requests().is_empty());
 }
 
 #[tokio::test]
@@ -604,13 +656,16 @@ async fn a_label_pattern_without_its_option_is_refused_before_any_request() {
     let missing = FieldError::Field(FieldFinding::FieldMissing);
     let client = client(&responder);
     let pass = client.pass(&token());
-    assert_eq!(pass.read_field(ISSUE, &field).await, Err(missing.clone()));
     assert_eq!(
-        pass.set_field(ISSUE, &field, Some("M")).await,
+        pass.read_field(ISSUE, &field, None).await,
         Err(missing.clone())
     );
     assert_eq!(
-        pass.set_field(ISSUE, &field, None).await,
+        pass.set_field(ISSUE, &field, None, Some("M")).await,
+        Err(missing.clone())
+    );
+    assert_eq!(
+        pass.set_field(ISSUE, &field, None, None).await,
         Err(missing.clone())
     );
     let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
