@@ -163,7 +163,7 @@ gates:
     - name: rust-lint
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
-      command: "cargo test --workspace"
+      command: "cargo nextest run --workspace && cargo test --doc --workspace"
     - name: proto-lint
       command: "buf lint api/proto"
     - name: proto-breaking
