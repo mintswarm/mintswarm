@@ -105,8 +105,8 @@ Checks:
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
   error and no traceback;
-- glob semantics: floor.py's glob_to_regex agrees with the one in
-  .mintswarm/dogfood/github/request-review.py;
+- glob semantics: floor.py's glob_to_regex matches a pinned table of
+  patterns by paths, and pinned edge cases;
 - decision record shape, on every decision run that exits 0 or 1: the
   record's keys (version 2) and each layer's keys in order, the subject, the
   mode, `min_confidence` (90 unless the config sets it), the floor layer's
@@ -245,7 +245,6 @@ SIZE = HERE / "size.py"
 FIXTURES = HERE / "fixtures"
 ROOT = HERE.parents[2]
 CONFIG = ROOT / ".mintswarm" / "config.yaml"
-REQUEST_REVIEW = ROOT / ".mintswarm" / "dogfood" / "github" / "request-review.py"
 CONFIG_PATH = ".mintswarm/config.yaml"
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 RECORD = Path(".mintswarm/job/outputs/decision.json")
@@ -3446,7 +3445,7 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
 
 
 def load_module(name: str, path: Path):
-    sys.dont_write_bytecode = True  # leave no __pycache__ next to either script
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to the script
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -3469,24 +3468,6 @@ def check_authority_triggers() -> None:
 
 def check_globs() -> None:
     floor = load_module("msw_floor", FLOOR)
-    review = load_module("msw_request_review", REQUEST_REVIEW)
-    patterns = [
-        "**",
-        "docs/**",
-        "**/x.md",
-        "a/**/b",
-        "a/**",
-        "*.md",
-        "docs/*.md",
-        "?.md",
-        "a?c",
-        "a.b",
-        "[ab].md",
-        "a+b(c)",
-        "README.md",
-        ".mintswarm/dogfood/github/**",
-        "crates/*/src/**",
-    ]
     paths = [
         "docs",
         "docs/a.md",
@@ -3512,14 +3493,29 @@ def check_globs() -> None:
         "crates/core/src/lib.rs",
         "crates/core/x/src/lib.rs",
     ]
+    # Each pattern with exactly the paths above it matches; it matches none of the others.
+    matches = {
+        "**": paths,
+        "docs/**": ["docs/a.md", "docs/x/y.md"],
+        "**/x.md": ["x.md", "a/x.md", "a/b/x.md"],
+        "a/**/b": ["a/b", "a/c/d/b"],
+        "a/**": ["a/x.md", "a/b/x.md", "a/b", "a/c/d/b", "a/", "a/c"],
+        "*.md": ["x.md", "a.md", "ab.md", "[ab].md", "README.md", "readme.md"],
+        "docs/*.md": ["docs/a.md"],
+        "?.md": ["x.md", "a.md"],
+        "a?c": ["abc"],
+        "a.b": ["a.b"],
+        "[ab].md": ["[ab].md"],
+        "a+b(c)": ["a+b(c)"],
+        "README.md": ["README.md"],
+        ".mintswarm/dogfood/github/**": [".mintswarm/dogfood/github/push.sh"],
+        "crates/*/src/**": ["crates/core/src/lib.rs"],
+    }
     differ = [
-        (p, s)
-        for p in patterns
-        for s in paths
-        if bool(floor.glob_to_regex(p).fullmatch(s)) != bool(review.glob_to_regex(p).fullmatch(s))
+        (p, s) for p, want in matches.items() for s in paths if bool(floor.glob_to_regex(p).fullmatch(s)) != (s in want)
     ]
     T.check(
-        f"glob semantics: floor.py and request-review.py agree on {len(patterns) * len(paths)} pairs",
+        f"glob semantics: floor.py matches as pinned on {len(matches) * len(paths)} pairs",
         not differ,
         str(differ[:5]),
     )
