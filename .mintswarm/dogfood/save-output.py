@@ -73,10 +73,12 @@ The result block's content follows "Result block" and "Questions" in
   a comment are violations.
 - Each question, option, recommendation and reference has the keys and
   types of crates/domain/src/question.rs, null meaning absent for the
-  optional ones; unknown keys are violations, and a question that is not
-  an object (an old string question) is one. Sound questions then get
-  the checks of Question::violations, and when all are sound the id and
-  status rules of StageOutcome::check, in its order and wording.
+  optional ones; unknown and duplicate keys and strings holding an
+  unpaired surrogate are violations, and so is a question that is not an
+  object (an old string question). Sound questions then get the checks
+  of Question::violations, emptiness meaning Rust's trim over the
+  White_Space property, and when all are sound the id and status rules of
+  StageOutcome::check, in its order and wording.
 
 Every content violation is listed in one message under rule "Result
 block", which quotes the last sentence of "Questions".
@@ -372,8 +374,44 @@ QUESTION_FIELDS = (
 )
 
 
+# Rust's White_Space property, which str::trim strips: Python's str.strip also strips U+001C-U+001F.
+RUST_WHITE_SPACE = frozenset("\t\n\v\f\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000") | frozenset(
+    chr(c) for c in range(0x2000, 0x200B)
+)
+SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def rust_blank(value: str) -> bool:
+    """Whether Rust's value.trim().is_empty() holds."""
+    return all(c in RUST_WHITE_SPACE for c in value)
+
+
+def unpaired(value) -> bool:
+    """Whether a decoded string holds a lone surrogate, which serde_json rejects and UTF-8 cannot hold."""
+    return isinstance(value, str) and SURROGATE.search(value) is not None
+
+
+class JsonObject(dict):
+    """A decoded JSON object that keeps the first value of a repeated key and lists the repeats."""
+
+    def __init__(self, pairs: list):
+        super().__init__()
+        self.duplicates = []
+        for key, value in pairs:
+            if key not in self:
+                self[key] = value
+            elif key not in self.duplicates:
+                self.duplicates.append(key)
+
+
 def rust_debug(value: str) -> str:
-    """A string as Rust's `{:?}` writes it, as the Rust check's messages quote ids."""
+    """A string as Rust's `{:?}` writes it, as the Rust check's messages quote ids.
+
+    An approximation: Rust's char::escape_debug escapes by its is_printable table and
+    Grapheme_Extend, approximated here by general categories. The two agree for ASCII and the
+    printable letters, digits, punctuation and symbols ids realistically hold, and may differ for
+    unassigned code points, some format characters and spacing marks.
+    """
     out = []
     for c in value:
         if c in '"\\':
@@ -440,6 +478,8 @@ def read_scalar(raw: str) -> tuple:
             value = json.loads(raw[: i + 1])
         except json.JSONDecodeError:
             return None, "a double-quoted value may use JSON escapes only"
+        if unpaired(value):
+            return None, "holds an unpaired surrogate"
         if not TAIL.fullmatch(raw[i + 1 :]):
             return None, f"text after the closing quote: {raw[i + 1 :].strip()!r}"
         return ("string", value), ""
@@ -449,7 +489,7 @@ def read_scalar(raw: str) -> tuple:
         return None, "block scalars are not supported; use one double-quoted line"
     cut = COMMENT.search(raw)
     text = (raw[: cut.start()] if cut else ("" if raw.startswith("#") else raw)).rstrip(" \t")
-    problem = plain_problem(text)
+    problem = plain_problem(text) or ("holds an unpaired surrogate" if unpaired(text) else "")
     if problem:
         return None, problem
     return resolve_plain(text), ""
@@ -470,6 +510,7 @@ def read_outputs(raw: str) -> tuple:
     for item in inner.split(","):
         item = item.strip(" \t")
         problem = plain_problem(item) or ("holds ' #'" if COMMENT.search(item) else "")
+        problem = problem or ("holds an unpaired surrogate" if unpaired(item) else "")
         kind, value = resolve_plain(item)
         if problem or kind != "string":
             reason = problem or (f"reads as {value}" if kind == "other" else "is empty or null")
@@ -493,7 +534,7 @@ def decode_array(texts: list) -> tuple:
     """Decode the JSON array that starts the joined texts. Returns (text, value, end, error)."""
     text = "\n".join(texts)
     try:
-        value, end = json.JSONDecoder().raw_decode(text)
+        value, end = json.JSONDecoder(object_pairs_hook=JsonObject).raw_decode(text)
     except json.JSONDecodeError as exc:
         return text, None, None, exc
     return text, value, end, None
@@ -547,13 +588,18 @@ def check_value(value, present: bool, spec, label: str, path: str, out: list) ->
             out.append(f"{label}: {path} is missing")
         elif not isinstance(value, str):
             out.append(f"{label}: {path} must be a string, not {json_type(value)}")
+        elif unpaired(value):
+            out.append(f"{label}: {path} holds an unpaired surrogate")
         else:
             return True, value
         return False, None
     if spec == "string?":
-        if value is None or isinstance(value, str):
+        if unpaired(value):
+            out.append(f"{label}: {path} holds an unpaired surrogate")
+        elif value is None or isinstance(value, str):
             return True, value
-        out.append(f"{label}: {path} must be a string or null, not {json_type(value)}")
+        else:
+            out.append(f"{label}: {path} must be a string or null, not {json_type(value)}")
         return False, None
     what = spec[0]
     if what == "enum":
@@ -593,6 +639,9 @@ def check_fields(value: dict, fields: tuple, label: str, path: str, out: list) -
     sound, result = True, {}
     where = f"{path}: " if path else ""
     names = [name for name, _ in fields]
+    for key in getattr(value, "duplicates", ()):
+        out.append(f"{label}: {where}duplicate key {rust_debug(key)}")
+        sound = False
     for key in value:
         if key not in names:
             out.append(f"{label}: {where}unknown key {rust_debug(key)}")
@@ -633,9 +682,9 @@ def question_violations(q: dict) -> list:
             out.append(f"{qid}: an assumption cannot have shape open")
         elif all(v in choice for v in valid):
             out.append(f"{qid}: an assumption needs an option besides those it chooses")
-    if not q["question"].strip():
+    if rust_blank(q["question"]):
         out.append(f"{qid}: question is empty")
-    if not q["why"].strip():
+    if rust_blank(q["why"]):
         out.append(f"{qid}: why is empty")
     if shape in ("one", "several") and len(options) < 2:
         out.append(f"{qid}: shapes one and several need at least two options")
@@ -677,7 +726,7 @@ def check_questions(questions: list, status) -> list:
             all_sound = False
             continue
         qid = q.get("id")
-        label = qid if isinstance(qid, str) and qid.strip() else f"questions[{i}]"
+        label = qid if isinstance(qid, str) and not rust_blank(qid) and not unpaired(qid) else f"questions[{i}]"
         sound, normalised = check_fields(q, QUESTION_FIELDS, label, "", out)
         if sound:
             questions[i] = normalised
@@ -767,7 +816,7 @@ def record_path(output: Path) -> Path:
 
 def write_both(writes: list) -> None:
     """Write each (path, text), all or none: temporary files in the target directory, then
-    os.replace. On an OSError, removes what it wrote and raises."""
+    os.replace. On any exception, removes what it wrote and raises."""
     temps, done = [], []
     try:
         for path, text in writes:
@@ -779,7 +828,7 @@ def write_both(writes: list) -> None:
         for (path, _), temp in zip(writes, temps):
             os.replace(temp, path)
             done.append(path)
-    except OSError:
+    except BaseException:
         for path in temps + done:
             try:
                 os.unlink(path)
@@ -844,7 +893,7 @@ def main(argv: list) -> int:
     record = json.dumps(outcome, indent=2, ensure_ascii=False) + "\n"
     try:
         write_both([(path, document), (record_path(path), record)])
-    except OSError as exc:
+    except (OSError, UnicodeEncodeError) as exc:
         print(f"save-output: cannot write {output}: {exc}", file=sys.stderr)
         return 2
     print(result.rstrip())

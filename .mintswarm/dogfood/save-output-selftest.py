@@ -51,6 +51,7 @@ Prints one line per check and exits 0 only if every check passed.
 Standard library only.
 """
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -537,6 +538,7 @@ class Questions(Harness):
                 "q1: an assumption needs an option besides those it chooses",
             ),
             (question(question=" \t"), "q1: question is empty"),
+            (question(question="\u3000\u2028\x85\xa0"), "q1: question is empty"),
             (question(why=""), "q1: why is empty"),
             (question(options=[option("a")]), "q1: shapes one and several need at least two options"),
             (
@@ -603,6 +605,36 @@ class Questions(Harness):
                 ['q1: options[0]: unknown key "cost"'],
             ),
             ("duplicate key", lines + ['  reason: ""'], [f'line {len(lines) + BLOCK_LINE}: duplicate key "reason"']),
+            (
+                "duplicate question key",
+                [line.replace('"id": "q1", ', '"id": "q1", "id": "q9", ') for line in lines],
+                ['q1: duplicate key "id"'],
+            ),
+            (
+                "duplicate nested key",
+                [line.replace('"id": "a", ', '"id": "a", "label": "x", ') for line in lines],
+                ['q1: options[0]: duplicate key "label"'],
+            ),
+            (
+                "unpaired surrogate in a question",
+                [line.replace('"Which q1?"', '"Which q1\\ud800?"') for line in lines],
+                ["q1: question holds an unpaired surrogate"],
+            ),
+            (
+                "unpaired surrogate in an id",
+                [line.replace('"id": "q1"', '"id": "q\\udc00"') for line in lines],
+                ["questions[0]: id holds an unpaired surrogate"],
+            ),
+            (
+                "unpaired surrogate in an optional string",
+                block(question(options=[option("a", trade_off="T@"), option("b")]), status="needs_input"),
+                ["q1: options[0].trade_off holds an unpaired surrogate"],
+            ),
+            (
+                "unpaired surrogate in a scalar",
+                block(good, status="needs_input", reason='"\\ud800"'),
+                [f"line {at[lines[-1]]}: reason: holds an unpaired surrogate"],
+            ),
             ("missing key", [line for line in lines if "artefact" not in line], ['missing key "artefact"']),
             (
                 "bad enum",
@@ -668,7 +700,24 @@ class Questions(Harness):
         ]
         for name, case, expected in cases:
             with self.subTest(case=name):
-                self.assert_violations(case, *expected)
+                self.assert_violations([line.replace("T@", "T\\ud800") for line in case], *expected)
+
+    def test_trim_is_rusts(self):
+        q = question(question="\x1c", why="\u200b")
+        self.assert_accepted(block(q, status="needs_input"), record_of(q, status="needs_input"))
+
+    def test_write_both_cleans_up_on_any_exception(self):
+        spec = importlib.util.spec_from_file_location("save_output", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = dont_write
+        target = self.dir / "outputs"
+        with self.assertRaises(UnicodeEncodeError):
+            module.write_both([(target / "review.md", "ok\n"), (target / "review.result.json", "\ud800")])
+        self.assertEqual(list(target.iterdir()), [], "write_both left files behind")
 
     def test_allowed_comment_and_null_forms(self):
         q = question(
