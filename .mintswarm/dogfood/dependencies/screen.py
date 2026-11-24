@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Screen each package a plan declares, for the plan approval.
+"""Screen each package a plan declares, for the plan approval, and each package a lockfile diff brings in, for the
+review.
 
     screen.py plan --plan <plan.md> --root <dir> --out <file>
+    screen.py review --dir <dir>
+
+## plan
 
 Run by the dispatching session, with network access to the registry hosts
 and `api.osv.dev` only. It reads the `new_dependencies` of the plan's
@@ -52,6 +56,42 @@ names are imitated; a name in `popular` or `exempt` (the lockfile names
 and known neighbours of popular names) is itself exempt, and so is a scope
 that either list already uses.
 
+## review
+
+Run by the dispatching session after prefetch.py, on the same `--dir`, with
+network access to `api.osv.dev` only: it makes no registry request. It
+first removes a `<dir>/screen.json` left by an earlier run (a symlink is
+unlinked, never followed). With no `<dir>/packages.json` it prints `no
+packages.json` and exits 0.
+
+Otherwise it screens every package of `packages.json`, direct and
+transitive alike, at its locked version, from the registry metadata
+prefetch.py left in `<ecosystem>/<name>@<version>/metadata.json` and one
+batched advisory query, and writes `<dir>/screen.json` with `"mode":
+"review"` and one record per `packages.json` entry: `name`, `ecosystem`
+(`cargo` as `crates.io`), `lockfile`, `version`, `direct`, `status`,
+`reason`, `signals`, `problems`, `disqualifiers`, `flags` and `flagged`.
+
+- `signals`: `age_days` (from the package's creation), `version_age_days`
+  (from the locked version's publication), `publisher`,
+  `previous_publisher` and `publisher_changed` (against the release
+  published right before the locked one; null when there is none),
+  `downloads` (crates.io only) and `repository` (null when the registry
+  lists none); each is `"unavailable"` when the metadata does not give it.
+- `problems` and `disqualifiers`: as in plan mode, for the locked version.
+- `flags`: the disqualifiers, then, in this order, `new_package` (under
+  NEW_PACKAGE_DAYS old), `new_version` (published under NEW_VERSION_DAYS
+  ago), `publisher_changed`, `low_downloads` (under LOW_DOWNLOADS on
+  crates.io; npm gives none), `no_repository` and `unscreened`; `flagged`
+  is true when there is any. An `"unavailable"` value never flags by
+  itself.
+
+A package whose `prefetch.json` status is not `fetched`, whose
+`metadata.json` is missing or unreadable, or whose advisory query fails is
+`unscreened`, with its reason, and so flagged.
+
+## both modes
+
 `request` is the only network path: HTTPS to the four registry hosts of
 prefetch.py and `api.osv.dev`, no proxy, no redirect, no credential, the
 default verified TLS context, GET everywhere and POST only to
@@ -60,8 +100,9 @@ request to a crates.io host. prefetch.py and advisories.py are loaded by file
 path, so `python3 -I` works.
 
 Standard library only, apart from running yq. Exit 0 whatever happens to
-single packages; 2 on bad arguments, an unreadable plan or footprint, an
-unreadable typosquat list or an output that cannot be written.
+single packages; 2 on bad arguments, an unreadable plan or footprint, a
+malformed `packages.json` or `prefetch.json`, an unreadable typosquat list,
+a stale output that cannot be removed or an output that cannot be written.
 """
 
 import argparse
@@ -112,6 +153,20 @@ ECOSYSTEMS = {"Cargo.toml": "crates.io", "package.json": "npm"}
 LOCKFILES = {"crates.io": "Cargo.lock", "npm": "pnpm-lock.yaml"}
 DISQUALIFIERS = ("advisory", "yanked", "deprecated", "typosquat")
 UNAVAILABLE = "unavailable"
+NEW_PACKAGE_DAYS = 90
+NEW_VERSION_DAYS = 14
+LOW_DOWNLOADS = 10000
+EVIDENCE_FLAGS = ("new_package", "new_version", "publisher_changed", "low_downloads", "no_repository", "unscreened")
+REVIEW_ECOSYSTEMS = {"cargo": "crates.io", "npm": "npm"}
+SIGNALS = (
+    "age_days",
+    "version_age_days",
+    "publisher",
+    "previous_publisher",
+    "publisher_changed",
+    "downloads",
+    "repository",
+)
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?")
 
 
@@ -730,6 +785,204 @@ def screen(deps: list, root: Path, names: dict, source) -> dict:
     }
 
 
+# --- the review -------------------------------------------------------------
+
+
+def days_since(value):
+    """Whole days from the ISO timestamp value to today, or "unavailable"."""
+    when = day(value)
+    return (today() - when).days if when is not None else UNAVAILABLE
+
+
+def text_or_unavailable(value):
+    return value if isinstance(value, str) and value else UNAVAILABLE
+
+
+def repository_link(holder: dict, key: str):
+    """The repository link in holder, None when holder says there is none, "unavailable" when it cannot tell."""
+    if key not in holder:
+        return UNAVAILABLE
+    value = holder[key]
+    if value is None or value == "":
+        return None
+    return value if isinstance(value, str) else UNAVAILABLE
+
+
+def review_signals(ecosystem: str, registry) -> dict:
+    """The evidence for the locked version, from the prefetched registry metadata only."""
+    registry = P.mapping(registry)
+    if ecosystem == "crates.io":
+        info, release = P.mapping(registry.get("crate")), P.mapping(registry.get("version"))
+        created, published, publisher = info.get("created_at"), release.get("created_at"), release.get("published_by")
+        downloads = count(info.get("downloads")) if "downloads" in info else UNAVAILABLE
+        repository = repository_link(info, "repository") if "crate" in registry else UNAVAILABLE
+        previous_key, known_history = "published_by", True
+    else:
+        created, published, publisher = registry.get("created"), registry.get("time"), registry.get("publisher")
+        downloads, repository = UNAVAILABLE, repository_link(registry, "repository")
+        previous_key, known_history = "publisher", registry.get("source") == "packument"
+    publisher = text_or_unavailable(publisher)
+    previous = registry.get("previous", UNAVAILABLE)
+    if not known_history or not (previous is None or isinstance(previous, dict)):
+        previous_publisher = UNAVAILABLE
+    elif previous is None:
+        previous_publisher = None
+    else:
+        previous_publisher = text_or_unavailable(previous.get(previous_key))
+    changed = UNAVAILABLE
+    if previous_publisher is None:
+        changed = None
+    elif UNAVAILABLE not in (publisher, previous_publisher):
+        changed = publisher != previous_publisher
+    return {
+        "age_days": days_since(created),
+        "version_age_days": days_since(published),
+        "publisher": publisher,
+        "previous_publisher": previous_publisher,
+        "publisher_changed": changed,
+        "downloads": downloads,
+        "repository": repository,
+    }
+
+
+def review_flags(record: dict) -> dict:
+    """record with `flags` and `flagged` set from its disqualifiers, its signals and its status."""
+    signals = record.get("signals") or {}
+
+    def under(key: str, limit: int) -> bool:
+        value = signals.get(key)
+        return isinstance(value, int) and not isinstance(value, bool) and value < limit
+
+    hits = {
+        "new_package": under("age_days", NEW_PACKAGE_DAYS),
+        "new_version": under("version_age_days", NEW_VERSION_DAYS),
+        "publisher_changed": signals.get("publisher_changed") is True,
+        "low_downloads": record.get("ecosystem") == "crates.io" and under("downloads", LOW_DOWNLOADS),
+        "no_repository": "repository" in signals and signals["repository"] is None,
+        "unscreened": record.get("status") == "unscreened",
+    }
+    record["flags"] = list(record.get("disqualifiers") or []) + [f for f in EVIDENCE_FLAGS if hits[f]]
+    record["flagged"] = bool(record["flags"])
+    return record
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise InputError(f"cannot read {path}: {exc}") from exc
+
+
+def prefetched(out: Path, packages: list) -> list:
+    """The prefetch.json record of each packages.json entry, in order; InputError when they do not match."""
+    data = read_json(out / "prefetch.json")
+    records = data.get("packages") if isinstance(data, dict) else None
+    if not isinstance(records, list) or len(records) != len(packages):
+        raise InputError(f"{out / 'prefetch.json'} does not list the packages of packages.json")
+    for number, (record, entry) in enumerate(zip(records, packages), 1):
+        if not (
+            isinstance(record, dict)
+            and all(record.get(k) == entry[k] for k in ("ecosystem", "lockfile", "name", "version"))
+            and isinstance(record.get("status"), str)
+            and isinstance(record.get("reason"), str)
+            and (record.get("dir") is None or isinstance(record.get("dir"), str))
+        ):
+            raise InputError(f"{out / 'prefetch.json'}: package {number} does not match packages.json")
+    return records
+
+
+def review_package(entry: dict, fetched: dict, out: Path, names: dict) -> dict:
+    """The record of one locked package, before advisories; never raises."""
+    ecosystem = REVIEW_ECOSYSTEMS[entry["ecosystem"]]
+    direct = entry.get("direct")
+    record = {
+        "name": entry["name"],
+        "ecosystem": ecosystem,
+        "lockfile": entry["lockfile"],
+        "version": entry["version"],
+        "direct": direct if isinstance(direct, bool) else None,
+        "status": "screened",
+        "reason": "",
+        "signals": dict.fromkeys(SIGNALS, UNAVAILABLE),
+        "problems": {
+            "advisories": None,
+            "yanked": None,
+            "deprecated": None,
+            "typosquat_of": typosquat_of(
+                entry["name"], ecosystem, names[ecosystem]["popular"], names[ecosystem]["exempt"]
+            ),
+        },
+        "disqualifiers": [],
+    }
+    if fetched["status"] != "fetched":
+        return unscreened(record, f"prefetch {fetched['status']}: {fetched['reason'][: P.TEXT_CAP]}")
+    expected = f"{entry['ecosystem']}/{entry['name']}@{entry['version']}"
+    if fetched["dir"] != expected or unsafe_manifest(expected):
+        return unscreened(record, f"prefetch.json gives no usable directory for {expected}")
+    path = out / expected / "metadata.json"
+    try:
+        if path.is_symlink():
+            raise OSError("a symlink")
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        registry = metadata["registry"]
+        if not isinstance(registry, dict):
+            raise ValueError("no registry metadata")
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError, KeyError, TypeError) as exc:
+        return unscreened(record, f"cannot read {expected}/metadata.json: {str(exc)[: P.TEXT_CAP]}")
+    record["signals"] = review_signals(ecosystem, registry)
+    if ecosystem == "crates.io":
+        record["problems"]["yanked"] = P.mapping(registry.get("version")).get("yanked") is True
+    else:
+        deprecated = registry.get("deprecated")
+        if deprecated:
+            record["problems"]["deprecated"] = P.scalar(deprecated) if isinstance(deprecated, str) else "deprecated"
+    return record
+
+
+def review(packages: list, fetched: list, out: Path, names: dict, source) -> dict:
+    records = [review_package(entry, done, out, names) for entry, done in zip(packages, fetched)]
+    add_advisories(records, source)
+    for record in records:
+        disqualify(record)
+        review_flags(record)
+    return {
+        "tool": TOOL,
+        "version": RECORD_VERSION,
+        "mode": "review",
+        "date": today().isoformat(),
+        "advisory_source": source.name,
+        "packages": records,
+    }
+
+
+def review_main(directory: str, source) -> int:
+    out = Path(directory)
+    target = out / "screen.json"
+    try:
+        P.remove(target)
+    except OSError as exc:
+        raise InputError(f"cannot remove the stale {target}: {exc}") from exc
+    if not (out / "packages.json").is_file():
+        print("no packages.json")
+        return 0
+    try:
+        packages = P.load(out / "packages.json")
+    except P.InputError as exc:
+        raise InputError(str(exc)) from exc
+    fetched = prefetched(out, packages)
+    names = popular_names()
+    record = review(packages, fetched, out, names, source if source is not None else A.OsvSource(request))
+    try:
+        target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise InputError(f"cannot write {target}: {exc}") from exc
+    records = record["packages"]
+    unscreened_count = sum(p["status"] == "unscreened" for p in records)
+    flagged = sum(p["flagged"] for p in records)
+    print(f"{len(records) - unscreened_count} screened, {unscreened_count} unscreened, {flagged} flagged: {target}")
+    return 0
+
+
 # --- the plan ---------------------------------------------------------------
 
 
@@ -771,10 +1024,13 @@ def main(argv: list, source=None) -> int:
     plan = commands.add_parser("plan", add_help=False)
     for option in ("--plan", "--root", "--out"):
         plan.add_argument(option, required=True)
+    commands.add_parser("review", add_help=False).add_argument("--dir", required=True)
     try:
         args = parser.parse_args(argv)
+        if args.command == "review":
+            return review_main(args.dir, source)
         if args.command != "plan":
-            raise InputError("the command must be 'plan'")
+            raise InputError("the command must be 'plan' or 'review'")
         root = Path(args.root)
         if not root.is_dir():
             raise InputError(f"--root {root} is not a directory")

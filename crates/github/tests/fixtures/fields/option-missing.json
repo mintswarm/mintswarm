@@ -1,0 +1,13 @@
+{
+  "message": "Validation Failed",
+  "errors": [
+    {
+      "resource": "IssueFieldValue",
+      "field": "value",
+      "code": "invalid",
+      "message": "Option 'XL' does not exist for the field Effort"
+    }
+  ],
+  "documentation_url": "https://docs.github.com/rest/issues/issue-field-values",
+  "status": "422"
+}

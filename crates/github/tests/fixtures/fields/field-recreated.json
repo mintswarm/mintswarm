@@ -1,0 +1,9 @@
+[
+  {
+    "issue_field_id": 909,
+    "issue_field_name": "Effort",
+    "data_type": "single_select",
+    "value": "M",
+    "single_select_option": { "id": 9003, "name": "M", "color": "blue" }
+  }
+]

@@ -809,6 +809,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -816,6 +817,7 @@ name = "mintswarm-github"
 version = "0.1.0"
 dependencies = [
  "jsonwebtoken",
+ "mintswarm-domain",
  "reqwest",
  "rustix",
  "serde",

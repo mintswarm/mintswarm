@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 jsonwebtoken = { workspace = true }
+mintswarm-domain = { path = "../domain" }
 reqwest = { workspace = true }
 rustix = { workspace = true, features = ["fs", "process"] }
 serde = { workspace = true, features = ["derive"] }

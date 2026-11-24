@@ -399,6 +399,23 @@ impl fmt::Display for FieldError {
 
 impl std::error::Error for FieldError {}
 
+impl FieldError {
+    /// Whether the field id the caller passed may no longer name the field, so the caller
+    /// resolves the id again by the field's name before it treats the error as drift: the
+    /// tracker does not know the field (`field_missing`), a field of the mapped name has another
+    /// id (`field_recreated`), or the tracker refused a write (`write_rejected`).
+    pub fn should_resolve_again(&self) -> bool {
+        matches!(
+            self,
+            Self::Field(
+                FieldFinding::FieldMissing
+                    | FieldFinding::FieldRecreated
+                    | FieldFinding::WriteRejected
+            )
+        )
+    }
+}
+
 /// Lists a field's options. Only the operator's admin commands use it, never the plane.
 pub trait FieldCatalogue: Send + Sync {
     /// Every option the tracker holds for this field, mapped or not.
@@ -410,7 +427,10 @@ pub trait FieldCatalogue: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{FieldMap, FieldMapError, FieldMapSpec, FieldSource, OptionSpec, SourceSpec};
+    use super::{
+        FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldSource, OptionSpec,
+        SourceSpec,
+    };
     use crate::scale::Size;
 
     fn option(name: &str, range: &str) -> OptionSpec {
@@ -445,6 +465,23 @@ mod tests {
         let field = map.field_ref();
         assert_eq!(field.options, ["Low", "Medium", "High"]);
         assert!(matches!(field.source, FieldSource::Labels { .. }));
+    }
+
+    #[test]
+    fn a_stale_field_id_calls_for_resolving_again() {
+        let again = |finding| FieldError::Field(finding).should_resolve_again();
+        assert!(again(FieldFinding::FieldMissing));
+        assert!(again(FieldFinding::FieldRecreated));
+        assert!(again(FieldFinding::WriteRejected));
+        for finding in [
+            FieldFinding::OptionMissing,
+            FieldFinding::OptionRenamed,
+            FieldFinding::OptionUnmapped,
+            FieldFinding::LabelsConflict,
+        ] {
+            assert!(!again(finding), "{finding}");
+        }
+        assert!(!FieldError::Transport("GET /x: 502".into()).should_resolve_again());
     }
 
     #[test]

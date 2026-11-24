@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AttemptId, JobId, RevId, RunnerId, Seq, WorkerId};
 use crate::records::Bound;
-use crate::work::{StageJob, StageOutcome, Step, StepJob, Usage};
+use crate::work::{StageJob, StageOutcome, StepJob, StepKind, Usage};
 
 /// A harness a runner can drive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ pub enum StepStatus {
 pub enum JobOutcome {
     Stage(StageOutcome),
     Step {
-        step: Step,
+        step: StepKind,
         status: StepStatus,
         reason: String,
     },

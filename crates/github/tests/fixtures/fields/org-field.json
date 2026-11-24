@@ -1,0 +1,12 @@
+{
+  "id": 101,
+  "name": "Effort",
+  "data_type": "single_select",
+  "options": [
+    { "id": 1001, "name": "XS", "color": "gray" },
+    { "id": 1002, "name": "S", "color": "green" },
+    { "id": 1003, "name": "M", "color": "blue" },
+    { "id": 1004, "name": "L", "color": "yellow" },
+    { "id": 1005, "name": "Huge", "color": "red" }
+  ]
+}
