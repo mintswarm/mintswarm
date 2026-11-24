@@ -28,13 +28,14 @@ Checks:
   every mode but `always`; under `shadow`, the record's mode reason and the
   comment state that the decision changes nothing;
 - reasons: every hit rule with its reasons, the band, confidence and
-  decisive reason, each hard trigger, a confidence below min_confidence
-  and an unusable layer's problems;
+  decisive reason, each unusable hard trigger as `hard trigger` and the
+  authority triggers as `requires the maintainer`, a confidence below
+  min_confidence and an unusable layer's problems;
 - an authority trigger: under `judged` with a clean floor, a `safe` 100
   landing document listing `weakens-safeguard` gives `human` for `would_be`
-  and `effective`, the reason names the trigger, and the comment's
-  Confidence row says it requires the maintainer while the Hard triggers
-  row is `none`;
+  and `effective`, the reasons say it requires the maintainer and list no
+  `hard trigger`, and the comment's Confidence row says it requires the
+  maintainer while the Hard triggers row is `none`;
 - threshold edges: with `min_confidence: 90`, 90 is `auto` and 89 `human`,
   under `judged`;
 - bindings: a verdict whose plan, facts, base, head or merge base, component
@@ -548,7 +549,7 @@ def check_reasons(r: Runner) -> None:
         "floor hit steers: " + HIT["steers"][0],
         "judgement: blocked 0: the change does what the plan says",
         "judgement: hard trigger criterion-not-met",
-        "judgement: hard trigger credentials",
+        "judgement: requires the maintainer: credentials",
         "would_be: human",
         "effective: human",
     ]
@@ -591,7 +592,8 @@ def check_authority(r: Runner) -> None:
     )
     T.check(
         "authority: the reasons name the trigger",
-        "judgement: hard trigger weakens-safeguard" in reasons,
+        "judgement: requires the maintainer: weakens-safeguard" in reasons
+        and not any(reason.startswith("judgement: hard trigger") for reason in reasons),
         json.dumps(reasons),
     )
     T.check(

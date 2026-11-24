@@ -150,8 +150,10 @@ record's, with its `judged_decision` and `decision` named `would_be` and
   reasons          the mode's rule; the floor's outcome and each hit rule
                    with its reasons, or its problems; each evidence entry;
                    the judgement's band,
-                   confidence and decisive reason, then each hard trigger
-                   or a confidence below min_confidence, or its problems;
+                   confidence and decisive reason, then each unusable
+                   hard trigger as `hard trigger`, the authority triggers
+                   as `requires the maintainer`, or, with no trigger, a
+                   confidence below min_confidence; or its problems;
                    `would_be` and `effective`
   acts             false
   inputs           `facts` {`path`, `sha256`} and `approval` {`approver`,
@@ -599,9 +601,15 @@ def decide(mode: str, min_confidence: int, floor_: dict, judged: dict) -> tuple:
     reasons += [f"floor evidence: {entry}" for entry in floor_["evidence"]]
     if judged["status"] == "usable":
         reasons.append(f"judgement: {judged['band']} {judged['confidence']}: {judged['reasons'][0]}")
-        if judged["hard_triggers"]:
-            reasons += [f"judgement: hard trigger {trigger}" for trigger in judged["hard_triggers"]]
-        elif judged["confidence"] < min_confidence:
+        authority = [t for t in judged["hard_triggers"] if t in judgement.AUTHORITY_TRIGGERS]
+        reasons += [
+            f"judgement: hard trigger {trigger}"
+            for trigger in judged["hard_triggers"]
+            if trigger not in judgement.AUTHORITY_TRIGGERS
+        ]
+        if authority:
+            reasons.append(f"judgement: requires the maintainer: {', '.join(authority)}")
+        if not judged["hard_triggers"] and judged["confidence"] < min_confidence:
             reasons.append(f"judgement: confidence {judged['confidence']} below min_confidence {min_confidence}")
     else:
         reasons.append("judgement: unusable")
@@ -665,7 +673,9 @@ def comment(record: dict) -> str:
         f"- **PR:** #{subject['pr']}, head commit `{subject['head']['commit']}`, "
         f"base commit `{subject['base']['commit']}`",
         *floor_rows(floor_),
-        *judgement.decision.judgement_rows(judged, record["min_confidence"], suffix),
+        *judgement.decision.judgement_rows(
+            judged, record["min_confidence"], suffix, authority=judgement.AUTHORITY_TRIGGERS
+        ),
         f"- **Would-be decision:** `{record['would_be']}`",
         f"- **Effective decision:** `{record['effective']}`",
         f"- **Plan approval (input; the landing floor uses it for coverage):** approver {maybe(approval['approver'])}, "
