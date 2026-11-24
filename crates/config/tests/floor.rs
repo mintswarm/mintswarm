@@ -6,7 +6,7 @@
 
 #![cfg(test)]
 
-use mintswarm_config::{GatesSummary, load_repo_config};
+use mintswarm_config::{GatesSummary, ReviewClear, load_repo_config};
 use serde_json::{Value, json};
 
 const REPO_JSON: &str = include_str!("conformance/repo-config.json");
@@ -529,6 +529,44 @@ fn max_rounds_values() {
         "the snapshot sets pipeline.review.max_rounds"
     );
     assert_eq!(config.review_max_rounds(), recorded);
+}
+
+/// `pipeline.review.clear` as the readiness check's `review_config` accepts it: blocker, major,
+/// minor or nit, and major when absent.
+#[test]
+fn review_clear_values() {
+    let clear = |value: Option<Value>| {
+        load_repo_config(&variant(|c| match value {
+            Some(value) => set(c, "/pipeline/review", "clear", value),
+            None => remove(c, "/pipeline/review", "clear"),
+        }))
+    };
+    for (name, expected) in [
+        ("blocker", ReviewClear::Blocker),
+        ("major", ReviewClear::Major),
+        ("minor", ReviewClear::Minor),
+        ("nit", ReviewClear::Nit),
+    ] {
+        let config = clear(Some(json!(name))).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(config.review_clear(), expected, "{name}");
+    }
+    let absent = clear(None).expect("absent loads");
+    assert_eq!(absent.review_clear(), ReviewClear::Major);
+    let null = clear(Some(Value::Null)).expect("null loads as absent");
+    assert_eq!(null.review_clear(), ReviewClear::Major);
+    let no_review = load_repo_config(&variant(|c| remove(c, "/pipeline", "review")))
+        .expect("no pipeline.review loads");
+    assert_eq!(no_review.review_clear(), ReviewClear::Major);
+    for value in [
+        json!("trivial"),
+        json!("Nit"),
+        json!(""),
+        json!(1),
+        json!(true),
+    ] {
+        let error = clear(Some(value.clone())).expect_err("rejected");
+        assert_eq!(error.path(), "pipeline.review.clear", "{value}: {error}");
+    }
 }
 
 #[test]
