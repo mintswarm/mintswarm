@@ -239,6 +239,7 @@ Every open `mintswarm` issue the session works on carries one `msw-state` value,
 | `designing` | The design stage runs. |
 | `planning` | Re-classification, decomposition, filing children, the plan stage, the plan floor, the assessment or the plan-approval decision runs. |
 | `awaiting approval` | A plan, decomposition or design waits for a human's approval. |
+| `plan approved` | A human approved the plan, from the tracker or in the session, and implement has not started yet. |
 | `implementing` | The implement stage, its commit, the gates, their summary or the push runs. |
 | `in review` | The PR is under review: review and address rounds, and the landing floor, judge and decision. |
 | `awaiting merge` | The PR is ready and waits to be merged, or is being merged and released. |
@@ -276,6 +277,7 @@ Each Status wording the session writes to the Pipeline state artifact or the `<!
 | Planning | `planning` |
 | Decomposing (re-classified as plan) | `planning` |
 | Awaiting plan approval, or awaiting approval for a decomposition or a design | `awaiting approval` |
+| Plan approved (from the tracker or the session) | `plan approved` |
 | Implementing | `implementing` |
 | Reviewing, round N (PR #M) | `in review` |
 | Awaiting approval, PR #N | `awaiting merge` |
@@ -297,6 +299,7 @@ With `tracker.state.status: issue_status`, `msw-state.py set` also sets GitHub's
 | `designing` | In progress |
 | `planning` | In progress |
 | `awaiting approval` | In review |
+| `plan approved` | In progress |
 | `implementing` | In progress |
 | `in review` | In review |
 | `awaiting merge` | In review |
