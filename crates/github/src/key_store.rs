@@ -479,7 +479,9 @@ fn read_file(path: &Path) -> Result<Vec<u8>, KeyStoreError> {
 
 /// Runs `command` with stdin null and stdout and stderr piped, and returns its stdout. Stderr is
 /// discarded. The child runs in its own process group, and when `timeout` expires the whole group
-/// is killed, so that helpers it started (a pinentry, an agent prompt) do not outlive the read.
+/// is killed, so that helpers the backend starts itself do not outlive the read. A prompt from an
+/// agent that runs in its own session, such as gpg-agent's pinentry under `pass`, is outside the
+/// group and may remain.
 async fn run(
     mut command: Command,
     program: &Path,
@@ -491,23 +493,29 @@ async fn run(
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let child = command.spawn().map_err(|source| KeyStoreError::Spawn {
+    let mut child = command.spawn().map_err(|source| KeyStoreError::Spawn {
         program: program.to_owned(),
         source,
     })?;
-    // The child leads its group, so the group id is its pid. The child is not reaped before the
-    // future below is dropped, so the id cannot be reused while it is killed.
+    // The child leads its group, so the group id is its pid.
     let group = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
         .and_then(rustix::process::Pid::from_raw);
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(output) => output,
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    // The wait borrows the child, so on timeout the child is still owned here, and the group is
+    // killed before the child is dropped and reaped. The group id cannot be reused while any
+    // member is alive, unreaped child included; once none is, the signal reaches nothing.
+    let collected = tokio::time::timeout(timeout, collect(&mut child, stdout, stderr)).await;
+    let (status, stdout) = match collected {
+        Ok(collected) => collected,
         Err(_) => {
             if let Some(group) = group {
                 // The group may already be gone; the child itself is still killed on drop.
                 let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
             }
+            drop(child);
             return Err(KeyStoreError::TimedOut {
                 program: program.to_owned(),
                 timeout,
@@ -518,13 +526,39 @@ async fn run(
         program: program.to_owned(),
         source,
     })?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(KeyStoreError::Failed {
             program: program.to_owned(),
-            status: output.status,
+            status,
         });
     }
-    Ok(output.stdout)
+    Ok(stdout)
+}
+
+/// Waits for `child` while reading its stdout to the end and draining its stderr, so that
+/// neither pipe fills and blocks it.
+async fn collect(
+    child: &mut tokio::process::Child,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+) -> io::Result<(ExitStatus, Vec<u8>)> {
+    use tokio::io::AsyncReadExt;
+    let read_stdout = async {
+        let mut buffer = Vec::new();
+        if let Some(mut stdout) = stdout {
+            stdout.read_to_end(&mut buffer).await?;
+        }
+        io::Result::Ok(buffer)
+    };
+    let drain_stderr = async {
+        if let Some(mut stderr) = stderr {
+            tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await?;
+        }
+        io::Result::Ok(())
+    };
+    let (status, stdout, stderr) = tokio::join!(child.wait(), read_stdout, drain_stderr);
+    stderr?;
+    Ok((status?, stdout?))
 }
 
 /// The real uid of this process.
