@@ -17,6 +17,13 @@
       "source": "labels",
       "label": "component:{name}"
     },
+    "state": {
+      "source": "field",
+      "field": "msw-state",
+      "field_id": 50325307,
+      "label": "msw-state:{value}",
+      "status": "issue_status"
+    },
     "ingest": {
       "trusted": {
         "labels": [
@@ -177,7 +184,18 @@
         "new_files": 3,
         "new_dependencies": 0
       },
-      "limits_by_component": {},
+      "limits_by_component": {
+        "domain": {
+          "lines": 2000,
+          "files": 15,
+          "new_files": 12
+        },
+        "runner": {
+          "lines": 2000,
+          "files": 15,
+          "new_files": 12
+        }
+      },
       "non_production": [
         "**/tests/**",
         "**/*selftest*",
@@ -211,7 +229,7 @@
       "review": "agent"
     },
     "review": {
-      "max_rounds": 3,
+      "max_rounds": 5,
       "reviewers": [
         "zmij"
       ]
