@@ -63,11 +63,34 @@ pub struct IssueRead {
     pub cursor: Cursor,
 }
 
+/// What a comment is to the pipeline, design §9 "Reads and writes": a steer relays the
+/// maintainer's direction, a note is the bot's own record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentMark {
+    /// A trusted author's comment, or a bot comment carrying the steer marker.
+    Steer,
+    /// A bot comment carrying the note marker.
+    Note,
+}
+
 /// A document published on an issue.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     pub name: String,
     pub body: String,
+}
+
+/// An issue's artifact as its list shows it, without the body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSummary {
+    /// The tracker's id of the artifact.
+    pub id: u64,
+    /// The artifact's number on its issue (1, 2, …), by which it is read.
+    pub number: u64,
+    pub name: String,
+    /// Where people read it.
+    pub url: String,
 }
 
 /// Why people are assigned to an item.
