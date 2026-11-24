@@ -4,7 +4,7 @@
     land.py PR --sha SHA [--dry-run]
 
 The session runs it when the maintainer approves a PR in the session
-(README.md, "Session procedure", step 12). It acts only as
+(README.md, "Session procedure", step 13). It acts only as
 mintswarm-dev-steward: the App config is $MSW_STEWARD_CONFIG, or
 ~/.config/mintswarm/steward-app.json when that is unset, and it must name the
 slug mintswarm-dev-steward and the key service

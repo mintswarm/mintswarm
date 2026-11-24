@@ -260,7 +260,10 @@ EXPECTED_APPROVAL = {
         ],
     },
     "limits": {"files": 10, "lines": 300, "new_files": 3, "new_dependencies": 0},
-    "limits_by_component": {},
+    "limits_by_component": {
+        "domain": {"lines": 2000, "files": 15, "new_files": 12},
+        "runner": {"lines": 2000, "files": 15, "new_files": 12},
+    },
     "non_production": [
         "**/tests/**",
         "**/*selftest*",

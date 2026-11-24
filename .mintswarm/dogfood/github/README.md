@@ -19,6 +19,7 @@ A second App, `mintswarm-dev-steward`, is the landing identity: it has its own k
 | `request-review.py PR --branch B` | Resolves reviewers for the PR's changed paths from `.mintswarm/config.yaml` and requests them through `bot-gh.sh`. `--dry-run` only prints them. | none directly |
 | `assign-approvers.py assign\|release NUMBER REASON` | Assigns an issue or PR to `pipeline.review.reviewers` from `.mintswarm/config.yaml` at `--base` (default `origin/master`) while a human is waited on, and `release` removes only the assignments the bot made, judged from the item's events. Never assigns a `[bot]` login, posts only approvers not already assigned, and exits 2 when no human approver is resolved; REASON is `plan`, `needs_input`, `pr` or `external_steps`. `--dry-run` only prints the logins. | none directly |
 | `reclassify.py split\|check-parent` | `split ISSUE --analysis PATH --analysis-url URL` reads the `## Split` json of an implementation issue's analysis and, when it proposes a split, sets the issue's type to the plan type of `tracker.kinds` in `.mintswarm/config.yaml` at `--base` (default `origin/master`), checks that GitHub took it, posts one comment (`<!-- mintswarm: reclassified -->`) naming the finding and the analysis URL, and prints the job kind, the pipeline-state text, the comment URL and the decomposition approval package line; on an issue already of the plan type it changes no type, posts the comment only if no comment holds the marker yet (so a re-run after a failed comment finishes the job), and prints the same lines. The `## Split` heading and its json fence are found outside fenced blocks, as the plan-approval floor finds sections. `check-parent PARENT` exits 1 unless the parent's type is the plan or the design type. `split --dry-run` changes nothing. | none directly |
+| `msw-state.py set\|get` | `set ISSUE VALUE` sets the issue's `msw-state` value (see [msw-state](#msw-state)) as `tracker.state` in `.mintswarm/config.yaml` at `--base` (default `origin/master`) chooses: the organisation issue field `msw-state`, by its recorded `field_id`, or exactly one `msw-state:<value>` label, swapped in one `PUT` of the issue's labels. It writes only when the value differs and checks GitHub's answer. Then, unless the value is `none` or `tracker.state.status` is `off`, it sets the issue status the value maps to through GraphQL `setIssueStatus`, whenever the status differs, even if the value was already current. `get ISSUE` prints the value and the status. `set --dry-run` changes nothing. | none directly |
 | `bot-identity.sh install\|status\|uninstall` | Makes every commit on a `mintswarm/*` branch authored and committed by `mintswarm-dev[bot]`, through a conditional include in the repository's shared git config. | none |
 | `store-credentials.sh create\|rotate` | `create MANIFEST` runs the whole manifest flow: it writes a page that posts the manifest to GitHub, catches the redirect on `127.0.0.1` with `manifest-listener.py`, converts the code and stores the key and the identifiers in that App's own key-store item and config. `rotate PEM_PATH [--keep]` stores a new key for the App whose config `MSW_APP_CONFIG` names. | the code, from the listener to `curl` on stdin; the key, from GitHub or the downloaded PEM to `key-store.sh` on stdin |
 | `manifests/*.json` | One manifest per App. `mintswarm-dev.json`: `contents`, `pull_requests`, `issues` and `workflows` write; `checks`, `statuses` and `metadata` read. `workflows` is there because agents author the CI files and GitHub refuses a whole push from an App that adds, edits or deletes a file under `.github/workflows/` without it; once it is accepted (Setup, step 2), `bot-gh.sh`'s unnarrowed tokens carry `workflows: write` too. `mintswarm-dev-steward.json`: the same without `issues` and `workflows` (it never pushes). Both private, with no events and no webhook, redirecting to `http://127.0.0.1:8765/`. | none |
@@ -128,7 +129,7 @@ key-store.sh delete msw-selftest t
 
 ## Steward
 
-`mintswarm-dev-steward` is the landing identity of #29: the App that merges pull requests into `master`. It is a separate App so that its key, the only one allowed to bypass the `master` ruleset, is never the runner's. `land.py` is the only script that acts as it (Session procedure, step 12); `mint-token.sh` and `bot-gh.sh` can act as it with `MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json`.
+`mintswarm-dev-steward` is the landing identity of #29: the App that merges pull requests into `master`. It is a separate App so that its key, the only one allowed to bypass the `master` ruleset, is never the runner's. `land.py` is the only script that acts as it (Session procedure, step 13); `mint-token.sh` and `bot-gh.sh` can act as it with `MSW_APP_CONFIG=~/.config/mintswarm/steward-app.json`.
 
 | | |
 | --- | --- |
@@ -199,7 +200,8 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
     4. The comment that asks the maintainer to approve the decomposition (the decomposition approval package) starts with the printed `package:` line, when there is one.
     5. Before filing each child, run `reclassify.py check-parent <issue> --base <base commit>`. On a non-zero exit, file nothing more and stop the job for a human as in step 7: post the refusal and run `assign-approvers.py assign <issue> needs_input --base <base commit>`.
 
-12. **Approval in the session:** when the maintainer approves a PR in the session ("I approve PR #N"), land it with the steward. Approvals given on GitHub keep working as before, and this step is not needed for them.
+12. **`msw-state`:** whenever the session writes a new Status line to an issue's Pipeline state artifact or updates its `<!-- mintswarm: state -->` comment, it runs `msw-state.py set <issue> <value> --base <base commit>`, with the value the tables in [msw-state](#msw-state) map the state to. It does the same when a job stops for `needs_input` (step 7) or waits on external steps (step 8), both `escalated`, and runs `msw-state.py set <issue> none --base <base commit>` when a job is dropped. It sets `queued` when it picks up an issue whose job it has not yet started, and `blocked` when that job waits on dependencies that are still open. It also runs `set` again with the current value after every `assign-approvers.py assign` on the issue (steps 7, 8 and 9) and after opening the PR (step 2): GitHub sets Todo when an issue is assigned and In review when a PR is linked, and the re-run puts the mapped status back. `msw-state.py get <issue> --base <base commit>` shows the current value and status. A job whose base commit predates `tracker.state` in `.mintswarm/config.yaml` has no settings there, so `set` would exit 2: for such a job, run `git fetch origin master` and pass `--base origin/master` instead.
+13. **Approval in the session:** when the maintainer approves a PR in the session ("I approve PR #N"), land it with the steward. Approvals given on GitHub keep working as before, and this step is not needed for them.
     1. Post the approval steer on the PR as `mintswarm-dev`, with `bot-gh.sh api repos/{owner}/{repo}/issues/<number>/comments -F body=@<file>`. The body opens with exactly these three lines, `<sha>` being the PR's head commit when they approved it, followed by the time and the maintainer's words quoted:
 
        ```
@@ -216,6 +218,92 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
 A full URL is the `https://github.com/…` URL GitHub returned for the artifact or comment (its `html_url`), never `#N` or a relative link. `<base commit>` is the job's base commit, the one plan approval reads the config at; without `--base`, `assign` reads the local `origin/master`, which the session does not fetch. `release` removes every assignment the bot made on the item, whatever its reason, and leaves those a person made.
 
 Each Bash call in the session is a fresh shell, so the scripts mint a token per call; that stays far inside the rate limits below.
+
+## msw-state
+
+Every open `mintswarm` issue the session works on carries one `msw-state` value, its coarse phase in the pipeline, so issues can be filtered by where they are. The session sets it with `msw-state.py set` (Session procedure, step 12), and the value changes only when the phase changes.
+
+`tracker.state.source` in `.mintswarm/config.yaml` chooses where the value lives:
+
+- `field`: the organisation-level single-select issue field `msw-state`, whose options are the values below, in that order. An organisation admin defines it once (it needs `admin:org`, which the bot does not have and does not get); the bot only sets values on issues. Listing the organisation's fields needs `read:org`, which the bot lacks too, so the config records the field's id (`field_id`) and `msw-state.py` sets the option by name. `field` and `field_id` are read in this mode only.
+- `labels`, where issue fields are unavailable (a personal account, or the feature off): one `msw-state:<value>` label (`tracker.state.label`), for example `msw-state:implementing`; `field` and `field_id` may be left out. Label names are compared case-insensitively, as GitHub compares them. `msw-state.py` creates a missing label and swaps the old one for the new in a single `PUT` of the issue's labels, so every issue it has touched carries exactly one; an issue it has never touched carries none, which reads as `none`.
+
+### Values
+
+| Value | When it applies |
+| --- | --- |
+| `none` | The default: the issue is not a mintswarm job, or its job was rejected, cancelled or dropped. |
+| `queued` | The issue is picked up and waits for a runner. |
+| `blocked` | The issue waits on other issues: a queued job whose dependencies are open, or a parent waiting on its children. |
+| `analysing` | The analyse stage runs, or the job's worktree is being prepared for it. |
+| `designing` | The design stage runs. |
+| `planning` | Re-classification, decomposition, filing children, the plan stage, the plan floor, the assessment or the plan-approval decision runs. |
+| `awaiting approval` | A plan, decomposition or design waits for a human's approval. |
+| `implementing` | The implement stage, its commit, the gates, their summary or the push runs. |
+| `in review` | The PR is under review: review and address rounds, and the landing floor, judge and decision. |
+| `awaiting merge` | The PR is ready and waits to be merged, or is being merged and released. |
+| `escalated` | A human is needed: a `needs_input` stop, external steps after the merge, or an escalation. |
+| `done` | The issue's work is merged and closed. |
+
+### Runner states
+
+Each fine state of the runner ([#152](https://github.com/mintswarm/mintswarm/issues/152) design, §6) maps to one value.
+
+| Runner state | msw-state |
+| --- | --- |
+| `queued`, with the blocked flag | `blocked` |
+| `queued`, without it | `queued` |
+| `preparing`, `analysing` | `analysing` |
+| `designing` | `designing` |
+| `reclassifying`, `decomposing`, `filing_children`, `planning`, `plan_floor`, `assessing`, `deciding` | `planning` |
+| `awaiting_design_approval`, `awaiting_decomposition_approval`, `awaiting_plan_approval` | `awaiting approval` |
+| `awaiting_children` | `blocked` |
+| `implementing`, `committing`, `gating`, `summarising_gates`, `pushing` | `implementing` |
+| `reviewing`, `addressing`, `landing_floor`, `landing_judging`, `landing_deciding` | `in review` |
+| `ready`, `merging`, `releasing` | `awaiting merge` |
+| `awaiting_input`, `awaiting_external_steps`, `escalated` | `escalated` |
+| `done` | `done` |
+| `rejected`, `cancelled` | `none` |
+| `paused` | the value of the state it pauses |
+
+### Pipeline states
+
+Each Status wording the session writes to the Pipeline state artifact or the `<!-- mintswarm: state -->` comment maps to one value.
+
+| Pipeline state | msw-state |
+| --- | --- |
+| Analysing | `analysing` |
+| Planning | `planning` |
+| Decomposing (re-classified as plan) | `planning` |
+| Awaiting plan approval, or awaiting approval for a decomposition or a design | `awaiting approval` |
+| Implementing | `implementing` |
+| Reviewing, round N (PR #M) | `in review` |
+| Awaiting approval, PR #N | `awaiting merge` |
+| Decomposed into #a, #b, … (tracked through its children) | `blocked` |
+| Done (merged and closed) | `done` |
+| Stopped for `needs_input` (Session procedure, step 7) | `escalated` |
+| Waiting on external steps after the merge (Session procedure, step 8) | `escalated` |
+
+### Issue status
+
+With `tracker.state.status: issue_status`, `msw-state.py set` also sets GitHub's issue status from the value, whatever the source. The status names are resolved to ids through the repository's `planningStatuses`; a repository without one of these names makes `set` exit 1 until `tracker.state.status` is `off`.
+
+| msw-state | Issue status |
+| --- | --- |
+| `none` | left alone |
+| `queued` | Todo |
+| `blocked` | Todo |
+| `analysing` | In progress |
+| `designing` | In progress |
+| `planning` | In progress |
+| `awaiting approval` | In review |
+| `implementing` | In progress |
+| `in review` | In review |
+| `awaiting merge` | In review |
+| `escalated` | In review |
+| `done` | Done |
+
+GitHub's own automations move statuses too: assigning someone sets Todo, and linking a PR sets In review. `set` therefore compares and repairs the status even when the value is already current, and the session runs it after each of its assignments and after opening the PR. An assignment made by a person is repaired only at the next `set`.
 
 ## Pitfalls
 
