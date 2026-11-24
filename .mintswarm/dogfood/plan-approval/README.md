@@ -54,7 +54,7 @@ After the plan stage returns a plan, in this order:
      --screen .mintswarm/job/outputs/screen.json
    ```
 
-   It writes `.mintswarm/job/outputs/decision.json` (version 2: the threshold, and the judgement's confidence, band, hard triggers, doubts and reason); the screen record is bound in `floor.json` and not copied into `decision.json` and exits 0 for `auto` and 1 for `human`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Both comments carry one `Package` row per declared package with its screen results. Keep stdout in a file for the comment.
+   It writes `.mintswarm/job/outputs/decision.json` (version 2: the threshold, and the judgement's confidence, band, hard triggers, doubts and reason) and exits 0 for `auto` and 1 for `human`. The screen record is bound in `floor.json` and not copied into `decision.json`. For `auto` it prints the auto-approval comment to stdout, and in `shadow` mode the shadow-record comment; otherwise stdout is empty. Both comments carry one `Package` row per declared package with its screen results. Keep stdout in a file for the comment.
 8. **Publish `decision.json` as an issue artifact** on the same issue, in every mode, for traceability.
 9. **Record the decision in the session's plan artifact**: the mode, the decision and `judged_decision`, the floor result, the band and confidence against `min_confidence`, any hard triggers, the reason, and links to the assessment and decision artifacts.
 

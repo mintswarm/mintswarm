@@ -21,9 +21,10 @@ Inputs:
 - REF given to --base, the base ref. The mode and the threshold are
   `pipeline.plan_approval.mode` and `pipeline.plan_approval.min_confidence`
   (an integer from 90 to 100, 90 when absent) of .mintswarm/config.yaml at
-  the commit it resolves to, read and validated by floor.py's own code (loaded from the
-  file next to this one, its `prepare`), so the worktree's config is never opened. NAME
-  given to --component must be a defined component.
+  the commit it resolves to, read and validated by floor.py's own code
+  (loaded from the file next to this one, its `prepare`), so the
+  worktree's config is never opened. NAME given to --component must be a
+  defined component.
 - PATH given to --plan, the plan, and the PATHs given to --issue-document
   and --analysis, the issue document and the analysis the floor read, all
   read as UTF-8; an unreadable one is unusable input.
@@ -129,7 +130,8 @@ stdout, in two cases only:
 
 - for `auto`, the auto-approval comment: it says the plan was approved
   without a human, the mode and base commit, the floor result, the
-  Package rows, the judgement rows, the assessment artifact and who judged, and how to veto;
+  Package rows, the judgement rows, the assessment artifact and who
+  judged, and how to veto;
 - in `shadow` mode, the shadow-record comment: the plan's path, sha256 and
   footprint in brief, the assess harness, model and artifact and whether
   they are as configured, the judgement rows, the floor's base, result,
