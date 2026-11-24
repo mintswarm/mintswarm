@@ -3,7 +3,8 @@
 //! The whole document is checked: every key must be known, and the sections the dogfood tools
 //! validate are checked as they check them, one check for each of theirs:
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
-//! `dependencies/new-packages.py` `review_mode` and `report-gates.py` `resolve`. A change to any
+//! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve` and
+//! `github/msw-state.py` `settings`. A change to any
 //! of those, or to the config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
@@ -345,7 +346,11 @@ fn bounded(value: &Value, path: &Path, low: u64, high: Option<u64>) -> Result<u6
 
 fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
     let tracker = mapping(value, path)?;
-    known(tracker, path, &["kind", "kinds", "components", "ingest"])?;
+    known(
+        tracker,
+        path,
+        &["kind", "kinds", "components", "state", "ingest"],
+    )?;
     if let Some(kind) = tracker.get("kind") {
         string(kind, &path.key("kind"))?;
     }
@@ -373,6 +378,9 @@ fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
             &[],
         )?;
     }
+    if let Some(state) = tracker.get("state") {
+        check_state(state, &path.key("state"))?;
+    }
     if let Some(ingest) = tracker.get("ingest") {
         let ingest_path = path.key("ingest");
         let map = mapping(ingest, &ingest_path)?;
@@ -390,6 +398,45 @@ fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// `tracker.state`, checked as `msw-state.py` `settings` checks it.
+fn check_state(value: &Value, path: &Path) -> Result<(), Error> {
+    let state = mapping(value, path)?;
+    known(
+        state,
+        path,
+        &["source", "field", "field_id", "label", "status"],
+    )?;
+    let one_of = |key: &str, allowed: [&str; 2]| match state.get(key) {
+        Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(value.as_str()),
+        other => Err(Error::schema(
+            &path.key(key),
+            format!(
+                "must be {} or {}, not {}",
+                allowed[0],
+                allowed[1],
+                other.unwrap_or(&Value::Null)
+            ),
+        )),
+    };
+    if one_of("source", ["field", "labels"])? == "field" {
+        match state.get("field") {
+            Some(Value::String(field)) if !field.is_empty() => {}
+            _ => return Err(Error::schema(&path.key("field"), "must be a field name")),
+        }
+        match state.get("field_id") {
+            Some(value) => bounded(value, &path.key("field_id"), 1, None).map(drop)?,
+            None => return Err(Error::schema(&path.key("field_id"), "is missing")),
+        }
+    }
+    match state.get("label") {
+        Some(Value::String(label)) if label.matches("{value}").count() == 1 => {}
+        _ => {
+            return Err(Error::schema(&path.key("label"), "must hold {value} once"));
+        }
+    }
+    one_of("status", ["issue_status", "off"]).map(drop)
 }
 
 /// The component names, after checking each component as `validate_config` does.

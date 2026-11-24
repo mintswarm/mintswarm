@@ -422,6 +422,64 @@ fn gates_summary_values() {
     assert_eq!(error.path(), "gates.summary", "{error}");
 }
 
+/// `tracker.state` as `msw-state.py` `settings` checks it, from the block `master` adds.
+#[test]
+fn tracker_state_values() {
+    let base = || {
+        json!({
+            "source": "field",
+            "field": "msw-state",
+            "field_id": 50325307,
+            "label": "msw-state:{value}",
+            "status": "issue_status",
+        })
+    };
+    let state = |change: &dyn Fn(&mut Value)| {
+        let mut state = base();
+        change(&mut state);
+        load_repo_config(&variant(|c| set(c, "/tracker", "state", state)))
+    };
+    state(&|_| {}).expect("the field block loads");
+    state(&|s| {
+        s["source"] = json!("labels");
+        s["status"] = json!("off");
+        let map = s.as_object_mut().expect("a mapping");
+        map.remove("field");
+        map.remove("field_id");
+    })
+    .expect("labels mode needs neither field nor field_id");
+    let rejected: [(&str, &str, Option<Value>); 11] = [
+        ("source", "source", Some(json!("project"))),
+        ("source", "source", None),
+        ("field", "field", Some(json!(""))),
+        ("field", "field", None),
+        ("field_id", "field_id", Some(json!(0))),
+        ("field_id", "field_id", Some(json!(true))),
+        ("field_id", "field_id", Some(json!("50325307"))),
+        ("field_id", "field_id", None),
+        ("label", "label", Some(json!("msw-state"))),
+        ("label", "label", Some(json!("{value}:{value}"))),
+        ("status", "status", Some(json!("on"))),
+    ];
+    for (key, path, value) in rejected {
+        let error = state(&|s| match &value {
+            Some(value) => s[key] = value.clone(),
+            None => drop(s.as_object_mut().expect("a mapping").remove(key)),
+        })
+        .expect_err("rejected");
+        assert_eq!(
+            error.path(),
+            format!("tracker.state.{path}"),
+            "{key} {value:?}: {error}"
+        );
+    }
+    let error = state(&|s| s["colour"] = json!("ededed")).expect_err("unknown key");
+    assert_eq!(error.path(), "tracker.state.colour", "{error}");
+    let error = load_repo_config(&variant(|c| set(c, "/tracker", "state", json!("field"))))
+        .expect_err("not a mapping");
+    assert_eq!(error.path(), "tracker.state", "{error}");
+}
+
 /// A config with `summary: on`, which yq reads as the string "on" (YAML 1.2), not a bool.
 const SUMMARY_ON: &str = "components: {}\npipeline:\n  plan_approval:\n    mode: never\n    limits: {files: 1, lines: 1, new_files: 1, new_dependencies: 0}\n  landing:\n    mode: never\n    footprint: {lines_factor: 1}\ngates:\n  summary: on\n";
 
@@ -444,7 +502,12 @@ fn max_rounds_values() {
         );
     }
     let config = load_repo_config(&variant(|_| {})).expect("the real config loads");
-    assert_eq!(config.review_max_rounds(), Some(3));
+    let recorded = real()["pipeline"]["review"]["max_rounds"].as_u64();
+    assert!(
+        recorded.is_some(),
+        "the snapshot sets pipeline.review.max_rounds"
+    );
+    assert_eq!(config.review_max_rounds(), recorded);
 }
 
 #[test]
