@@ -8,7 +8,7 @@ use std::task::{Context, Poll, Waker};
 use mintswarm_domain::cost::{CostModel, NoCostModel};
 use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldRead, FieldRef,
-    FieldValue, OptionSpec, SourceSpec, read_labels,
+    FieldValue, LabelPattern, OptionSpec, SourceSpec, read_labels,
 };
 use mintswarm_domain::ids::{AccountName, IssueNumber, PrNumber};
 use mintswarm_domain::scale::{Scale, Size};
@@ -188,6 +188,33 @@ fn read_labels_maps_two_matches_to_labels_conflict_for_any_role() {
         read_labels("effort:{option}", &["effort:"]),
         FieldRead::Unset
     );
+
+    // The text around the option compares case-insensitively, as on the GitHub edge, so a
+    // mixed-case pair is a conflict, not one value.
+    let mixed = read_labels("effort:{option}", &["effort:S", "Effort:L"]);
+    assert!(
+        matches!(&mixed, FieldRead::Conflict(values)
+            if values.iter().map(|value| value.name.as_str()).eq(["S", "L"])),
+        "{mixed:?}"
+    );
+    assert_eq!(mixed.finding(), Some(FieldFinding::LabelsConflict));
+}
+
+#[test]
+fn label_pattern_is_the_one_labels_matcher() {
+    let pattern = LabelPattern::new("effort:{option}").unwrap();
+    assert_eq!(pattern.option_of("effort:S"), Some("S"));
+    assert_eq!(pattern.option_of("EFFORT:xl"), Some("xl"));
+    assert_eq!(pattern.option_of("effort:"), None);
+    assert_eq!(pattern.option_of("priority:S"), None);
+    assert_eq!(pattern.label("M"), "effort:M");
+
+    let pattern = LabelPattern::new("[{option}] size").unwrap();
+    assert_eq!(pattern.option_of("[M] Size"), Some("M"));
+    assert_eq!(pattern.option_of("[M] size!"), None);
+
+    assert_eq!(LabelPattern::new("effort"), None);
+    assert_eq!(LabelPattern::new("{option}:{option}"), None);
 }
 
 #[test]

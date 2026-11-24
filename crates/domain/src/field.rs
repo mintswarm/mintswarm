@@ -187,7 +187,7 @@ impl<S: Scale> FieldMap<S> {
         let source = match spec.source {
             SourceSpec::Field { name } => FieldSource::Field { name },
             SourceSpec::Labels { label } => {
-                if label_parts(&label).is_none() {
+                if LabelPattern::new(&label).is_none() {
                     return Err(FieldMapError::LabelPattern { label });
                 }
                 FieldSource::Labels { label }
@@ -352,31 +352,60 @@ impl FieldRead {
 /// The placeholder a labels-mode pattern holds once, for the option's name.
 pub const OPTION: &str = "{option}";
 
-/// The text before and after `{option}` in `pattern`, or `None` unless it holds it exactly once.
-fn label_parts(pattern: &str) -> Option<(&str, &str)> {
-    let (prefix, suffix) = pattern.split_once(OPTION)?;
-    (!suffix.contains(OPTION)).then_some((prefix, suffix))
+/// A labels-mode pattern split at its one `{option}` placeholder: the one matcher for R3, used
+/// by the domain's [`read_labels`] and by the tracker edge alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelPattern<'a> {
+    prefix: &'a str,
+    suffix: &'a str,
+}
+
+impl<'a> LabelPattern<'a> {
+    /// The pattern's parts, or `None` unless `pattern` holds `{option}` exactly once.
+    pub fn new(pattern: &'a str) -> Option<Self> {
+        let (prefix, suffix) = pattern.split_once(OPTION)?;
+        (!suffix.contains(OPTION)).then_some(Self { prefix, suffix })
+    }
+
+    /// The label that names `option` under this pattern.
+    pub fn label(&self, option: &str) -> String {
+        format!("{}{option}{}", self.prefix, self.suffix)
+    }
+
+    /// The option `label` names under this pattern, or `None` when it does not match.
+    ///
+    /// The text around the option is compared ASCII case-insensitively, as GitHub compares label
+    /// names, so `Effort:M` matches `effort:{option}`. The option itself is returned as written
+    /// and must not be empty.
+    pub fn option_of<'l>(&self, label: &'l str) -> Option<&'l str> {
+        let rest = label.len().checked_sub(self.suffix.len())?;
+        let head = label.get(..self.prefix.len())?;
+        let tail = label.get(rest..)?;
+        let option = label.get(self.prefix.len()..rest)?;
+        (head.eq_ignore_ascii_case(self.prefix)
+            && tail.eq_ignore_ascii_case(self.suffix)
+            && !option.is_empty())
+        .then_some(option)
+    }
 }
 
 /// Read a role's value from an issue's labels in labels mode, R3, for any role.
 ///
-/// A label matches when it is `pattern` with `{option}` replaced by a non-empty option name.
-/// No match reads as [`FieldRead::Unset`], one as [`FieldRead::Value`] naming the option, and
-/// two or more as [`FieldRead::Conflict`], whose [`finding`](FieldRead::finding) is
-/// `LabelsConflict`. A pattern without exactly one `{option}` matches nothing.
+/// A label matches when [`LabelPattern::option_of`] finds an option in it. No match reads as
+/// [`FieldRead::Unset`], one as [`FieldRead::Value`] naming the option, and two or more as
+/// [`FieldRead::Conflict`], whose [`finding`](FieldRead::finding) is `LabelsConflict`. A pattern
+/// without exactly one `{option}` matches nothing.
 pub fn read_labels(pattern: &str, labels: &[&str]) -> FieldRead {
-    let Some((prefix, suffix)) = label_parts(pattern) else {
+    let Some(pattern) = LabelPattern::new(pattern) else {
         return FieldRead::Unset;
     };
     let mut values: Vec<FieldValue> = labels
         .iter()
-        .filter_map(|label| {
-            let name = label.strip_prefix(prefix)?.strip_suffix(suffix)?;
-            (!name.is_empty()).then(|| FieldValue {
-                field_id: None,
-                option_id: None,
-                name: name.to_owned(),
-            })
+        .filter_map(|label| pattern.option_of(label))
+        .map(|name| FieldValue {
+            field_id: None,
+            option_id: None,
+            name: name.to_owned(),
         })
         .collect();
     match values.len() {

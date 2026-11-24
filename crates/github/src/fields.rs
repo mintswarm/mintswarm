@@ -161,7 +161,7 @@ impl FieldPass<'_> {
                 resolve_values(&entries, name, field_id, &field.options, &endpoint)
             }
             FieldSource::Labels { label } => {
-                let pattern = Pattern::checked(label)?;
+                let pattern = checked_pattern(label)?;
                 let labels = self.labels(issue.0).await?;
                 resolve_labels(&labels, &pattern, &field.options)
             }
@@ -196,7 +196,7 @@ impl FieldPass<'_> {
                     .await?;
             }
             FieldSource::Labels { label } => {
-                let pattern = Pattern::checked(label)?;
+                let pattern = checked_pattern(label)?;
                 self.write_labels(issue.0, &pattern, option).await?;
             }
         }
@@ -474,45 +474,15 @@ fn resolve_labels(
     }
 }
 
-/// The placeholder for the option's name in a label pattern.
-pub(crate) const OPTION: &str = "{option}";
+/// The domain's labels-mode matcher, shared so the edge and [`read_labels`] agree on R3.
+///
+/// [`read_labels`]: mintswarm_domain::field::read_labels
+pub(crate) use mintswarm_domain::field::LabelPattern as Pattern;
 
-/// A label pattern split at its `{option}` placeholder.
-#[derive(Debug)]
-pub(crate) struct Pattern<'a> {
-    prefix: &'a str,
-    suffix: &'a str,
-}
-
-impl<'a> Pattern<'a> {
-    /// The pattern's parts; `None` when it has no `{option}`, so it matches no label.
-    pub(crate) fn new(pattern: &'a str) -> Option<Self> {
-        let (prefix, suffix) = pattern.split_once(OPTION)?;
-        Some(Self { prefix, suffix })
-    }
-
-    /// The pattern's parts, or `field_missing` when it has no `{option}`: such a pattern names
-    /// no option, so the role maps no field.
-    pub(crate) fn checked(pattern: &'a str) -> Result<Self, FieldError> {
-        Self::new(pattern).ok_or(FieldError::Field(FieldFinding::FieldMissing))
-    }
-
-    /// The label that names `option` under this pattern.
-    pub(crate) fn label(&self, option: &str) -> String {
-        format!("{}{option}{}", self.prefix, self.suffix)
-    }
-
-    /// The option `label` names under this pattern, compared case-insensitively.
-    pub(crate) fn option_of<'l>(&self, label: &'l str) -> Option<&'l str> {
-        let rest = label.len().checked_sub(self.suffix.len())?;
-        let head = label.get(..self.prefix.len())?;
-        let tail = label.get(rest..)?;
-        let option = label.get(self.prefix.len()..rest)?;
-        (head.eq_ignore_ascii_case(self.prefix)
-            && tail.eq_ignore_ascii_case(self.suffix)
-            && !option.is_empty())
-        .then_some(option)
-    }
+/// The pattern's parts, or `field_missing` when it does not hold `{option}` exactly once: such a
+/// pattern names no option, so the role maps no field.
+pub(crate) fn checked_pattern(pattern: &str) -> Result<Pattern<'_>, FieldError> {
+    Pattern::new(pattern).ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
 /// Whether a request read or wrote, for [`classify`].
@@ -577,7 +547,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::{EtagCache, Op, Pattern, Resource, classify, path_segment};
+    use super::{EtagCache, Op, Pattern, Resource, checked_pattern, classify, path_segment};
     use crate::rest::Reply;
 
     fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
@@ -717,11 +687,11 @@ mod tests {
 
         assert!(Pattern::new("effort").is_none());
         assert_eq!(
-            Pattern::checked("effort").unwrap_err(),
+            checked_pattern("effort").unwrap_err(),
             FieldError::Field(FieldFinding::FieldMissing)
         );
         assert_eq!(
-            Pattern::checked("[{option}] size").unwrap().label("M"),
+            checked_pattern("[{option}] size").unwrap().label("M"),
             "[M] size"
         );
     }

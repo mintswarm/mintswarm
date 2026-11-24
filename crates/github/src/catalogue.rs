@@ -9,7 +9,7 @@ use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRef, FieldSource, FieldValue,
 };
 
-use crate::fields::{Op, Pattern, classify};
+use crate::fields::{Op, checked_pattern, classify};
 use crate::rest::{ClientError, Reply, Rest, check_names};
 use crate::secret::Token;
 
@@ -95,7 +95,7 @@ impl GitHubFieldCatalogue {
     }
 
     async fn label_options(&self, pattern: &str) -> Result<Vec<FieldValue>, FieldError> {
-        let pattern = Pattern::checked(pattern)?;
+        let pattern = checked_pattern(pattern)?;
         let mut options = Vec::new();
         for page in 1..=MAX_PAGES {
             let path = format!(
