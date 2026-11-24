@@ -9,11 +9,12 @@ Dogfooding stand-in for the control plane's plan-approval decision, which
 combines the two layers of plan approval in code: the deterministic floor
 (floor.py) and the judgement of the assess stage. Paths are relative to the
 working directory, which is the worktree root. Every argument but --screen
-is required; each is given at most once, as `--name value`; anything else, an empty value or a value that
-is an argument name is unusable input. N is a positive decimal integer, the
-issue's number, and REF given to --base must not start with `-`. The first
-action is to delete any stale .mintswarm/job/outputs/decision.json; when
-that fails, the input is unusable.
+is required; each is given at most once, as `--name value`; anything else,
+an empty value or a value that is an argument name is unusable input. N is a
+positive decimal integer, the issue's number, and REF given to --base must
+not start with `-`. The first action is to delete any stale
+.mintswarm/job/outputs/decision.json; when that fails, the input is
+unusable.
 
 Inputs:
 
@@ -49,21 +50,21 @@ history makes every run exit 2.
 
 The floor layer is usable only if the verdict is strict JSON (no duplicate
 keys, NaN or Infinity) and all of these hold: its keys are floor.py's, in
-order; `tool` is `mintswarm-plan-floor` and `version` is 3; `plan.sha256`
-is the sha256 of the plan's bytes; `issue_document.sha256` and
+order; `tool` is `mintswarm-plan-floor` and `version` is 3; `plan.sha256` is
+the sha256 of the plan's bytes; `issue_document.sha256` and
 `analysis.sha256` are those of the documents given here, so a verdict made
 without them or with other ones does not count; `screen` is null when
---screen is not given and otherwise has the sha256 of the record given, so
-a verdict made with another record, or with or without one when this run
-differs, does not count; `base.commit` is the
-resolved base; `component` is NAME; `mode` is the base config's mode; every
-rule is {`rule`, `result`, `reasons`} with `result` `hit` or `clean` and
-string reasons exactly when it is a hit; `rules` holds floor.py's rule
-identifiers in order, and `not_evaluated` is empty, or exactly the rules
-that read the footprint (floor.FOOTPRINT_RULES) after a `footprint` hit;
-`verdict` agrees with the rules; and `rules` and `not_evaluated` equal what
-floor.py's own conclude gives for the plan, the documents, the screen
-record, the history and the validated base config, recomputed here, so an edited verdict that is
+--screen is not given and otherwise has the sha256 of the record given, so a
+verdict made with another record, or with or without one when this run
+differs, does not count; `base.commit` is the resolved base; `component` is
+NAME; `mode` is the base config's mode; every rule is {`rule`, `result`,
+`reasons`} with `result` `hit` or `clean` and string reasons exactly when it
+is a hit; `rules` holds floor.py's rule identifiers in order, and
+`not_evaluated` is empty, or exactly the rules that read the footprint
+(floor.FOOTPRINT_RULES) after a `footprint` hit; `verdict` agrees with the
+rules; and `rules` and `not_evaluated` equal what floor.py's own conclude
+gives for the plan, the documents, the screen record, the history and the
+validated base config, recomputed here, so an edited verdict that is
 consistent in itself still does not count. A usable verdict is therefore
 clean only when all of floor.py's rules ran and are clean.
 
@@ -122,9 +123,9 @@ unchanged) and `not_evaluated`. `layers.judgement` holds `status`,
 `band` (the identifier), `hard_triggers`, `doubts` and `reasons`. A field that cannot be filled, including the content of an
 unusable layer, is null, or [] for a list.
 
-One status line goes to stderr, with the band and confidence or
-`unusable`. After the record is written, the issue
-comment the session posts goes to stdout, in two cases only:
+One status line goes to stderr, with the band and confidence or `unusable`.
+After the record is written, the issue comment the session posts goes to
+stdout, in two cases only:
 
 - for `auto`, the auto-approval comment: it says the plan was approved
   without a human, the mode and base commit, the floor result, the
@@ -152,23 +153,24 @@ record is not usable (as floor.py's parse_screen reads it) or that the
 package is not in it. The record is not part of decision.json.
 
 Model and session text in either, the screen record's and the footprint's
-package text among it, is flattened to one line, stripped of
-control and format characters, its backticks replaced, cut to 200
-characters and set in a code span; layer problems are this script's fixed
-strings. Nothing else is ever printed to stdout.
+package text among it, is flattened to one line, stripped of control and
+format characters, its backticks replaced, cut to 200 characters and set in
+a code span; layer problems are this script's fixed strings. Nothing else is
+ever printed to stdout.
 
 Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
-record unless a stale one could not be deleted: bad arguments, an unresolvable base ref, a partial
-clone, a failed fetch into the object store (a forged or missing object, a shallow history), no config at it, an invalid
-config, an unknown component, an unreadable plan, issue document,
-analysis or screen record, git or yq missing or failing (reading the history too), a record that cannot be deleted or written, or any unexpected
-error. A missing or unusable verdict or assessment is not unusable input: it
-gives a record with that layer unusable. The interpreter itself exits 1 when
-it crashes outside main(), so exit 0 counts only together with a record
-whose `decision` is `auto`; exit 2 never comes with a valid record, and exit
-2 or no record counts as `human`. Standard
-library only, apart from running git and yq through floor.py.
-"""
+record unless a stale one could not be deleted: bad arguments, an
+unresolvable base ref, a partial clone, a failed fetch into the object store
+(a forged or missing object, a shallow history), no config at it, an invalid
+config, an unknown component, an unreadable plan, issue document, analysis
+or screen record, git or yq missing or failing (reading the history too), a
+record that cannot be deleted or written, or any unexpected error. A missing
+or unusable verdict or assessment is not unusable input: it gives a record
+with that layer unusable. The interpreter itself exits 1 when it crashes
+outside main(), so exit 0 counts only together with a record whose
+`decision` is `auto`; exit 2 never comes with a valid record, and exit 2 or
+no record counts as `human`. Standard library only, apart from running git
+and yq through floor.py."""
 
 import hashlib
 import importlib.util

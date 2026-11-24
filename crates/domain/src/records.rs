@@ -176,6 +176,7 @@ pub struct FloorRecord {
     pub plan: Bound,
     pub issue_document: Option<Bound>,
     pub analysis: Option<Bound>,
+    pub screen: Option<Bound>,
     pub component: String,
     pub base: BaseRef,
     pub config: String,
@@ -187,7 +188,7 @@ pub struct FloorRecord {
 
 impl FloorRecord {
     pub const TOOL: &'static str = "mintswarm-plan-floor";
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 }
 
 /// Whether an approval goes ahead on its own or waits for a human.

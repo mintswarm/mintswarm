@@ -45,7 +45,7 @@ SELFTESTS = (
 )
 TOOLS = ("floor.py", "decision.py", "keep-round.py", "collect-facts.py")
 RECORDS = {
-    ("mintswarm-plan-floor", 2),
+    ("mintswarm-plan-floor", 3),
     ("mintswarm-approval-decision", 2),
     ("mintswarm-keep-round", 2),
     ("mintswarm-landing-facts", 3),

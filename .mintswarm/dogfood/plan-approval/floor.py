@@ -9,12 +9,12 @@ deterministic rules that run on a plan before the approval decision. Every
 hit sends the plan to a human; a clean verdict only means that no rule
 written here objects. Paths are relative to the working directory, which is
 the worktree root. --plan, --component and --base are required, and
---issue-document, --analysis and --screen optional; each is given at most once, as
-`--name value`. Anything else, an empty value, a value that is an argument
-name or a REF starting with `-` is unusable input. A document that is not
-given is a hit of each rule that reads it. The first action is to delete any
-stale .mintswarm/job/outputs/floor.json; when that fails, the input is
-unusable.
+--issue-document, --analysis and --screen optional; each is given at most
+once, as `--name value`. Anything else, an empty value, a value that is an
+argument name or a REF starting with `-` is unusable input. A document that
+is not given is a hit of each rule that reads it. The first action is to
+delete any stale .mintswarm/job/outputs/floor.json; when that fails, the
+input is unusable.
 
 Inputs:
 
@@ -85,24 +85,24 @@ least as long. A section starts at a `## <title>` line (trailing whitespace
 ignored) and runs to the next `## ` or `# ` heading. A section a rule reads
 that is missing or appears more than once is a hit of that rule.
 
-The configuration is validated; any failure is unusable input:
-`components` maps names to mappings whose optional `paths` is a list of
-globs; `shared` is absent or a list of globs; `pipeline.plan_approval` has
-`mode` (`always`, `shadow`, `judged` or `never`), `limits` with exactly the
-non-negative integers `files`, `lines` and `new_files`,
-optionally `require_human`, with optional lists `components` (each
-defined) and `paths` (globs), and optionally `min_confidence`, an integer
-(not a boolean) from 90 to 100, the auto-approval confidence the decision
-requires under `judged`, 90 when absent, optionally `non_production`, a list
-of globs matching the paths whose lines are not production lines (when
-absent: `**/tests/**`, `**/*selftest*`, `**/test_*.py`, `**/*_test.*`,
-`**/*.test.*`, `**/*.spec.*`, `**/fixtures/**`, `**/Cargo.lock` and
-`**/pnpm-lock.yaml`), and optionally `limits_by_component`, mapping defined
-components to mappings with some of the keys of `limits`, each a
-non-negative integer (not a boolean), which replace the flat `limits` value
-key by key for that component; `gates.tests` is absent or a string;
-`gates.run` is absent or a list of mappings with a `command` string that
-shlex can split. NAME must be a defined component.
+The configuration is validated; any failure is unusable input: `components`
+maps names to mappings whose optional `paths` is a list of globs; `shared`
+is absent or a list of globs; `pipeline.plan_approval` has `mode` (`always`,
+`shadow`, `judged` or `never`), `limits` with exactly the non-negative
+integers `files`, `lines` and `new_files`, optionally `require_human`, with
+optional lists `components` (each defined) and `paths` (globs), and
+optionally `min_confidence`, an integer (not a boolean) from 90 to 100, the
+auto-approval confidence the decision requires under `judged`, 90 when
+absent, optionally `non_production`, a list of globs matching the paths
+whose lines are not production lines (when absent: `**/tests/**`,
+`**/*selftest*`, `**/test_*.py`, `**/*_test.*`, `**/*.test.*`,
+`**/*.spec.*`, `**/fixtures/**`, `**/Cargo.lock` and `**/pnpm-lock.yaml`),
+and optionally `limits_by_component`, mapping defined components to mappings
+with some of the keys of `limits`, each a non-negative integer (not a
+boolean), which replace the flat `limits` value key by key for that
+component; `gates.tests` is absent or a string; `gates.run` is absent or a
+list of mappings with a `command` string that shlex can split. NAME must be
+a defined component.
 
 A glob matches the whole path: `**` matches anything including `/`, `**/`
 zero or more directories, `*` anything within one segment, `?` one
@@ -192,20 +192,21 @@ limits_by_component applied, a reason naming the override when it decides
 the limit.
 
 A usable screen record is strict JSON, an object whose `tool` is
-`dependency-screen`, `version` the integer 1, `mode` `plan` and `packages`
-a list of objects, each with string `name`, `manifest` and `reason`,
-`status` `screened` or `unscreened`, and `disqualifiers` a list of unique
-values out of `advisory`, `yanked`, `deprecated` and `typosquat`; other
-keys are read by nobody here. With no new_dependencies, no --screen and a
-record with no packages are both clean.
+`dependency-screen`, `version` the integer 1, `mode` `plan` and `packages` a
+list of objects, each with string `name`, `manifest` and `reason`, `status`
+`screened` or `unscreened`, and `disqualifiers` a list of unique values out
+of `advisory`, `yanked`, `deprecated` and `typosquat`; other keys are read
+by nobody here. With no new_dependencies, no --screen and a record with no
+packages are both clean.
 
 Issue criteria are the column-0 items of `## Acceptance criteria` marked
 `N.`, `N)`, `-`, `*` or `+`, with an optional `[ ]` or `[x]` after the
-marker; following non-blank lines that are not items belong to the item,
-and so do indented lines after a blank line, its later paragraphs; a line
-at column 0 after a blank line that is not an item ends it. Table rows are split on `|` not preceded by `\\`,
-and `\\|` then reads as `|`. Question and criterion text, and the screen
-record's text, in reasons is put on one line and cut to 200 characters.
+marker; following non-blank lines that are not items belong to the item, and
+so do indented lines after a blank line, its later paragraphs; a line at
+column 0 after a blank line that is not an item ends it. Table rows are
+split on `|` not preceded by `\\`, and `\\|` then reads as `|`. Question and
+criterion text, and the screen record's text, in reasons is put on one line
+and cut to 200 characters.
 
 When `footprint` is a hit, the rules from require-human-paths to
 overridden-assumptions, which read the footprint, are not evaluated; the
@@ -215,26 +216,25 @@ The verdict is .mintswarm/job/outputs/floor.json, written to a temporary
 file and renamed onto it, with these keys in this order: `tool`
 (`mintswarm-plan-floor`), `version` (3), `plan` ({`path`, `sha256` of its
 bytes}), `issue_document`, `analysis` and `screen` (each {`path`, `sha256`
-of its bytes}, or null when not given), `component`, `base` ({`ref` as given,
-`commit`, the full hash}), `config` (`.mintswarm/config.yaml`), `mode` (as
-read), `verdict` (`hit` or `clean`), `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in
-the order above, `reasons` empty when clean) and `not_evaluated` (the
-identifiers skipped, in order). One line per evaluated rule is printed, then
-`floor: hit` or `floor: clean`.
+of its bytes}, or null when not given), `component`, `base` ({`ref` as
+given, `commit`, the full hash}), `config` (`.mintswarm/config.yaml`),
+`mode` (as read), `verdict` (`hit` or `clean`), `rules` (one {`rule`,
+`result`, `reasons`} per evaluated rule, in the order above, `reasons` empty
+when clean) and `not_evaluated` (the identifiers skipped, in order). One
+line per evaluated rule is printed, then `floor: hit` or `floor: clean`.
 
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
-unresolvable base ref, a partial clone, a failed fetch into the object
-store (a forged or missing object, a shallow history), no config at the
-base, an invalid config, an unreadable or non-UTF-8 plan, issue
-document, analysis or screen record, git or yq missing or
-failing (reading the history too), a stale verdict that cannot be deleted,
-or any unexpected error. Unusable input leaves no verdict file, unless a
-stale one could not be deleted. The interpreter itself exits 1 when it
-crashes outside main(), for example at import time, so exit 0 or 1 counts
-only together with a verdict file whose `plan.sha256`, `base.commit` and
-document bindings match the request; exit 2 never comes with a valid verdict. Standard library
-only, apart from running git and yq.
-"""
+unresolvable base ref, a partial clone, a failed fetch into the object store
+(a forged or missing object, a shallow history), no config at the base, an
+invalid config, an unreadable or non-UTF-8 plan, issue document, analysis or
+screen record, git or yq missing or failing (reading the history too), a
+stale verdict that cannot be deleted, or any unexpected error. Unusable
+input leaves no verdict file, unless a stale one could not be deleted. The
+interpreter itself exits 1 when it crashes outside main(), for example at
+import time, so exit 0 or 1 counts only together with a verdict file whose
+`plan.sha256`, `base.commit` and document bindings match the request; exit 2
+never comes with a valid verdict. Standard library only, apart from running
+git and yq."""
 
 import contextlib
 import hashlib
