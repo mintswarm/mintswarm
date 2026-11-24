@@ -1,6 +1,10 @@
 //! Reads and writes of a role's field on GitHub issues, design §4.3 and §4.6: organisation
 //! issue fields by id, or one label per option.
 //!
+//! A field is configured by name only; the caller resolves its id (for example with
+//! [`GitHubFieldCatalogue::field_id`](crate::GitHubFieldCatalogue::field_id)) and passes it to
+//! each read and write, and resolves it again when an error calls for it.
+//!
 //! A [`FieldClient`] is bound to one repository and keeps an ETag cache across passes. A
 //! [`FieldPass`] is one pass over issues with one token: every role of an issue is read from one
 //! response per resource, and the next pass revalidates it with `If-None-Match`. Field-class
@@ -138,6 +142,8 @@ pub struct FieldPass<'a> {
 impl FieldPass<'_> {
     /// The value of the role's field on `issue`.
     ///
+    /// `field_id` is the id the caller resolved from the field's name; labels mode ignores it,
+    /// and a field-mode read without one is `field_missing`, before any request.
     /// A field-mode value whose field has the mapped name but another id is
     /// `field_recreated`; [`FieldError::should_resolve_again`] tells the caller to resolve the
     /// id again by name.
@@ -145,15 +151,17 @@ impl FieldPass<'_> {
         &self,
         issue: IssueNumber,
         field: &FieldRef,
+        field_id: Option<u64>,
     ) -> Result<FieldRead, FieldError> {
         match &field.source {
-            FieldSource::Field { name, field_id } => {
+            FieldSource::Field { name } => {
+                let field_id = resolved(field_id)?;
                 let entries = self.fetch(issue.0, Resource::FieldValues).await?;
                 let endpoint = format!("GET {}", self.client.path(issue.0, Resource::FieldValues));
-                resolve_values(&entries, name, *field_id, &field.options, &endpoint)
+                resolve_values(&entries, name, field_id, &field.options, &endpoint)
             }
             FieldSource::Labels { label } => {
-                let pattern = Pattern::checked(label)?;
+                let pattern = checked_pattern(label)?;
                 let labels = self.labels(issue.0).await?;
                 resolve_labels(&labels, &pattern, &field.options)
             }
@@ -162,6 +170,8 @@ impl FieldPass<'_> {
 
     /// Sets the role's field on `issue` to the option `option`, or clears it for `None`.
     ///
+    /// `field_id` is the id the caller resolved from the field's name, as for
+    /// [`read_field`](Self::read_field).
     /// An option the map does not list is refused with `option_unmapped` before any request,
     /// as is a label pattern without `{option}` with `field_missing`.
     /// A write GitHub refuses, or answers with another value, is `write_rejected`, and one whose
@@ -171,6 +181,7 @@ impl FieldPass<'_> {
         &self,
         issue: IssueNumber,
         field: &FieldRef,
+        field_id: Option<u64>,
         option: Option<&str>,
     ) -> Result<(), FieldError> {
         if let Some(name) = option {
@@ -179,12 +190,13 @@ impl FieldPass<'_> {
             }
         }
         match &field.source {
-            FieldSource::Field { name, field_id } => {
-                self.write_value(issue.0, name, *field_id, &field.options, option)
+            FieldSource::Field { name } => {
+                let field_id = resolved(field_id)?;
+                self.write_value(issue.0, name, field_id, &field.options, option)
                     .await?;
             }
             FieldSource::Labels { label } => {
-                let pattern = Pattern::checked(label)?;
+                let pattern = checked_pattern(label)?;
                 self.write_labels(issue.0, &pattern, option).await?;
             }
         }
@@ -356,6 +368,12 @@ impl FieldPass<'_> {
     }
 }
 
+/// The resolved id of a field-mode role, or `field_missing` when the caller has none, so it
+/// resolves the id by the field's name ([`FieldError::should_resolve_again`]).
+fn resolved(field_id: Option<u64>) -> Result<u64, FieldError> {
+    field_id.ok_or(FieldError::Field(FieldFinding::FieldMissing))
+}
+
 /// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.
 fn path_segment(text: &str) -> String {
     let mut encoded = String::with_capacity(text.len());
@@ -456,45 +474,15 @@ fn resolve_labels(
     }
 }
 
-/// The placeholder for the option's name in a label pattern.
-pub(crate) const OPTION: &str = "{option}";
+/// The domain's labels-mode matcher, shared so the edge and [`read_labels`] agree on R3.
+///
+/// [`read_labels`]: mintswarm_domain::field::read_labels
+pub(crate) use mintswarm_domain::field::LabelPattern as Pattern;
 
-/// A label pattern split at its `{option}` placeholder.
-#[derive(Debug)]
-pub(crate) struct Pattern<'a> {
-    prefix: &'a str,
-    suffix: &'a str,
-}
-
-impl<'a> Pattern<'a> {
-    /// The pattern's parts; `None` when it has no `{option}`, so it matches no label.
-    pub(crate) fn new(pattern: &'a str) -> Option<Self> {
-        let (prefix, suffix) = pattern.split_once(OPTION)?;
-        Some(Self { prefix, suffix })
-    }
-
-    /// The pattern's parts, or `field_missing` when it has no `{option}`: such a pattern names
-    /// no option, so the role maps no field.
-    pub(crate) fn checked(pattern: &'a str) -> Result<Self, FieldError> {
-        Self::new(pattern).ok_or(FieldError::Field(FieldFinding::FieldMissing))
-    }
-
-    /// The label that names `option` under this pattern.
-    pub(crate) fn label(&self, option: &str) -> String {
-        format!("{}{option}{}", self.prefix, self.suffix)
-    }
-
-    /// The option `label` names under this pattern, compared case-insensitively.
-    pub(crate) fn option_of<'l>(&self, label: &'l str) -> Option<&'l str> {
-        let rest = label.len().checked_sub(self.suffix.len())?;
-        let head = label.get(..self.prefix.len())?;
-        let tail = label.get(rest..)?;
-        let option = label.get(self.prefix.len()..rest)?;
-        (head.eq_ignore_ascii_case(self.prefix)
-            && tail.eq_ignore_ascii_case(self.suffix)
-            && !option.is_empty())
-        .then_some(option)
-    }
+/// The pattern's parts, or `field_missing` when it does not hold `{option}` exactly once: such a
+/// pattern names no option, so the role maps no field.
+pub(crate) fn checked_pattern(pattern: &str) -> Result<Pattern<'_>, FieldError> {
+    Pattern::new(pattern).ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
 /// Whether a request read or wrote, for [`classify`].
@@ -559,7 +547,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::{EtagCache, Op, Pattern, Resource, classify, path_segment};
+    use super::{EtagCache, Op, Pattern, Resource, checked_pattern, classify, path_segment};
     use crate::rest::Reply;
 
     fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
@@ -699,11 +687,11 @@ mod tests {
 
         assert!(Pattern::new("effort").is_none());
         assert_eq!(
-            Pattern::checked("effort").unwrap_err(),
+            checked_pattern("effort").unwrap_err(),
             FieldError::Field(FieldFinding::FieldMissing)
         );
         assert_eq!(
-            Pattern::checked("[{option}] size").unwrap().label("M"),
+            checked_pattern("[{option}] size").unwrap().label("M"),
             "[M] size"
         );
     }

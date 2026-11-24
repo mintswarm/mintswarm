@@ -9,6 +9,7 @@ pub mod plane;
 pub mod priority;
 pub mod question;
 pub mod records;
+pub mod role;
 pub mod scale;
 pub mod tracker;
 pub mod vcs;

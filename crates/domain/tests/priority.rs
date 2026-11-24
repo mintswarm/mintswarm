@@ -24,7 +24,6 @@ fn priority_map(options: Vec<OptionSpec>) -> FieldMap<Priority> {
     FieldMap::new(FieldMapSpec {
         source: SourceSpec::Field {
             name: "Priority".into(),
-            field_id: 7,
         },
         default: "medium".into(),
         options,

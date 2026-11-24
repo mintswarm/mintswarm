@@ -50,8 +50,74 @@ msw-result:
   status: complete          # complete | needs_input | failed
   artefact: analysis        # the document you return: analysis | design | decomposition | plan | assessment | handoff | address | gates | review | landing
   outputs: [.mintswarm/job/outputs/analysis.md]   # where the runner saves it
-  questions: []             # needs_input: the blocking questions, one string each
+  questions: []             # the open questions and assumptions as a JSON array of question objects (see Questions); `[]` when none
   reason: ""                # failed: why, in one sentence
 ```
 
 Keep the rest of the final reply to a few lines: the runner keeps only the document block and the result block.
+
+The keys `status`, `artefact`, `outputs`, `questions` and `reason` are required; `commit` and `pr_title` are optional, and an absent or `null` one means none. Each value other than `outputs` and `questions` is one line, in a subset of YAML that every reader takes the same way:
+
+- a plain value, such as `complete`, or a double-quoted one, such as `""`, with only JSON escapes inside the quotes;
+- an optional trailing `# comment`, after at least one space;
+- no single quotes, no block scalars (`|`, `>`) and no value spread over several lines;
+- a plain value does not hold `: `, does not start with a YAML indicator such as `[`, `{`, `&`, `*`, `!`, `|`, `>`, `'`, `"`, `%`, `@` or a backtick, and does not read as null, a boolean or a number: quote such a value, and write an empty `reason` as `""`.
+
+`outputs` is a flow list of plain values on one line. `status` is `complete`, `needs_input` or `failed`. Unknown keys, at any level of the block and in any question object, are rejected, so nothing is dropped from the record.
+
+When the reply is saved, save-output.py also writes `<name>.result.json` beside the document (`analysis.md` → `analysis.result.json`): the block as a `StageOutcome` in serde JSON form, with every key present, `null` for an absent value and `[]` for an absent list.
+
+### Questions
+
+`questions` lists every question you leave open and every assumption you made, as a JSON array of objects of this form. Optional fields may be absent or `null`; the two mean the same.
+
+```json
+{
+  "id": "q1",
+  "kind": "must_decide | recommended | assumption",
+  "question": "Which store keeps drafts?",
+  "why": "Blocks the drafts migration; with a per-user store a late sender keeps their draft.",
+  "shape": "one | several | yes_no | open",
+  "options": [
+    { "id": "a", "label": "Per user and item", "consequence": "…", "trade_off": "…" },
+    { "id": "b", "label": "Shared per item", "consequence": "…" }
+  ],
+  "recommendation": { "choice": ["a"], "answer": null, "reason": "…" },
+  "references": [
+    { "kind": "file | artefact | ticket | design | answer | url", "target": "crates/core/src/attention.rs", "lines": "40-72" }
+  ]
+}
+```
+
+- `kind`: `must_decide`, a person must answer; `recommended`, a person should confirm your recommendation; `assumption`, you went ahead with your recommendation.
+- `shape`: `one` option, `several` options, `yes_no`, or `open` free text.
+- `options` (each with `id`, `label`, `consequence` and an optional `trade_off`), `recommendation` (`choice`, `answer`, and a required `reason`) and `references` (`kind`, `target` and an optional `lines`) are optional. A reference of kind `answer` names an earlier `<set>/<id>`.
+
+The checks:
+
+1. `recommended` and `assumption` need a `recommendation`. A question without one is `must_decide`, which may carry a weak recommendation.
+2. An `assumption` has shape `one`, `several` or `yes_no`, and at least one valid choice besides those it chooses.
+3. `question` and `why` are not empty. `one` and `several` have at least two options; `yes_no` has none, or exactly the ids `yes` and `no`; `open` has none. Question ids are unique in the block, and option ids in their question. `choice` holds exactly one id for `one` and `yes_no`, at least one for `several` and none for `open`; each is an option id, or `yes` or `no` for `yes_no` without options, and none is repeated. `answer` is set only for `open`.
+
+The status rule: `needs_input` holds at least one `must_decide` or `recommended` question; `complete` and `failed` hold assumptions only, or none.
+
+The four-space rule: the value of `questions` is `[]`, or a `[` that opens on the `questions:` line. Every further line of the array, the closing `]` included, is indented by at least four spaces, with spaces only. No blank or comment lines go inside the array; only whitespace and a `# comment` may follow the closing `]`. For example:
+
+```yaml
+msw-result:
+  status: needs_input
+  artefact: analysis
+  outputs: [.mintswarm/job/outputs/analysis.md]
+  questions: [
+    {"id": "q1", "kind": "must_decide", "question": "Which component owns the parser?",
+     "why": "Decides the plan's component and reviewers.", "shape": "one",
+     "options": [{"id": "a", "label": "domain", "consequence": "The types and the parser live together."},
+                 {"id": "b", "label": "runner", "consequence": "Only the runner reads blocks."}]},
+    {"id": "q2", "kind": "assumption", "question": "Are trailing comments allowed?",
+     "why": "Changes the parser's grammar.", "shape": "yes_no",
+     "recommendation": {"choice": ["yes"], "reason": "stages.md already uses them"}}
+    ]
+  reason: ""
+```
+
+The result block's keys and values follow the subset above, and its questions pass every check in this section; save-output.py lists every violation at once and saves nothing until all are fixed.

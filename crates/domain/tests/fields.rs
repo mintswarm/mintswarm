@@ -7,8 +7,8 @@ use std::task::{Context, Poll, Waker};
 
 use mintswarm_domain::cost::{CostModel, NoCostModel};
 use mintswarm_domain::field::{
-    FieldError, FieldMap, FieldMapError, FieldMapSpec, FieldRead, FieldRef, FieldValue, OptionSpec,
-    SourceSpec,
+    FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldRead, FieldRef,
+    FieldValue, LabelPattern, OptionSpec, SourceSpec, read_labels,
 };
 use mintswarm_domain::ids::{AccountName, IssueNumber, PrNumber};
 use mintswarm_domain::scale::{Scale, Size};
@@ -26,11 +26,10 @@ fn option(name: &str, range: &str, write: bool, reads_as: Option<&str>) -> Optio
     }
 }
 
-fn field_spec(field_id: i64, default: &str, options: Vec<OptionSpec>) -> FieldMapSpec {
+fn field_spec(default: &str, options: Vec<OptionSpec>) -> FieldMapSpec {
     FieldMapSpec {
         source: SourceSpec::Field {
             name: "Effort".into(),
-            field_id,
         },
         default: default.into(),
         options,
@@ -70,12 +69,10 @@ fn field_map_rejects_each_invariant() {
     outside[0] = option("XS", "XS", true, Some("S"));
 
     let cases = [
-        (field_spec(7, "M", overlap), "overlap"),
-        (field_spec(7, "M", uncovered), "uncovered"),
-        (field_spec(7, "M", outside), "outside"),
-        (field_spec(7, "medium", partition()), "default"),
-        (field_spec(0, "M", partition()), "zero"),
-        (field_spec(-3, "M", partition()), "negative"),
+        (field_spec("M", overlap), "overlap"),
+        (field_spec("M", uncovered), "uncovered"),
+        (field_spec("M", outside), "outside"),
+        (field_spec("medium", partition()), "default"),
     ];
     let errors: Vec<FieldMapError> = cases
         .into_iter()
@@ -104,13 +101,8 @@ fn field_map_rejects_each_invariant() {
             default: "medium".into()
         }
     );
-    assert_eq!(errors[4], FieldMapError::FieldIdNotPositive { field_id: 0 });
-    assert_eq!(
-        errors[5],
-        FieldMapError::FieldIdNotPositive { field_id: -3 }
-    );
 
-    let kinds: Vec<_> = errors[..5].iter().map(discriminant).collect();
+    let kinds: Vec<_> = errors.iter().map(discriminant).collect();
     for (i, a) in kinds.iter().enumerate() {
         for b in &kinds[i + 1..] {
             assert_ne!(a, b);
@@ -121,7 +113,6 @@ fn field_map_rejects_each_invariant() {
 #[test]
 fn read_only_partial_map_accepted() {
     let spec = field_spec(
-        7,
         "M",
         vec![
             option("Low", "XS-S", false, None),
@@ -139,12 +130,91 @@ fn aliases_beside_full_partition_accepted() {
     options.push(option("Low", "XS-S", false, None));
     options.push(option("Medium", "M-L", false, None));
     options.push(option("High", "XL-4XL", false, Some("2XL")));
-    let map = FieldMap::<Size>::new(field_spec(7, "M", options)).unwrap();
+    let map = FieldMap::<Size>::new(field_spec("M", options)).unwrap();
     assert!(!map.is_read_only());
     assert_eq!(map.default(), Size::M);
     assert_eq!(map.option("High").unwrap().reads_as, Size::Xxl);
     assert_eq!(map.option("Medium").unwrap().reads_as, Size::L);
     assert_eq!(map.field_ref().options.len(), 11);
+}
+
+#[test]
+fn labels_mode_requires_one_option_placeholder() {
+    for label in ["effort", "effort:{option}:{option}", ""] {
+        let spec = FieldMapSpec {
+            source: SourceSpec::Labels {
+                label: label.into(),
+            },
+            default: "M".into(),
+            options: partition(),
+        };
+        assert_eq!(
+            FieldMap::<Size>::new(spec),
+            Err(FieldMapError::LabelPattern {
+                label: label.into()
+            }),
+            "{label:?}"
+        );
+    }
+}
+
+#[test]
+fn read_labels_maps_two_matches_to_labels_conflict_for_any_role() {
+    for (pattern, first, name, second) in [
+        ("effort:{option}", "effort:S", "S", "effort:L"),
+        ("{option} priority", "high priority", "high", "low priority"),
+    ] {
+        let unrelated = ["bug", "mintswarm"];
+        assert_eq!(read_labels(pattern, &unrelated), FieldRead::Unset);
+        assert_eq!(FieldRead::Unset.finding(), None);
+
+        let one = read_labels(pattern, &["bug", first]);
+        let FieldRead::Value(value) = &one else {
+            panic!("{pattern}: {one:?}");
+        };
+        assert_eq!(value.field_id, None);
+        assert_eq!(value.option_id, None);
+        assert_eq!(value.name, name);
+        assert_eq!(one.finding(), None);
+
+        let both = read_labels(pattern, &[first, "bug", second]);
+        assert!(
+            matches!(&both, FieldRead::Conflict(values) if values.len() == 2),
+            "{pattern}: {both:?}"
+        );
+        assert_eq!(both.finding(), Some(FieldFinding::LabelsConflict));
+    }
+    assert_eq!(
+        read_labels("effort:{option}", &["effort:"]),
+        FieldRead::Unset
+    );
+
+    // The text around the option compares case-insensitively, as on the GitHub edge, so a
+    // mixed-case pair is a conflict, not one value.
+    let mixed = read_labels("effort:{option}", &["effort:S", "Effort:L"]);
+    assert!(
+        matches!(&mixed, FieldRead::Conflict(values)
+            if values.iter().map(|value| value.name.as_str()).eq(["S", "L"])),
+        "{mixed:?}"
+    );
+    assert_eq!(mixed.finding(), Some(FieldFinding::LabelsConflict));
+}
+
+#[test]
+fn label_pattern_is_the_one_labels_matcher() {
+    let pattern = LabelPattern::new("effort:{option}").unwrap();
+    assert_eq!(pattern.option_of("effort:S"), Some("S"));
+    assert_eq!(pattern.option_of("EFFORT:xl"), Some("xl"));
+    assert_eq!(pattern.option_of("effort:"), None);
+    assert_eq!(pattern.option_of("priority:S"), None);
+    assert_eq!(pattern.label("M"), "effort:M");
+
+    let pattern = LabelPattern::new("[{option}] size").unwrap();
+    assert_eq!(pattern.option_of("[M] Size"), Some("M"));
+    assert_eq!(pattern.option_of("[M] size!"), None);
+
+    assert_eq!(LabelPattern::new("effort"), None);
+    assert_eq!(LabelPattern::new("{option}:{option}"), None);
 }
 
 #[test]
@@ -292,7 +362,7 @@ fn poll_once<F: Future + Send>(future: F) -> F::Output {
 
 #[test]
 fn tracker_declares_field_operations() {
-    let map = FieldMap::<Size>::new(field_spec(7, "M", partition())).unwrap();
+    let map = FieldMap::<Size>::new(field_spec("M", partition())).unwrap();
     let field = map.field_ref();
     let tracker = Stub;
 

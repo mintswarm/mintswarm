@@ -7,7 +7,7 @@ This directory describes how the session takes a design document to approval unt
 After the design stage (`.mintswarm/stages/design.md`) returns a design, in this order:
 
 1. **Publish the design** as an issue artifact on the design issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`), and note the sha256 of the published document.
-2. **Post the approval package** (below) as one comment on the design issue through `bot-gh.sh` (`-F body=@<file>`), with the full URLs GitHub returned (`html_url`).
+2. **Post the approval package** (below) as one comment on the design issue, opening with the line `<!-- mintswarm: design approval package -->` and ending with the output of `.mintswarm/dogfood/github/watch-plan-approvals.py --commands design`, through `bot-gh.sh` (`-F body=@<file>`), with the full URLs GitHub returned (`html_url`).
 3. **Assign the issue** with `.mintswarm/dogfood/github/assign-approvers.py assign <issue> plan --base <base commit>`. The script has no `design` reason yet, so design approvals use `plan` until it gains one.
 4. **Act on the maintainer's answer**, a comment whose first line is the command:
    - `approve`, which must cite the sha256 of the current design; an approval of an earlier revision does not count. An `approve` adopts each open question's recommendation, unless the approval comment answers that question otherwise. Release the issue with `assign-approvers.py release <issue> plan`, and place the published design artifact whose sha256 equals the one the `approve` cited at the decompose job's `.mintswarm/job/inputs/parent/design.md`. Before dispatching decompose, check that the placed file's sha256 equals the cited one; if it does not, do not dispatch.
@@ -23,7 +23,8 @@ One comment on the design issue, holding:
 3. the decisions it takes, binding and adopted from the analysis;
 4. its open questions, each with its recommendation;
 5. for a revision, what changed and the change request it answers;
-6. the analysis artifact's full URL, the commands `approve`, `changes` and `reject`, and the statement that design approval is always human, with no floor, assess or decision.
+6. the analysis artifact's full URL and the statement that design approval is always human, with no floor, assess or decision;
+7. the Commands section, listing `approve`, `changes`, `reject` and `/help`.
 
 ## Records
 

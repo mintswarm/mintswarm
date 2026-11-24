@@ -8,7 +8,7 @@ use mintswarm_rules::field::{
     Drift, FallbackScope, ReadValue, fallback, findings, read_value, write_option,
 };
 
-const FIELD_ID: i64 = 7;
+const FIELD_ID: u64 = 7;
 
 fn option(name: &str, range: &str, write: bool) -> OptionSpec {
     OptionSpec {
@@ -23,7 +23,6 @@ fn field_spec(options: Vec<OptionSpec>) -> FieldMapSpec {
     FieldMapSpec {
         source: SourceSpec::Field {
             name: "Effort".into(),
-            field_id: FIELD_ID,
         },
         default: "M".into(),
         options,
@@ -150,7 +149,7 @@ fn findings_is_empty_for_a_matching_set() {
         value(Some(7), 2, "Medium"),
         value(Some(7), 3, "High"),
     ];
-    assert_eq!(findings(&map, &observed), []);
+    assert_eq!(findings(&map, Some(FIELD_ID), &observed), []);
 }
 
 #[test]
@@ -162,7 +161,7 @@ fn findings_reports_a_renamed_option_as_missing_then_unmapped() {
         value(Some(7), 3, "High"),
     ];
     assert_eq!(
-        findings(&map, &observed),
+        findings(&map, Some(FIELD_ID), &observed),
         [
             Drift {
                 finding: FieldFinding::OptionMissing,
@@ -185,12 +184,12 @@ fn findings_reports_a_recreated_field_once_and_skips_it_for_labels() {
         value(Some(8), 3, "High"),
     ];
     assert_eq!(
-        findings(&map, &observed),
+        findings(&map, Some(FIELD_ID), &observed),
         [Drift {
             finding: FieldFinding::FieldRecreated,
             option: None,
         }]
     );
     let labels = FieldMap::<Size>::new(labels_spec(vec![option("All", "XS-4XL", true)])).unwrap();
-    assert_eq!(findings(&labels, &[value(None, 1, "All")]), []);
+    assert_eq!(findings(&labels, None, &[value(None, 1, "All")]), []);
 }

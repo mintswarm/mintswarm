@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::scale::{Scale, ScaleRange, ScaleRangeError};
 
 /// Where a role's value lives on the tracker. A role whose source is `off` has no map at all.
+///
+/// A field is referenced by its name only. Its id is resolved from the name at the tracker
+/// edge and cached there, never written in configuration, because a recreated field gets a new
+/// id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum FieldSource {
@@ -19,8 +23,6 @@ pub enum FieldSource {
     Field {
         /// The field's name.
         name: String,
-        /// The field's id, recorded at setup.
-        field_id: u64,
     },
     /// One label per option.
     Labels {
@@ -41,12 +43,10 @@ pub struct FieldRef {
 /// A role's source as the config states it, before validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceSpec {
-    /// An organisation issue field, single select.
+    /// An organisation issue field, single select, by name.
     Field {
         /// The field's name.
         name: String,
-        /// The field's id as the config states it; validation requires it to be positive.
-        field_id: i64,
     },
     /// One label per option.
     Labels {
@@ -104,8 +104,8 @@ pub struct FieldMap<S: Scale> {
 /// Why a [`FieldMapSpec`] breaks an invariant of design §4.1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FieldMapError {
-    /// `field_id` is zero or negative.
-    FieldIdNotPositive { field_id: i64 },
+    /// A labels-mode `label` does not hold `{option}` exactly once.
+    LabelPattern { label: String },
     /// `default` is not a value of the scale.
     UnknownDefault { default: String },
     /// The map has no options.
@@ -139,8 +139,8 @@ pub enum FieldMapError {
 impl fmt::Display for FieldMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FieldIdNotPositive { field_id } => {
-                write!(f, "field_id {field_id} is not a positive integer")
+            Self::LabelPattern { label } => {
+                write!(f, "label {label:?} must hold {OPTION} exactly once")
             }
             Self::UnknownDefault { default } => {
                 write!(f, "default {default:?} is not a value of the scale")
@@ -181,17 +181,17 @@ impl std::error::Error for FieldMapError {}
 
 impl<S: Scale> FieldMap<S> {
     /// Validate `spec` against the invariants of design §4.1, including R1's exemption: a role
-    /// whose options are all `write: false` is read-only and needs no partition.
+    /// whose options are all `write: false` is read-only and needs no partition. A labels-mode
+    /// pattern must hold `{option}` exactly once.
     pub fn new(spec: FieldMapSpec) -> Result<Self, FieldMapError> {
         let source = match spec.source {
-            SourceSpec::Field { name, field_id } => {
-                let id = u64::try_from(field_id)
-                    .ok()
-                    .filter(|id| *id > 0)
-                    .ok_or(FieldMapError::FieldIdNotPositive { field_id })?;
-                FieldSource::Field { name, field_id: id }
+            SourceSpec::Field { name } => FieldSource::Field { name },
+            SourceSpec::Labels { label } => {
+                if LabelPattern::new(&label).is_none() {
+                    return Err(FieldMapError::LabelPattern { label });
+                }
+                FieldSource::Labels { label }
             }
-            SourceSpec::Labels { label } => FieldSource::Labels { label },
         };
         let default = S::parse(&spec.default).ok_or_else(|| FieldMapError::UnknownDefault {
             default: spec.default.clone(),
@@ -318,7 +318,8 @@ impl<S: Scale> FieldMap<S> {
 /// An option value as the tracker holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldValue {
-    /// The field's id; `None` in labels mode.
+    /// The field's id as the tracker returns it; `None` in labels mode. It is never configured:
+    /// the tracker edge resolves it from the field's name and caches it.
     pub field_id: Option<u64>,
     /// The option's id, where the tracker has one.
     pub option_id: Option<u64>,
@@ -338,13 +339,90 @@ pub enum FieldRead {
     Conflict(Vec<FieldValue>),
 }
 
+impl FieldRead {
+    /// The drift finding the read carries: `LabelsConflict` for a conflict, `None` otherwise.
+    pub fn finding(&self) -> Option<FieldFinding> {
+        match self {
+            Self::Conflict(_) => Some(FieldFinding::LabelsConflict),
+            Self::Unset | Self::Value(_) => None,
+        }
+    }
+}
+
+/// The placeholder a labels-mode pattern holds once, for the option's name.
+pub const OPTION: &str = "{option}";
+
+/// A labels-mode pattern split at its one `{option}` placeholder: the one matcher for R3, used
+/// by the domain's [`read_labels`] and by the tracker edge alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelPattern<'a> {
+    prefix: &'a str,
+    suffix: &'a str,
+}
+
+impl<'a> LabelPattern<'a> {
+    /// The pattern's parts, or `None` unless `pattern` holds `{option}` exactly once.
+    pub fn new(pattern: &'a str) -> Option<Self> {
+        let (prefix, suffix) = pattern.split_once(OPTION)?;
+        (!suffix.contains(OPTION)).then_some(Self { prefix, suffix })
+    }
+
+    /// The label that names `option` under this pattern.
+    pub fn label(&self, option: &str) -> String {
+        format!("{}{option}{}", self.prefix, self.suffix)
+    }
+
+    /// The option `label` names under this pattern, or `None` when it does not match.
+    ///
+    /// The text around the option is compared ASCII case-insensitively, as GitHub compares label
+    /// names, so `Effort:M` matches `effort:{option}`. The option itself is returned as written
+    /// and must not be empty.
+    pub fn option_of<'l>(&self, label: &'l str) -> Option<&'l str> {
+        let rest = label.len().checked_sub(self.suffix.len())?;
+        let head = label.get(..self.prefix.len())?;
+        let tail = label.get(rest..)?;
+        let option = label.get(self.prefix.len()..rest)?;
+        (head.eq_ignore_ascii_case(self.prefix)
+            && tail.eq_ignore_ascii_case(self.suffix)
+            && !option.is_empty())
+        .then_some(option)
+    }
+}
+
+/// Read a role's value from an issue's labels in labels mode, R3, for any role.
+///
+/// A label matches when [`LabelPattern::option_of`] finds an option in it. No match reads as
+/// [`FieldRead::Unset`], one as [`FieldRead::Value`] naming the option, and two or more as
+/// [`FieldRead::Conflict`], whose [`finding`](FieldRead::finding) is `LabelsConflict`. A pattern
+/// without exactly one `{option}` matches nothing.
+pub fn read_labels(pattern: &str, labels: &[&str]) -> FieldRead {
+    let Some(pattern) = LabelPattern::new(pattern) else {
+        return FieldRead::Unset;
+    };
+    let mut values: Vec<FieldValue> = labels
+        .iter()
+        .filter_map(|label| pattern.option_of(label))
+        .map(|name| FieldValue {
+            field_id: None,
+            option_id: None,
+            name: name.to_owned(),
+        })
+        .collect();
+    match values.len() {
+        0 => FieldRead::Unset,
+        1 => FieldRead::Value(values.remove(0)),
+        _ => FieldRead::Conflict(values),
+    }
+}
+
 /// A drift finding, design §4.3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldFinding {
     /// The mapped field no longer exists on the tracker.
     FieldMissing,
-    /// A field of the mapped name exists, but under a different id than the one recorded.
+    /// A field of the mapped name exists, but under a different id than the one the tracker edge
+    /// resolved from the name and cached.
     FieldRecreated,
     /// A mapped option no longer exists on the field.
     OptionMissing,

@@ -17,13 +17,20 @@
 //! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
 //! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
 //! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores;
-//! - a `field_id` under a `tracker` field block, which `msw-state.py` ignores: field ids are
-//!   resolved per account and are not configuration.
+//! - a `field_id` under `tracker.state`, `tracker.plan_verdict` or `tracker.decomp_verdict`,
+//!   which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
 //!
 //! The `gates.format` check is the loader's own: no dogfood tool checks it.
+//!
+//! The `tracker.fields` check is the loader's own too. Each `tracker.fields.<role>` entry is
+//! checked through the role's [`RoleDescriptor`], found by name in a registry, so the check
+//! holds no rule for one role only. A tracker field is named, never given by id: its id is
+//! resolved from the name at the tracker edge, so a `field_id` key there is an unknown key.
 
 use std::collections::BTreeMap;
 
+use mintswarm_domain::field::{FieldMap, FieldMapError, FieldMapSpec, OptionSpec, SourceSpec};
+use mintswarm_domain::role::{Role, RoleDescriptor, roles};
 use serde_json::{Map, Value};
 
 use crate::{Error, Path, Stage, parse_yaml};
@@ -200,14 +207,30 @@ const NON_PRODUCTION: [&str; 9] = [
 /// The report formats with a built-in converter, besides `ctrf`.
 const BUILT_IN_FORMATS: [&str; 1] = ["junit"];
 
-/// Parse and validate a repository config.
+/// Parse and validate a repository config, with the registered roles.
 pub fn load_repo_config(text: &str) -> Result<RepoConfig, Error> {
-    RepoConfig::from_value(parse_yaml(text)?)
+    load_repo_config_with_roles(text, roles())
+}
+
+/// Parse and validate a repository config, checking `tracker.fields` against `roles`.
+pub fn load_repo_config_with_roles(
+    text: &str,
+    roles: &[&dyn RoleDescriptor],
+) -> Result<RepoConfig, Error> {
+    RepoConfig::from_value_with_roles(parse_yaml(text)?, roles)
 }
 
 impl RepoConfig {
-    /// Validate a config already converted to JSON.
+    /// Validate a config already converted to JSON, with the registered roles.
     pub fn from_value(value: Value) -> Result<Self, Error> {
+        Self::from_value_with_roles(value, roles())
+    }
+
+    /// Validate a config already converted to JSON, checking `tracker.fields` against `roles`.
+    pub fn from_value_with_roles(
+        value: Value,
+        roles: &[&dyn RoleDescriptor],
+    ) -> Result<Self, Error> {
         let root = Path::root();
         let top = mapping(&value, &root)?;
         known(
@@ -224,7 +247,7 @@ impl RepoConfig {
             ],
         )?;
         if let Some(tracker) = top.get("tracker") {
-            check_tracker(tracker, &root.key("tracker"))?;
+            check_tracker(tracker, &root.key("tracker"), roles)?;
         }
         if let Some(design) = top.get("design") {
             strings_only(design, &root.key("design"), &["store"], &[])?;
@@ -309,6 +332,17 @@ impl RepoConfig {
     /// `gates.format`, empty when absent, null or empty.
     pub fn formatters(&self) -> &[Formatter] {
         &self.formatters
+    }
+
+    /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
+    ///
+    /// The entry was checked at load when the role was registered then; an entry that does not
+    /// build reads as `None`.
+    pub fn field_map<R: Role>(&self) -> Option<FieldMap<R::Scale>> {
+        let entry = self.value.get("tracker")?.get("fields")?.get(R::NAME)?;
+        let path = Path::root().key("tracker").key("fields").key(R::NAME);
+        let spec = field_spec(entry, &path).ok()??;
+        FieldMap::new(spec).ok()
     }
 }
 
@@ -399,7 +433,7 @@ fn bounded(value: &Value, path: &Path, low: u64, high: Option<u64>) -> Result<u6
         .ok_or_else(|| Error::schema(path, format!("{message}, not {value}")))
 }
 
-fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
+fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> Result<(), Error> {
     let tracker = mapping(value, path)?;
     known(
         tracker,
@@ -411,6 +445,7 @@ fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
             "state",
             "plan_verdict",
             "decomp_verdict",
+            "fields",
             "ingest",
         ],
     )?;
@@ -448,6 +483,9 @@ fn check_tracker(value: &Value, path: &Path) -> Result<(), Error> {
         if let Some(verdict) = tracker.get(key) {
             check_tracker_value(verdict, &path.key(key), false)?;
         }
+    }
+    if let Some(fields) = tracker.get("fields") {
+        check_fields(fields, &path.key("fields"), roles)?;
     }
     if let Some(ingest) = tracker.get("ingest") {
         let ingest_path = path.key("ingest");
@@ -507,6 +545,160 @@ fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<
         one_of("status", ["issue_status", "off"]).map(drop)?;
     }
     Ok(())
+}
+
+/// `tracker.fields`: each `<role>` entry is checked through the registered descriptor of that
+/// name, so the check holds no rule for one role only.
+fn check_fields(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> Result<(), Error> {
+    for (name, entry) in mapping(value, path)? {
+        let role_path = path.key(name);
+        let Some(role) = roles.iter().find(|role| role.name() == name) else {
+            let known: Vec<&str> = roles.iter().map(|role| role.name()).collect();
+            return Err(Error::schema(
+                &role_path,
+                format!(
+                    "is not a registered role; the roles are {}",
+                    known.join(", ")
+                ),
+            ));
+        };
+        if let Some(spec) = field_spec(entry, &role_path)? {
+            role.check(spec)
+                .map_err(|error| field_map_error(&error, &role_path))?;
+        }
+    }
+    Ok(())
+}
+
+/// One `tracker.fields.<role>` entry, `None` for `source: off`, whose keys are still checked.
+fn field_spec(value: &Value, path: &Path) -> Result<Option<FieldMapSpec>, Error> {
+    let entry = mapping(value, path)?;
+    known(
+        entry,
+        path,
+        &["source", "field", "label", "default", "options"],
+    )?;
+    let source_path = path.key("source");
+    let source = match entry.get("source") {
+        Some(Value::String(source)) if ["field", "labels", "off"].contains(&source.as_str()) => {
+            source.as_str()
+        }
+        other => {
+            return Err(Error::schema(
+                &source_path,
+                format!(
+                    "must be field, labels or off, not {}",
+                    other.unwrap_or(&Value::Null)
+                ),
+            ));
+        }
+    };
+    let field_path = path.key("field");
+    let field = entry
+        .get("field")
+        .map(|field| string(field, &field_path))
+        .transpose()?;
+    let label_path = path.key("label");
+    let label = match entry.get("label") {
+        None => None,
+        Some(label) => match string(label, &label_path)? {
+            label if label.matches(OPTION).count() == 1 => Some(label),
+            _ => {
+                return Err(Error::schema(
+                    &label_path,
+                    format!("must hold {OPTION} exactly once"),
+                ));
+            }
+        },
+    };
+    let default_path = path.key("default");
+    let default = entry
+        .get("default")
+        .map(|default| string(default, &default_path))
+        .transpose()?;
+    let options_path = path.key("options");
+    let options = entry
+        .get("options")
+        .map(|options| option_specs(options, &options_path))
+        .transpose()?;
+
+    let source = match source {
+        "off" => return Ok(None),
+        "field" => match field {
+            Some(name) if !name.trim().is_empty() => SourceSpec::Field {
+                name: name.to_owned(),
+            },
+            _ => return Err(Error::schema(&field_path, "must be a field name")),
+        },
+        _ => match label {
+            Some(label) => SourceSpec::Labels {
+                label: label.to_owned(),
+            },
+            None => return Err(Error::schema(&label_path, "is missing")),
+        },
+    };
+    let default = default.ok_or_else(|| Error::schema(&default_path, "is missing"))?;
+    let options = options.ok_or_else(|| Error::schema(&options_path, "is missing"))?;
+    Ok(Some(FieldMapSpec {
+        source,
+        default: default.to_owned(),
+        options,
+    }))
+}
+
+/// The placeholder a field label holds once.
+const OPTION: &str = mintswarm_domain::field::OPTION;
+
+/// `tracker.fields.<role>.options`: option names mapped to `range`, `write` and `reads_as`.
+fn option_specs(value: &Value, path: &Path) -> Result<Vec<OptionSpec>, Error> {
+    let mut options = Vec::new();
+    for (name, option) in mapping(value, path)? {
+        let option_path = path.key(name);
+        let map = mapping(option, &option_path)?;
+        known(map, &option_path, &["range", "write", "reads_as"])?;
+        let range_path = option_path.key("range");
+        let range = match map.get("range") {
+            Some(range) => string(range, &range_path)?.to_owned(),
+            None => return Err(Error::schema(&range_path, "is missing")),
+        };
+        let write = match map.get("write") {
+            None => true,
+            Some(Value::Bool(write)) => *write,
+            Some(other) => {
+                return Err(Error::schema(
+                    &option_path.key("write"),
+                    format!("must be a bool, not {}", kind(other)),
+                ));
+            }
+        };
+        let reads_as = map
+            .get("reads_as")
+            .map(|reads_as| string(reads_as, &option_path.key("reads_as")).map(str::to_owned))
+            .transpose()?;
+        options.push(OptionSpec {
+            name: name.clone(),
+            range,
+            write,
+            reads_as,
+        });
+    }
+    Ok(options)
+}
+
+/// A broken invariant as a schema error at the key it concerns under `role`.
+fn field_map_error(error: &FieldMapError, role: &Path) -> Error {
+    let options = role.key("options");
+    let path = match error {
+        FieldMapError::UnknownDefault { .. } => role.key("default"),
+        FieldMapError::LabelPattern { .. } => role.key("label"),
+        FieldMapError::NoOptions | FieldMapError::Uncovered { .. } => options,
+        FieldMapError::DuplicateOption { option }
+        | FieldMapError::BadRange { option, .. }
+        | FieldMapError::UnknownReadsAs { option, .. }
+        | FieldMapError::ReadsAsOutsideRange { option, .. } => options.key(option),
+        FieldMapError::Overlap { second, .. } => options.key(second),
+    };
+    Error::schema(&path, error.to_string())
 }
 
 /// The component names, after checking each component as `validate_config` does.
