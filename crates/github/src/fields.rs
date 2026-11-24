@@ -166,8 +166,14 @@ impl FieldPass<'_> {
         if !reply.status.is_success() {
             return Err(classify(&reply, Op::Write));
         }
-        match resolve_values(&reply.json()?, name, field_id, options, &reply.endpoint)? {
-            FieldRead::Value(got) if got.name == value => Ok(()),
+        // Whatever the answer holds other than the value written, recreated field aside, is a
+        // rejected write, so the caller resolves the field again.
+        match resolve_values(&reply.json()?, name, field_id, options, &reply.endpoint) {
+            Ok(FieldRead::Value(got)) if got.name == value => Ok(()),
+            Err(
+                error
+                @ (FieldError::Transport(_) | FieldError::Field(FieldFinding::FieldRecreated)),
+            ) => Err(error),
             _ => Err(FieldError::Field(FieldFinding::WriteRejected)),
         }
     }

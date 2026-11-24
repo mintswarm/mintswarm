@@ -222,6 +222,21 @@ async fn a_write_answered_with_another_value_is_rejected() {
 }
 
 #[tokio::test]
+async fn a_write_answered_with_an_unmapped_value_is_rejected() {
+    let responder = Responder::start().await;
+    responder.reply(200, VALUES);
+    let mut field = size();
+    field.options = names(&["L"]);
+    let error = client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &field, Some("L"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, FieldError::Field(FieldFinding::WriteRejected));
+    assert!(error.should_resolve_again());
+}
+
+#[tokio::test]
 async fn a_write_answered_under_another_field_id_is_recreated() {
     let responder = Responder::start().await;
     responder.reply(200, RECREATED);
