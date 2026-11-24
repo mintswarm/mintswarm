@@ -231,7 +231,7 @@ def ready_config() -> dict:
                     "components": ["agents"],
                     "paths": [CONFIG, "tests/**", "AGENTS.md", "CLAUDE.md"],
                 },
-                "limits": {"files": 10, "lines": 300, "new_files": 3, "new_dependencies": 0},
+                "limits": {"files": 10, "lines": 300, "new_files": 3},
             },
             "landing": {
                 "mode": "always",
