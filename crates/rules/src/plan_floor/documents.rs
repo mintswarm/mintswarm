@@ -3,10 +3,10 @@
 
 use mintswarm_domain::records::{Json, RuleResult};
 
-use super::py::{flat, repr_str};
 use super::rule;
 use crate::json;
 use crate::markdown::{document_lines, headings, is_py_space, issue_body, py_strip, section};
+use crate::py::{flat, repr_str};
 
 const MUST_DECIDE: &str = "- **Must decide:**";
 const RECOMMENDED: &str = "- **Recommended:**";

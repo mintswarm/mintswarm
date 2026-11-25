@@ -5,10 +5,10 @@ use mintswarm_domain::records::{Json, RuleResult, Verdict};
 
 use super::config::View;
 use super::footprint::Footprint;
-use super::py::{flat, lower};
 use super::{CONFIG, rule};
 use crate::glob::matching;
 use crate::json;
+use crate::py::{flat, lower};
 
 /// The component whose paths `tests-none` allows.
 const DOCS: &str = "docs";

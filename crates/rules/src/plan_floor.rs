@@ -9,8 +9,7 @@
 //! - [`footprint`]: the footprint parser and the `footprint` rule's reasons;
 //! - [`config`]: the floor's view of the config at the base, with the gate words;
 //! - [`rules`]: the rules that read the footprint, with the dependency screen;
-//! - [`documents`]: the three document rules;
-//! - [`py`]: Python's string semantics the reasons quote.
+//! - [`documents`]: the three document rules.
 //!
 //! Where a strict-JSON footprint nests deeper than [`crate::json::MAX_DEPTH`], Python reads it
 //! or crashes on its recursion limit; here it is a `footprint` hit, as [`crate::json`] diverges.
@@ -18,7 +17,6 @@
 pub mod config;
 pub mod documents;
 pub mod footprint;
-pub mod py;
 pub mod rules;
 
 use mintswarm_domain::records::{

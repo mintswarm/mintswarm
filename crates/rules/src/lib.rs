@@ -6,6 +6,7 @@
 //!   - [`glob`]: path globs with the plan floor's semantics;
 //!   - [`json`]: the strict JSON reader and a writer that reproduces `json.dumps` byte for byte;
 //!   - [`markdown`]: headings, sections and fenced blocks, in both of the tools' fence dialects;
+//!   - [`py`]: Python's string semantics, `repr()`, `str.lower()` and reasons cut to one line;
 //!   - [`binding`]: sha256 digests and the bindings of files to them;
 //!   - [`exit`]: the 0, 1 and 2 exit-code contract.
 //! - [`plan_floor`]: the plan floor, `plan-approval/floor.py`'s rules over a sha256-bound input
@@ -21,4 +22,5 @@ pub mod glob;
 pub mod json;
 pub mod markdown;
 pub mod plan_floor;
+pub mod py;
 pub mod size;

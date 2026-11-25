@@ -1,4 +1,4 @@
-//! Python's string semantics, where the floor's reasons quote what Python prints.
+//! Python's string semantics, where a ported tool's messages quote what Python prints.
 //!
 //! - [`repr_str`] and [`repr`]: `repr()` of a `str` and of a value `json.loads` returns;
 //! - [`flat`]: `floor.py`'s `flat`, text on one line cut to [`REASON_LIMIT`] characters;

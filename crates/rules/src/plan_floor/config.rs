@@ -8,8 +8,8 @@ use mintswarm_config::{Mode as ConfigMode, load_repo_config};
 use mintswarm_domain::records::Mode;
 use serde_json::Value;
 
-use super::py::repr_str;
 use crate::exit::Unusable;
+use crate::py::repr_str;
 
 /// The limit names, in the floor's order.
 pub const LIMITS: [&str; 3] = ["files", "lines", "new_files"];

@@ -5,9 +5,9 @@ use std::fmt;
 
 use mintswarm_domain::records::Json;
 
-use super::py::{lower, repr, repr_str};
 use crate::json::{self, Style};
 use crate::markdown::{document_lines, py_strip};
+use crate::py::{lower, repr, repr_str};
 
 /// The seven footprint keys, in their required order.
 pub const KEYS: [&str; 7] = [
