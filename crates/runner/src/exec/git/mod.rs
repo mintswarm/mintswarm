@@ -10,6 +10,7 @@ mod diff;
 mod env;
 mod fetch;
 mod read;
+mod retry;
 mod snapshot;
 mod store;
 #[cfg(test)]
@@ -19,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::plane::Credential;
+use mintswarm_domain::retry::RetryPolicy;
 use mintswarm_domain::vcs::{
     BranchName, ChangeSet, CommitInfo, DiffOpts, FetchReport, Identity, MergeOutcome, PushOutcome,
     RebaseOutcome, RefOrId, Remote, RemoteHead, RepoPath, RevRange, TreeEntry, TreeMode, Vcs,
@@ -27,6 +29,7 @@ use mintswarm_domain::vcs::{
 
 pub use bundle::{BundleError, Documents, plan_floor_bundle};
 pub use diff::{DIFF_OPTIONS, PATCH_OPTIONS, PINNED_OPTIONS};
+pub use retry::{FetchFailure, UnrecognisedFailure};
 pub use snapshot::{Snapshots, snapshots_path};
 pub use store::{GIT_REQUIREMENT, store_path};
 
@@ -98,6 +101,22 @@ pub enum GitError {
         /// The start of what it wrote to standard error.
         stderr: String,
     },
+    /// `git fetch` kept failing in a way that may pass, until its attempts or the retry
+    /// policy's total ran out. The text is ours alone; what git last wrote is kept in `stderr`.
+    #[error("git fetch gave up after {attempts} attempts, the last ending in {last}")]
+    FetchExhausted {
+        /// How many attempts were made, the first included.
+        attempts: u32,
+        /// How the last attempt failed.
+        last: FetchFailure,
+        /// The last attempt's exit status, in our words: `exit code N` or `no exit code`.
+        status: String,
+        /// The start of what the last attempt wrote to standard error.
+        stderr: String,
+        /// The redacted record of the last failure when it was not recognised, for the caller
+        /// to record in the runner's store; `None` for a network failure.
+        unrecognised: Option<Box<UnrecognisedFailure>>,
+    },
     /// A git command's output was not what the adapter expects.
     #[error("git {command} gave unexpected output: {detail}")]
     Parse {
@@ -146,6 +165,8 @@ pub struct GitStore {
     warnings: Vec<String>,
     /// Whether `file://` remotes are allowed; only tests set it.
     allow_file: bool,
+    /// How `fetch` retries a transient failure.
+    retry: RetryPolicy,
 }
 
 impl GitStore {
