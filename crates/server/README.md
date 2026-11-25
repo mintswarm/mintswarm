@@ -9,10 +9,13 @@ mintswarm-server webhooks --listen 127.0.0.1:8787 --log ~/.local/state/mintswarm
 ```
 
 - It accepts `POST /github/webhook` and checks `X-Hub-Signature-256` against the webhook secret in constant time.
-- A verified delivery gets `202` and one JSON line in the `--log` file, which is opened in append mode and created if absent; its directory must exist.
+- A verified delivery is answered `202` at once and put on a queue; a separate task drains the queue to the `--log` file as one JSON line per delivery. The file is opened in append mode and created if absent; its directory must exist.
 - A missing or bad signature gets `401` and one JSON line on stderr without the body, such as `{"received_at":"…","rejected":"bad_signature","delivery":"…","event":"ping"}`.
-- A body over 25 MiB gets `413` and is not logged. A log write that fails gets `500`, so GitHub shows the delivery as failed and it can be redelivered; if the failure left part of a line, that part stays in the log as a line that does not parse.
-- At most eight requests are handled at once; one more gets `503` before its body is read, so callers without the secret cannot make the receiver hold more than eight bodies.
+- A body over 25 MiB gets `413` and is not logged.
+- A log write that fails happens after GitHub got its `202`, so GitHub shows the delivery as delivered. The failure is reported on stderr as one JSON line, such as `{"received_at":"…","error":"cannot append to the delivery log …: the disk is full","delivery":"…","event":"…"}`, and is not retried. Redeliver it by hand from **Recent Deliveries** (see below) after fixing the cause. If the failure left part of a line, that part stays in the log as a line that does not parse, and the next line starts on a line of its own.
+- Two bounds answer `429 Too Many Requests` rather than wait or drop silently:
+  - `--max-in-flight` (default 16): the most requests whose bodies are read and checked at once. A request holds its body, up to 25 MiB, until its signature is checked, so this bounds what callers without the secret can make the receiver hold: 16 x 25 MiB = 400 MiB. GitHub sends each delivery as one request and the receiver answers as soon as the signature is checked, so GitHub's own requests rarely overlap. One request more gets `429` before its body is read.
+  - `--max-queued` (default 256): the most verified deliveries waiting for the log. Only deliveries with a valid signature are queued, and the writer only falls behind while the disk stalls; 256 covers a burst such as a push that updates many pull requests at once. A verified delivery that finds the queue full gets `429`, plus a stderr line with `"rejected":"queue_full"`, and GitHub shows it as failed, to be redelivered by hand.
 - Every event is logged, `ping` and unknown ones included.
 - On start it prints one line on stderr with the address and the log path. It runs until stopped; on a secret, log or address error it exits 1 before listening.
 - The log is never rotated. To start a new one, stop the receiver, move the file and start it again.
@@ -93,7 +96,7 @@ Each line is one compact JSON object with these keys, in this order:
 | `repository` | `payload.repository.full_name`, such as `owner/name` |
 | `payload` | the body as parsed JSON, or as a string if it is not JSON |
 
-A header or payload key that is absent is `null`. Each line is written whole under a lock, so readers see complete lines; a very large line may arrive in parts, which `jq` waits for. After a `500`, a line that does not parse may come before the next one.
+A header or payload key that is absent is `null`. Each line is written whole under a lock, so readers see complete lines; a very large line may arrive in parts, which `jq` waits for. After a failed write reported on stderr, a line that does not parse may come before the next one.
 
 Only `payload` is authenticated: the signature covers the body and nothing else. `delivery` and `event` come from the `X-GitHub-Delivery` and `X-GitHub-Event` headers, which are not signed, so a line's `event` and `delivery` may not be what GitHub sent. A valid delivery can also be replayed: anyone who has seen one, for example through the smee channel, can post it again and it is logged again as a new line. Consumers that act on lines should deduplicate on ids inside `payload`, such as `payload.comment.id`, not on `delivery`, and should read the kind of event from `payload` rather than trust `event` alone.
 
