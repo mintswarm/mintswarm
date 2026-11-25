@@ -18,11 +18,14 @@ pub enum RepoReadError {
         /// The delay the host asked for, if any.
         retry_after: Option<Duration>,
     },
-    /// The repository or its default branch is missing, or not shown to the credential.
+    /// The repository or its default branch is missing or not shown to the credential, or the
+    /// credential is refused or lacks the permission to read it.
     Inaccessible,
     /// The path cannot be named on the host: not UTF-8, empty, with an empty, `.` or `..`
     /// segment, or with a leading or trailing `/`.
     InvalidPath,
+    /// The revision is not a full commit id, so a read at it could follow a moving ref.
+    InvalidRev,
     /// The file is too large for the host to return inline.
     TooLarge,
     /// The host answered with a status or a shape the reader does not expect.
@@ -40,6 +43,7 @@ impl fmt::Display for RepoReadError {
             Self::RateLimited { retry_after: None } => f.write_str("rate limited"),
             Self::Inaccessible => f.write_str("the repository or its branch is not accessible"),
             Self::InvalidPath => f.write_str("the path cannot be read from the host"),
+            Self::InvalidRev => f.write_str("the revision is not a full commit id"),
             Self::TooLarge => f.write_str("the file is too large to read inline"),
             Self::Unexpected => f.write_str("the host's answer is not of the expected shape"),
             Self::Transport(detail) => write!(f, "transport error: {detail}"),
@@ -70,8 +74,15 @@ pub trait RepoReads: Send + Sync {
     /// The commit at the head of the repository's default branch.
     fn default_branch_head(&self) -> impl Future<Output = Result<RevId, RepoReadError>> + Send;
 
-    /// The bytes of the file at `path` in commit `rev`. `None` means there is no file at the
-    /// path, the same meaning as [`Vcs::read_blob`](crate::vcs::Vcs::read_blob).
+    /// The bytes of the file at `path` in commit `rev`, which must be a full commit id or the
+    /// read fails with [`RepoReadError::InvalidRev`]. `None` means there is no file at the path,
+    /// the same meaning as [`Vcs::read_blob`](crate::vcs::Vcs::read_blob).
+    ///
+    /// A host may also answer `None` when it does not show the commit or the repository at
+    /// all: one it does not know, or one the credential can no longer see. A caller should pin
+    /// `rev` with [`default_branch_head`](Self::default_branch_head) through the same reader
+    /// first, which reports lost access as [`RepoReadError::Inaccessible`], before it treats
+    /// `None` as an absent file.
     fn read_file(
         &self,
         rev: &RevId,
@@ -85,10 +96,11 @@ mod tests {
 
     use super::RepoReadError;
 
-    fn others() -> [RepoReadError; 5] {
+    fn others() -> [RepoReadError; 6] {
         [
             RepoReadError::Inaccessible,
             RepoReadError::InvalidPath,
+            RepoReadError::InvalidRev,
             RepoReadError::TooLarge,
             RepoReadError::Unexpected,
             RepoReadError::Transport("GET /repos/a/b: the request failed".into()),
