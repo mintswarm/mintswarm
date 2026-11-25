@@ -14,6 +14,7 @@ pub mod role;
 pub mod scale;
 pub mod tracker;
 pub mod vcs;
+pub mod watch;
 pub mod work;
 
 pub use question::{
