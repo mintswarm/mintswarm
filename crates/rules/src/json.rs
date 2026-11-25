@@ -579,7 +579,7 @@ fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
 /// `f` as Python's `float.__repr__` writes it: the shortest digits that read back as `f`, in
 /// fixed notation with at least one fractional digit for decimal exponents from -4 to 15, and
 /// otherwise as `d.ddde±XX`.
-fn float_repr(f: f64) -> String {
+pub(crate) fn float_repr(f: f64) -> String {
     if f.is_nan() {
         return "NaN".into();
     }

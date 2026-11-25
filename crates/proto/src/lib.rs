@@ -7,8 +7,14 @@
 pub mod runner {
     /// Version 1 of the runner protocol: `RunnerService`, its messages and
     /// `Secret` (`runner.proto` and `common.proto`), with the generated tonic
-    /// client and server, and the runner events, `RunnerEvent` and
+    /// client and server; the `Connect` stream's envelopes, `ConnectRequest`
+    /// and `ConnectResponse`, and the messages they carry (`connect.proto`);
+    /// `StepKind` (`steps.proto`); and the runner events, `RunnerEvent` and
     /// `EventBatch` (`events.proto`).
+    ///
+    /// The client has no `connect(dst)` constructor, since it would clash
+    /// with the `Connect` RPC's method: build one with
+    /// `RunnerServiceClient::new(channel)`.
     pub mod v1 {
         tonic::include_proto!("mintswarm.runner.v1");
 

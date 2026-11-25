@@ -4,10 +4,11 @@
 #![cfg(test)]
 
 use mintswarm_proto::runner::v1::{
-    AuthenticateRequest, AuthenticateResponse, GetBlobHeader, GetBlobRequest, GetBlobResponse,
-    PutBlobHeader, PutBlobRequest, PutBlobResponse, RegisterRequest, RegisterResponse, Repository,
-    Secret, StatBlobsRequest, StatBlobsResponse, get_blob_response, put_blob_request,
-    runner_service_client, runner_service_server,
+    AuthenticateRequest, AuthenticateResponse, ConnectRequest, ConnectResponse, GetBlobHeader,
+    GetBlobRequest, GetBlobResponse, PutBlobHeader, PutBlobRequest, PutBlobResponse,
+    Reauthenticate, RegisterRequest, RegisterResponse, Repository, Secret, StatBlobsRequest,
+    StatBlobsResponse, connect_request, get_blob_response, put_blob_request, runner_service_client,
+    runner_service_server,
 };
 
 /// A value no formatting should ever print.
@@ -64,11 +65,21 @@ fn secrets_are_redacted() {
     let register = register_request();
     let authenticate = authenticate_request();
     let authenticated = authenticate_response();
-    let messages: [(&str, &dyn std::fmt::Debug); 4] = [
+    let reauthenticate = Reauthenticate {
+        access_token: Some(secret.clone()),
+    };
+    let connect = ConnectRequest {
+        body: Some(connect_request::Body::Reauthenticate(
+            reauthenticate.clone(),
+        )),
+    };
+    let messages: [(&str, &dyn std::fmt::Debug); 6] = [
         ("Secret", &secret),
         ("RegisterRequest", &register),
         ("AuthenticateRequest", &authenticate),
         ("AuthenticateResponse", &authenticated),
+        ("Reauthenticate", &reauthenticate),
+        ("ConnectRequest", &connect),
     ];
     for (name, message) in messages {
         for printed in [format!("{message:?}"), format!("{message:#?}")] {
@@ -157,6 +168,21 @@ fn client_and_server_are_exported() {
     let _ = server.max_decoding_message_size(2 * 1024 * 1024);
 }
 
+/// Calls the `Connect` stub with a request stream and binds its answer to a
+/// response stream, so the generated client is proven bidirectional. Never
+/// run: it only has to compile.
+#[expect(
+    dead_code,
+    reason = "compile-only proof that the Connect client stub is bidirectional"
+)]
+async fn connect_is_bidirectional(
+    client: &mut runner_service_client::RunnerServiceClient<tonic::transport::Channel>,
+) {
+    let requests = tonic::codegen::tokio_stream::iter(Vec::<ConnectRequest>::new());
+    let _: Result<tonic::Response<tonic::Streaming<ConnectResponse>>, tonic::Status> =
+        client.connect(requests).await;
+}
+
 /// A server that answers nothing; it only proves the trait can be
 /// implemented outside the crate.
 struct Unimplemented;
@@ -175,6 +201,15 @@ impl runner_service_server::RunnerService for Unimplemented {
         _: tonic::Request<AuthenticateRequest>,
     ) -> Result<tonic::Response<AuthenticateResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("authenticate"))
+    }
+
+    type ConnectStream = tonic::codegen::BoxStream<ConnectResponse>;
+
+    async fn connect(
+        &self,
+        _: tonic::Request<tonic::Streaming<ConnectRequest>>,
+    ) -> Result<tonic::Response<Self::ConnectStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("connect"))
     }
 
     async fn stat_blobs(

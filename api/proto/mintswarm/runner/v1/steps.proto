@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package mintswarm.runner.v1;
+
+// A kind of step job a runner can execute (design §7.2).
+//
+// An open enum: a new kind is a new value and a new runner release. A runner
+// lists the kinds it executes in `Hello.step_kinds`, and the plane never
+// dispatches a kind outside that list. A runner that receives a kind it does
+// not know answers with `attempt_start_failed{reason: unsupported}` (design
+// §10).
+enum StepKind {
+  // Not set; never sent.
+  STEP_KIND_UNSPECIFIED = 0;
+  // Prepares the attempt's worktree.
+  STEP_KIND_PREPARE = 1;
+  // Commits the attempt's changes.
+  STEP_KIND_COMMIT = 2;
+  // Runs the gates.
+  STEP_KIND_GATES = 3;
+  // Pushes the branch.
+  STEP_KIND_PUSH = 4;
+  // Builds the changes bundle.
+  STEP_KIND_BUNDLE = 5;
+  // Keeps a review round.
+  STEP_KIND_KEEP_ROUND = 6;
+  // Assembles a job's dependency inputs.
+  STEP_KIND_DEPENDENCY_INPUTS = 7;
+  // Gathers the facts a landing decision reads.
+  STEP_KIND_LANDING_FACTS = 8;
+  // Applies tracker effects; never dispatched by a plane (contract C2).
+  STEP_KIND_TRACKER_EFFECTS = 9;
+  // Files child issues; never dispatched by a plane (contract C2).
+  STEP_KIND_FILE_CHILDREN = 10;
+}

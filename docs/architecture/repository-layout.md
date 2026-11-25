@@ -43,13 +43,13 @@ mintswarm/
 │   ├── domain/             # ids; job states, events and the transition table; StageJob, StepJob, Usage; pipeline records; PlaneLink, Vcs, Tracker and CodeHost traits; Question objects and their checks; scales (size, priority), field maps, own level and the stride selector, cost model; capability probe results, namespaces and version requirements
 │   ├── config/             # repository config (.mintswarm/config.yaml) and runner config; capability probe definitions and their built-in, machine and repository merge; native YAML loader matching yq
 │   ├── github/             # the runner's GitHub App access: App JWT, installation tokens scoped to one repository, private-key store; issue-field and label reads and writes (FieldClient, field catalogue); GET-only issue, comment, link, artifact and PR reads (GitHubReads: paging, ETags, a retry-after pause), comment marks, content-creation limiter
-│   ├── rules/              # pure rules shared by runner and plane: tracker field writes, size resolution; Python-parity globs, strict JSON reader and json.dumps writer, Markdown sections and fences, sha256 bindings, 0/1/2 exit contract
+│   ├── rules/              # pure rules shared by runner and plane: tracker field writes, size resolution; Python-parity globs, strict JSON reader and json.dumps writer, Markdown sections and fences, sha256 bindings, 0/1/2 exit contract; stage output capture (rules 1–6 and the msw-result block, with Claude Code transcript selection) and the stage-aware result checks; the plan floor over a sha256-bound input bundle
 │   ├── proto/              # Rust generated from api/proto by build.rs (protox) into OUT_DIR, not committed; `fakes` feature for test fakes
 │   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
 │   │   └── migrations/     # SQL, append-only
 │   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
 │   ├── steward/            # `mintswarm-steward` binary: the process that holds the deployment's signing keys apart from the control plane
-│   ├── runner/             # `mintswarm-runner` binary + library
+│   ├── runner/             # `mintswarm-runner` library: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` binary: CLI and `mcp console`
 │
@@ -106,7 +106,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
-- **Dependency direction is one-way** (`A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement): `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}, and beside it `domain` ← `github` ← {`core`, `runner`}; `proto` never depends on `github`. `core` and `runner` never depend on each other; anything they share goes down a level. Today `github` depends only on `domain`, and `domain`, `config` and `proto` depend on no other workspace crate. `steward` stands apart: it depends on no workspace crate today.
+- **Dependency direction is one-way** (`A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement): `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}, beside it `domain` ← `github` ← {`core`, `runner`}, and `domain` ← `config` ← `rules`; `proto` never depends on `github`. `core` and `runner` never depend on each other; anything they share goes down a level. Today `github` and `runner` depend only on `domain`, `rules` on `domain` and `config`, `config` only on `domain`, and `domain` and `proto` on no other workspace crate. `steward` stands apart: it depends on no workspace crate today.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
