@@ -11,10 +11,10 @@ repository, and runs the check groups that exercise the pure floor: GROUPS below
 - `{"kind": "config", "sha256", "bytes"}`: the bytes of a `.mintswarm/config.yaml` at a base commit;
 - `{"kind": "history", "sha256", "bytes"}`: the raw `git log -z --format=%s` output from a base
   commit;
-- `{"kind": "run", "group", "case", "base", "component", "config", "history", "plan",
+- `{"kind": "run", "group", "case", "base", "components", "config", "history", "plan",
   "issue_document", "analysis", "screen", "analysis_record", "plan_record", "exit", "floor"}`: one
-  run, its config and history named by sha256, each document `{"path", "bytes"}` or null, its exit
-  code, and what the parity test compares of the `floor.json` it wrote, or null when it wrote none:
+  run, its components the list `floor.py` was given, its config and history named by sha256, each
+  document `{"path", "bytes"}` or null, its exit code, and what the parity test compares of the `floor.json` it wrote, or null when it wrote none:
   every field of the record, with each rule as `[rule, result]`, its reasons dropped.
 
 Reasons are not recorded: a reason can carry a Python library's error message, which changes between
@@ -160,7 +160,7 @@ class Capture:
             "group": group,
             "case": self.cases[group],
             "base": {"ref": args["base"], "commit": commit},
-            "component": args["component"],
+            "components": args["components"],
             "config": self.keep("config", config.stdout),
             "history": self.keep("history", history.stdout),
             "plan": self.document(sb, args["plan"]),

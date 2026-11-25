@@ -12,10 +12,10 @@ writes the case's documents and result records into that repository's worktree a
 - `{"kind": "recipe", "branch", "commits"}`: the recipe, each commit with its parents (indices of earlier
   commits), time, encoding (null for UTF-8), message bytes, files (`{"path", "mode", "bytes"}`) and the
   commit id the plumbing gave;
-- `{"kind": "case", "name", "base", "component", "documents", "files", "directories", "exit", "floor"}`: one
-  run of `floor.py`, `base` the ref as given and the commit it is pinned to, `documents` the path given for
-  each of `plan`, `issue_document`, `analysis` and `screen` (or null), `files` every file written under the
-  worktree root (`{"path", "bytes"}`), `directories` every directory made where a file is expected, `exit` the
+- `{"kind": "case", "name", "base", "components", "documents", "files", "directories", "exit", "floor"}`: one
+  run of `floor.py`, `base` the ref as given and the commit it is pinned to, `components` the list given
+  to `--components`, `documents` the path given for each of `plan`, `issue_document`, `analysis` and
+  `screen` (or null), `files` every file written under the worktree root (`{"path", "bytes"}`), `directories` every directory made where a file is expected, `exit` the
   exit code and `floor` the whole text of the `floor.json` it wrote, or null.
 
 Bytes are `{"utf8": text}`, or `{"hex": digits}` when they are not valid UTF-8. The config and the plans keep
@@ -118,7 +118,7 @@ def issue_text() -> str:
     criteria = "".join(f"{i}. {c}\n" for i, c in enumerate(CRITERIA, 1))
     return (
         "# feat(widgets): a second widget\n\n"
-        "- **Issue:** #7\n- **Kind:** implementation\n- **Component:** widgets\n- **Labels:** mintswarm\n\n"
+        "- **Issue:** #7\n- **Kind:** implementation\n- **Components:** widgets\n- **Labels:** mintswarm\n\n"
         "## Problem\n\nOne widget is not enough.\n\n"
         f"## Acceptance criteria\n\n{criteria}"
     )
@@ -198,13 +198,13 @@ def changed(files: dict, **replace) -> dict:
     return out
 
 
-# Each case: name, base ("head", "tree" or "root"), component, documents, files, directories.
+# Each case: name, base ("head", "tree" or "root"), components, documents, files, directories.
 CASES = [
-    ("clean", "head", "widgets", ALL_DOCUMENTS, ALL_FILES, []),
+    ("clean", "head", ["widgets"], ALL_DOCUMENTS, ALL_FILES, []),
     (
         "limits hit",
         "head",
-        "widgets",
+        ["widgets"],
         ALL_DOCUMENTS,
         changed(ALL_FILES, **{PLAN: plan_text([f"widgets/{n}.rs" for n in "bcde"], ["widgets/b.rs"], 400)}),
         [],
@@ -212,7 +212,7 @@ CASES = [
     (
         "require_human path hit",
         "head",
-        "widgets",
+        ["widgets"],
         ALL_DOCUMENTS,
         changed(ALL_FILES, **{PLAN: plan_text(["widgets/secret/key.rs"], [], 5)}),
         [],
@@ -220,17 +220,17 @@ CASES = [
     (
         "optional documents absent",
         "head",
-        "widgets",
+        ["widgets"],
         {"plan": PLAN, "issue_document": None, "analysis": None, "screen": None},
         {PLAN: CLEAN_PLAN},
         [],
     ),
-    ("base a tree", "tree", "widgets", ALL_DOCUMENTS, ALL_FILES, []),
-    ("base without config", "root", "widgets", ALL_DOCUMENTS, ALL_FILES, []),
+    ("base a tree", "tree", ["widgets"], ALL_DOCUMENTS, ALL_FILES, []),
+    ("base without config", "root", ["widgets"], ALL_DOCUMENTS, ALL_FILES, []),
     (
         "missing analysis",
         "head",
-        "widgets",
+        ["widgets"],
         ALL_DOCUMENTS,
         {path: text for path, text in ALL_FILES.items() if path != ANALYSIS},
         [],
@@ -238,7 +238,7 @@ CASES = [
     (
         "plan record a directory",
         "head",
-        "widgets",
+        ["widgets"],
         ALL_DOCUMENTS,
         {path: text for path, text in ALL_FILES.items() if path != ".mintswarm/job/outputs/plan.result.json"},
         [".mintswarm/job/outputs/plan.result.json"],
@@ -290,7 +290,7 @@ def build(tmp: Path, work: Path) -> list:
 
 
 def run_case(tmp: Path, work: Path, ids: list, case: tuple) -> dict:
-    name, base, component, documents, files, directories = case
+    name, base, components, documents, files, directories = case
     shutil.rmtree(work / ".mintswarm", ignore_errors=True)
     for path, text in files.items():
         (work / path).parent.mkdir(parents=True, exist_ok=True)
@@ -305,7 +305,7 @@ def run_case(tmp: Path, work: Path, ids: list, case: tuple) -> dict:
         commit = ref
     else:
         ref = commit = ids[0]
-    argv = ["--plan", documents["plan"], "--component", component, "--base", ref]
+    argv = ["--plan", documents["plan"], "--components", ",".join(components), "--base", ref]
     for key, flag in (("issue_document", "--issue-document"), ("analysis", "--analysis"), ("screen", "--screen")):
         if documents[key] is not None:
             argv += [flag, documents[key]]
@@ -317,7 +317,7 @@ def run_case(tmp: Path, work: Path, ids: list, case: tuple) -> dict:
         "kind": "case",
         "name": name,
         "base": {"ref": ref, "commit": commit},
-        "component": component,
+        "components": components,
         "documents": documents,
         "files": [{"path": path, "bytes": blob(text.encode("utf-8"))} for path, text in files.items()],
         "directories": directories,
