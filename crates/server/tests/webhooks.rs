@@ -12,8 +12,8 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_server::webhooks::{
     BODY_LIMIT, DEFAULT_READ_TIMEOUT, DeliveryLog, Limits, PATH, Receiver, Secret, SecretError,
-    SecretSource, Stopped, Verdict, Writer, bind, delivery_line, format_rfc3339_utc, load_secret,
-    log_line, parse_signature, router, serve, verify,
+    SecretSource, ServeError, Stopped, Verdict, Writer, bind, delivery_line, format_rfc3339_utc,
+    load_secret, log_line, parse_signature, router, serve, verify,
 };
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -53,7 +53,10 @@ impl Fixture {
     /// Drops the receiver and waits until the writer has drained the queue to the log.
     async fn finish(self) -> Done {
         drop(self.receiver);
-        self.writer.finished().await;
+        self.writer
+            .finished()
+            .await
+            .expect("the writer drains the queue");
         Done {
             _dir: self.dir,
             path: self.path,
@@ -465,7 +468,10 @@ async fn a_full_queue_is_refused_and_a_bad_signature_never_reaches_it() {
     );
     release.send(()).expect("the writer waits for the release");
     drop(receiver);
-    writer.finished().await;
+    writer
+        .finished()
+        .await
+        .expect("the writer drains the queue");
     let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
         .expect("the log is UTF-8");
     let deliveries: Vec<Value> = text
@@ -759,7 +765,10 @@ async fn a_failed_write_is_answered_202_and_later_lines_stay_whole() {
         );
     }
     drop(receiver);
-    writer.finished().await;
+    writer
+        .finished()
+        .await
+        .expect("the writer drains the queue");
     let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
         .expect("the log is UTF-8");
     let mut lines = text.lines();
@@ -945,4 +954,76 @@ async fn debug_output_hides_the_secret() {
     let secret = std::str::from_utf8(SECRET).expect("UTF-8");
     assert!(!text.contains(secret));
     assert!(!text.contains("secret to everybody"));
+}
+
+/// A log writer that panics on its first write, as a bug in the writer would.
+struct Panics;
+
+impl Write for Panics {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        panic!("a test writer that panics");
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_writer_that_panics_fails_finished() {
+    let log = DeliveryLog::with_writer(PathBuf::from("deliveries.jsonl"), Panics);
+    let (receiver, writer) = Receiver::start(secret(), log, Limits::default());
+    assert_eq!(
+        send(&receiver, signed("push", "d-1", b"{}")).await,
+        StatusCode::ACCEPTED,
+        "the delivery is answered before it is written"
+    );
+    drop(receiver);
+    let finished = writer.finished().await;
+    assert!(
+        matches!(finished, Err(ServeError::Writer { .. })),
+        "a writer panic is reported: {finished:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writer_that_panics_fails_the_stop_and_later_deliveries_get_500() {
+    let log = DeliveryLog::with_writer(PathBuf::from("deliveries.jsonl"), Panics);
+    let (receiver, writer) = Receiver::start(secret(), log, Limits::default());
+    let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("a local port");
+    let addr = listener.local_addr().expect("the bound address");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve(
+        listener,
+        receiver,
+        writer,
+        async {
+            let _ = stopped.await;
+        },
+        std::future::pending(),
+    ));
+
+    assert_eq!(post_over_tcp(addr, "d-1", b"{}").await, 202);
+    // The writer panics on d-1 in its own thread; once it has, the queue is closed.
+    let mut status = 0;
+    for attempt in 0..100 {
+        status = post_over_tcp(addr, &format!("d-{}", attempt + 2), b"{}").await;
+        if status == 500 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(status, 500, "a delivery after the writer died gets 500");
+
+    stop.send(()).expect("serve waits for the stop");
+    let served = tokio::time::timeout(BOUNDED_WAIT, server)
+        .await
+        .expect("serve returns once stopped")
+        .expect("serve does not panic");
+    assert!(
+        matches!(served, Err(ServeError::Writer { .. })),
+        "the stop is reported as failed: {served:?}"
+    );
 }

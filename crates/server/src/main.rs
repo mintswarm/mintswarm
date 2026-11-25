@@ -133,19 +133,26 @@ fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Serve => ExitCode::SUCCESS,
         Command::Migrate => ExitCode::SUCCESS,
-        Command::Webhooks(args) => match run_webhooks(&args) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("mintswarm-server webhooks: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        Command::Webhooks(args) => exit_code(run_webhooks(&args)),
+    }
+}
+
+/// Reports a failed run on stderr, and gives the exit code: 0 when it succeeded, 1 otherwise.
+fn exit_code(result: Result<(), MainError>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("mintswarm-server webhooks: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
 /// Loads the secret and opens the log before binding, then serves until SIGINT (Ctrl-C) or
 /// SIGTERM. A stop waits for the requests in progress until the stop deadline or a second
-/// signal, drains the queue to the log, and says on stderr how it ended.
+/// signal, drains the queue to the log, and says on stderr how it ended. When the log writer
+/// failed, deliveries answered `202` may be lost, and the run fails with
+/// [`webhooks::ServeError::Writer`] instead.
 fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -166,16 +173,25 @@ fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
         let (requested, forced) = stop.spawn(deadline);
         let (receiver, writer) = Receiver::start(secret, log, limits);
         let stopped = webhooks::serve(listener, receiver, writer, requested, forced).await?;
-        let how = match stopped {
-            Stopped::Drained => "every request in progress was answered".to_owned(),
-            Stopped::DeadlinePassed => format!(
-                "the {deadline}-second stop deadline passed, and the requests still in progress were left unanswered"
-            ),
-            Stopped::Forced => "a second signal came, and the requests still in progress were left unanswered".to_owned(),
-        };
-        eprintln!("mintswarm-server webhooks: stopped; {how}; every queued delivery was handled");
+        eprintln!("{}", stopped_line(stopped, deadline));
         Ok(())
     })
+}
+
+/// The last stderr line of a stop whose queue was drained, after a stop deadline of `deadline`
+/// seconds.
+fn stopped_line(stopped: Stopped, deadline: u64) -> String {
+    let how = match stopped {
+        Stopped::Drained => "every request in progress was answered".to_owned(),
+        Stopped::DeadlinePassed => format!(
+            "the {deadline}-second stop deadline passed, and the requests still in progress were left unanswered"
+        ),
+        Stopped::Forced => {
+            "a second signal came, and the requests still in progress were left unanswered"
+                .to_owned()
+        }
+    };
+    format!("mintswarm-server webhooks: stopped; {how}; every queued delivery was handled")
 }
 
 /// The signals that stop the receiver, watched from before it listens, so a stop never kills
@@ -240,11 +256,23 @@ impl Stop {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use std::process::ExitCode;
+
+    use super::{Cli, MainError, exit_code};
     use clap::CommandFactory;
+    use mintswarm_server::webhooks::ServeError;
 
     #[test]
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn a_failed_log_writer_fails_the_run() {
+        let failed = MainError::Serve(ServeError::Writer {
+            reason: "it panicked",
+        });
+        assert_eq!(exit_code(Err(failed)), ExitCode::FAILURE);
+        assert_eq!(exit_code(Ok(())), ExitCode::SUCCESS);
     }
 }

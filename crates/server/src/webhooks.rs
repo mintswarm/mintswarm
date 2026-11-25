@@ -574,16 +574,24 @@ impl fmt::Debug for Queued {
 }
 
 /// The task that drains the queue to the log. It ends once the queue is empty and either every
-/// [`Receiver`] clone is dropped or [`serve`] has closed the queue.
+/// [`Receiver`] clone is dropped or [`serve`] has closed the queue. If it panics, the queue
+/// closes with it: what it still held is lost, and later verified deliveries get `500` and a
+/// stderr line; [`Writer::finished`] then fails.
 #[derive(Debug)]
 pub struct Writer(JoinHandle<()>);
 
 impl Writer {
-    /// Waits until the queue is drained and the writer has ended.
-    pub async fn finished(self) {
-        // The writer only ends by draining the queue; a panic in it has already been reported
-        // on stderr by the runtime, and there is nothing left to write.
-        let _ = self.0.await;
+    /// Waits until the queue is drained and the writer has ended. Fails with
+    /// [`ServeError::Writer`] when the writer ended without draining it, as when it panicked:
+    /// the deliveries it still held were answered `202` but may not be in the log.
+    pub async fn finished(self) -> Result<(), ServeError> {
+        self.0.await.map_err(|error| ServeError::Writer {
+            reason: if error.is_panic() {
+                "it panicked"
+            } else {
+                "it was cancelled"
+            },
+        })
     }
 }
 
@@ -763,6 +771,15 @@ pub enum ServeError {
         /// The underlying error.
         source: io::Error,
     },
+    /// The writer ended without draining the queue. Deliveries it still held were answered
+    /// `202` but may not be in the log, and requests after it ended got `500`.
+    #[error(
+        "the log writer failed ({reason}); deliveries answered 202 may be missing from the log"
+    )]
+    Writer {
+        /// Why, in our words. The panic's own message is not carried.
+        reason: &'static str,
+    },
 }
 
 /// Binds `addr`.
@@ -799,7 +816,9 @@ pub enum Stopped {
 /// or `force` resolves, whichever comes first; `force` is only awaited after `shutdown`. It
 /// then closes the queue, so a request still open that later passes its signature check gets
 /// `500` and a stderr line, and waits for `writer` to drain what was queued, so every delivery
-/// answered `202` is written, or reported on stderr, before it returns.
+/// answered `202` is written, or reported on stderr, before it returns. When the writer failed
+/// instead, it returns [`ServeError::Writer`], even if the server also stopped with an error:
+/// deliveries answered `202` may have been lost, which matters most.
 pub async fn serve(
     listener: TcpListener,
     receiver: Receiver,
@@ -835,7 +854,7 @@ pub async fn serve(
     // there is nothing to stop. It is awaited after an error too, to write what was answered.
     let _ = queue.send(Item::Stop).await;
     drop(queue);
-    writer.finished().await;
+    writer.finished().await?;
     served
         .map(|()| stopped)
         .map_err(|source| ServeError::Serve {
