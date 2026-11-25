@@ -4,6 +4,11 @@
 //! `mintswarm.runner.v1.Secret` is generated without a derived `Debug`:
 //! `src/lib.rs` implements one that prints `Secret(<redacted>)`, so no secret
 //! is ever logged (design §9.5).
+//!
+//! The transport helpers are not generated: tonic's `connect(dst)` constructor
+//! on `RunnerServiceClient<Channel>` would clash with the client method of the
+//! `Connect` RPC, which is also named `connect`. Clients are built with
+//! `RunnerServiceClient::new(channel)` from a `tonic::transport::Channel`.
 
 use std::error::Error;
 use std::fs;
@@ -28,7 +33,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let fds = protox::compile(&files, [&root])?;
     tonic_prost_build::configure()
+        // `RunnerServiceClient::connect(dst)` would clash with the `Connect`
+        // RPC's `connect` method; see the module doc.
+        .build_transport(false)
         .skip_debug([".mintswarm.runner.v1.Secret"])
+        // `Hello` is far larger than the other cases; it is sent once per
+        // stream, so it stays unboxed.
+        .enum_attribute(
+            ".mintswarm.runner.v1.ConnectRequest.body",
+            "#[allow(clippy::large_enum_variant)]",
+        )
         .compile_fds(fds)?;
     Ok(())
 }
