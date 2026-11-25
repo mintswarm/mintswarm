@@ -115,15 +115,15 @@ fn digits(s: &str, radix: u32) -> bool {
 
 /// Whether `YAML_NUMBER` matches all of `text`.
 fn is_yaml_number(text: &str) -> bool {
-    if let Some(octal) = text.strip_prefix("0o") {
-        if digits(octal, 8) {
-            return true;
-        }
+    if let Some(octal) = text.strip_prefix("0o")
+        && digits(octal, 8)
+    {
+        return true;
     }
-    if let Some(hex) = text.strip_prefix("0x") {
-        if digits(hex, 16) {
-            return true;
-        }
+    if let Some(hex) = text.strip_prefix("0x")
+        && digits(hex, 16)
+    {
+        return true;
     }
     if matches!(text, ".nan" | ".NaN" | ".NAN") {
         return true;
@@ -714,13 +714,13 @@ pub(crate) fn parse_result(block: &[&str], first: usize) -> Result<StageOutcome,
                         Slot::None
                     }
                 };
-                if let (Slot::Str(status), "status") = (&value, key) {
-                    if !STATUSES.contains(&status.as_str()) {
-                        violations.push(format!(
-                            "line {here}: status must be one of {}, not {status:?}",
-                            STATUSES.join(", ")
-                        ));
-                    }
+                if let (Slot::Str(status), "status") = (&value, key)
+                    && !STATUSES.contains(&status.as_str())
+                {
+                    violations.push(format!(
+                        "line {here}: status must be one of {}, not {status:?}",
+                        STATUSES.join(", ")
+                    ));
                 }
                 value
             }

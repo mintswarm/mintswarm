@@ -117,7 +117,7 @@ fn messages_carry_the_design_fields() {
     let missing = StatBlobsResponse {
         missing: stat.sha256.clone(),
     };
-    assert_eq!(missing.missing, [digest.clone()]);
+    assert_eq!(missing.missing, std::slice::from_ref(&digest));
 
     let put_header = PutBlobRequest {
         part: Some(put_blob_request::Part::Header(PutBlobHeader {
