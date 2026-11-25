@@ -8,7 +8,9 @@
 //! writes": issues with their comments since a cursor, parent and sub-issue links, issue
 //! artifacts and pull requests with their reviews and checks, paged, revalidated with ETags and
 //! paused by `retry-after`. [`comment_mark`] tells steers and notes from other comments.
-//! [`ContentLimiter`] budgets content-creating requests for the writes to come.
+//! [`GitHubRepoReads`] reads the default branch's head and a file's bytes at a commit through
+//! the same GET path, so the plane needs no clone. [`ContentLimiter`] budgets content-creating
+//! requests for the writes to come.
 
 mod catalogue;
 mod config;
@@ -19,6 +21,7 @@ mod key_store;
 mod limit;
 mod pulls;
 mod reads;
+mod repo;
 mod rest;
 mod secret;
 mod token;
@@ -33,6 +36,7 @@ pub use reads::{
     GitHubReads, KindSource, Kinds, MAX_PAGES, NOTE_MARKER, PER_PAGE, ReadError, STEER_MARKER,
     comment_mark,
 };
+pub use repo::GitHubRepoReads;
 pub use rest::ClientError;
 pub use secret::{SecretBytes, Token};
 pub use token::{

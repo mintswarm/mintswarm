@@ -42,10 +42,10 @@ impl<K: Eq + Hash + Clone, V: Clone> EtagCache<K, V> {
     pub(crate) fn insert(&mut self, key: K, etag: String, body: V) {
         if let Some((_, _, stored)) = self.entries.get(&key) {
             self.order.remove(stored);
-        } else if self.entries.len() >= self.limit {
-            if let Some((_, oldest)) = self.order.pop_first() {
-                self.entries.remove(&oldest);
-            }
+        } else if self.entries.len() >= self.limit
+            && let Some((_, oldest)) = self.order.pop_first()
+        {
+            self.entries.remove(&oldest);
         }
         self.stored += 1;
         self.order.insert(self.stored, key.clone());

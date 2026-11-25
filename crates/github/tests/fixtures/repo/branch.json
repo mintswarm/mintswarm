@@ -1,0 +1,24 @@
+{
+  "name": "master",
+  "commit": {
+    "sha": "4e1d2c3b5a6978877665544332211009f8e7d6c5",
+    "node_id": "C_kwDOExample",
+    "url": "https://api.github.com/repos/acme/widgets/commits/4e1d2c3b5a6978877665544332211009f8e7d6c5",
+    "commit": {
+      "message": "feat: widgets",
+      "tree": {
+        "sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6"
+      }
+    },
+    "parents": [
+      {
+        "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+      }
+    ]
+  },
+  "_links": {
+    "self": "https://api.github.com/repos/acme/widgets/branches/master",
+    "html": "https://github.com/acme/widgets/tree/master"
+  },
+  "protected": true
+}

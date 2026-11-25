@@ -568,7 +568,7 @@ fn process_uid() -> u32 {
 
 /// Decodes standard base64 with padding, as `openssl base64 -d -A` does, ignoring surrounding
 /// whitespace.
-fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64(text: &[u8]) -> Option<Vec<u8>> {
     let text = text.trim_ascii();
     if text.len() % 4 != 0 {
         return None;
