@@ -270,7 +270,9 @@ fn merge_base_finds_the_common_ancestor() {
 fn diff_reports_kinds_modes_and_lines() {
     let fx = Fixture::new();
     let store = fx.fetched_store("diff");
-    let plain = store.diff(&fx.base, &fx.side, DiffOpts::default()).unwrap();
+    let plain = store
+        .diff(&fx.base, &fx.side, DiffOpts::default(), &[])
+        .unwrap();
     let kinds: BTreeMap<RepoPath, ChangeKind> = plain
         .files
         .iter()
@@ -309,6 +311,7 @@ fn diff_reports_kinds_modes_and_lines() {
                 raw: true,
                 patch: true,
             },
+            &[],
         )
         .unwrap();
     let file = |name: &[u8]| {
@@ -371,14 +374,14 @@ fn diff_reports_kinds_modes_and_lines() {
 
     assert!(
         store
-            .diff(&fx.side, &fx.side, DiffOpts::default())
+            .diff(&fx.side, &fx.side, DiffOpts::default(), &[])
             .unwrap()
             .files
             .is_empty()
     );
     let bad = RevId(format!("{}^", fx.side.0));
     assert!(matches!(
-        store.diff(&bad, &fx.side, DiffOpts::default()),
+        store.diff(&bad, &fx.side, DiffOpts::default(), &[]),
         Err(GitError::RevisionSyntax(_))
     ));
 }
@@ -488,6 +491,7 @@ fn diff_equals_landing_floor_diff() {
                     raw: true,
                     patch: false,
                 },
+                &[],
             )
             .unwrap();
         let letter = |kind: ChangeKind| match kind {

@@ -1,11 +1,12 @@
 //! `diff` between two commits' trees, with the landing floor's options.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::vcs::{ChangeKind, ChangeSet, DiffOpts, FileChange, RepoPath};
 
-use super::read::{id_text, resolve};
+use super::read::{id_text, path_args, resolve};
 use super::{GitError, GitStore};
 
 /// The landing floor's diff options (`landing/floor.py` `DIFF_OPTIONS`), exactly.
@@ -34,21 +35,25 @@ pub const PATCH_OPTIONS: [&str; 7] = [
     "--submodule=short",
 ];
 
-/// The changes from `base`'s tree to `head`'s.
+/// The changes from `base`'s tree to `head`'s, limited to `paths` unless it is empty.
 pub(super) fn diff(
     store: &GitStore,
     base: &RevId,
     head: &RevId,
     opts: &DiffOpts,
+    paths: &[RepoPath],
 ) -> Result<ChangeSet, GitError> {
     let base = resolve(store, store.checked_id(base)?)?.0;
     let head = resolve(store, store.checked_id(head)?)?.0;
+    let paths = path_args(paths, "diff")?;
     let run = |form: &[&str], options: &[&str]| {
         let args = std::iter::once("diff")
             .chain(form.iter().copied())
             .chain(options.iter().copied())
             .chain(PINNED_OPTIONS)
-            .chain([base.as_str(), head.as_str()]);
+            .chain([base.as_str(), head.as_str(), "--"])
+            .map(OsStr::new)
+            .chain(paths.iter().copied());
         store.git(args)
     };
 

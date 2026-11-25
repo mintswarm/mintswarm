@@ -2,6 +2,7 @@
 //! the test-only `file://` remote.
 
 mod bundle;
+mod history;
 mod read;
 mod retry;
 mod snapshot;
@@ -447,8 +448,8 @@ fn observe(store: &GitStore, fx: &Fixture) -> String {
         store.log(&range, &[]).unwrap(),
         store.log(&to_side, &[path(b"keep.txt")]).unwrap(),
         store.merge_base(&fx.main, &fx.side).unwrap(),
-        store.diff(&fx.base, &fx.side, all.clone()).unwrap(),
-        store.diff(&fx.main, &fx.merged, all).unwrap(),
+        store.diff(&fx.base, &fx.side, all.clone(), &[]).unwrap(),
+        store.diff(&fx.main, &fx.merged, all, &[]).unwrap(),
     )
 }
 

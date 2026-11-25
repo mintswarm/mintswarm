@@ -203,8 +203,15 @@ pub trait Vcs: Send + Sync {
     /// The best common ancestor of two commits.
     fn merge_base(&self, a: &RevId, b: &RevId) -> Result<Option<RevId>, Self::Error>;
 
-    /// The changes from one commit to another.
-    fn diff(&self, base: &RevId, head: &RevId, opts: DiffOpts) -> Result<ChangeSet, Self::Error>;
+    /// The changes from one commit to another, limited to the paths and the trees under them;
+    /// an empty `paths` means the whole tree.
+    fn diff(
+        &self,
+        base: &RevId,
+        head: &RevId,
+        opts: DiffOpts,
+        paths: &[RepoPath],
+    ) -> Result<ChangeSet, Self::Error>;
 
     /// Make a tree of a commit at `dest`.
     fn materialise(

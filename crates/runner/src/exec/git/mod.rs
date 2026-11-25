@@ -213,8 +213,14 @@ impl Vcs for GitStore {
         read::merge_base(self, a, b)
     }
 
-    fn diff(&self, base: &RevId, head: &RevId, opts: DiffOpts) -> Result<ChangeSet, GitError> {
-        diff::diff(self, base, head, &opts)
+    fn diff(
+        &self,
+        base: &RevId,
+        head: &RevId,
+        opts: DiffOpts,
+        paths: &[RepoPath],
+    ) -> Result<ChangeSet, GitError> {
+        diff::diff(self, base, head, &opts, paths)
     }
 
     fn materialise(&self, rev: &RevId, dest: &Path, mode: TreeMode) -> Result<Workspace, GitError> {

@@ -93,6 +93,23 @@ fn path_arg(path: &RepoPath) -> Option<&OsStr> {
     (!path.0.is_empty() && !path.0.contains(&0)).then(|| OsStr::from_bytes(&path.0))
 }
 
+/// The paths `command` limits itself to, as command-line arguments; an empty path or one with a
+/// NUL byte is refused.
+pub(super) fn path_args<'a>(
+    paths: &'a [RepoPath],
+    command: &str,
+) -> Result<Vec<&'a OsStr>, GitError> {
+    paths
+        .iter()
+        .map(|path| {
+            path_arg(path).ok_or_else(|| GitError::Parse {
+                command: command.to_owned(),
+                detail: "an empty path or one with a NUL byte".to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// One `ls-tree -z` record: mode, type, id and path.
 struct LsTreeEntry<'a> {
     mode: u32,
@@ -217,13 +234,7 @@ pub(super) fn log(
         args.push(format!("^{}", commit(store, from)?).into());
     }
     args.push("--".into());
-    for path in paths {
-        let arg = path_arg(path).ok_or_else(|| GitError::Parse {
-            command: "log".to_owned(),
-            detail: "an empty path or one with a NUL byte".to_owned(),
-        })?;
-        args.push(arg.to_owned());
-    }
+    args.extend(path_args(paths, "log")?.into_iter().map(OsStr::to_owned));
     let out = success(
         "log",
         store.output(store.command_with(LOG_CONFIG, &args), "log")?,
