@@ -104,7 +104,8 @@ fn map_check_run(body: &Value, endpoint: &str) -> Result<CheckState, ReadError> 
 fn map_status(body: &Value, endpoint: &str) -> Result<CheckState, ReadError> {
     Ok(CheckState {
         name: str_at(body, "context", endpoint)?,
-        conclusion: opt_str_at(body, "state", endpoint)?,
+        // A pending status has not concluded, like a check run whose conclusion is null.
+        conclusion: opt_str_at(body, "state", endpoint)?.filter(|state| state != "pending"),
         source: String::from("status"),
         app: None,
     })

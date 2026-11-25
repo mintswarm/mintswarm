@@ -505,7 +505,10 @@ async fn read_pr_maps_reviews_and_checks() {
         200,
         serde_json::json!({
             "state": "pending",
-            "statuses": [{"context": "mintswarm/gates", "state": "pending"}],
+            "statuses": [
+                {"context": "mintswarm/gates", "state": "pending"},
+                {"context": "mintswarm/review", "state": "failure"},
+            ],
         })
         .to_string(),
     );
@@ -552,7 +555,14 @@ async fn read_pr_maps_reviews_and_checks() {
             },
             CheckState {
                 name: "mintswarm/gates".into(),
-                conclusion: Some("pending".into()),
+                // A pending status has not concluded, like the running check run above.
+                conclusion: None,
+                source: "status".into(),
+                app: None,
+            },
+            CheckState {
+                name: "mintswarm/review".into(),
+                conclusion: Some("failure".into()),
                 source: "status".into(),
                 app: None,
             },

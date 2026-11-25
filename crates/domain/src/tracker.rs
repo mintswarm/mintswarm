@@ -253,6 +253,8 @@ pub struct Review {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckState {
     pub name: String,
+    /// How the check ended (`success`, `failure`, a status's `error`, ...); `None` while it
+    /// is still running or pending.
     pub conclusion: Option<String>,
     /// `check-run` or `status`.
     pub source: String,
