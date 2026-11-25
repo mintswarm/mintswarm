@@ -109,16 +109,27 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
 - **Briefs only.** Each entry in the tree above is a 3–5 word brief saying what the directory or file is, never what it contains. Adding a module, type or subcommand needs no edit to this document; only a new directory, a new dependency edge or a changed rule does.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
-- **Dependency direction is one-way.** `A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement. The allowed edges between workspace crates:
+- **Dependency direction is one-way.** `A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement. These are the allowed edges between workspace crates, and a crate may also depend on whatever its allowed dependencies may; the manifests may use any subset:
   - `domain` ← `config`
   - `domain` ← `github`
   - `domain` ← `rules`
-  - `config` ← `rules`
   - `domain` ← `runner`
+  - `config` ← `proto`
+  - `config` ← `rules`
   - `config` ← `runner`
+  - `proto` ← `core`
+  - `proto` ← `runner`
+  - `proto` ← `console-mcp`
+  - `github` ← `core`
+  - `github` ← `runner`
+  - `github` ← `server`
   - `rules` ← `runner`
   - `core` ← `server`
-  - `github` ← `server`
+  - `core` ← `cli`
+  - `runner` ← `server`
+  - `runner` ← `cli`
+  - `console-mcp` ← `server`
+  - `console-mcp` ← `cli`
 
   `core` and `runner` never depend on each other; anything they share goes down a level. `proto` never depends on `github`. `steward` stands apart and depends on no workspace crate.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
