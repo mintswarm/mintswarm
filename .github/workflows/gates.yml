@@ -11,7 +11,7 @@ env:
   # Must match the yq the dogfood scripts are developed and probed against.
   YQ_VERSION: v4.45.1
   YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
-  # Must match the buf version CONTRIBUTING.md names; BUF_SHA256 is the release's sha256.txt entry for buf-Linux-x86_64.
+  # The one pin of buf; BUF_SHA256 is the release's sha256.txt entry for buf-Linux-x86_64.
   BUF_VERSION: v1.75.0
   BUF_SHA256: fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b
 
