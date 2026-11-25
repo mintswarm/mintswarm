@@ -1,13 +1,16 @@
-//! The git VCS adapter, design §8: the trusted bare store, the neutral git environment, fetch
-//! and the read operations, on the git command-line tool.
+//! The git VCS adapter, design §8: the trusted bare store, the neutral git environment, fetch,
+//! the read operations, read-only snapshots and the plan floor's input bundle, on the git
+//! command-line tool.
 //!
 //! Every git command runs through [`GitStore`]'s command builder, which applies the neutral
 //! environment; nothing else in this module starts git.
 
+mod bundle;
 mod diff;
 mod env;
 mod fetch;
 mod read;
+mod snapshot;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -22,7 +25,9 @@ use mintswarm_domain::vcs::{
     Workspace,
 };
 
+pub use bundle::{BundleError, Documents, plan_floor_bundle};
 pub use diff::{DIFF_OPTIONS, PATCH_OPTIONS, PINNED_OPTIONS};
+pub use snapshot::{Snapshots, snapshots_path};
 pub use store::{GIT_REQUIREMENT, store_path};
 
 /// What went wrong in the git adapter.
@@ -111,6 +116,16 @@ pub enum GitError {
         #[source]
         source: std::io::Error,
     },
+    /// A tree path a snapshot does not write: an empty, `.` or `..` component, a `.git` component
+    /// in any case, or an entry under a symlink or a file.
+    #[error("the tree path `{0}` is refused")]
+    UnsafePath(String),
+    /// A destination that already exists.
+    #[error("{0} already exists")]
+    Exists(PathBuf),
+    /// A release of a snapshot no job holds.
+    #[error("no job holds the snapshot of {0}")]
+    NotHeld(String),
     /// An operation this adapter does not implement yet.
     #[error("{0} is not supported by the git adapter yet")]
     Unsupported(&'static str),
@@ -181,13 +196,8 @@ impl Vcs for GitStore {
         diff::diff(self, base, head, &opts)
     }
 
-    fn materialise(
-        &self,
-        _rev: &RevId,
-        _dest: &Path,
-        _mode: TreeMode,
-    ) -> Result<Workspace, GitError> {
-        Err(GitError::Unsupported("materialise"))
+    fn materialise(&self, rev: &RevId, dest: &Path, mode: TreeMode) -> Result<Workspace, GitError> {
+        snapshot::materialise(self, rev, dest, mode)
     }
 
     fn changes(&self, _ws: &Workspace) -> Result<ChangeSet, GitError> {

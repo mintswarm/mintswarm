@@ -1,7 +1,9 @@
 //! Tests of the git adapter, on fixture repositories built with git plumbing and fetched through
 //! the test-only `file://` remote.
 
+mod bundle;
 mod read;
+mod snapshot;
 mod store;
 
 use std::ffi::{OsStr, OsString};
@@ -282,6 +284,33 @@ impl Fixture {
         store.fetch(&self.remote(), &wants, None).unwrap();
         store
     }
+}
+
+/// A commit of `tree` on `parents` in the repository at `git_dir`, made by `commit-tree` with
+/// `message` as given on its standard input, at `time` with the fixture's identities, and with an
+/// `encoding` header when `encoding` names one.
+pub(super) fn commit_with(
+    git_dir: &Path,
+    tree: &str,
+    parents: &[&str],
+    message: &[u8],
+    encoding: Option<&str>,
+    time: u64,
+) -> RevId {
+    let mut command = fixture_command(Some(git_dir));
+    let date = format!("{time} +0000");
+    command
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date);
+    let mut args = Vec::new();
+    if let Some(encoding) = encoding {
+        args.extend(["-c".to_owned(), format!("i18n.commitEncoding={encoding}")]);
+    }
+    args.extend(["commit-tree".to_owned(), tree.to_owned()]);
+    for parent in parents {
+        args.extend(["-p".to_owned(), (*parent).to_owned()]);
+    }
+    RevId(text(&run_fixture(command, &args, message)))
 }
 
 /// Output as text without its final newline.
