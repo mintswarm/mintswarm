@@ -377,6 +377,12 @@ pub fn capture(reply: &str) -> Result<Capture, Fault> {
 /// its `outputs` are exactly `[.mintswarm/job/outputs/<artefact>.md]`, and a `failed` outcome has
 /// a non-blank `reason`. Every mismatch is listed at once, each starting with its field, under
 /// `Result block`, quoting [`EXPECTED_RULE`].
+///
+/// `questions` empty under `needs_input` is not checked here: [`capture`] has already rejected it
+/// under the `needs_input` status rule, quoting [`CONTENT_RULE`], with the message
+/// `needs_input needs a must_decide or recommended question`. That message names the field
+/// through the status rule rather than starting with `questions:`, because its wording is fixed
+/// by `save-output.py`, which capture matches byte for byte.
 pub fn check_expected(outcome: &StageOutcome, artefact: &str) -> Result<(), Fault> {
     let mut found = Vec::new();
     if outcome.artefact != artefact {

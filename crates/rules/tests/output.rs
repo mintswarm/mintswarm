@@ -135,6 +135,10 @@ fn check_expected_names_each_field() {
     );
 }
 
+/// `questions` empty under `needs_input` is rejected by `capture`, before `check_expected` runs,
+/// under the `needs_input` status rule. Its message does not start with `questions:` as the
+/// `check_expected` messages start with their field: the wording is fixed by `save-output.py`,
+/// which capture matches exactly.
 #[test]
 fn needs_input_without_a_blocking_question_is_rejected() {
     let reply = result_reply(&[
