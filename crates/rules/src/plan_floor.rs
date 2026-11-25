@@ -120,7 +120,8 @@ pub struct Bundle {
     pub analysis: Option<Item>,
     /// The screen record, when given.
     pub screen: Option<Item>,
-    /// The result record beside the analysis, when there is one; read only with the analysis.
+    /// The result record beside the analysis, when there is one; read, and its binding checked,
+    /// only with the analysis.
     pub analysis_record: Option<Item>,
     /// The result record beside the plan, when there is one.
     pub plan_record: Option<Item>,
@@ -138,7 +139,7 @@ impl Bundle {
             ),
             (
                 "history",
-                "the subjects",
+                "of the base",
                 self.subjects.bytes.as_slice(),
                 self.subjects.sha256.as_str(),
             ),
@@ -148,7 +149,10 @@ impl Bundle {
             ("issue document", self.issue_document.as_ref()),
             ("analysis", self.analysis.as_ref()),
             ("screen record", self.screen.as_ref()),
-            ("result record", self.analysis_record.as_ref()),
+            (
+                "result record",
+                self.analysis.as_ref().and(self.analysis_record.as_ref()),
+            ),
             ("result record", self.plan_record.as_ref()),
         ] {
             if let Some(item) = item {

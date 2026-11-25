@@ -233,6 +233,12 @@ fn a_mismatched_binding_is_unusable() {
         sha256.push_str(last);
     });
     assert_eq!(byte.len(), 8);
+    let mut unread = byte[6].1.clone();
+    unread.analysis = None;
+    assert!(
+        plan_floor::floor(&unread).is_ok(),
+        "the analysis record is not read without the analysis"
+    );
     for (name, bundle) in byte.into_iter().chain(digest) {
         let (outcome, text) = outcome(&bundle);
         assert_eq!(exit::code(&outcome), 2, "{name}: {outcome:?}");
