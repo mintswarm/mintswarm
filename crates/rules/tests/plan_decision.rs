@@ -222,13 +222,15 @@ fn every_selftest_decision_case_matches() {
             model: &run.model,
         };
         let decided = plan_decision::decide(&inputs);
-        let (code, text, stdout) = match &decided {
+        // decision.py prints nothing on unusable input, so the error goes only into the failure
+        let (code, text, stdout, unusable) = match &decided {
             Ok(d) => (
                 exit::code(&d.outcome()),
                 Some(d.text().as_bytes().to_vec()),
                 d.comment().unwrap_or("").to_owned(),
+                String::new(),
             ),
-            Err(e) => (2, None, format!("(unusable: {e})")),
+            Err(e) => (2, None, String::new(), format!(" (unusable: {e})")),
         };
         let same_record = if loosen {
             relaxed.push(run.name.clone());
@@ -239,7 +241,7 @@ fn every_selftest_decision_case_matches() {
         };
         if code != run.exit || !same_record || stdout != run.stdout {
             failures.push(format!(
-                "{}: exit {code}, expected {}\n--- got\n{}{}\n--- expected\n{}{}",
+                "{}: exit {code}{unusable}, expected {}\n--- got\n{}{}\n--- expected\n{}{}",
                 run.name,
                 run.exit,
                 text.as_deref()
@@ -354,9 +356,47 @@ fn the_plan_decision_fixture_is_fresh() {
     let captured = captured.expect("plan_decision_capture.py wrote its output");
     let committed =
         fs::read(fixtures().join("plan_decision.jsonl")).expect("the committed fixture");
+    let (captured, captured_inert) = split_inert(&captured);
+    let (committed, committed_inert) = split_inert(&committed);
     assert!(
         captured == committed,
         "tests/fixtures/plan_decision.jsonl is stale against decision.py, floor.py and their \
          self-test; refresh it with:\n    {REFRESH}"
     );
+    // The removed ranges follow the Unicode version of the Python running the capture, so they
+    // are compared only when that version is the committed one.
+    let version = |line: &[u8]| -> String {
+        let value: Value = serde_json::from_slice(line).expect("the inert line is JSON");
+        value["unicode"]
+            .as_str()
+            .expect("the inert line names its Unicode version")
+            .to_owned()
+    };
+    let (running, recorded) = (version(captured_inert), version(committed_inert));
+    if running == recorded {
+        assert!(
+            captured_inert == committed_inert,
+            "the inert line of tests/fixtures/plan_decision.jsonl is stale; refresh it with:\n    \
+             {REFRESH}"
+        );
+    } else {
+        eprintln!(
+            "the inert line is not compared: python3 has Unicode {running}, the fixture {recorded}"
+        );
+    }
+}
+
+/// The fixture's lines apart from its `inert` line, and that line.
+fn split_inert(fixture: &[u8]) -> (Vec<&[u8]>, &[u8]) {
+    let mut inert = None;
+    let mut rest = Vec::new();
+    for line in fixture.split(|&b| b == b'\n') {
+        if line.starts_with(br#"{"kind": "inert""#) {
+            assert!(inert.is_none(), "one inert line");
+            inert = Some(line);
+        } else {
+            rest.push(line);
+        }
+    }
+    (rest, inert.expect("the inert line"))
 }
