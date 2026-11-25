@@ -890,7 +890,7 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         r, "crates/github/src/lib.rs", base(files=["crates/github/src/lib.rs"]), scope_rules, component="domain"
     )
     expect_clean(r, "LICENSE.md", base(files=["LICENSE.md"]), ["component-scope", "no-component"])
-    expect_hit(r, "Makefile", base(files=["Makefile"]), "no-component")
+    expect_hit(r, "unowned-root-file", base(files=["unowned-root-file"]), "no-component")
 
     def docs_files(n: int) -> list:
         return [f"docs/limit-{i}.md" for i in range(n)]
