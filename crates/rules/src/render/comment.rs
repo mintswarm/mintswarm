@@ -134,10 +134,10 @@ fn disqualifier_text(package: &Package<'_>) -> String {
             if !ids.is_empty() {
                 text.push_str(&format!(" ({})", ids.join(", ")));
             }
-        } else if *item == "typosquat" {
-            if let Some(of) = field(problems, "typosquat_of").filter(|v| **v != Json::Null) {
-                text.push_str(&format!(" of {}", span_of(of)));
-            }
+        } else if *item == "typosquat"
+            && let Some(of) = field(problems, "typosquat_of").filter(|v| **v != Json::Null)
+        {
+            text.push_str(&format!(" of {}", span_of(of)));
         }
         parts.push(text);
     }
