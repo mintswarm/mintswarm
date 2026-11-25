@@ -1,15 +1,20 @@
-//! Loaders for mintswarm's YAML configuration: the repository config `.mintswarm/config.yaml` and
-//! the runner config.
+//! Loaders for mintswarm's YAML configuration: the repository config `.mintswarm/config.yaml`,
+//! the runner config and the capability probe definitions.
 //!
 //! YAML is read natively, with the same result as `yq -p=yaml -o=json .` (yq v4.45.1) gives for
 //! it, and the repository config is then checked as the dogfood floors check it.
 
+mod probes;
 mod runner;
 mod schema;
 mod yaml;
 
 use std::fmt;
 
+pub use probes::{
+    DEFAULT_PROBE_TIMEOUT, DetectMethod, ProbeDefinition, ProbeOrigin, load_probe_definition,
+    merge_probe_definitions,
+};
 pub use runner::{DEFAULT_WALL_CLOCK, RunnerConfig, Stage, load_runner_config};
 pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
