@@ -6,10 +6,11 @@
 
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AttemptId, JobId, RevId, RunnerId, Seq, WorkerId};
+use crate::ids::{AttemptId, DirectiveId, JobId, LeaseEpoch, RevId, RunnerId, Seq, WorkerId};
 use crate::records::Bound;
 use crate::work::{StageJob, StageOutcome, StepJob, StepKind, Usage};
 
@@ -28,6 +29,33 @@ pub struct ProbeSummary {
     pub passed: bool,
 }
 
+/// Whether a runner takes work or only watches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerMode {
+    #[default]
+    Worker,
+    Observer,
+}
+
+/// How far a held attempt has got on the runner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptPhase {
+    /// Claimed, but its harness has not started yet.
+    Assigned,
+    /// Its harness is running.
+    Started,
+}
+
+/// An attempt the runner still holds when it connects, with the lease epoch it holds it under.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldAttempt {
+    pub attempt: AttemptId,
+    pub lease_epoch: LeaseEpoch,
+    pub phase: AttemptPhase,
+}
+
 /// What a runner says about itself when it connects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerInfo {
@@ -40,6 +68,20 @@ pub struct RunnerInfo {
     pub account: Option<String>,
     pub workers: u32,
     pub repository: String,
+    #[serde(default)]
+    pub mode: RunnerMode,
+    /// Optional protocol features the runner supports, by name.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// The step kinds the runner can execute.
+    #[serde(default)]
+    pub step_kinds: Vec<StepKind>,
+    /// The minor version of the protocol the runner speaks.
+    #[serde(default)]
+    pub protocol_minor: u32,
+    /// The attempts the runner still holds, so the plane can keep or revoke their leases.
+    #[serde(default)]
+    pub held_attempts: Vec<HeldAttempt>,
 }
 
 /// The answer to `hello`.
@@ -61,6 +103,8 @@ pub enum Work {
 /// How long the runner holds an assignment without renewing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
+    /// The fence every write for the attempt carries.
+    pub epoch: LeaseEpoch,
     /// RFC 3339.
     pub expires_at: String,
 }
@@ -90,13 +134,16 @@ pub struct Heartbeat {
 pub enum DirectiveKind {
     Cancel {
         attempt: AttemptId,
+        lease_epoch: LeaseEpoch,
     },
     Interrupt {
         attempt: AttemptId,
+        lease_epoch: LeaseEpoch,
         message: Option<String>,
     },
     Deliver {
         attempt: AttemptId,
+        lease_epoch: LeaseEpoch,
         message: String,
     },
     Drain,
@@ -106,7 +153,41 @@ pub enum DirectiveKind {
 /// An instruction returned by `heartbeat`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Directive {
+    pub id: DirectiveId,
     pub kind: DirectiveKind,
+}
+
+/// The attempt and lease epoch a write is fenced by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fence {
+    pub attempt: AttemptId,
+    pub lease_epoch: LeaseEpoch,
+}
+
+/// What the runner did with a directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectiveDisposition {
+    /// Applied inside the running harness session.
+    AppliedInSession,
+    /// Applied at the attempt's next boundary.
+    AppliedAtBoundary,
+    /// The attempt was cancelled.
+    Cancelled,
+    /// The directive no longer applies, for example to an attempt that already ended.
+    NotApplicable,
+    /// The runner or its harness cannot carry the directive out.
+    Unsupported,
+}
+
+/// The runner's acknowledgement of a directive, replayed until acknowledged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectiveReceipt {
+    pub seq: Seq,
+    pub directive: DirectiveId,
+    /// The attempt the directive was about; `None` for runner-level directives such as `Drain`.
+    pub fence: Option<Fence>,
+    pub disposition: DirectiveDisposition,
 }
 
 /// Whether a step succeeded.
@@ -135,6 +216,7 @@ pub struct JobEvent {
     pub job: JobId,
     pub seq: Seq,
     pub attempt: AttemptId,
+    pub lease_epoch: LeaseEpoch,
     pub outcome: Option<JobOutcome>,
     pub usage: Option<Usage>,
     pub warnings: Vec<String>,
@@ -162,6 +244,8 @@ pub enum RecordKind {
 pub struct Record {
     pub job: JobId,
     pub seq: Seq,
+    pub attempt: AttemptId,
+    pub lease_epoch: LeaseEpoch,
     pub kind: RecordKind,
     pub version: u32,
     pub sha256: String,
@@ -169,12 +253,60 @@ pub struct Record {
     pub bound: Vec<Bound>,
 }
 
-/// A credential for one push. Its `Debug` output never shows the token.
+/// What a credential is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialPurpose {
+    Fetch,
+    Push,
+}
+
+/// A credential request's purpose with what it binds the credential to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "purpose", rename_all = "snake_case")]
+pub enum CredentialBinding {
+    /// Read access to a remote.
+    Fetch { remote: String },
+    /// Write access to push one branch to one commit.
+    Push {
+        branch: String,
+        commit: RevId,
+        /// The remote head the push expects; `None` when the branch does not exist yet.
+        expected_remote_head: Option<RevId>,
+        /// The sha256 of the bundle of changes the push sends.
+        changes_bundle_sha256: String,
+    },
+}
+
+/// A request for a credential, fenced by the attempt's lease.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialRequest {
+    pub job: JobId,
+    pub attempt: AttemptId,
+    pub lease_epoch: LeaseEpoch,
+    pub binding: CredentialBinding,
+}
+
+impl CredentialRequest {
+    /// The purpose the binding states.
+    #[must_use]
+    pub fn purpose(&self) -> CredentialPurpose {
+        match self.binding {
+            CredentialBinding::Fetch { .. } => CredentialPurpose::Fetch,
+            CredentialBinding::Push { .. } => CredentialPurpose::Push,
+        }
+    }
+}
+
+/// A short-lived credential. Its `Debug` output never shows the token.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credential {
     pub token: String,
     /// RFC 3339.
     pub expires_at: String,
+    /// The permissions the token grants, as the code host names them.
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 impl fmt::Debug for Credential {
@@ -182,6 +314,7 @@ impl fmt::Debug for Credential {
         f.debug_struct("Credential")
             .field("token", &"[redacted]")
             .field("expires_at", &self.expires_at)
+            .field("permissions", &self.permissions)
             .finish()
     }
 }
@@ -212,11 +345,25 @@ pub trait PlaneLink: Send + Sync {
     /// Hand over a record.
     fn put_record(&self, rec: Record) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Get a credential to push the job's branch to a commit.
-    fn push_credential(
+    /// Acknowledge a directive.
+    fn receipt(
         &self,
-        job: JobId,
-        commit: RevId,
+        receipt: DirectiveReceipt,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let _ = receipt;
+        async { Ok(()) }
+    }
+
+    /// The handle that wakes the runner when a directive is waiting, so it need not wait for the
+    /// next heartbeat. A remote link fires it when a directive arrives; `LocalPlane` never does.
+    fn directive_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::new(tokio::sync::Notify::new())
+    }
+
+    /// Get a credential to fetch from a remote or to push the job's branch to a commit.
+    fn credential(
+        &self,
+        req: CredentialRequest,
     ) -> impl Future<Output = Result<Credential, Self::Error>> + Send;
 
     /// The last event and record accepted.
