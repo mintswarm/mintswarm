@@ -82,12 +82,13 @@ pub enum GitError {
     /// A repository name that cannot name a store.
     #[error("`{0}` cannot name a store")]
     StoreName(String),
-    /// A git command failed.
-    #[error("git {command} failed ({status}): {stderr}")]
+    /// A git command failed. The text is ours alone; what git wrote is kept in `stderr` for
+    /// logs and diagnostics, never in the text.
+    #[error("git {command} failed ({status})")]
     Git {
         /// The git subcommand.
         command: String,
-        /// Its exit status.
+        /// Its exit status, in our words: `exit code N` or `no exit code`.
         status: String,
         /// The start of what it wrote to standard error.
         stderr: String,
@@ -100,8 +101,9 @@ pub enum GitError {
         /// What was unexpected.
         detail: String,
     },
-    /// A file or process operation failed.
-    #[error("{context}: {source}")]
+    /// A file or process operation failed. The text is `context` alone; the underlying error is
+    /// only the `source()`.
+    #[error("{context}")]
     Io {
         /// What the adapter was doing.
         context: String,

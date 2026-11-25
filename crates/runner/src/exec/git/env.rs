@@ -197,7 +197,10 @@ pub(super) fn failure(name: &str, output: &Output) -> GitError {
     };
     GitError::Git {
         command: name.to_owned(),
-        status: output.status.to_string(),
+        status: output.status.code().map_or_else(
+            || "no exit code".to_owned(),
+            |code| format!("exit code {code}"),
+        ),
         stderr,
     }
 }
