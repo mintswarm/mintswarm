@@ -1,0 +1,30 @@
+[
+  {
+    "id": 9101,
+    "number": 1,
+    "name": "analysis",
+    "type": "markdown",
+    "description": "The analysis of the issue.",
+    "body": "# Analysis\n\nThe reads need paging.",
+    "body_html": "<h1>Analysis</h1><p>The reads need paging.</p>",
+    "html_url": "https://github.com/acme/widgets/issues/180/artifacts/1",
+    "creator": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot" },
+    "created_at": "2026-11-21T09:00:00Z",
+    "updated_at": "2026-11-21T09:00:00Z",
+    "updated_by_actor": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot" }
+  },
+  {
+    "id": 9102,
+    "number": 2,
+    "name": "plan",
+    "type": "markdown",
+    "description": "The plan for the issue.",
+    "body": "# Plan\n\nA GET-only client.",
+    "body_html": "<h1>Plan</h1><p>A GET-only client.</p>",
+    "html_url": "https://github.com/acme/widgets/issues/180/artifacts/2",
+    "creator": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot" },
+    "created_at": "2026-11-22T09:00:00Z",
+    "updated_at": "2026-11-23T09:00:00Z",
+    "updated_by_actor": { "login": "maintainer", "id": 1, "type": "User" }
+  }
+]

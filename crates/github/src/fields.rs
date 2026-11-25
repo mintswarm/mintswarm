@@ -23,7 +23,8 @@ use mintswarm_domain::field::{
 };
 use mintswarm_domain::ids::IssueNumber;
 
-use crate::rest::{ClientError, Reply, Rest, check_names};
+use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
+use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
 use crate::secret::Token;
 
 /// The per-issue resources a pass reads.
@@ -37,54 +38,6 @@ enum Resource {
 
 type Key = (u64, Resource);
 
-/// At most this many resources are kept in a client's ETag cache.
-const ETAG_CACHE_LIMIT: usize = 4096;
-
-/// The last ETag and body of each issue's resources, the oldest dropped above a fixed count.
-#[derive(Debug)]
-struct EtagCache {
-    limit: usize,
-    /// Each entry's ETag and body, and when it was stored.
-    entries: HashMap<Key, (String, Arc<Value>, u64)>,
-    stored: u64,
-}
-
-impl EtagCache {
-    fn new(limit: usize) -> Self {
-        Self {
-            limit,
-            entries: HashMap::new(),
-            stored: 0,
-        }
-    }
-
-    fn get(&self, key: &Key) -> Option<(String, Arc<Value>)> {
-        self.entries
-            .get(key)
-            .map(|(etag, body, _)| (etag.clone(), Arc::clone(body)))
-    }
-
-    /// Stores `key`'s ETag and body, dropping the oldest entry when the cache is full.
-    fn insert(&mut self, key: Key, etag: String, body: Arc<Value>) {
-        if !self.entries.contains_key(&key) && self.entries.len() >= self.limit {
-            let oldest = self
-                .entries
-                .iter()
-                .min_by_key(|(_, (_, _, stored))| *stored)
-                .map(|(key, _)| *key);
-            if let Some(oldest) = oldest {
-                self.entries.remove(&oldest);
-            }
-        }
-        self.stored += 1;
-        self.entries.insert(key, (etag, body, self.stored));
-    }
-
-    fn remove(&mut self, key: &Key) {
-        self.entries.remove(key);
-    }
-}
-
 /// Reads and writes role fields on the issues of one repository.
 #[derive(Debug)]
 pub struct FieldClient {
@@ -92,7 +45,7 @@ pub struct FieldClient {
     owner: String,
     repo: String,
     /// The last ETag and body of each issue's resources, kept across passes.
-    etags: Mutex<EtagCache>,
+    etags: Mutex<EtagCache<Key>>,
 }
 
 impl FieldClient {
@@ -374,19 +327,6 @@ fn resolved(field_id: Option<u64>) -> Result<u64, FieldError> {
     field_id.ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
-/// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.
-fn path_segment(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
 /// The request that clears a field on an issue, given the issue's `issue-field-values` path.
 fn clear_request(values_path: &str, field_id: u64) -> (Method, String) {
     (Method::DELETE, format!("{values_path}/{field_id}"))
@@ -547,7 +487,8 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::{EtagCache, Op, Pattern, Resource, checked_pattern, classify, path_segment};
+    use super::{Op, Pattern, Resource, checked_pattern, classify};
+    use crate::etag::EtagCache;
     use crate::rest::Reply;
 
     fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
@@ -556,6 +497,8 @@ mod tests {
             status: StatusCode::from_u16(status).unwrap(),
             etag: None,
             rate_limited,
+            retry_after: None,
+            next_page: None,
             body: body.as_bytes().to_vec(),
         }
     }
@@ -649,22 +592,12 @@ mod tests {
         cache.insert((2, Resource::Issue), "b".into(), Arc::clone(&body));
         // Storing a key again refreshes it without dropping another.
         cache.insert((1, Resource::Issue), "a2".into(), Arc::clone(&body));
-        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.len(), 2);
         cache.insert((3, Resource::FieldValues), "c".into(), body);
-        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.len(), 2);
         assert!(cache.get(&(2, Resource::Issue)).is_none());
         assert_eq!(cache.get(&(1, Resource::Issue)).unwrap().0, "a2");
         assert_eq!(cache.get(&(3, Resource::FieldValues)).unwrap().0, "c");
-    }
-
-    #[test]
-    fn label_names_are_encoded_as_one_path_segment() {
-        assert_eq!(path_segment("effort:S"), "effort%3AS");
-        assert_eq!(
-            path_segment("[M] size/é?#"),
-            "%5BM%5D%20size%2F%C3%A9%3F%23"
-        );
-        assert_eq!(path_segment("a-b.c_d~1"), "a-b.c_d~1");
     }
 
     #[test]
