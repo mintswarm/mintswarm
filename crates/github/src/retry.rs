@@ -8,15 +8,20 @@
 //! implementation cannot be built outside `rest.rs`, so no request reaches GitHub around the
 //! layer.
 //!
-//! A success, a 304 or a 4xx that is not a rate limit is returned at once. A 5xx, a timeout, a
-//! broken connection or an unreadable body may have been carried out, so an idempotent call
-//! waits and tries again while a create first asks its probe. A refused connection and a
-//! rate-limited reply were not carried out, so they are retried without a probe. Each wait is
-//! [`RetryPolicy::jittered`], raised to the wait a rate-limited reply names in `retry-after` or
-//! `x-ratelimit-reset`, or to [`SECONDARY_LIMIT_WAIT`], doubled for each further such refusal,
-//! when it names none. A pausing layer shares a rate limit's wait with every later call as a
-//! deadline, which a retry's own wait never adds to. When the attempts run out, or a wait would
-//! end past the policy's total, the call gives up with [`Exhausted`].
+//! A success, a 304 or a 4xx that is not a rate limit is returned at once, and a request that
+//! could not be built ([`Failure::Request`]) ends the call after its one attempt. A 5xx, a
+//! timeout, a broken connection or an unreadable body may have been carried out, so an
+//! idempotent call waits and tries again while a create first asks its probe. A refused
+//! connection and a rate-limited reply were not carried out, so they are retried without a
+//! probe. Each wait is [`RetryPolicy::jittered`], raised to the wait a rate-limited reply names
+//! in `retry-after` or `x-ratelimit-reset`, or to [`SECONDARY_LIMIT_WAIT`], doubled for each
+//! further such refusal, when it names none. A pausing layer shares a rate limit's wait with
+//! every later call as a deadline, which a retry's own wait never adds to.
+//!
+//! The policy's total bounds the call: an attempt still running when it ends is cut off as a
+//! [`Failure::Timeout`], and a wait that would end past it is not started. When the attempts or
+//! the total run out, the call gives up with [`Exhausted`]. A create's probe is the caller's own
+//! call, not bounded by the create's total.
 
 use std::fmt;
 use std::future::Future;
@@ -67,8 +72,8 @@ impl Request<'_> {
 }
 
 /// The outcome of one attempt: GitHub's reply, whatever its status, or a [`Failure`] of
-/// [`Connect`](Failure::Connect), [`Timeout`](Failure::Timeout), [`Reset`](Failure::Reset) or
-/// [`Body`](Failure::Body).
+/// [`Connect`](Failure::Connect), [`Timeout`](Failure::Timeout), [`Reset`](Failure::Reset),
+/// [`Body`](Failure::Body) or [`Request`](Failure::Request).
 pub(crate) type Attempt = Result<Reply, Failure>;
 
 /// Sends one attempt of a request and nothing more. Sealed: only [`Retrying`] calls it.
@@ -306,7 +311,14 @@ impl<T: Transport> Retrying<T> {
         let mut unnamed_limits = 0;
         loop {
             attempts += 1;
-            let (failure, floor) = match self.transport.send(request).await {
+            let attempt = match end {
+                // Whatever is left of the total bounds the attempt; one cut off may have landed.
+                Some(end) => tokio::time::timeout_at(end, self.transport.send(request))
+                    .await
+                    .unwrap_or(Err(Failure::Timeout)),
+                None => self.transport.send(request).await,
+            };
+            let (failure, floor) = match attempt {
                 Ok(reply) if reply.rate_limited => {
                     let named = reply.retry_after.or(reply.reset_wait);
                     let floor = match named {
@@ -330,6 +342,8 @@ impl<T: Transport> Retrying<T> {
                     reply.after_ambiguous = ambiguous;
                     return Ok(reply);
                 }
+                // Nothing was sent, and another attempt would fail the same way.
+                Err(Failure::Request) => return Err(give_up(attempts, Failure::Request)),
                 Err(failure) => (failure, Duration::ZERO),
             };
             let definite = matches!(failure, Failure::Connect | Failure::RateLimited { .. });
@@ -601,6 +615,79 @@ mod tests {
         );
         assert_eq!(offsets(&layer), secs(&[0, 5]));
         assert_eq!(started.elapsed(), Duration::from_secs(9));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_total_cuts_off_a_running_attempt() {
+        // The attempt would take 30 s; the total ends it at 10 s, and no wait fits after it.
+        let policy = RetryPolicy {
+            total: Duration::from_secs(10),
+            ..RetryPolicy::default()
+        };
+        let layer = layer_with([Ok(reply(200))], policy, Duration::from_secs(30));
+        let started = Instant::now();
+        let error = layer.get("/x", &token(), None).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Exhausted {
+                    attempts: 1,
+                    last: Failure::Timeout,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_that_cannot_be_built_is_not_retried() {
+        let layer = scripted([Err(Failure::Request)]);
+        let started = Instant::now();
+        let error = layer.get("/x", &token(), None).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Exhausted {
+                    attempts: 1,
+                    last: Failure::Request,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(started.elapsed(), Duration::ZERO);
+
+        // A create gives up the same way, without asking its probe.
+        let layer = scripted([Ok(reply(500)), Err(Failure::Request)]);
+        let asked = AtomicUsize::new(0);
+        let error = layer
+            .create(
+                "/x",
+                &token(),
+                &serde_json::json!({}),
+                Box::new(|| {
+                    asked.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async { Landing::NotLanded })
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Exhausted {
+                    attempts: 2,
+                    last: Failure::Request,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        // Asked once, after the 500, and not after the request that could not be built.
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert_eq!(offsets(&layer), secs(&[0, 1]));
     }
 
     #[tokio::test(start_paused = true)]

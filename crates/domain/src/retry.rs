@@ -26,10 +26,12 @@ pub const DEFAULT_BASE_DELAY: Duration = Duration::from_secs(1);
 /// opt-in in 2026.
 pub const DEFAULT_MAX_DELAY: Duration = Duration::from_secs(20);
 
-/// How long a call may take in all, its attempts and waits together: [`DEFAULT_ATTEMPTS`] (4)
-/// times the 30 s that one GitHub request may take (`REQUEST_TIMEOUT` in `mintswarm-github`),
-/// plus the capped ceilings of the three waits between them, 1 + 2 + 4 s. It also leaves room
-/// for one 60 s secondary rate-limit wait after a first refusal that came back fast.
+/// How long a call may take in all, its attempts and waits together; an attempt still running
+/// when it ends is cut off as a [`Failure::Timeout`]. It is [`DEFAULT_ATTEMPTS`] (4) times the
+/// 30 s that one GitHub request may take (`REQUEST_TIMEOUT` in `mintswarm-github`, whose tests
+/// check this sum against it), plus the capped ceilings of the three waits between them,
+/// 1 + 2 + 4 s. It also leaves room for one 60 s secondary rate-limit wait after a first
+/// refusal that came back fast.
 pub const DEFAULT_TOTAL: Duration = Duration::from_secs(127);
 
 /// The bounds of a call's retries: at most `attempts` attempts within `total`, each wait drawn
@@ -42,7 +44,8 @@ pub struct RetryPolicy {
     pub base_delay: Duration,
     /// The cap on any wait's ceiling; not below `base_delay`.
     pub max_delay: Duration,
-    /// How long a call may take in all; a wait that would end after it ends the call instead.
+    /// How long a call may take in all: an attempt still running when it ends is cut off as a
+    /// [`Failure::Timeout`], and a wait that would end after it ends the call instead.
     pub total: Duration,
 }
 
@@ -92,6 +95,9 @@ pub enum Failure {
     Reset,
     /// The answer's body could not be read.
     Body,
+    /// The request could not be built, so nothing was sent, and every attempt would fail the
+    /// same way; it is never retried.
+    Request,
     /// The service refused the request for a rate limit.
     RateLimited {
         /// The wait the service asked for, if it named one.
@@ -107,6 +113,7 @@ impl fmt::Display for Failure {
             Self::Connect => f.write_str("no connection"),
             Self::Reset => f.write_str("a broken connection"),
             Self::Body => f.write_str("an unreadable answer"),
+            Self::Request => f.write_str("a request that could not be built"),
             Self::RateLimited { wait: Some(wait) } => {
                 write!(f, "a rate limit asking for {}s", wait.as_secs())
             }
@@ -115,7 +122,8 @@ impl fmt::Display for Failure {
     }
 }
 
-/// A call that gave up: its attempts or its time ran out while it kept failing transiently.
+/// A call that gave up: its attempts or its time ran out while it kept failing transiently, or
+/// its request could not be built ([`Failure::Request`]), which ends it after one attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Exhausted {
     /// The method and path of the call; never a credential.

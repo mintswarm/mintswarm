@@ -128,11 +128,13 @@ impl Http {
     }
 }
 
-/// The class of a failed send: nothing was sent without a connection, a timeout is its own
-/// class, and anything else broke a request that may have been sent. reqwest's own error, and
-/// its text, go no further.
+/// The class of a failed send: a request reqwest could not build was never sent and would fail
+/// again, nothing was sent without a connection, a timeout is its own class, and anything else
+/// broke a request that may have been sent. reqwest's own error, and its text, go no further.
 fn send_failure(error: &reqwest::Error) -> Failure {
-    if error.is_connect() {
+    if error.is_builder() {
+        Failure::Request
+    } else if error.is_connect() {
         Failure::Connect
     } else if error.is_timeout() {
         Failure::Timeout
@@ -144,13 +146,13 @@ fn send_failure(error: &reqwest::Error) -> Failure {
 impl Transport for Http {
     /// Sends one request with the caller's token, a JSON body if any, and `If-None-Match` if an
     /// ETag is given. Only a failure to send or to read the body is a [`Failure`] here; statuses
-    /// are the layer's and the caller's to classify. A header that cannot be built means
-    /// nothing was sent, a [`Failure::Connect`].
+    /// are the layer's and the caller's to classify. A header or URL that cannot be built means
+    /// nothing was sent and nothing would be on another attempt, a [`Failure::Request`].
     async fn send(&self, request: &Request<'_>) -> Attempt {
         let endpoint = request.endpoint();
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {}", request.token.expose()))
-                .map_err(|_| Failure::Connect)?;
+                .map_err(|_| Failure::Request)?;
         authorization.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -166,7 +168,7 @@ impl Transport for Http {
         if let Some(etag) = request.if_none_match {
             headers.insert(
                 IF_NONE_MATCH,
-                HeaderValue::from_str(etag).map_err(|_| Failure::Connect)?,
+                HeaderValue::from_str(etag).map_err(|_| Failure::Request)?,
             );
         }
         let mut builder = self
@@ -268,7 +270,47 @@ pub(crate) fn error_text(body: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{links_next, path_segment};
+    use mintswarm_domain::retry::{DEFAULT_ATTEMPTS, DEFAULT_TOTAL, Failure, RetryPolicy};
+    use reqwest::Method;
+
+    use super::{Http, links_next, path_segment};
+    use crate::retry::{Request, Transport};
+    use crate::secret::Token;
+    use crate::token::REQUEST_TIMEOUT;
+
+    #[test]
+    fn the_default_total_is_derived_from_the_request_timeout() {
+        let policy = RetryPolicy::default();
+        let waits: std::time::Duration = (1..DEFAULT_ATTEMPTS).map(|n| policy.ceiling(n)).sum();
+        assert_eq!(REQUEST_TIMEOUT * DEFAULT_ATTEMPTS + waits, DEFAULT_TOTAL);
+    }
+
+    /// One attempt of a GET at `path` with `token` through an [`Http`] at `base`.
+    async fn send(base: &str, path: &str, token: &str) -> Result<(), Failure> {
+        let http = Http::new(base).expect("a client");
+        let token = Token::new(token.to_owned(), 0);
+        let request = Request {
+            method: Method::GET,
+            path,
+            token: &token,
+            body: None,
+            if_none_match: None,
+        };
+        http.send(&request).await.map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn a_request_that_cannot_be_built_is_its_own_class() {
+        // A header that cannot hold the token, and a URL that does not parse; neither is sent.
+        assert_eq!(
+            send("http://127.0.0.1:9", "/x", "ghs_bad\ntoken").await,
+            Err(Failure::Request)
+        );
+        assert_eq!(
+            send("not a url", "/x", "ghs_t0ken").await,
+            Err(Failure::Request)
+        );
+    }
 
     #[test]
     fn the_link_header_names_a_next_page() {

@@ -25,7 +25,10 @@ pub const GITHUB_API: &str = "https://api.github.com";
 pub const REFRESH_MARGIN_SECS: u64 = 300;
 /// How long connecting to GitHub may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a whole request to GitHub may take.
+/// How long a whole request to GitHub may take. [`DEFAULT_TOTAL`] is derived from it, four of
+/// these plus the waits between them; a test in `rest.rs` fails when the two drift apart.
+///
+/// [`DEFAULT_TOTAL`]: mintswarm_domain::retry::DEFAULT_TOTAL
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The source of the current Unix time, in seconds.
