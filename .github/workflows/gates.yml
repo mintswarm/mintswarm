@@ -105,8 +105,7 @@ jobs:
       - name: cargo-nextest
         if: hashFiles('rust-toolchain.toml') != ''
         env:
-          # The single source of the cargo-nextest version the gates use; #286 adds it to
-          # CONTRIBUTING.md and docs/conventions/rust.md. SHA256 covers the release's
+          # The single source of the cargo-nextest version the gates use. SHA256 covers the release's
           # cargo-nextest-$VERSION-x86_64-unknown-linux-gnu.tar.gz archive.
           VERSION: 0.9.152
           SHA256: d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a
