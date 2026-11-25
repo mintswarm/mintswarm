@@ -107,7 +107,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 ## Rules
 
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
-- **Briefs only.** Each entry in the tree above is a 3–5 word brief saying what the directory or file is, never what it contains. Adding a module, type or subcommand needs no edit to this document; only a new directory, a new dependency edge or a changed rule does.
+- **Briefs only.** Each entry in the tree above is a brief of at most five words saying what the directory or file is, never what it contains. Adding a module, type or subcommand needs no edit to this document; only a new directory, a new dependency edge or a changed rule does.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
 - **Dependency direction is one-way.** `A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement. These are the allowed edges between workspace crates, and a crate may also depend on whatever its allowed dependencies may; the manifests may use any subset:
   - `domain` ← `config`
