@@ -208,8 +208,9 @@ the other two at column 0 only. With a usable record the bullets are counted:
 M Must decide, R Recommended, B Blocking, A Assumption plus Non-blocking and
 U column-0 lines with no known marker, against the record's m `must_decide`,
 r `recommended` and a `assumption` questions. They agree when U is 0, A is a,
-M is at most m, R is at most r and (m - M) + (r - R) is B, so an old Blocking bullet stands for either blocking
-kind; no bullet is a hit of its own, and assumptions never are.
+M is at most m, R is at most r and (m - M) + (r - R) is B, so an old Blocking
+bullet stands for either blocking kind; no bullet is a hit of its own, and
+assumptions never are.
 
 A usable result record is strict JSON, an object whose `questions` is a list
 of objects, each with a string `question` and a `kind` of `must_decide`,
