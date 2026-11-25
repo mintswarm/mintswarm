@@ -1,13 +1,21 @@
 //! Contract tests: the record types against the Python tools' output, the plane types through
 //! serde_json, the code host's lack of a merge, and the ten steps.
 
+use std::convert::Infallible;
 use std::fmt::Debug;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
-use mintswarm_domain::ids::{AttemptId, IssueNumber, JobId, RevId, RunnerId, Seq, WorkerId};
+use mintswarm_domain::ids::{
+    AttemptId, DirectiveId, IssueNumber, JobId, LeaseEpoch, RevId, RunnerId, Seq, WorkerId,
+};
 use mintswarm_domain::plane::{
-    Assignment, Credential, Directive, DirectiveKind, HarnessInfo, Heartbeat, HelloAck, JobEvent,
-    JobOutcome, Lease, ProbeSummary, Record, RecordKind, RunnerInfo, StepStatus, Work,
+    Assignment, AttemptPhase, Credential, CredentialBinding, CredentialPurpose, CredentialRequest,
+    Directive, DirectiveDisposition, DirectiveKind, DirectiveReceipt, Fence, HarnessInfo,
+    Heartbeat, HeldAttempt, HelloAck, JobEvent, JobOutcome, Lease, PlaneLink, ProbeSummary, Record,
+    RecordKind, RunnerInfo, RunnerMode, StepStatus, Work,
 };
 use mintswarm_domain::records::{
     Bound, DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
@@ -158,19 +166,35 @@ fn plane_types_round_trip() {
         account: Some("work".into()),
         workers: 4,
         repository: "mintswarm/mintswarm".into(),
+        mode: RunnerMode::Observer,
+        features: vec!["directive_receipts".into()],
+        step_kinds: vec![StepKind::Gates, StepKind::KeepRound],
+        protocol_minor: 2,
+        held_attempts: vec![held_attempt(AttemptPhase::Started)],
     });
+    for phase in [AttemptPhase::Assigned, AttemptPhase::Started] {
+        round_trip(phase);
+        round_trip(held_attempt(phase));
+    }
+    for mode in [RunnerMode::Worker, RunnerMode::Observer] {
+        round_trip(mode);
+    }
+    round_trip(LeaseEpoch(u64::MAX));
+    round_trip(DirectiveId("dir-1".into()));
     round_trip(HelloAck {
         runner: RunnerId("r1".into()),
         acked: Seq(7),
     });
     round_trip(WorkerId("w1".into()));
     let lease = Lease {
+        epoch: LeaseEpoch(3),
         expires_at: "2026-11-23T12:00:00Z".into(),
     };
     round_trip(Assignment {
         work: Work::Stage(stage_job()),
         lease: lease.clone(),
     });
+    round_trip(lease.clone());
     round_trip(Assignment {
         work: Work::Step(step_job()),
         lease,
@@ -187,19 +211,40 @@ fn plane_types_round_trip() {
     for kind in [
         DirectiveKind::Cancel {
             attempt: attempt.clone(),
+            lease_epoch: LeaseEpoch(3),
         },
         DirectiveKind::Interrupt {
             attempt: attempt.clone(),
+            lease_epoch: LeaseEpoch(3),
             message: Some("stop".into()),
         },
         DirectiveKind::Deliver {
             attempt: attempt.clone(),
+            lease_epoch: LeaseEpoch(3),
             message: "a steer".into(),
         },
         DirectiveKind::Drain,
         DirectiveKind::UpgradeRequired,
     ] {
-        round_trip(Directive { kind });
+        round_trip(Directive {
+            id: DirectiveId("dir-1".into()),
+            kind,
+        });
+    }
+    let fence = Fence {
+        attempt: attempt.clone(),
+        lease_epoch: LeaseEpoch(3),
+    };
+    round_trip(fence.clone());
+    for disposition in DISPOSITIONS {
+        for fence in [Some(fence.clone()), None] {
+            round_trip(DirectiveReceipt {
+                seq: Seq(12),
+                directive: DirectiveId("dir-1".into()),
+                fence,
+                disposition,
+            });
+        }
     }
     let usage = Usage {
         tokens: Tokens {
@@ -225,6 +270,7 @@ fn plane_types_round_trip() {
         job: JobId("job-164".into()),
         seq: Seq(8),
         attempt: attempt.clone(),
+        lease_epoch: LeaseEpoch(3),
         outcome: Some(JobOutcome::Stage(StageOutcome {
             status: OutcomeStatus::Complete,
             artefact: "handoff".into(),
@@ -240,7 +286,8 @@ fn plane_types_round_trip() {
     round_trip(JobEvent {
         job: JobId("job-164".into()),
         seq: Seq(9),
-        attempt,
+        attempt: attempt.clone(),
+        lease_epoch: LeaseEpoch(3),
         outcome: Some(JobOutcome::Step {
             step: StepKind::Gates,
             status: StepStatus::Failed,
@@ -252,6 +299,8 @@ fn plane_types_round_trip() {
     round_trip(Record {
         job: JobId("job-164".into()),
         seq: Seq(10),
+        attempt: attempt.clone(),
+        lease_epoch: LeaseEpoch(3),
         kind: RecordKind::LandingFloor,
         version: 1,
         sha256: "1".repeat(64),
@@ -263,11 +312,181 @@ fn plane_types_round_trip() {
     });
     round_trip(JobId("job-164".into()));
     round_trip(rev('d'));
+    for request in credential_requests() {
+        round_trip(request);
+    }
+    for purpose in [CredentialPurpose::Fetch, CredentialPurpose::Push] {
+        round_trip(purpose);
+    }
     round_trip(Credential {
         token: "secret".into(),
         expires_at: "2026-11-23T13:00:00Z".into(),
+        permissions: vec!["contents:write".into()],
     });
     round_trip(Seq(11));
+}
+
+const DISPOSITIONS: [DirectiveDisposition; 5] = [
+    DirectiveDisposition::AppliedInSession,
+    DirectiveDisposition::AppliedAtBoundary,
+    DirectiveDisposition::Cancelled,
+    DirectiveDisposition::NotApplicable,
+    DirectiveDisposition::Unsupported,
+];
+
+fn held_attempt(phase: AttemptPhase) -> HeldAttempt {
+    HeldAttempt {
+        attempt: AttemptId("att-1".into()),
+        lease_epoch: LeaseEpoch(3),
+        phase,
+    }
+}
+
+/// A fetch request, then a push to an existing branch, then a push that creates the branch.
+fn credential_requests() -> [CredentialRequest; 3] {
+    let request = |binding| CredentialRequest {
+        job: JobId("job-164".into()),
+        attempt: AttemptId("att-1".into()),
+        lease_epoch: LeaseEpoch(3),
+        binding,
+    };
+    let push = |expected_remote_head| CredentialBinding::Push {
+        branch: "mintswarm/164-types".into(),
+        commit: rev('e'),
+        expected_remote_head,
+        changes_bundle_sha256: "3".repeat(64),
+    };
+    [
+        request(CredentialBinding::Fetch {
+            remote: "origin".into(),
+        }),
+        request(push(Some(rev('f')))),
+        request(push(None)),
+    ]
+}
+
+#[test]
+fn directive_dispositions_serialise_by_name() {
+    let names: Vec<String> = DISPOSITIONS
+        .iter()
+        .map(|d| serde_json::to_string(d).expect("serialises"))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "\"applied_in_session\"",
+            "\"applied_at_boundary\"",
+            "\"cancelled\"",
+            "\"not_applicable\"",
+            "\"unsupported\"",
+        ]
+    );
+}
+
+#[test]
+fn runner_info_defaults_new_fields() {
+    let info: RunnerInfo = serde_json::from_str(
+        r#"{"runner": "r1", "version": "0.1.0", "host": "host", "harnesses": [], "probes": [],
+            "account": null, "workers": 1, "repository": "mintswarm/mintswarm"}"#,
+    )
+    .expect("older RunnerInfo JSON reads");
+    assert_eq!(info.mode, RunnerMode::Worker);
+    assert!(info.features.is_empty());
+    assert!(info.step_kinds.is_empty());
+    assert_eq!(info.protocol_minor, 0);
+    assert!(info.held_attempts.is_empty());
+}
+
+#[test]
+fn missing_fence_is_rejected() {
+    let event = r#"{"job": "job-164", "seq": 1, "attempt": "att-1", "outcome": null,
+        "usage": null, "warnings": []}"#;
+    assert!(serde_json::from_str::<JobEvent>(event).is_err());
+    let record = r#"{"job": "job-164", "seq": 2, "attempt": "att-1", "kind": "floor",
+        "version": 1, "sha256": "", "bytes": [], "bound": []}"#;
+    assert!(serde_json::from_str::<Record>(record).is_err());
+    // The same JSON with the epoch reads, so the failures above are the missing fence.
+    let event = event.replacen('{', r#"{"lease_epoch": 1, "#, 1);
+    assert!(serde_json::from_str::<JobEvent>(&event).is_ok());
+    let record = record.replacen('{', r#"{"lease_epoch": 1, "#, 1);
+    assert!(serde_json::from_str::<Record>(&record).is_ok());
+}
+
+#[test]
+fn credential_request_purpose() {
+    let purposes = credential_requests().map(|r| r.purpose());
+    assert_eq!(
+        purposes,
+        [
+            CredentialPurpose::Fetch,
+            CredentialPurpose::Push,
+            CredentialPurpose::Push
+        ]
+    );
+}
+
+/// A `PlaneLink` that implements only the required methods, so the defaults are what is tested.
+struct Stub;
+
+impl PlaneLink for Stub {
+    type Error = Infallible;
+
+    async fn hello(&self, info: RunnerInfo) -> Result<HelloAck, Infallible> {
+        Ok(HelloAck {
+            runner: info.runner,
+            acked: Seq(0),
+        })
+    }
+
+    async fn claim(&self, _worker: WorkerId) -> Result<Option<Assignment>, Infallible> {
+        Ok(None)
+    }
+
+    async fn heartbeat(&self, _hb: Heartbeat) -> Result<Vec<Directive>, Infallible> {
+        Ok(vec![])
+    }
+
+    async fn report(&self, _ev: JobEvent) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    async fn put_record(&self, _rec: Record) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    async fn credential(&self, _req: CredentialRequest) -> Result<Credential, Infallible> {
+        Ok(Credential {
+            token: "secret".into(),
+            expires_at: "2026-11-23T13:00:00Z".into(),
+            permissions: vec![],
+        })
+    }
+
+    async fn acked(&self) -> Result<Seq, Infallible> {
+        Ok(Seq(0))
+    }
+}
+
+fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
+    let mut cx = Context::from_waker(Waker::noop());
+    pin!(future).poll(&mut cx)
+}
+
+#[test]
+fn plane_link_defaults() {
+    let stub = Stub;
+    let receipt = DirectiveReceipt {
+        seq: Seq(1),
+        directive: DirectiveId("dir-1".into()),
+        fence: None,
+        disposition: DirectiveDisposition::Unsupported,
+    };
+    assert!(matches!(
+        poll_once(stub.receipt(receipt)),
+        Poll::Ready(Ok(()))
+    ));
+    let notify = stub.directive_notify();
+    assert!(poll_once(notify.notified()).is_pending());
 }
 
 #[test]
@@ -286,8 +505,11 @@ fn credential_debug_hides_the_token() {
     let cred = Credential {
         token: "ghs_secret".into(),
         expires_at: "2026-11-23T13:00:00Z".into(),
+        permissions: vec!["contents:write".into()],
     };
-    assert!(!format!("{cred:?}").contains("ghs_secret"));
+    let shown = format!("{cred:?}");
+    assert!(!shown.contains("ghs_secret"));
+    assert!(shown.contains("contents:write"));
 }
 
 #[test]
