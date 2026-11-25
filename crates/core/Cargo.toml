@@ -7,7 +7,20 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Short-lived Postgres instances for tests, in `mintswarm_core::testing::pg`. Enabled only
+# explicitly: no self dev-dependency turns it on, so workspace-wide test and lint runs need no
+# Postgres.
+pg-tests = ["dep:tokio", "dep:tempfile", "dep:thiserror", "dep:rustix"]
+
 [dependencies]
 chacha20poly1305 = { workspace = true }
 deadpool-postgres = { workspace = true }
+rustix = { workspace = true, features = ["process"], optional = true }
+tempfile = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"], optional = true }
 tokio-postgres = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
