@@ -121,3 +121,31 @@ msw-result:
 ```
 
 The result block's keys and values follow the subset above, and its questions pass every check in this section; save-output.py lists every violation at once and saves nothing until all are fixed.
+
+### Question bullets
+
+A stage whose document has a `## Questions` section (analyse, plan, implement) writes each question there as one bullet with one of three markers:
+
+- `- **Must decide:** <question>`: a person must answer; there is no recommendation, or only a weak one.
+- `- **Recommended:** <question> → <answer>`: a person should confirm the recommended answer.
+- `- **Assumption:** <question> → <answer>`: the stage went ahead with the answer, and the next stage works on it.
+
+Under each bullet, indented sub-bullets follow in this order: `Why:`; then `Options:` on a `Must decide` or `Recommended`, or `Alternatives:` on an `Assumption`, where it is required; then, on a `Must decide` only, an optional weak `Recommendation:`; then `Reason:`, required on a `Recommended`, an `Assumption`, and a `Must decide` that has a `Recommendation:`, and absent otherwise. `Shape:` (`one`, `several`, `yes_no` or `open`) and `References:` are optional and come last.
+
+- Options are written `(a) <label>: <consequence>` or `(a) <label>: <consequence>; <trade-off>`, separated by ` · `. The letters are the option ids; a label holds no `: ` and a consequence no `; `.
+- An answer is the text after `→`, or after `Recommendation:` on a `Must decide`. It starts with the letter of the chosen option, `(a)`, or with `Shape: several` the letters of all chosen options, `(a) (c)`; on a `Must decide` or `Recommended` any text after the letters only restates them. On an `Assumption` the answer is itself the chosen option, written in full as `(a) <label>: <consequence>`, or with `Shape: several` the chosen options separated by ` · `; `Alternatives:` lists the further options in the same form, with the following letters.
+- With `Shape: yes_no` no options are listed and the answer is `yes` or `no`; an `Assumption` names the other answer under `Alternatives:`.
+- References are written `<kind> <target>` or `<kind> <target>:<lines>`, separated by ` · `, for example `References: file crates/core/src/attention.rs:40-72 · ticket #339 · answer analysis/q2`. `kind` is one of `file`, `artefact`, `ticket`, `design`, `answer` or `url`; a target holds no ` · `; `:<lines>` is a line number or range such as `40` or `40-72`, given only on a `file` or `artefact` reference.
+- With `Shape: open` no options are listed and the answer is free text, without a letter. An `Assumption` is never `open`: it always names alternatives that can be chosen instead.
+- The section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
+
+Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind and question text:
+
+- `id` is `q1`, `q2` and so on, in bullet order, and `kind` is `must_decide`, `recommended` or `assumption` after the marker;
+- `question` is the text after the marker, up to the first ` → ` when there is one;
+- `Why:` gives `why`; `Shape:` gives `shape`, which without it is `one` when options are listed and `open` when none are, the options of an `Assumption`'s answer and `Alternatives:` counting as listed;
+- each option gives an object with `id` its letter, `label` the text up to the first `: `, `consequence` the text after it up to the first `; `, and `trade_off` the rest, absent without a `; `. `options` holds those of `Options:`; on an `Assumption`, those of the answer followed by those of `Alternatives:`; with `Shape: yes_no` or `open`, none;
+- the answer gives `recommendation`: `choice` holds its letters, or `yes` or `no` with `Shape: yes_no`, and is empty with `Shape: open`; `answer` holds the free text with `Shape: open` and is otherwise absent; `Reason:` gives `reason`. A `Must decide` without a `Recommendation:` has no `recommendation`;
+- `References:` gives `references`, one object per reference in order: `kind` is its first word; on a `file` or `artefact` reference ending in `:` and a line number or range, `target` is the text after the kind up to that last `:` and `lines` the rest; otherwise `target` is all the text after the kind and `lines` is absent. Without `References:` there are no references.
+
+The status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).

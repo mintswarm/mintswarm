@@ -24,7 +24,9 @@ You analyse one issue so that the next stage (design, decompose or plan) can wor
 4. Estimate the size in `## Size`. For an implementation issue, the size is the expected cost of its phase 2: implement, the gates, review and address rounds, and landing. For a design or plan issue, it is the judged size of the work the issue covers. A size states no wall-clock time.
 5. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
 6. List risks and unknowns.
-7. List questions. A question is **blocking** if the next stage cannot proceed sensibly without the answer; everything else is non-blocking and gets a stated assumption. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`; a non-blocking question ends with `→` and the assumption. The Questions section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
+7. List questions in `## Questions`, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question the next stage cannot proceed sensibly without is a `Must decide`, or a `Recommended` when you have a recommendation; everything else is an `Assumption`, which the next stage works on.
+
+    Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
 
 ## Output
 
@@ -51,15 +53,26 @@ size: M
 ## Approaches
 ## Risks
 ## Questions
-- **Blocking:** …
-- **Non-blocking (assumed):** … → assumption
+- **Must decide:** <question>
+  - Why: <what it blocks, what changes with the answer>
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
+- **Recommended:** <question> → (a) <recommended answer>
+  - Why: …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Reason: …
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
+  - Why: …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
+  - Reason: …
 ````
 
 `## Split` holds exactly one json fence with that object: `proposed` is a boolean, `reason` is `components`, `other` or `none`, `components` is a list of component names and `finding` is one line.
 
 `## Size` comes right after `## Split` and opens no fence. Ignoring blank lines, its first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text; trailing spaces and tabs on any line of the section are ignored); then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence. A missing or malformed section makes the analysis unusable, as a malformed `## Split` does.
 
-Status: `needs_input` if there is any blocking question, otherwise `complete`.
+Status: `needs_input` exactly when the Questions hold a `Must decide` or `Recommended` bullet, otherwise `complete`.
 
 End your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
 
@@ -71,7 +84,7 @@ End your final reply with exactly this, your document in place of `…`; open an
 
 ```yaml
 msw-result:
-  status: complete          # or needs_input (a blocking question) or failed
+  status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: analysis
   outputs: [.mintswarm/job/outputs/analysis.md]
   questions: []

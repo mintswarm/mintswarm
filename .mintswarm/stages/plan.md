@@ -21,11 +21,13 @@ You plan one implementation issue so that the implement stage can carry it out w
 1. Choose one approach and say why in two or three sentences; mention the rejected ones in one line each.
 2. Steps are ordered, each small enough to verify on its own, each naming the files it touches. A step names them after `files:` as paths in backticks, separated by `, `, up to the first `;`; a step that changes no file writes `files: none;`. Only the backticked paths there count, and together over all steps they are exactly the paths in the footprint's `files`.
 3. Every acceptance criterion maps to a test or, where no test is possible, to a stated manual check. If the project has no tests (`gates.tests: none`), say how each criterion will be verified instead.
-4. Stay inside the issue's component. If the work cannot be done without touching another component (apart from the config's `shared` paths), stop with `needs_input` and recommend a split as a `- **Blocking:**` question.
+4. Stay inside the issue's component. If the work cannot be done without touching another component (apart from the config's `shared` paths), stop with `needs_input` and recommend a split as a `- **Recommended:**` question whose options are to split the issue into one-component children or to keep it in one component.
 5. Name the gates from the config that the change must pass.
 6. The Verification table has one row per acceptance criterion of the issue, in the issue's order, and no other rows. Its first cell is the criterion verbatim: without its list marker (a number, `-` or `- [ ]`), with no added emphasis, quotes or rewording. Write any `|` in either cell as `\|`, and join a criterion that spans several lines with single spaces.
-7. Each question is one bullet starting with `- **Blocking:**` or `- **Non-blocking (assumed):**`, the markers of `.mintswarm/stages/analyse.md`. A non-blocking question ends with `→` and the assumption the plan works on. The section holds only such bullets, with no prose; with no questions it is left empty, without a placeholder such as `None`.
-8. Where the plan departs from a `Non-blocking (assumed)` assumption of the analysis, it declares this in the footprint's `overridden_assumptions`; the analysis's other assumptions stand.
+7. List questions in `## Questions`, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question the implement stage cannot proceed sensibly without is a `Must decide`, or a `Recommended` when you have a recommendation; a decision the plan went ahead with and works on is an `Assumption`.
+
+    Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
+8. Where the plan departs from an `Assumption` bullet of the analysis, it declares this in the footprint's `overridden_assumptions`; the analysis's other assumptions stand.
 9. Before returning, check the footprint: if `files` contains `.mintswarm/config.yaml` or a file a `gates.run` command names, `gate_changes` is not empty and has an entry for each such file that starts with the file's path, exactly as in `files`, followed by `:`.
 10. When every change is the output of a named tool or transformation (a formatter, a renderer, a rename), add a `## Mechanical check` section after `## Verification` and before `## Gates`, and have a step run its check. The section holds:
     - the tool or transformation, with its exact version where the output depends on it;
@@ -71,7 +73,7 @@ The footprint declares what the change will touch, for the plan-approval floor a
 | `new_dependencies` | list of objects `{"name": "…", "manifest": "…"}` | each dependency the change adds, and the path of the manifest it is added to, for example `Cargo.toml`; one entry per manifest. The plan floor reads the session's screen of every entry, and an entry that is unscreened or disqualified (a known advisory, a yanked or deprecated version, a likely typosquat) is a hit; the number of entries is not limited |
 | `external_steps` | list of strings | each step a person, or anything outside the repository, must take for the change to work: a secret, a label, a setting, a command on someone's machine; not the runner's own work (push, PR, gates). A required tool version (for example an exact formatter release) is not an external step; it goes under Gates or Risks, or in `## Mechanical check` under rule 10 |
 | `gate_changes` | list of strings | every change to `.mintswarm/config.yaml` and to any file a `gates.run` command names, including edits outside the `gates` block, for example in `pipeline`; one line per such file, starting with the file's path exactly as in `files` followed by `:`, then what changes in it, and saying so when no gate is added, removed or altered, for example `.mintswarm/config.yaml: pipeline.plan_approval.mode changes; no gate is added, removed or altered`; `[]` means the change touches no such file |
-| `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Non-blocking (assumed)` assumption of the analysis the plan departs from: `assumption` is the text after the first `→` of that analysis bullet, verbatim with leading and trailing whitespace removed; `reason` says what the plan does instead and why |
+| `overridden_assumptions` | list of objects `{"assumption": "…", "reason": "…"}` | each `Assumption` bullet of the analysis the plan departs from: `assumption` is the text after the first `→` of that analysis bullet, verbatim with leading and trailing whitespace removed; `reason` says what the plan does instead and why |
 
 ## Output
 
@@ -119,11 +121,22 @@ size: M
 ## Gates
 ## Risks
 ## Questions
-- **Blocking:** …
-- **Non-blocking (assumed):** … → assumption
+- **Must decide:** <question>
+  - Why: <what it blocks, what changes with the answer>
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
+- **Recommended:** <question> → (a) <recommended answer>
+  - Why: …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Reason: …
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
+  - Why: …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
+  - Reason: …
 ````
 
-Status: `needs_input` if the Questions hold any `- **Blocking:**` entry, including a recommended split, otherwise `complete`.
+Status: `needs_input` exactly when the Questions hold a `Must decide` or `Recommended` bullet, including a recommended split, otherwise `complete`.
 
 End your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
 
@@ -135,7 +148,7 @@ End your final reply with exactly this, your document in place of `…`; open an
 
 ```yaml
 msw-result:
-  status: complete          # or needs_input (a Blocking question) or failed
+  status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: plan
   outputs: [.mintswarm/job/outputs/plan.md]
   questions: []

@@ -25,6 +25,9 @@ You implement one implementation issue by following its approved plan, and later
 4. Run what checks you can locally, but the runner's gates decide.
 5. Before you finish, the worktree must be clean apart from `.mintswarm/job/`: everything you want kept is committed.
 6. Never push, never touch GitHub.
+7. List questions in `## Questions` of the handoff or the address document, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question that would change the issue's scope or component is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`.
+
+    Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
 
 ## Address rounds
 
@@ -49,6 +52,20 @@ First round: return `handoff.md` as `.mintswarm/stages.md` describes:
 | Acceptance criterion | How it is met |
 | --- | --- |
 ## Open points
+## Questions
+- **Must decide:** <question>
+  - Why: <what it blocks, what changes with the answer>
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
+- **Recommended:** <question> → (a) <recommended answer>
+  - Why: …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Reason: …
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
+  - Why: …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
+  - Reason: …
 ```
 
 Address rounds: return `address.md` as `.mintswarm/stages.md` describes:
@@ -63,9 +80,24 @@ Address rounds: return `address.md` as `.mintswarm/stages.md` describes:
 | F1 | fixed | commit `abc1234`: … |
 | F2 | disputed | … |
 | F3 | left | below the setting: … |
+
+## Questions
+- **Must decide:** <question>
+  - Why: <what it blocks, what changes with the answer>
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
+- **Recommended:** <question> → (a) <recommended answer>
+  - Why: …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Reason: …
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
+  - Why: …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
+  - Reason: …
 ```
 
-Status: `complete` when the work is committed and the document returned; `needs_input` for a scope question; `failed` if you cannot make it work, with the reason.
+Status: `complete` when the work is committed and the document returned; `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, as for a scope question; `failed` if you cannot make it work, with the reason.
 
 First round: end your final reply with exactly this, your document in place of `…`; open and close with more backticks than the longest run that starts any line of your document (five if it has a four-backtick line):
 
@@ -77,7 +109,7 @@ First round: end your final reply with exactly this, your document in place of `
 
 ```yaml
 msw-result:
-  status: complete          # or needs_input (a scope question) or failed
+  status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: handoff
   outputs: [.mintswarm/job/outputs/handoff.md]
   questions: []
@@ -95,7 +127,7 @@ Address rounds: end your final reply with exactly this, your document in place o
 
 ```yaml
 msw-result:
-  status: complete          # or needs_input (a scope question) or failed
+  status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: address
   outputs: [.mintswarm/job/outputs/address.md]
   questions: []
