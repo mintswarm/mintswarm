@@ -48,7 +48,7 @@ mintswarm/
 │   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
 │   │   └── migrations/     # SQL, append-only
 │   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
-│   ├── runner/             # `mintswarm-runner` library (binary to come): `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations
+│   ├── runner/             # `mintswarm-runner` library: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` binary: CLI and `mcp console`
 │
