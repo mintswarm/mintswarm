@@ -1,11 +1,13 @@
 //! The history operations: path-limited diffs, merge bases, ancestry and commit records.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use mintswarm_domain::ids::RevId;
-use mintswarm_domain::vcs::{ChangeKind, DiffOpts, RefOrId, Remote, RepoPath, Vcs};
+use mintswarm_domain::vcs::{
+    ChangeKind, CommitInfo, DiffOpts, RefOrId, Remote, RepoPath, RevRange, Vcs,
+};
 use tempfile::TempDir;
 
 use super::super::{GitError, GitStore};
@@ -47,11 +49,23 @@ impl History {
         self.git(&["hash-object", "-w", "--stdin"], data)
     }
 
-    /// A tree of regular files, by name and content.
+    /// A tree of regular files, by path and content; a path with `/` is in a subtree.
     fn tree(&self, files: &[(&str, &[u8])]) -> String {
+        let mut entries: BTreeMap<&str, Vec<(&str, &[u8])>> = BTreeMap::new();
         let mut input = Vec::new();
         for (name, data) in files {
-            input.extend_from_slice(format!("100644 blob {}\t{name}", self.blob(data)).as_bytes());
+            match name.split_once('/') {
+                Some((dir, rest)) => entries.entry(dir).or_default().push((rest, data)),
+                None => {
+                    let line = format!("100644 blob {}\t{name}", self.blob(data));
+                    input.extend_from_slice(line.as_bytes());
+                    input.push(0);
+                }
+            }
+        }
+        for (dir, files) in entries {
+            let line = format!("040000 tree {}\t{dir}", self.tree(&files));
+            input.extend_from_slice(line.as_bytes());
             input.push(0);
         }
         self.git(&["mktree", "-z"], &input)
@@ -243,4 +257,272 @@ fn merge_bases_lists_every_base() {
         store.is_ancestor(&a2, &missing),
         Err(GitError::NotFound(_))
     ));
+}
+
+/// The ids of `commits`.
+fn ids(commits: &[CommitInfo]) -> Vec<RevId> {
+    commits.iter().map(|commit| commit.id.clone()).collect()
+}
+
+/// A change's path, kind and blob ids.
+type Change = (RepoPath, ChangeKind, Option<RevId>, Option<RevId>);
+
+fn changes(commit: &CommitInfo) -> Vec<Change> {
+    commit
+        .changes
+        .iter()
+        .map(|change| {
+            assert!(change.lines.is_none());
+            (
+                change.path.clone(),
+                change.kind,
+                change.old_blob.clone(),
+                change.new_blob.clone(),
+            )
+        })
+        .collect()
+}
+
+/// The id fixture git gives `<commit>:<name>` in `store`.
+fn blob_at(store: &GitStore, commit: &RevId, name: &str) -> Option<RevId> {
+    git_ids(store, &["rev-parse", &format!("{}:{name}", commit.0)]).pop()
+}
+
+#[test]
+fn commit_records_follow_the_first_parent_in_topological_order() {
+    let history = History::new();
+    let root_tree = history.tree(&[("README", b"r\n"), ("dir/a.txt", b"a\n")]);
+    let root = history.commit(&root_tree, &[], "root\n", 1_700_000_000);
+    // Author and committer dates differ, with offsets other than UTC.
+    let main = history.commit_at(
+        &history.tree(&[("README", b"main\n"), ("dir/a.txt", b"a\n")]),
+        &[&root],
+        b"subject only",
+        "1700000000 +0530",
+        "1700000500 -0700",
+    );
+    let side_message = b"side\n\n\nwith blank lines\n\n";
+    let side = history.commit_at(
+        &history.tree(&[
+            ("README", b"r\n"),
+            ("dir/a.txt", b"a\n"),
+            ("dir/s.txt", b"s\n"),
+        ]),
+        &[&root],
+        side_message,
+        "1700000100 -0700",
+        "1700000600 +0530",
+    );
+    let merged_tree = history.tree(&[
+        ("README", b"main\n"),
+        ("dir/a.txt", b"a\n"),
+        ("dir/s.txt", b"s\n"),
+    ]);
+    let merge = history.commit(&merged_tree, &[&main, &side], "merge\n", 1_700_000_700);
+    // An empty commit dated before its parents.
+    let empty = history.commit(&merged_tree, &[&merge], "empty\n", 1_600_000_000);
+    let other = history.commit(
+        &history.tree(&[("README", b"r\n"), ("dir/a.txt", b"other\n")]),
+        &[&root],
+        "other\n",
+        1_700_000_800,
+    );
+    // A merge that keeps its first parent's tree: no first-parent changes.
+    let ours = history.commit(&merged_tree, &[&empty, &other], "ours\n", 1_700_000_900);
+    let store = history.store("records", &[&ours]);
+
+    let all = RevRange {
+        from: None,
+        to: ours.clone(),
+    };
+    let commits = store.log(&all, &[]).unwrap();
+    assert_eq!(
+        ids(&commits),
+        git_ids(&store, &["rev-list", "--topo-order", &ours.0])
+    );
+    assert_eq!(commits.len(), 7);
+    let position = |id: &RevId| commits.iter().position(|commit| &commit.id == id).unwrap();
+    for commit in &commits {
+        for parent in &commit.parents {
+            assert!(position(&commit.id) < position(parent));
+        }
+    }
+    let record = |id: &RevId| &commits[position(id)];
+
+    // The author's date in UTC, whatever the committer's date and the offsets.
+    assert_eq!(record(&main).authored_at, "2023-11-14T22:13:20Z");
+    assert_eq!(record(&side).authored_at, "2023-11-14T22:15:00Z");
+    assert_eq!(record(&empty).authored_at, "2020-09-13T12:26:40Z");
+    // The message as stored, byte for byte.
+    assert_eq!(record(&main).message.as_bytes(), b"subject only");
+    assert_eq!(record(&side).message.as_bytes(), side_message);
+    assert_eq!(record(&merge).message, "merge\n");
+    assert_eq!(record(&merge).parents, [main.clone(), side.clone()]);
+    assert_eq!(record(&merge).author.email, "ada@example.com");
+
+    // A root commit against the empty tree.
+    assert_eq!(
+        changes(record(&root)),
+        [
+            (
+                path(b"README"),
+                ChangeKind::Added,
+                None,
+                blob_at(&store, &root, "README")
+            ),
+            (
+                path(b"dir/a.txt"),
+                ChangeKind::Added,
+                None,
+                blob_at(&store, &root, "dir/a.txt")
+            ),
+        ]
+    );
+    assert_eq!(
+        changes(record(&main)),
+        [(
+            path(b"README"),
+            ChangeKind::Modified,
+            blob_at(&store, &root, "README"),
+            blob_at(&store, &main, "README")
+        )]
+    );
+    // A merge against its first parent only.
+    assert_eq!(
+        changes(record(&merge)),
+        [(
+            path(b"dir/s.txt"),
+            ChangeKind::Added,
+            None,
+            blob_at(&store, &side, "dir/s.txt")
+        )]
+    );
+    assert!(record(&empty).changes.is_empty());
+    assert!(record(&ours).changes.is_empty());
+
+    // `read_commit` gives the record `log` gives.
+    for commit in &commits {
+        assert_eq!(&store.read_commit(&commit.id).unwrap(), commit);
+    }
+
+    // With paths: the commits whose first-parent changes touch them, with those changes alone.
+    let dir = store.log(&all, &[path(b"dir")]).unwrap();
+    let expected: Vec<RevId> = ids(&commits)
+        .into_iter()
+        .filter(|id| [&merge, &side, &other, &root].contains(&id))
+        .collect();
+    assert_eq!(ids(&dir), expected);
+    for commit in &dir {
+        assert!(
+            commit
+                .changes
+                .iter()
+                .all(|change| change.path.0.starts_with(b"dir/"))
+        );
+    }
+    let in_dir = |id: &RevId| dir.iter().find(|commit| &commit.id == id).unwrap();
+    assert_eq!(changes(in_dir(&merge)), changes(record(&merge)));
+    assert_eq!(changes(in_dir(&root)), changes(record(&root))[1..].to_vec());
+    assert_eq!(
+        ids(&store
+            .log(&all, &[path(b"README"), path(b"dir/s.txt")])
+            .unwrap()),
+        ids(&commits)
+            .into_iter()
+            .filter(|id| [&merge, &main, &side, &root].contains(&id))
+            .collect::<Vec<_>>()
+    );
+    for nothing in [path(b"di"), path(b"dir/"), path(b"*"), path(b"READ")] {
+        assert!(store.log(&all, &[nothing]).unwrap().is_empty());
+    }
+    assert!(matches!(
+        store.log(&all, &[path(b"")]),
+        Err(GitError::Parse { .. })
+    ));
+
+    // A range.
+    let range = RevRange {
+        from: Some(main.clone()),
+        to: empty.clone(),
+    };
+    assert_eq!(
+        ids(&store.log(&range, &[]).unwrap()),
+        [empty.clone(), merge.clone(), side.clone()]
+    );
+
+    assert!(matches!(
+        store.read_commit(&RevId(format!("{}~1", ours.0))),
+        Err(GitError::RevisionSyntax(_))
+    ));
+    assert!(matches!(
+        store.read_commit(&RevId(GITLINK.to_owned())),
+        Err(GitError::NotFound(_))
+    ));
+}
+
+#[test]
+fn commit_records_need_a_valid_author_line() {
+    let history = History::new();
+    let tree = history.tree(&[("f", b"f\n")]);
+    let root = history.commit(&tree, &[], "root\n", 1_700_000_000);
+    let store = history.store("authors", &[&root]);
+    let committer = "committer Ada Lovelace <ada@example.com> 1700000000 +0000";
+    let craft = |author: Option<&str>| {
+        let mut raw = format!("tree {tree}\nparent {}\n", root.0);
+        if let Some(author) = author {
+            raw.push_str(&format!("author {author}\n"));
+        }
+        raw.push_str(&format!("{committer}\n\ncrafted\n"));
+        RevId(text(&run_fixture(
+            fixture_command(Some(store.path())),
+            &[
+                "hash-object",
+                "-t",
+                "commit",
+                "--literally",
+                "-w",
+                "--stdin",
+            ],
+            raw.as_bytes(),
+        )))
+    };
+
+    // The name is everything before the last ` <`, as the shim's pattern reads it.
+    let odd = store
+        .read_commit(&craft(Some(
+            "Odd <x> Name <odd@example.com> 1700000000 -0130",
+        )))
+        .unwrap();
+    assert_eq!(odd.author.name, "Odd <x> Name");
+    assert_eq!(odd.author.email, "odd@example.com");
+    assert_eq!(odd.authored_at, "2023-11-14T22:13:20Z");
+    assert_eq!(odd.message, "crafted\n");
+    assert_eq!(odd.parents, std::slice::from_ref(&root));
+
+    for author in [
+        None,
+        Some("Nobody 1700000000 +0000"),
+        Some("Ada <ada@example.com>"),
+        Some("Ada <ada@example.com> 1700000000"),
+        Some("Ada <ada@example.com> 1700000000 0000"),
+        Some("Ada <ada@example.com> 1700000000 +00000"),
+        Some("Ada <ada@example.com> -1 +0000"),
+        Some("Ada <ada@example.com> 99999999999999999999999 +0000"),
+        Some("Ada <a>b@example.com> 1700000000 +0000"),
+        Some("Ada<ada@example.com> 1700000000 +0000"),
+    ] {
+        let crafted = craft(author);
+        assert!(
+            matches!(store.read_commit(&crafted), Err(GitError::Parse { .. })),
+            "{author:?}"
+        );
+        let range = RevRange {
+            from: None,
+            to: crafted,
+        };
+        assert!(
+            matches!(store.log(&range, &[]), Err(GitError::Parse { .. })),
+            "{author:?}"
+        );
+    }
 }

@@ -158,7 +158,7 @@ fn list_tree_lists_every_entry() {
 }
 
 #[test]
-fn log_lists_commits_newest_first() {
+fn log_lists_commits_in_topological_order() {
     let fx = Fixture::new();
     let store = fx.fetched_store("log");
     let range = RevRange {
@@ -166,21 +166,36 @@ fn log_lists_commits_newest_first() {
         to: fx.merged.clone(),
     };
     let commits = store.log(&range, &[]).unwrap();
-    assert_eq!(ids(&commits), [&fx.merged, &fx.side, &fx.main]);
+    let topo: Vec<RevId> = super::text(&super::fixture_git(
+        store.path(),
+        &[
+            "rev-list",
+            "--topo-order",
+            &fx.merged.0,
+            &format!("^{}", fx.base.0),
+        ],
+    ))
+    .lines()
+    .map(|line| RevId(line.to_owned()))
+    .collect();
+    assert_eq!(ids(&commits), topo.iter().collect::<Vec<_>>());
+    assert_eq!(ids(&commits), [&fx.merged, &fx.main, &fx.side]);
+    // Children come before their parents.
+    for (at, commit) in commits.iter().enumerate() {
+        for parent in &commit.parents {
+            assert!(!ids(&commits[..at]).contains(&parent), "{}", parent.0);
+        }
+    }
     let merge = &commits[0];
     assert_eq!(merge.parents, [fx.side.clone(), fx.main.clone()]);
-    assert_eq!(merge.subject, "merge main");
+    assert_eq!(merge.message, "merge main\n");
     assert_eq!(merge.author.name, "Ada Lovelace");
     assert_eq!(merge.author.email, "ada@example.com");
-    // git writes UTC as `Z` or `+00:00`, depending on its version.
-    let at = &merge.committed_at;
-    assert!(
-        at == "2023-11-14T22:18:20Z" || at == "2023-11-14T22:18:20+00:00",
-        "{at}"
-    );
-    assert_eq!(commits[1].subject, "side work");
-    assert_eq!(commits[1].body, "body line\n");
-    assert_eq!(commits[1].parents, std::slice::from_ref(&fx.base));
+    assert_eq!(merge.authored_at, "2023-11-14T22:18:20Z");
+    let side = &commits[2];
+    assert_eq!(side.message, "side work\n\nbody line\n");
+    assert_eq!(side.authored_at, "2023-11-14T22:16:40Z");
+    assert_eq!(side.parents, std::slice::from_ref(&fx.base));
 
     let all = RevRange {
         from: None,
@@ -240,11 +255,14 @@ fn log_ignores_the_store_log_config() {
         )
     };
     let baseline = observe();
-    assert_eq!(baseline.0[0].subject, "unrelated café");
+    assert_eq!(baseline.0[0].message, "unrelated café\n");
     for (key, value) in [
         ("log.showSignature", "true"),
         ("i18n.logOutputEncoding", "ISO-8859-1"),
         ("log.follow", "true"),
+        ("diff.orderFile", "/nonexistent"),
+        ("diff.renames", "copies"),
+        ("diff.relative", "true"),
     ] {
         super::fixture_git(store.path(), &["config", key, value]);
     }

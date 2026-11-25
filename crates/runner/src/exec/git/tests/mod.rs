@@ -441,12 +441,13 @@ fn observe(store: &GitStore, fx: &Fixture) -> String {
         to: fx.side.clone(),
     };
     format!(
-        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
         store.resolve(&fx.side.0).unwrap(),
         store.list_tree(&fx.side).unwrap(),
         store.read_blob(&fx.side, &path(b"keep.txt")).unwrap(),
         store.log(&range, &[]).unwrap(),
         store.log(&to_side, &[path(b"keep.txt")]).unwrap(),
+        store.read_commit(&fx.merged).unwrap(),
         store.merge_bases(&fx.main, &fx.side).unwrap(),
         [
             store.is_ancestor(&fx.base, &fx.side).unwrap(),

@@ -1,11 +1,12 @@
 //! The git VCS adapter, design §8: the trusted bare store, the neutral git environment, fetch,
-//! the read operations, read-only snapshots and the plan floor's input bundle, on the git
-//! command-line tool.
+//! the read operations and commit records, read-only snapshots and the plan floor's input
+//! bundle, on the git command-line tool.
 //!
 //! Every git command runs through [`GitStore`]'s command builder, which applies the neutral
 //! environment; nothing else in this module starts git.
 
 mod bundle;
+mod commits;
 mod diff;
 mod env;
 mod fetch;
@@ -207,6 +208,10 @@ impl Vcs for GitStore {
 
     fn log(&self, revs: &RevRange, paths: &[RepoPath]) -> Result<Vec<CommitInfo>, GitError> {
         read::log(self, revs, paths)
+    }
+
+    fn read_commit(&self, rev: &RevId) -> Result<CommitInfo, GitError> {
+        read::read_commit(self, rev)
     }
 
     fn merge_bases(&self, a: &RevId, b: &RevId) -> Result<Vec<RevId>, GitError> {

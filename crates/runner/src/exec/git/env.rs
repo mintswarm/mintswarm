@@ -5,6 +5,7 @@
 //! inherited, the variables below are removed, and fixed values are set.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::process::{Command, Output, Stdio};
 
@@ -159,6 +160,41 @@ impl GitStore {
             context: format!("cannot run git {name}"),
             source,
         })
+    }
+
+    /// Run a command with `input` on its standard input and return its output, whatever its exit
+    /// status. The input is written from a second thread while the output is read, so neither
+    /// pipe can fill and block the other.
+    pub(super) fn output_with_input(
+        &self,
+        mut command: Command,
+        name: &str,
+        input: &[u8],
+    ) -> Result<Output, GitError> {
+        let io = |context: String| move |source| GitError::Io { context, source };
+        command.stdin(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(io(format!("cannot run git {name}")))?;
+        let stdin = child.stdin.take();
+        let (written, output) = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || match stdin {
+                Some(mut stdin) => stdin.write_all(input),
+                None => Ok(()),
+            });
+            let output = child.wait_with_output();
+            (writer.join(), output)
+        });
+        let output = output.map_err(io(format!("cannot wait for git {name}")))?;
+        // A failed write matters only when git succeeded; otherwise its exit status tells more.
+        let written =
+            written.unwrap_or_else(|_| Err(std::io::Error::other("the writing thread panicked")));
+        match written {
+            Err(source) if output.status.success() => {
+                Err(io(format!("cannot write to git {name}"))(source))
+            }
+            _ => Ok(output),
+        }
     }
 
     /// Run a git subcommand and return its standard output; any exit status but 0 is an error.
