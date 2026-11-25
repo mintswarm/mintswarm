@@ -41,15 +41,16 @@ When one change depends on another unmerged one, base the second PR on the first
 
 ## Commits
 
-[Conventional Commits](https://www.conventionalcommits.org/), with the component as scope:
+[Conventional Commits](https://www.conventionalcommits.org/), with the issue's components as scope:
 
 ```
 feat(runner): reconnect and replay job events after stream loss
+feat(domain,agents): an issue carries one or more components
 fix(core): renew leases on heartbeat, not on claim
 docs(docs): describe the repository layout
 ```
 
-Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, `docs/` and the top-level documents use `docs`. A change that also touches the `shared` paths listed in that file takes the scope of the component it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
+Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, `docs/` and the top-level documents use `docs`. The scope is the issue's components, comma-separated in the issue's order with no spaces, such as `feat(domain,agents): …`. A change that also touches the `shared` paths listed in that file takes the scope of the components it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
 
 Inside a work branch commits can be as small as you like; the PR title is what lands on `master`.
 

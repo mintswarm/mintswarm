@@ -11,7 +11,7 @@ tracker:
     implementation: { issue_type: Task }
   components:
     source: labels                   # labels (per repository) | field (account-wide select or free text)
-    label: "component:{name}"        # implementation issues carry exactly one; design and plan issues may carry several
+    label: "component:{name}"        # an issue carries one or more, one label per component
   # Read from the base ref, never the worktree, by .mintswarm/dogfood/github/msw-state.py.
   state:
     source: field                    # field (organisation issue field, single select) | labels
