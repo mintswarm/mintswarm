@@ -119,15 +119,20 @@ fn is_heading(line: &str) -> bool {
 }
 
 /// Whether `line` opens a json fence by `floor.py`'s `FENCE`: after any spaces and tabs, a run of
-/// three or more backticks or tildes followed by `json` in any case.
+/// three or more backticks or tildes followed by `json` in any case. Python's `re.IGNORECASE`
+/// folds Unicode case, under which only `s` gains a letter: U+017F LATIN SMALL LETTER LONG S.
 fn is_json_fence(line: &str) -> bool {
     let stripped = line.trim_start_matches([' ', '\t']);
     ['`', '~'].into_iter().any(|c| {
         let rest = stripped.trim_start_matches(c);
-        stripped.len() - rest.len() >= 3
-            && rest
-                .get(..4)
-                .is_some_and(|word| word.eq_ignore_ascii_case("json"))
+        let fold = |c: char| {
+            if c == '\u{17f}' {
+                's'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        };
+        stripped.len() - rest.len() >= 3 && rest.chars().take(4).map(fold).eq("json".chars())
     })
 }
 
@@ -426,4 +431,19 @@ pub fn parse(text: &str) -> Parsed<Footprint> {
         gate_changes,
         overridden_assumptions,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_json_fence;
+
+    #[test]
+    fn a_json_fence_folds_case_as_python_does() {
+        for line in ["```json", "  ~~~~JSON", "\t```JſON x", "```jſon"] {
+            assert!(is_json_fence(line), "{line:?}");
+        }
+        for line in ["``json", "```jso", "```yaml", "```jzon"] {
+            assert!(!is_json_fence(line), "{line:?}");
+        }
+    }
 }
