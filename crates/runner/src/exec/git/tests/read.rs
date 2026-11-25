@@ -252,18 +252,18 @@ fn log_ignores_the_store_log_config() {
 }
 
 #[test]
-fn merge_base_finds_the_common_ancestor() {
+fn merge_bases_finds_the_common_ancestors() {
     let fx = Fixture::new();
     let store = fx.fetched_store("base");
     assert_eq!(
-        store.merge_base(&fx.main, &fx.side).unwrap(),
-        Some(fx.base.clone())
+        store.merge_bases(&fx.main, &fx.side).unwrap(),
+        std::slice::from_ref(&fx.base)
     );
     assert_eq!(
-        store.merge_base(&fx.merged, &fx.main).unwrap(),
-        Some(fx.main.clone())
+        store.merge_bases(&fx.merged, &fx.main).unwrap(),
+        std::slice::from_ref(&fx.main)
     );
-    assert_eq!(store.merge_base(&fx.side, &fx.orphan).unwrap(), None);
+    assert!(store.merge_bases(&fx.side, &fx.orphan).unwrap().is_empty());
 }
 
 #[test]
@@ -480,10 +480,13 @@ fn diff_equals_landing_floor_diff() {
     ] {
         let (modes, lines, added) = floor_diff(&store, base, head);
         assert!(!modes.is_empty());
-        let fork = store.merge_base(base, head).unwrap().unwrap();
+        let bases = store.merge_bases(base, head).unwrap();
+        let [fork] = bases.as_slice() else {
+            panic!("one merge base expected, not {}", bases.len());
+        };
         let ours = store
             .diff(
-                &fork,
+                fork,
                 head,
                 DiffOpts {
                     numstat: true,

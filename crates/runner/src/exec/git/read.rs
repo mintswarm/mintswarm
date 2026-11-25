@@ -1,4 +1,4 @@
-//! The read operations: `resolve`, ranges, blobs, trees, logs and merge bases. Revisions are
+//! The read operations: `resolve`, ranges, blobs, trees, logs, merge bases and ancestry. Revisions are
 //! full ids only; no revision syntax reaches git.
 
 use std::ffi::{OsStr, OsString};
@@ -297,18 +297,32 @@ pub(crate) fn subjects(store: &GitStore, rev: &RevId) -> Result<Vec<u8>, GitErro
     )
 }
 
-/// The best common ancestor of two commits, or `None` when they share no history.
-pub(super) fn merge_base(
-    store: &GitStore,
-    a: &RevId,
-    b: &RevId,
-) -> Result<Option<RevId>, GitError> {
+/// Every best common ancestor of two commits; empty when they share no history.
+pub(super) fn merge_bases(store: &GitStore, a: &RevId, b: &RevId) -> Result<Vec<RevId>, GitError> {
     let a = commit(store, a)?;
     let b = commit(store, b)?;
-    let output = store.output(store.command(["merge-base", a, b]), "merge-base")?;
+    let output = store.output(store.command(["merge-base", "--all", a, b]), "merge-base")?;
     if output.status.code() == Some(1) && output.stdout.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let out = success("merge-base", output)?;
-    id_text(store, out.trim_ascii_end(), "merge-base").map(|id| Some(RevId(id)))
+    out.split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| id_text(store, line, "merge-base").map(RevId))
+        .collect()
+}
+
+/// Whether `a` is reachable from `b`, `a == b` included.
+pub(super) fn is_ancestor(store: &GitStore, a: &RevId, b: &RevId) -> Result<bool, GitError> {
+    let a = commit(store, a)?;
+    let b = commit(store, b)?;
+    let output = store.output(
+        store.command(["merge-base", "--is-ancestor", a, b]),
+        "merge-base",
+    )?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(failure("merge-base", &output)),
+    }
 }

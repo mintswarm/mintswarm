@@ -209,8 +209,12 @@ impl Vcs for GitStore {
         read::log(self, revs, paths)
     }
 
-    fn merge_base(&self, a: &RevId, b: &RevId) -> Result<Option<RevId>, GitError> {
-        read::merge_base(self, a, b)
+    fn merge_bases(&self, a: &RevId, b: &RevId) -> Result<Vec<RevId>, GitError> {
+        read::merge_bases(self, a, b)
+    }
+
+    fn is_ancestor(&self, a: &RevId, b: &RevId) -> Result<bool, GitError> {
+        read::is_ancestor(self, a, b)
     }
 
     fn diff(

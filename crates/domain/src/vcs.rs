@@ -200,8 +200,12 @@ pub trait Vcs: Send + Sync {
     /// The commits of a range that touch the paths, newest first.
     fn log(&self, revs: &RevRange, paths: &[RepoPath]) -> Result<Vec<CommitInfo>, Self::Error>;
 
-    /// The best common ancestor of two commits.
-    fn merge_base(&self, a: &RevId, b: &RevId) -> Result<Option<RevId>, Self::Error>;
+    /// Every best common ancestor of two commits, as `git merge-base --all` finds them; empty
+    /// when they share no history.
+    fn merge_bases(&self, a: &RevId, b: &RevId) -> Result<Vec<RevId>, Self::Error>;
+
+    /// Whether `a` is reachable from `b`; true when `a == b`.
+    fn is_ancestor(&self, a: &RevId, b: &RevId) -> Result<bool, Self::Error>;
 
     /// The changes from one commit to another, limited to the paths and the trees under them;
     /// an empty `paths` means the whole tree.
