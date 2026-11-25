@@ -17,9 +17,11 @@ repository, and runs the check groups that exercise the pure floor: GROUPS below
   code, and the exact text of the `floor.json` it wrote, or null when it wrote none.
 
 Bytes are `{"utf8": text}`, or `{"hex": digits}` when they are not valid UTF-8. Each config and
-history line is written once, before the runs. A run whose arguments `floor.py` refuses, whose
-base does not resolve to a commit or whose base has no config is not recorded: those test the
-extraction of the bundle, not the floor.
+history line is written once, before the runs. A run is not recorded when its arguments
+`floor.py` refuses, its base does not resolve to a commit, its base has no config, a document it
+names or a result record that exists is not a regular file, or its PATH is not the sandbox's:
+those test the extraction of the bundle, not the floor. Every other unusable-input run is recorded,
+with exit 2 and floor null.
 
 It reads `.mintswarm/dogfood/` and never modifies it. Run it with PYTHONDONTWRITEBYTECODE=1. Two
 runs write the same bytes. It exits 1 when any self-test check fails, and writes nothing then.
@@ -61,6 +63,7 @@ GROUPS = (
     "check_question_records",
     "check_acceptance_criteria",
     "check_first_of_kind",
+    "check_unusable_input",
     "check_size_floor",
 )
 
@@ -111,12 +114,22 @@ class Capture:
         file = sb.repo / path
         return {"path": path, "bytes": blob(file.read_bytes())} if file.exists() else None
 
-    def record(self, sb, argv: list, proc) -> None:
-        if not self.groups:
+    def extractable(self, sb, args: dict) -> bool:
+        named = [args["plan"], *(args[arg] for _, arg in DOCUMENTS)]
+        if any(path is not None and not (sb.repo / path).is_file() for path in named):
+            return False
+        records = [args["plan"], *([] if args["analysis"] is None else [args["analysis"]])]
+        paths = [sb.repo / self.floor.record_path(path) for path in records]
+        return all(path.is_file() or not path.exists() for path in paths)
+
+    def record(self, sb, argv: list, proc, env) -> None:
+        if not self.groups or (env is not None and env.get("PATH") != sb.env.get("PATH")):
             return
         try:
             args = self.floor.parse_args(argv)
         except self.floor.InputError:
+            return
+        if not self.extractable(sb, args):
             return
         resolved = self.git(sb, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{args['base']}^{{commit}}")
         if resolved.returncode != 0:
@@ -170,7 +183,7 @@ def main(argv: list) -> int:
     def exec_and_record(sb, args: list, env: dict = None, script: Path = selftest.FLOOR):
         proc = exec_(sb, args, env, script)
         if script == selftest.FLOOR:
-            capture.record(sb, args, proc)
+            capture.record(sb, args, proc, env)
         return proc
 
     selftest.Sandbox.exec = exec_and_record
@@ -192,6 +205,7 @@ def main(argv: list) -> int:
         selftest.check_blocking_questions(runner)
         selftest.check_acceptance_criteria(runner)
         selftest.check_first_of_kind(runner)
+        selftest.check_unusable_input(sb, commits)
         selftest.check_size_floor(runner)
     if selftest.T.failed:
         failures = [line for line in output.getvalue().splitlines() if line.startswith("FAIL")]

@@ -112,6 +112,8 @@ fn outcome(bundle: &Bundle) -> (Outcome, Option<String>) {
 fn every_selftest_floor_case_matches() {
     let runs = runs();
     assert!(runs.len() > 100, "the fixture holds {} runs", runs.len());
+    let unusable = runs.iter().filter(|run| run.exit == 2).count();
+    assert!(unusable >= 20, "the fixture holds {unusable} exit-2 runs");
     let mut failures = Vec::new();
     for run in &runs {
         let (outcome, text) = outcome(&run.bundle);
