@@ -16,7 +16,7 @@ const SCREEN_TOOL: &str = "dependency-screen";
 const SCREEN_MODE: &str = "plan";
 const DISQUALIFIERS: [&str; 4] = ["advisory", "yanked", "deprecated", "typosquat"];
 
-fn get<'j>(entries: &'j [(String, Json)], key: &str) -> Option<&'j Json> {
+pub(crate) fn get<'j>(entries: &'j [(String, Json)], key: &str) -> Option<&'j Json> {
     entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
@@ -28,18 +28,20 @@ fn get_str<'j>(entries: &'j [(String, Json)], key: &str) -> Option<&'j str> {
 }
 
 /// One package of a usable screen record.
-struct Package<'j> {
-    name: &'j str,
-    manifest: &'j str,
-    reason: &'j str,
-    unscreened: bool,
-    version: Option<&'j str>,
-    disqualifiers: Vec<&'j str>,
+pub(crate) struct Package<'j> {
+    pub name: &'j str,
+    pub manifest: &'j str,
+    pub reason: &'j str,
+    pub unscreened: bool,
+    pub version: Option<&'j str>,
+    pub disqualifiers: Vec<&'j str>,
+    /// The package's object, for the fields the Package rows show.
+    pub fields: &'j [(String, Json)],
 }
 
 /// The packages of the screen record `record`, as `parse_screen` reads it, or the
 /// `dependency-screen` rule's fixed reason when it is not a record that rule reads.
-fn parse_screen(record: &Json) -> Result<Vec<Package<'_>>, &'static str> {
+pub(crate) fn parse_screen(record: &Json) -> Result<Vec<Package<'_>>, &'static str> {
     let Json::Object(entries) = record else {
         return Err("the screen record is not a JSON object");
     };
@@ -101,6 +103,7 @@ fn parse_screen(record: &Json) -> Result<Vec<Package<'_>>, &'static str> {
             unscreened,
             version: get_str(fields, "version"),
             disqualifiers,
+            fields,
         });
     }
     Ok(out)

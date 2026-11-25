@@ -31,6 +31,10 @@ use crate::json::{self, Style};
 /// The config's path, which the verdict names.
 pub const CONFIG: &str = ".mintswarm/config.yaml";
 
+/// The rules that read the footprint, not evaluated after a `footprint` hit: `floor.py`'s
+/// `FOOTPRINT_RULES`.
+pub const FOOTPRINT_RULES: std::ops::Range<usize> = 1..13;
+
 /// The rules, in the order they are evaluated and reported.
 pub const RULES: [&str; 16] = [
     "footprint",
@@ -222,14 +226,14 @@ fn bound_json(bound: Option<&Bound>) -> Json {
     })
 }
 
-fn verdict_name(verdict: RuleVerdict) -> &'static str {
+pub(crate) fn verdict_name(verdict: RuleVerdict) -> &'static str {
     match verdict {
         RuleVerdict::Hit => "hit",
         RuleVerdict::Clean => "clean",
     }
 }
 
-fn mode_name(mode: Mode) -> &'static str {
+pub(crate) fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Always => "always",
         Mode::Shadow => "shadow",
@@ -304,13 +308,23 @@ fn bound(item: &Item) -> Bound {
     }
 }
 
-/// The verdict `floor.py` reaches on the inputs `bundle` holds, or why they cannot be used.
-///
-/// Every item's binding is checked first: an item whose bytes do not have the sha256 it holds is
-/// unusable input. Then, as `floor.py` reads them: the plan, the documents and the result records
-/// must be UTF-8; the config must load and define the bundle's component. The rules run in
-/// [`RULES`] order; after a `footprint` hit, the rules that read the footprint are not evaluated.
-pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
+/// What the floor concludes on a bundle: the config's view, the rules evaluated with their
+/// reasons, the rules not evaluated and the footprint, `None` after a `footprint` hit; what
+/// `floor.py`'s `conclude` returns, which `decision.py` reuses.
+#[derive(Clone, Debug)]
+pub(crate) struct Evaluation {
+    /// The config's view for the bundle's component.
+    pub view: config::View,
+    /// The rules evaluated, in [`RULES`] order.
+    pub rules: Vec<RuleResult>,
+    /// The rules not evaluated, in [`RULES`] order.
+    pub not_evaluated: Vec<String>,
+    /// The footprint, when it parses.
+    pub footprint: Option<footprint::Footprint>,
+}
+
+/// The floor's rules on `bundle`, or why it cannot be used; see [`floor`].
+pub(crate) fn evaluate(bundle: &Bundle) -> Result<Evaluation, Unusable> {
     for (what, path, bytes, sha256) in bundle.items() {
         if digest(bytes) != sha256 {
             return Err(Unusable::new(format!(
@@ -331,12 +345,15 @@ pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
     let subjects = bundle.subjects.decode();
     let subjects: Vec<&str> = subjects.iter().map(String::as_str).collect();
 
-    let mut results = match footprint::parse(plan) {
-        Err(error) => vec![rule("footprint", vec![error.message().to_owned()])],
+    let (mut results, footprint) = match footprint::parse(plan) {
+        Err(error) => (
+            vec![rule("footprint", vec![error.message().to_owned()])],
+            None,
+        ),
         Ok(parsed) => {
             let mut results = vec![rule("footprint", Vec::new())];
             results.extend(rules::evaluate(&parsed, &bundle.component, &view, screen));
-            results
+            (results, Some(parsed))
         }
     };
     let documents = documents::Documents {
@@ -356,7 +373,23 @@ pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
         .filter(|name| !results.iter().any(|r| r.rule == **name))
         .map(|name| (*name).to_owned())
         .collect();
-    let verdict = if rules::any_hit(&results) {
+    Ok(Evaluation {
+        view,
+        rules: results,
+        not_evaluated,
+        footprint,
+    })
+}
+
+/// The verdict `floor.py` reaches on the inputs `bundle` holds, or why they cannot be used.
+///
+/// Every item's binding is checked first: an item whose bytes do not have the sha256 it holds is
+/// unusable input. Then, as `floor.py` reads them: the plan, the documents and the result records
+/// must be UTF-8; the config must load and define the bundle's component. The rules run in
+/// [`RULES`] order; after a `footprint` hit, the rules that read the footprint are not evaluated.
+pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
+    let evaluation = evaluate(bundle)?;
+    let verdict = if rules::any_hit(&evaluation.rules) {
         RuleVerdict::Hit
     } else {
         RuleVerdict::Clean
@@ -372,10 +405,10 @@ pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
             component: bundle.component.clone(),
             base: bundle.base.clone(),
             config: CONFIG.to_owned(),
-            mode: view.mode,
+            mode: evaluation.view.mode,
             verdict,
-            rules: results,
-            not_evaluated,
+            rules: evaluation.rules,
+            not_evaluated: evaluation.not_evaluated,
         },
     })
 }
