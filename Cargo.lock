@@ -1189,6 +1189,9 @@ name = "mintswarm-rules"
 version = "0.1.0"
 dependencies = [
  "mintswarm-domain",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
