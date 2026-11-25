@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mintswarm_domain::question::QuestionViolation;
 use mintswarm_domain::work::{OutcomeStatus, StageOutcome};
 use mintswarm_rules::output::{
     CONTENT_RULE, EXPECTED_RULE, RULES, capture, capture_transcript, check_expected,
@@ -153,7 +154,7 @@ fn needs_input_without_a_blocking_question_is_rejected() {
     assert_eq!(fault.quote, CONTENT_RULE);
     assert_eq!(
         listed(&fault.fault),
-        ["needs_input needs a must_decide or recommended question"]
+        [QuestionViolation::NeedsInputWithoutBlocking.to_string()]
     );
 }
 
