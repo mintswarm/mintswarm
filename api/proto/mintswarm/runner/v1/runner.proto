@@ -4,6 +4,7 @@ package mintswarm.runner.v1;
 
 import "google/protobuf/timestamp.proto";
 import "mintswarm/runner/v1/common.proto";
+import "mintswarm/runner/v1/connect.proto";
 
 // The service a runner calls on the control plane.
 //
@@ -27,6 +28,16 @@ service RunnerService {
   //
   // Errors: `UNAUTHENTICATED` when the assertion fails the plane's checks.
   rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+
+  // The session stream that carries all live traffic (design §5): hello and
+  // reconciliation, claims, heartbeats and leases, events and
+  // acknowledgements, directives, token refresh, capabilities, metrics and
+  // shutdown. Requires `authorization: Bearer <access token>`.
+  //
+  // `Hello` is the first runner message and `HelloAck` the first plane
+  // message; anything else first closes the stream with
+  // `FAILED_PRECONDITION` (design §5.3).
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
 
   // Returns which of the given blobs the plane lacks (design §8.2, step 1).
   // Requires `authorization: Bearer <access token>`.
