@@ -16,10 +16,11 @@ still exists:
 - `document` and `record`: the saved document and its `.result.json` record, read with
   `newline=""`, on exit 0; otherwise `null`.
 
-The last line is `{"unrecorded": [...], "failed": [...]}`: the tests that made no save-output.py
-call, and those that failed or errored. A failing test does not fail the recording: some of the
-self-test's assertions pin Python's own messages, which change between Python versions, and the
-calls are recorded either way. Reads `.mintswarm/dogfood/` without modifying it and writes only OUT
+The last line is `{"unrecorded": [...], "failed": [...], "errored": [...]}`: the tests that made
+no save-output.py call, those whose assertions failed, and those that raised. A failing test does
+not fail the recording: some of the self-test's assertions pin Python's own messages, which change
+between Python versions, and its calls are recorded either way. An erroring test may stop before
+all its calls, so `tests/save_output.rs` fails on any test listed in `errored`. Reads `.mintswarm/dogfood/` without modifying it and writes only OUT
 and the self-test's own temporary directories.
 
 `tests/save_output.rs` runs it into a temporary file and replays every entry through
@@ -128,8 +129,10 @@ def main(argv: list) -> int:
         finally:
             subprocess.run = recorder.real_run
         unrecorded = [name for name in names if name not in recorder.recorded]
-        failed = sorted({test_name(test) for test, _ in result.failures + result.errors})
-        out.write(json.dumps({"unrecorded": unrecorded, "failed": failed}, ensure_ascii=True) + "\n")
+        failed = sorted({test_name(test) for test, _ in result.failures})
+        errored = sorted({test_name(test) for test, _ in result.errors})
+        summary = {"unrecorded": unrecorded, "failed": failed, "errored": errored}
+        out.write(json.dumps(summary, ensure_ascii=True) + "\n")
     return 0
 
 

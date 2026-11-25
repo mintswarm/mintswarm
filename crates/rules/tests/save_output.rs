@@ -151,6 +151,18 @@ fn every_save_output_call_of_the_self_test_is_reproduced() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
+    let errored: Vec<&str> = summary["errored"]
+        .as_array()
+        .expect("the summary lists the tests that raised")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    // a test that raises may stop before all its calls, so fewer are recorded
+    assert!(
+        errored.is_empty(),
+        "self-test errors: {}",
+        errored.join(", ")
+    );
     if !failed.is_empty() {
         // the self-test pins some of Python's own messages; its calls are replayed all the same
         eprintln!(
