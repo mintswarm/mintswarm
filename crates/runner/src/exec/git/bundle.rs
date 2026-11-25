@@ -25,8 +25,8 @@ pub struct Documents {
     pub screen: Option<String>,
 }
 
-/// Why a bundle cannot be extracted: input `floor.py` exits 2 on. The text is ours alone; a git or
-/// file error is only the `source()`.
+/// Why a bundle cannot be extracted: the inputs on which `floor.py` exits 2. The text is ours
+/// alone; a git or file error is only the `source()`.
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
     /// The base commit is not a commit in the store.
