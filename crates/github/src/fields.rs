@@ -498,6 +498,7 @@ mod tests {
             etag: None,
             rate_limited,
             retry_after: None,
+            next_page: None,
             body: body.as_bytes().to_vec(),
         }
     }

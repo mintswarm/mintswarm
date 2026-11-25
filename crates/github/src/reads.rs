@@ -3,7 +3,8 @@
 //!
 //! Every GET goes through one ETag cache, so a repeated read is revalidated with
 //! `If-None-Match` and a 304 is served from the cache. Lists are read with `per_page=100`, page
-//! by page, and a list still full at its 30th page is refused. After a rate-limited reply with
+//! by page, following the `Link` header's `rel="next"`, and a list with a page after its 30th
+//! is refused. After a rate-limited reply with
 //! `retry-after` the client sends nothing until that long has passed; the rate-limited read
 //! itself fails with [`ReadError::RateLimited`] and is not retried.
 
@@ -177,8 +178,16 @@ pub struct GitHubReads {
     kinds: Kinds,
     trusted: Vec<Login>,
     bot: Login,
-    /// The last ETag and body of each path read, kept across reads.
-    etags: Mutex<EtagCache<String>>,
+    /// The last ETag and page of each path read, kept across reads.
+    etags: Mutex<EtagCache<String, Page>>,
+}
+
+/// One read's JSON and whether the list it is a page of goes on.
+#[derive(Clone, Debug)]
+struct Page {
+    body: Arc<Value>,
+    /// The `Link` header's answer: whether a `rel="next"` page exists; `None` without a `Link`.
+    next: Option<bool>,
 }
 
 impl GitHubReads {
@@ -355,6 +364,11 @@ impl GitHubReads {
 
     /// The JSON at `path`, revalidated against the ETag cache.
     pub(crate) async fn get(&self, token: &Token, path: &str) -> Result<Arc<Value>, ReadError> {
+        Ok(self.get_page(token, path).await?.body)
+    }
+
+    /// The JSON at `path` with its next-page hint, revalidated against the ETag cache.
+    async fn get_page(&self, token: &Token, path: &str) -> Result<Page, ReadError> {
         let cached = self.cache().get(&path.to_owned());
         let reply = self
             .rest
@@ -367,22 +381,25 @@ impl GitHubReads {
             )
             .await?;
         if reply.status == StatusCode::NOT_MODIFIED {
-            let (_, body) = cached.ok_or_else(|| {
+            let (_, page) = cached.ok_or_else(|| {
                 ReadError::Transport(format!("{}: 304 with nothing cached", reply.endpoint))
             })?;
-            return Ok(body);
+            return Ok(page);
         }
         if reply.status.is_success() {
-            let body = Arc::new(
-                serde_json::from_slice::<Value>(&reply.body)
-                    .map_err(|_| unexpected(&reply.endpoint))?,
-            );
+            let page = Page {
+                body: Arc::new(
+                    serde_json::from_slice::<Value>(&reply.body)
+                        .map_err(|_| unexpected(&reply.endpoint))?,
+                ),
+                next: reply.next_page,
+            };
             let mut cache = self.cache();
             match reply.etag {
-                Some(etag) => cache.insert(path.to_owned(), etag, Arc::clone(&body)),
+                Some(etag) => cache.insert(path.to_owned(), etag, page.clone()),
                 None => cache.remove(&path.to_owned()),
             }
-            return Ok(body);
+            return Ok(page);
         }
         Err(if reply.rate_limited {
             ReadError::RateLimited {
@@ -402,8 +419,9 @@ impl GitHubReads {
     }
 
     /// Every item of the list at `path` (which may carry a query), [`PER_PAGE`] a page: a bare
-    /// array, or the array under `items` of an object. A list still full at page [`MAX_PAGES`]
-    /// is refused without asking for the next page.
+    /// array, or the array under `items` of an object. A page is the last when its `Link`
+    /// header has no `rel="next"`, or, without a `Link`, when it is short. A list that goes on
+    /// after page [`MAX_PAGES`] is refused without asking for the next page.
     pub(crate) async fn get_paged(
         &self,
         token: &Token,
@@ -414,15 +432,15 @@ impl GitHubReads {
         let mut all = Vec::new();
         for page in 1..=MAX_PAGES {
             let page_path = format!("{path}{separator}per_page={PER_PAGE}&page={page}");
-            let body = self.get(token, &page_path).await?;
+            let page = self.get_page(token, &page_path).await?;
             let list = match items {
-                Some(key) => body.get(key),
-                None => Some(body.as_ref()),
+                Some(key) => page.body.get(key),
+                None => Some(page.body.as_ref()),
             }
             .and_then(Value::as_array)
             .ok_or_else(|| unexpected(&format!("GET {page_path}")))?;
             all.extend(list.iter().cloned());
-            if list.len() < PER_PAGE {
+            if !page.next.unwrap_or(list.len() >= PER_PAGE) {
                 return Ok(all);
             }
         }
@@ -431,7 +449,7 @@ impl GitHubReads {
         })
     }
 
-    fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache<String>> {
+    fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache<String, Page>> {
         self.etags.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

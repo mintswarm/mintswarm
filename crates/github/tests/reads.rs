@@ -155,6 +155,87 @@ async fn a_list_needing_more_than_30_pages_is_refused() {
     );
 }
 
+/// A `Link` header for comments page `page`, with a `next` link when `next` is set.
+fn comments_link(page: u64, next: bool) -> String {
+    let url = "https://api.github.com/repositories/1/issues/180/comments?per_page=100";
+    let mut link = format!("<{url}&page=1>; rel=\"first\"");
+    if page > 1 {
+        link.push_str(&format!(", <{url}&page={}>; rel=\"prev\"", page - 1));
+    }
+    if next {
+        link.push_str(&format!(", <{url}&page={}>; rel=\"next\"", page + 1));
+    }
+    link
+}
+
+#[tokio::test]
+async fn a_list_of_exactly_30_full_pages_is_read_by_its_link_header() {
+    let responder = Responder::start().await;
+    responder.reply(200, ISSUE_JSON);
+    for page in 1..=30 {
+        let link = comments_link(page, page < 30);
+        responder.reply_with(
+            200,
+            &[("link", link.as_str())],
+            comments_page((page - 1) * 100 + 1, 100),
+        );
+    }
+    let read = client(&responder)
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap();
+    assert_eq!(read.comments.len(), 3000);
+    let requests = responder.requests();
+    // The issue, then pages 1 to 30; the last page has no next link, so page 31 is not asked.
+    assert_eq!(requests.len(), 31);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.path.contains("page=31"))
+    );
+}
+
+#[tokio::test]
+async fn a_list_linking_past_page_30_is_refused() {
+    let responder = Responder::start().await;
+    responder.reply(200, ISSUE_JSON);
+    for page in 1..=30 {
+        let link = comments_link(page, true);
+        responder.reply_with(
+            200,
+            &[("link", link.as_str())],
+            comments_page((page - 1) * 100 + 1, 100),
+        );
+    }
+    let error = client(&responder)
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ReadError::TooManyPages { .. }), "{error:?}");
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 31);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.path.contains("page=31"))
+    );
+}
+
+#[tokio::test]
+async fn a_full_page_without_a_next_link_is_the_last() {
+    let responder = Responder::start().await;
+    responder.reply(200, ISSUE_JSON);
+    let link = comments_link(1, false);
+    responder.reply_with(200, &[("link", link.as_str())], comments_page(1, 100));
+    let read = client(&responder)
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap();
+    assert_eq!(read.comments.len(), 100);
+    // No extra request for an empty second page.
+    assert_eq!(responder.requests().len(), 2);
+}
+
 #[tokio::test]
 async fn a_repeated_get_revalidates_and_a_304_serves_the_cache() {
     let responder = Responder::start().await;

@@ -6,8 +6,8 @@
 //! that carries it, every later request waits until that long has passed.
 
 use reqwest::header::{
-    ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, HeaderMap, HeaderValue, IF_NONE_MATCH, RETRY_AFTER,
-    USER_AGENT,
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, HeaderMap, HeaderValue, IF_NONE_MATCH, LINK,
+    RETRY_AFTER, USER_AGENT,
 };
 use reqwest::{Method, StatusCode};
 use std::sync::{Mutex, PoisonError};
@@ -61,6 +61,19 @@ pub(crate) fn path_segment(text: &str) -> String {
     encoded
 }
 
+/// Whether a `Link` header value (`<url>; rel="next", <url>; rel="last"`) has a `next` link.
+fn links_next(link: &str) -> bool {
+    link.split(',').any(|entry| {
+        entry.split(';').skip(1).any(|param| {
+            param.trim().strip_prefix("rel=").is_some_and(|rel| {
+                rel.trim_matches('"')
+                    .split_whitespace()
+                    .any(|rel| rel == "next")
+            })
+        })
+    })
+}
+
 /// GitHub's answer to one request.
 #[derive(Debug)]
 pub(crate) struct Reply {
@@ -72,6 +85,8 @@ pub(crate) struct Reply {
     pub rate_limited: bool,
     /// The `retry-after` header in delta-seconds; an HTTP-date is ignored.
     pub retry_after: Option<Duration>,
+    /// Whether the `Link` header names a `rel="next"` page; `None` when there is no `Link`.
+    pub next_page: Option<bool>,
     pub body: Vec<u8>,
 }
 
@@ -209,6 +224,7 @@ impl Rest {
         let retry_after = header(RETRY_AFTER)
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
+        let next_page = header(LINK).map(|link| links_next(&link));
         let body = response.bytes().await.map_err(|_| failed())?.to_vec();
         if let Some(wait) = retry_after.filter(|_| rate_limited) {
             self.pause_for(wait);
@@ -219,6 +235,7 @@ impl Rest {
             etag,
             rate_limited,
             retry_after,
+            next_page,
             body,
         })
     }
@@ -226,7 +243,21 @@ impl Rest {
 
 #[cfg(test)]
 mod tests {
-    use super::path_segment;
+    use super::{links_next, path_segment};
+
+    #[test]
+    fn the_link_header_names_a_next_page() {
+        let base = "https://api.github.com/repositories/1/issues/180/comments";
+        assert!(links_next(&format!(
+            "<{base}?page=2>; rel=\"next\", <{base}?page=5>; rel=\"last\""
+        )));
+        assert!(!links_next(&format!(
+            "<{base}?page=1>; rel=\"first\", <{base}?page=29>; rel=\"prev\""
+        )));
+        assert!(!links_next(""));
+        // A URL that merely contains "next" is not a next link.
+        assert!(!links_next(&format!("<{base}?next=1>; rel=\"prev\"")));
+    }
 
     #[test]
     fn label_names_are_encoded_as_one_path_segment() {
