@@ -115,7 +115,11 @@ fn instance_is_removed_after_process_exit() {
         "binaries" => {
             let pid: i32 = fields[3].parse().unwrap();
             let pid = rustix::process::Pid::from_raw(pid).unwrap();
-            !Path::new(fields[2]).exists() && rustix::process::test_kill_process(pid).is_err()
+            // The server leads its own process group: no process of it, postmaster or
+            // backend, may be left.
+            !Path::new(fields[2]).exists()
+                && rustix::process::test_kill_process(pid).is_err()
+                && rustix::process::test_kill_process_group(pid).is_err()
         }
         "container" => {
             let ps = Command::new(fields[2])

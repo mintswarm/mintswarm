@@ -1,8 +1,8 @@
-//! The watchdog: a `sh` child in its own process group that removes the instance once the test
+//! The watchdog: a `/bin/sh` child in its own process group that removes the instance once the test
 //! process ends.
 //!
 //! The watchdog reads its stdin from a pipe whose write end only the test process holds. It
-//! first reads one line naming the server's pid or the container's id, then waits for end of
+//! first reads one line naming the server's pid or the container's name, then waits for end of
 //! file, which comes when the test process exits or is killed. It then stops the server or
 //! removes the container. Statics never drop, so this is how a per-process instance is removed
 //! without `unsafe` code.
@@ -15,32 +15,39 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use super::PgHarnessError;
 
 /// The binaries backend's cleanup: `$1` is the instance directory; the line read is the
-/// server's pid, or empty when no server was started.
+/// server's pid, or empty when no server was started. The server leads its own process group,
+/// so the whole group (the postmaster and its backends) is signalled, and killed only when it
+/// is still there after the wait. `kill -SIG -pgid` without `--` is the form every `sh` takes.
 const BINARIES_SCRIPT: &str = r#"
 IFS= read -r pid || pid=
 case $pid in ''|*[!0-9]*) pid= ;; esac
 cat >/dev/null
 if [ -n "$pid" ]; then
-    kill -QUIT "$pid" 2>/dev/null
+    kill -QUIT "-$pid" 2>/dev/null
     i=0
-    while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+    while [ "$i" -lt 100 ] && kill -0 "-$pid" 2>/dev/null; do
         sleep 0.1
         i=$((i + 1))
     done
-    kill -KILL "$pid" 2>/dev/null
+    if kill -0 "-$pid" 2>/dev/null; then
+        kill -KILL "-$pid" 2>/dev/null
+    fi
 fi
 rm -rf "$1"
 "#;
 
-/// The container backend's cleanup: `$1` is the runtime; the line read is the container's id,
-/// or empty when no container was started.
+/// The container backend's cleanup: `$1` is the runtime; the line read is the container's name,
+/// armed before the container is run. Removing a name no container has is harmless.
 const CONTAINER_SCRIPT: &str = r#"
-IFS= read -r id || id=
+IFS= read -r name || name=
 cat >/dev/null
-if [ -n "$id" ]; then
-    "$1" rm -f "$id" >/dev/null 2>&1
+if [ -n "$name" ]; then
+    "$1" rm -f "$name" >/dev/null 2>&1
 fi
 "#;
+
+/// The shell the watchdog runs, by absolute path so that cleanup does not depend on `PATH`.
+const SHELL: &str = "/bin/sh";
 
 /// What the watchdog removes.
 #[derive(Debug, Clone)]
@@ -50,7 +57,7 @@ pub(crate) enum Cleanup {
         /// The instance's temporary directory.
         dir: PathBuf,
     },
-    /// Remove the container whose id is armed, with this runtime.
+    /// Remove the container whose name is armed, with this runtime.
     Container {
         /// The `docker` or `podman` executable.
         runtime: PathBuf,
@@ -69,7 +76,7 @@ pub(crate) struct Watchdog {
 impl Watchdog {
     /// Starts the watchdog. Its arguments are positional parameters, never part of the script.
     pub(crate) fn spawn(cleanup: Cleanup) -> Result<Self, PgHarnessError> {
-        let mut command = Command::new("sh");
+        let mut command = Command::new(SHELL);
         match &cleanup {
             Cleanup::Binaries { dir } => {
                 command
@@ -89,7 +96,7 @@ impl Watchdog {
             .process_group(0)
             .spawn()
             .map_err(|source| PgHarnessError::Spawn {
-                program: "sh".to_owned(),
+                program: SHELL.to_owned(),
                 source,
             })?;
         let stdin = child
@@ -102,7 +109,7 @@ impl Watchdog {
         })
     }
 
-    /// Names the server pid or container id to remove. Called at most once.
+    /// Names the server pid or container name to remove. Called at most once.
     pub(crate) fn arm(&mut self, target: &str) -> Result<(), PgHarnessError> {
         writeln!(self.stdin, "{target}")?;
         self.stdin.flush()?;
