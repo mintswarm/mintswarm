@@ -1,3 +1,181 @@
 syntax = "proto3";
 
 package mintswarm.runner.v1;
+
+import "google/protobuf/timestamp.proto";
+import "mintswarm/runner/v1/common.proto";
+
+// The service a runner calls on the control plane.
+//
+// Every sha256 in this service is the lowercase hex digest of the bytes it
+// names. The fence on the blob calls is the design's §7.4
+// `(attempt_id, lease_epoch)` pair, written inline as on `RunnerEvent`.
+service RunnerService {
+  // Registers a new runner (design §9.1). Needs no access token: the request
+  // carries the registration token.
+  //
+  // Errors: `UNAUTHENTICATED` for an unknown, expired, used-up or revoked
+  // registration token; `FAILED_PRECONDITION` with reason
+  // `repository_mismatch` when the remote does not match the project, and
+  // with reason `upgrade_required` when the runner is too old.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Exchanges a client assertion signed with the runner key for an access
+  // token (design §9.2). Needs no access token: the request carries the
+  // signed assertion.
+  //
+  // Errors: `UNAUTHENTICATED` when the assertion fails the plane's checks.
+  rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+
+  // Returns which of the given blobs the plane lacks (design §8.2, step 1).
+  // Requires `authorization: Bearer <access token>`.
+  rpc StatBlobs(StatBlobsRequest) returns (StatBlobsResponse);
+
+  // Uploads one blob (design §8.2, step 2): the first message is a header,
+  // every later one a chunk. Requires `authorization: Bearer <access token>`.
+  //
+  // Errors: `DATA_LOSS` when the bytes do not hash to the header's sha256;
+  // `RESOURCE_EXHAUSTED` when the blob is over the plane's `max_blob_bytes`.
+  rpc PutBlob(stream PutBlobRequest) returns (PutBlobResponse);
+
+  // Downloads one blob that belongs to the fenced attempt's job (design
+  // §8.2): the first message is a header, every later one a chunk. Requires
+  // `authorization: Bearer <access token>`.
+  rpc GetBlob(GetBlobRequest) returns (stream GetBlobResponse);
+}
+
+// The registration call's request (design §9.1, step 4).
+message RegisterRequest {
+  // The one-time registration token from the connection string.
+  Secret registration_token = 1;
+  // The runner's Ed25519 public key, as the raw 32 bytes.
+  bytes public_key = 2;
+  // The repository the runner serves, checked against the project.
+  Repository repository = 3;
+  // The runner's host name.
+  string host = 4;
+  // The runner's operating system.
+  string os = 5;
+  // The runner's CPU architecture.
+  string arch = 6;
+  // The tags the operator asked for.
+  repeated string tags = 7;
+  // The harness account the runner works as.
+  string account = 8;
+  // How many workers the runner runs at once.
+  uint32 workers_total = 9;
+  // The runner's release version.
+  string runner_version = 10;
+  // The protocol minor version the runner speaks (design §10).
+  uint32 protocol_minor = 11;
+}
+
+// The repository a runner serves.
+message Repository {
+  // The repository's remote URL.
+  string remote = 1;
+}
+
+// The registration call's response (design §9.1, step 5).
+message RegisterResponse {
+  // The id the plane gave the runner.
+  string runner_id = 1;
+  // The project the runner belongs to.
+  string project = 2;
+  // The default tags the plane applied.
+  repeated string default_tags = 3;
+  // The `aud` the runner must use in its client assertions.
+  string audience = 4;
+}
+
+// The access-token exchange's request, with RFC 7523's names (design §9.2).
+message AuthenticateRequest {
+  // Always `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`.
+  string client_assertion_type = 1;
+  // The JWT signed with the runner key; a bearer credential until its `exp`.
+  Secret client_assertion = 2;
+}
+
+// The access-token exchange's response (design §9.2).
+message AuthenticateResponse {
+  // The opaque access token, sent as `authorization: Bearer <token>`.
+  Secret access_token = 1;
+  // When the access token expires.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// Asks which blobs the plane lacks.
+message StatBlobsRequest {
+  // The sha256 of each blob the runner is about to reference.
+  repeated string sha256 = 1;
+}
+
+// The blobs the plane lacks.
+message StatBlobsResponse {
+  // The sha256 of each requested blob the plane does not hold.
+  repeated string missing = 1;
+}
+
+// One message of a blob upload.
+message PutBlobRequest {
+  // A header first, then the chunks.
+  oneof part {
+    // What the blob is; the first message of the stream.
+    PutBlobHeader header = 1;
+    // The next bytes of the blob, at most 1 MiB.
+    bytes chunk = 2;
+  }
+}
+
+// What an uploaded blob is, and the attempt that uploads it.
+message PutBlobHeader {
+  // The blob's sha256, which the plane checks as it stores the bytes.
+  string sha256 = 1;
+  // The blob's size in bytes.
+  uint64 size = 2;
+  // The blob's media type.
+  string media_type = 3;
+  // The fence's attempt.
+  string attempt_id = 4;
+  // The fence's lease epoch.
+  uint64 lease_epoch = 5;
+}
+
+// The stored blob.
+message PutBlobResponse {
+  // The stored blob's sha256.
+  string sha256 = 1;
+  // The stored blob's size in bytes.
+  uint64 size = 2;
+}
+
+// Asks for one blob of the fenced attempt's job.
+message GetBlobRequest {
+  // The blob's sha256.
+  string sha256 = 1;
+  // The fence's attempt.
+  string attempt_id = 2;
+  // The fence's lease epoch.
+  uint64 lease_epoch = 3;
+}
+
+// One message of a blob download.
+message GetBlobResponse {
+  // A header first, then the chunks.
+  oneof part {
+    // What the blob is; the first message of the stream.
+    GetBlobHeader header = 1;
+    // The next bytes of the blob, at most 1 MiB.
+    bytes chunk = 2;
+  }
+}
+
+// What a downloaded blob is.
+message GetBlobHeader {
+  // The blob's sha256, which the runner checks before using the bytes.
+  string sha256 = 1;
+  // The blob's size in bytes.
+  uint64 size = 2;
+  // The blob's media type.
+  string media_type = 3;
+}
