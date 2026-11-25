@@ -16,6 +16,7 @@ mintswarm/
 ├── CLAUDE.md               # Claude Code entry point
 ├── CONTRIBUTING.md
 ├── LICENSE.md              # FSL-1.1-ALv2
+├── Makefile                # lists required tool versions
 ├── README.md
 ├── .cargo/config.toml      # Cargo build settings
 │

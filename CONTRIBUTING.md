@@ -89,6 +89,6 @@ The `gates` workflow (`.github/workflows/gates.yml`) reports one status check pe
 
 The gates are the `gates.run` entries of `.mintswarm/config.yaml`; `.github/workflows/gates.yml` runs each one as its own check. Before pushing, run the same commands: each entry's `command`, on its own from the repository root, for example in a subshell `( … )`, since some of them `cd` into `web/` and the next one expects the root again.
 
-`whitespace` and `proto-breaking` need `origin/master` fetched. Some gates need tools beyond the Rust and Python toolchains: `black` for `python-format`, `cargo-nextest` for `rust-test`, `buf` for `proto-lint` and `proto-breaking`, and Node for the `typescript-*` gates. Use the versions CI uses: `.github/workflows/gates.yml` pins `cargo-nextest` and `buf`, `pyproject.toml` pins `black` (`required-version`), and `web/.node-version` pins Node.
+`whitespace` and `proto-breaking` need `origin/master` fetched. Some gates need tools beyond the Rust and Python toolchains: `black` for `python-format`, `cargo-nextest` for `rust-test`, `buf` for `proto-lint` and `proto-breaking`, and Node for the `typescript-*` gates. Use the versions CI uses: `make required-versions` lists each tool's version with the file that pins it.
 
 The gate commands write their build output only under the git-ignored `build/` at the repository root, never next to sources. The dependency install (`web-install.sh`) writes `node_modules/` under `web/`, which is a dependency install, not build output.
