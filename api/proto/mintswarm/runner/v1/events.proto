@@ -1,0 +1,431 @@
+syntax = "proto3";
+
+package mintswarm.runner.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// A batch of runner events (design §8.1). Its events have contiguous,
+// ascending `seq` values.
+message EventBatch {
+  // The events, in ascending `seq` order with no gaps.
+  repeated RunnerEvent events = 1;
+}
+
+// One event or record notice from a runner's outbox (design §8.1).
+//
+// Every event carries the runner's single `seq` and, for job events, the
+// `(attempt_id, lease_epoch)` fence of design §7.4, written inline. The
+// plane drops a fenced event whose fence is stale.
+message RunnerEvent {
+  // The runner's outbox sequence number, one counter per runner.
+  uint64 seq = 1;
+  // When the runner recorded the event.
+  google.protobuf.Timestamp at = 2;
+  // The job the event belongs to; empty for runner-level events.
+  string job_id = 3;
+  // The attempt the event is fenced by; empty for runner-level events.
+  string attempt_id = 4;
+  // The lease epoch the event is fenced by; zero for runner-level events.
+  uint64 lease_epoch = 5;
+
+  // What happened.
+  oneof body {
+    // The attempt's harness session started.
+    AttemptStarted started = 10;
+    // The attempt could not start.
+    AttemptStartFailed start_failed = 11;
+    // The attempt ended.
+    AttemptOutcome outcome = 12;
+    // Token, cost and limit usage observed for the attempt.
+    Usage usage = 13;
+    // A progress step of the attempt.
+    Progress progress = 14;
+    // A warning the runner reports.
+    Warning warning = 15;
+    // A record was put; its bytes travel through the blob calls.
+    RecordPut record = 16;
+    // An artefact revision was put; its bytes travel through the blob calls.
+    ArtefactPut artefact = 17;
+    // What the runner did with a directive.
+    DirectiveReceipt receipt = 18;
+    // The stage's result block.
+    StageResult stage_result = 19;
+  }
+}
+
+// The attempt's harness session started.
+message AttemptStarted {}
+
+// The attempt could not start.
+message AttemptStartFailed {
+  // Why it could not start.
+  AttemptStartFailedReason reason = 1;
+  // A human-readable explanation.
+  string detail = 2;
+}
+
+// Why an attempt could not start.
+enum AttemptStartFailedReason {
+  // Not set; never sent.
+  ATTEMPT_START_FAILED_REASON_UNSPECIFIED = 0;
+  // The runner never received the attempt's assignment in full.
+  ATTEMPT_START_FAILED_REASON_NOT_RECEIVED = 1;
+  // The runner already runs or ran this attempt.
+  ATTEMPT_START_FAILED_REASON_DUPLICATE = 2;
+  // The runner cannot run what the assignment asks for.
+  ATTEMPT_START_FAILED_REASON_UNSUPPORTED = 3;
+}
+
+// The attempt ended.
+message AttemptOutcome {
+  // How it ended.
+  AttemptOutcomeKind kind = 1;
+  // Why it ended so, for example `budget_exceeded` for a `failed` attempt.
+  string reason = 2;
+  // The commit the attempt's branch ended at, when it has one.
+  optional string head = 3;
+}
+
+// How an attempt ended (#152's attempt outcomes).
+//
+// A budget overrun is not a value of its own: it is `failed` with reason
+// `budget_exceeded`. The plane stores a value it does not know as `failed`.
+enum AttemptOutcomeKind {
+  // Not set; never sent.
+  ATTEMPT_OUTCOME_KIND_UNSPECIFIED = 0;
+  // The attempt finished its work.
+  ATTEMPT_OUTCOME_KIND_SUCCEEDED = 1;
+  // The attempt failed.
+  ATTEMPT_OUTCOME_KIND_FAILED = 2;
+  // The attempt ran past its time limit.
+  ATTEMPT_OUTCOME_KIND_TIMED_OUT = 3;
+  // The attempt stopped making progress.
+  ATTEMPT_OUTCOME_KIND_STALLED = 4;
+  // The attempt was cancelled.
+  ATTEMPT_OUTCOME_KIND_CANCELLED = 5;
+  // The harness was rate-limited.
+  ATTEMPT_OUTCOME_KIND_THROTTLED = 6;
+  // The stage's output did not pass validation.
+  ATTEMPT_OUTCOME_KIND_INVALID_OUTPUT = 7;
+  // The requested model was not available.
+  ATTEMPT_OUTCOME_KIND_MODEL_UNAVAILABLE = 8;
+  // The runner lost the attempt, for example after a restart.
+  ATTEMPT_OUTCOME_KIND_LOST = 9;
+}
+
+// Token, cost and limit usage observed for an attempt.
+message Usage {
+  // Token counts.
+  message Tokens {
+    // Input tokens.
+    uint64 input = 1;
+    // Output tokens.
+    uint64 output = 2;
+    // Tokens read from the prompt cache.
+    uint64 cache_read = 3;
+    // Tokens written to the prompt cache.
+    uint64 cache_write = 4;
+  }
+
+  // A cost.
+  message Cost {
+    // The amount, in `currency`.
+    double amount = 1;
+    // The currency, for example `USD`.
+    string currency = 2;
+    // How the amount was arrived at, for example `reported` or `estimated`.
+    string basis = 3;
+  }
+
+  // One usage limit of the account.
+  message Limit {
+    // The limit's name, as the harness reports it.
+    string name = 1;
+    // How much of the limit is used, in percent.
+    double used_percent = 2;
+    // When the limit resets.
+    google.protobuf.Timestamp resets_at = 3;
+  }
+
+  // The token counts.
+  Tokens tokens = 1;
+  // The cost.
+  Cost cost = 2;
+  // The account's limits.
+  repeated Limit limits = 3;
+  // Where the figures come from, for example the harness's name.
+  string source = 4;
+  // When the figures were observed.
+  google.protobuf.Timestamp observed_at = 5;
+}
+
+// A progress step of an attempt. Sent only under the `progress_events`
+// feature.
+message Progress {
+  // A harness turn began.
+  message Turn {
+    // The turn's number, from one.
+    uint32 number = 1;
+  }
+
+  // The harness called a tool.
+  message ToolCall {
+    // The tool's name.
+    string name = 1;
+  }
+
+  // The harness's context usage changed.
+  message ContextUsage {
+    // How much of the context window is used, in percent.
+    double used_percent = 1;
+  }
+
+  // The harness compacted its context.
+  message Compaction {}
+
+  // A gate started.
+  message GateStarted {
+    // The gate's name.
+    string name = 1;
+  }
+
+  // A gate finished.
+  message GateFinished {
+    // The gate's name.
+    string name = 1;
+    // Whether it passed.
+    GateResult result = 2;
+  }
+
+  // What happened.
+  oneof event {
+    // A harness turn began.
+    Turn turn = 1;
+    // The harness called a tool.
+    ToolCall tool_call = 2;
+    // The harness's context usage changed.
+    ContextUsage context_usage = 3;
+    // The harness compacted its context.
+    Compaction compaction = 4;
+    // A gate started.
+    GateStarted gate_started = 5;
+    // A gate finished.
+    GateFinished gate_finished = 6;
+  }
+}
+
+// Whether a gate passed.
+enum GateResult {
+  // Not set; never sent.
+  GATE_RESULT_UNSPECIFIED = 0;
+  // The gate passed.
+  GATE_RESULT_PASSED = 1;
+  // The gate failed.
+  GATE_RESULT_FAILED = 2;
+}
+
+// A warning the runner reports.
+message Warning {
+  // The warning, for a person to read.
+  string message = 1;
+}
+
+// A record was put (design D6).
+//
+// The record's bytes are never in the event: they travel through the blob
+// calls, by `sha256`, and the plane checks the blob is present.
+message RecordPut {
+  // The inputs and commits a record is bound to.
+  message Bound {
+    // The input files, each bound by its sha256.
+    repeated Binding inputs = 1;
+    // The commits the record is bound to.
+    repeated string commits = 2;
+  }
+
+  // A file bound by its sha256.
+  message Binding {
+    // The file's path.
+    string path = 1;
+    // The lowercase hex sha256 of the file's bytes.
+    string sha256 = 2;
+  }
+
+  // The record kind's serde name, for example `floor`.
+  string kind = 1;
+  // The record kind's schema version.
+  uint32 version = 2;
+  // The lowercase hex sha256 of the record's bytes.
+  string sha256 = 3;
+  // The size of the record's bytes.
+  uint64 size = 4;
+  // What the record is bound to.
+  Bound bound = 5;
+}
+
+// An artefact revision was put. Its bytes travel through the blob calls, by
+// `sha256`.
+message ArtefactPut {
+  // The artefact's name, for example `plan`.
+  string name = 1;
+  // The artefact's revision, from one.
+  uint32 revision = 2;
+  // The lowercase hex sha256 of the revision's bytes.
+  string sha256 = 3;
+  // The size of the revision's bytes.
+  uint64 size = 4;
+}
+
+// What the runner did with a directive.
+message DirectiveReceipt {
+  // The directive's id.
+  string directive_id = 1;
+  // What the runner did with it.
+  DirectiveDisposition disposition = 2;
+  // A human-readable explanation.
+  string detail = 3;
+}
+
+// What the runner did with a directive.
+enum DirectiveDisposition {
+  // Not set; never sent.
+  DIRECTIVE_DISPOSITION_UNSPECIFIED = 0;
+  // Applied inside the running harness session.
+  DIRECTIVE_DISPOSITION_APPLIED_IN_SESSION = 1;
+  // Applied at the attempt's next boundary.
+  DIRECTIVE_DISPOSITION_APPLIED_AT_BOUNDARY = 2;
+  // The attempt was cancelled.
+  DIRECTIVE_DISPOSITION_CANCELLED = 3;
+  // The directive no longer applies, for example to an attempt that already
+  // ended.
+  DIRECTIVE_DISPOSITION_NOT_APPLICABLE = 4;
+  // The runner or its harness cannot carry the directive out.
+  DIRECTIVE_DISPOSITION_UNSUPPORTED = 5;
+}
+
+// The stage's result block.
+message StageResult {
+  // The stage's status.
+  StageStatus status = 1;
+  // The artefact the stage returns, for example `plan`.
+  string artefact = 2;
+  // The output files the stage wrote.
+  repeated string outputs = 3;
+  // The stage's open questions and assumptions.
+  repeated Question questions = 4;
+  // Why the stage failed; non-empty for `failed`.
+  string reason = 5;
+  // The commit message implement and address propose.
+  optional string commit = 6;
+  // The PR title the first implement round proposes.
+  optional string pr_title = 7;
+}
+
+// The status a stage reports in its result block.
+enum StageStatus {
+  // Not set; never sent.
+  STAGE_STATUS_UNSPECIFIED = 0;
+  // The stage did its work.
+  STAGE_STATUS_COMPLETE = 1;
+  // The stage needs a person to answer a question.
+  STAGE_STATUS_NEEDS_INPUT = 2;
+  // The stage failed.
+  STAGE_STATUS_FAILED = 3;
+}
+
+// One open question or assumption of a stage.
+message Question {
+  // Unique within the result, for example `q1`.
+  string id = 1;
+  // How the question blocks the item.
+  QuestionKind kind = 2;
+  // The question itself.
+  string question = 3;
+  // Why it matters.
+  string why = 4;
+  // The form of the answer the question expects.
+  QuestionShape shape = 5;
+  // The answers the question offers.
+  repeated QuestionOption options = 6;
+  // The answer the asker recommends.
+  QuestionRecommendation recommendation = 7;
+  // What the question points at.
+  repeated QuestionReference references = 8;
+}
+
+// How a question blocks the item.
+enum QuestionKind {
+  // Not set; never sent.
+  QUESTION_KIND_UNSPECIFIED = 0;
+  // A person must answer; blocking.
+  QUESTION_KIND_MUST_DECIDE = 1;
+  // A person should confirm the recommendation; blocking.
+  QUESTION_KIND_RECOMMENDED = 2;
+  // The stage went ahead with the recommendation; non-blocking.
+  QUESTION_KIND_ASSUMPTION = 3;
+}
+
+// The form of the answer a question expects.
+enum QuestionShape {
+  // Not set; never sent.
+  QUESTION_SHAPE_UNSPECIFIED = 0;
+  // Exactly one option.
+  QUESTION_SHAPE_ONE = 1;
+  // One or more options.
+  QUESTION_SHAPE_SEVERAL = 2;
+  // Yes or no.
+  QUESTION_SHAPE_YES_NO = 3;
+  // Free text.
+  QUESTION_SHAPE_OPEN = 4;
+}
+
+// One answer a question offers.
+message QuestionOption {
+  // Unique within the question, for example `a`.
+  string id = 1;
+  // The answer's label.
+  string label = 2;
+  // What choosing it leads to.
+  string consequence = 3;
+  // What choosing it costs.
+  optional string trade_off = 4;
+}
+
+// The answer the asker recommends.
+message QuestionRecommendation {
+  // The chosen option ids.
+  repeated string choice = 1;
+  // A free-text answer, only for an `open` question.
+  optional string answer = 2;
+  // Why it is recommended.
+  string reason = 3;
+}
+
+// Something a question points at.
+message QuestionReference {
+  // What the target is.
+  QuestionReferenceKind kind = 1;
+  // A path, artefact, ticket, design section, earlier answer or URL, by
+  // `kind`.
+  string target = 2;
+  // A line range, for example `40-72`.
+  optional string lines = 3;
+}
+
+// What a question reference's target is.
+enum QuestionReferenceKind {
+  // Not set; never sent.
+  QUESTION_REFERENCE_KIND_UNSPECIFIED = 0;
+  // A file in the repository.
+  QUESTION_REFERENCE_KIND_FILE = 1;
+  // An artefact.
+  QUESTION_REFERENCE_KIND_ARTEFACT = 2;
+  // A ticket.
+  QUESTION_REFERENCE_KIND_TICKET = 3;
+  // A design section.
+  QUESTION_REFERENCE_KIND_DESIGN = 4;
+  // An earlier answer, named `set/id`.
+  QUESTION_REFERENCE_KIND_ANSWER = 5;
+  // A URL.
+  QUESTION_REFERENCE_KIND_URL = 6;
+}

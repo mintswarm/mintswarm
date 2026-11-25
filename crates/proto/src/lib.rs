@@ -6,7 +6,9 @@
 /// The `mintswarm.runner.v1` package.
 pub mod runner {
     /// Version 1 of the runner protocol: `RunnerService`, its messages and
-    /// `Secret`, with the generated tonic client and server.
+    /// `Secret` (`runner.proto` and `common.proto`), with the generated tonic
+    /// client and server, and the runner events, `RunnerEvent` and
+    /// `EventBatch` (`events.proto`).
     pub mod v1 {
         tonic::include_proto!("mintswarm.runner.v1");
 
