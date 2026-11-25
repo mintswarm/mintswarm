@@ -18,7 +18,7 @@ decision.py run as `sys.executable SCRIPT ...` with that repository as its
 working directory, and plans, issue documents, analyses and assessments
 written under `cases/`; their TMPDIR is an empty directory of the sandbox,
 where the floors make their object stores. Unless a case says otherwise,
-floor.py gets a generated issue document for the case's component, whose criteria the
+floor.py gets a generated issue document for the case's components, whose criteria the
 plan's Verification table quotes and whose comments hold a decoy criteria
 section, and an analysis with no questions, and no --screen.
 
@@ -27,12 +27,13 @@ Checks:
 - config: the checkout's config has no pipeline.approve_plan and has the
   expected pipeline.plan_approval;
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
-  order, version 3, the 16 rule identifiers in order across `rules` and
+  order, version 4, the 16 rule identifiers in order across `rules` and
   `not_evaluated`, which is empty or the footprint rules after a `footprint`
   hit, results and reasons, `verdict` against the rules and the exit code,
   `plan`, `issue_document`, `analysis` and `screen` against the files given
   (null when not given),
-  `base.commit`, `mode` and the printed lines;
+  `components` against --components, `base.commit`, `mode` and the printed
+  lines;
 - clean base: a footprint modelled on #20 is clean on every rule, also
   with a `## TL;DR` section after the summary line, and is accepted with
   `mode: always`, which the verdict records;
@@ -41,7 +42,9 @@ Checks:
   xtask/** in the tooling component are clean on both require-human
   rules, and .github/workflows/**, also differently cased, is a
   `require-human-paths` hit; crates/rules/** and crates/github/** have a
-  component, both in domain;
+  component, both in domain; with two components a path in either is clean
+  on `component-scope` and a path outside both is a hit naming both, and
+  `agents` among two components is one `require-human-components` reason;
 - footprint unusable: missing, misplaced, malformed and badly shaped
   footprints, and each bad path form, are `footprint` hits with the
   footprint rules not evaluated and the document rules evaluated;
@@ -81,11 +84,14 @@ Checks:
   differences, wrapped criteria, a later paragraph quoted, `\\|`, other
   list markers and task boxes, reordered rows, the decoy in comments and
   CRLF are clean;
-- first-of-kind: `cli` at `real`, `core` (multi-scope only), `runner`
-  (revert only) and `domain` (other case only) are hits, and so are an
-  issue kind other than implementation, another component, a repeated or
-  missing header line and no --issue-document; `cli` at `dropped`, `api`
-  (`feat(api)!:`) and `docs` are clean;
+- first-of-kind: `cli` at `real`, `runner` (revert only) and `domain`
+  (other case only) are hits, and so are `core,cli` (one reason, for
+  `cli`), `cli,runner` (one reason each), an issue kind other than
+  implementation, a header whose components are another set, a repeated
+  or missing header line, the old `- **Component:**` line and no
+  --issue-document; `cli` at `dropped`, `api` (`feat(api)!:`), `docs`,
+  `core` and `core,web` (both scoped by `feat(core,web):`) and `docs,web`
+  with the header in another order are clean;
 - production lines: an eight-key footprint with a fixture among its files
   is measured by production_lines, clean at the lines limit and a hit one
   over, whatever estimated_lines; without a non-production file it is
@@ -107,10 +113,16 @@ Checks:
   reasons; an unusable record is a hit without packages declared too;
   record text in a reason is one line, cut to 200 characters; and after a
   `footprint` hit, `dependency-screen` is not evaluated;
-- per-component limits, at `component-limits` (docs lines 400): a docs plan
-  of 350 lines is clean, of 401 a hit naming the override, a tooling plan
-  of 350 lines a hit, and the docs plan's files limit stays 10;
-- unusable input: bad arguments, plans, documents (missing, unreadable, not
+- per-component limits, at `component-limits` (docs lines 400, web lines
+  500 and files 12, cli lines 400): a docs plan of 350 lines is clean, of
+  401 a hit naming the override, a tooling plan of 350 lines a hit, and the
+  docs plan's files limit stays 10; with several components each key takes
+  the largest override: `docs,web` and `web,docs` are clean at 500 lines
+  and a hit at 501 naming web's override, `docs,web` is clean at 12 files,
+  `docs,tooling` keeps the flat files limit, and the tie of `docs,cli` and
+  `cli,docs` at 400 lines names the first component's override;
+- unusable input: bad arguments (among them an empty, a repeated and an
+  undefined name in --components, each with its reason), plans, documents (missing, unreadable, not
   UTF-8, given twice or with an empty value), refs and configs (among them
   a `min_confidence` of 89, 101, `true` or `"95"`, a
   limits_by_component or non_production of the wrong shape, and the removed
@@ -125,7 +137,7 @@ Checks:
 - glob semantics: floor.py's glob_to_regex matches a pinned table of
   patterns by paths, and pinned edge cases;
 - decision record shape, on every decision run that exits 0 or 1: the
-  record's keys (version 2) and each layer's keys in order, the subject, the
+  record's keys (version 3) and each layer's keys in order, the subject, the
   mode, `min_confidence` (90 unless the config sets it), the floor layer's
   rules equal to the verdict's, the confidence, band, hard triggers, doubts
   and reason consistent with each other and equal to the envelope's,
@@ -172,8 +184,10 @@ Checks:
   binding (the documents' sha256 too), a verdict made without the documents
   or with another issue document or analysis, a forged verdict that is
   consistent in itself but differs from what floor.py gives for the plan
-  and documents (a `first-of-kind` hit set clean) are `human`, with the
-  floor layer unusable; a harness or model other than the config's
+  and documents (a `first-of-kind` hit set clean), and with a floor made
+  for `docs,web` the decision given `web,docs` or `docs` (the components
+  problem named) are `human`, with the floor layer unusable, while
+  `docs,web` gives `auto`; a harness or model other than the config's
   sets `as_configured` false and gives `human`; a `blocking-questions` hit
   and a `footprint` hit give a usable floor layer equal to the verdict; with
   result records beside the analysis and the plan, a `must_decide` object
@@ -190,7 +204,8 @@ Checks:
   judgement; and in both, model and session text, a hostile reason and
   doubt among it, only inside code spans of at most 600 characters, a long
   doubt's and reason's marked `… (truncated)`;
-- decision unusable input: bad arguments, plans, refs and configs, a
+- decision unusable input: bad arguments (an empty, a repeated and an
+  undefined name in --components among them), plans, refs and configs, a
   missing, unreadable or non-UTF-8 issue document, analysis or screen
   record, a screen record given twice or with an empty value, a missing
   `yq` and a record path that is a directory exit 2, print nothing
@@ -299,7 +314,7 @@ VERDICT_KEYS = [
     "issue_document",
     "analysis",
     "screen",
-    "component",
+    "components",
     "base",
     "config",
     "mode",
@@ -561,11 +576,13 @@ def criteria_list(criteria: list = None) -> str:
 
 
 def issue_document(
-    component: str = "docs", kind: str = "implementation", criteria: str = None, header: str = None
+    components: str = "docs", kind: str = "implementation", criteria: str = None, header: str = None
 ) -> str:
-    """An issue document as the session writes it, with a decoy criteria section in its comments."""
+    """An issue document as the session writes it, with a decoy criteria section in its comments; components is
+    the --components value, written comma-separated with a space as the header lists them."""
     if header is None:
-        header = f"- **Issue:** #99\n- **Kind:** {kind}\n- **Component:** {component}\n- **Labels:** mintswarm\n"
+        names = ", ".join(components.split(","))
+        header = f"- **Issue:** #99\n- **Kind:** {kind}\n- **Components:** {names}\n- **Labels:** mintswarm\n"
     return (
         f"# Selftest issue\n\n{header}\n"
         "## Problem\n\nA generated issue.\n\n"
@@ -667,7 +684,7 @@ def check_shape(name: str, proc, verdict, args: dict, commit: str, mode: str) ->
         problems.append(f"verdict {verdict.get('verdict')!r} against the rules")
     if proc.returncode != (1 if hit else 0):
         problems.append(f"exit {proc.returncode} with verdict {verdict.get('verdict')!r}")
-    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 3:
+    if verdict.get("tool") != "mintswarm-plan-floor" or verdict.get("version") != 4:
         problems.append("tool or version")
     for key in ("plan", "issue_document", "analysis", "screen"):
         path = args.get(key)
@@ -678,8 +695,8 @@ def check_shape(name: str, proc, verdict, args: dict, commit: str, mode: str) ->
         )
         if verdict.get(key) != bound:
             problems.append(f"{key} {verdict.get(key)}, expected {bound}")
-    if verdict.get("component") != args["component"]:
-        problems.append("component")
+    if verdict.get("components") != args["components"].split(","):
+        problems.append("components")
     if verdict.get("base") != {"ref": args["base"], "commit": commit}:
         problems.append(f"base {verdict.get('base')}, expected commit {commit}")
     if verdict.get("config") != CONFIG_PATH:
@@ -708,7 +725,7 @@ class Runner:
         self,
         name: str,
         content,
-        component: str = "docs",
+        components: str = "docs",
         config: str = "real",
         ref: str = None,
         commit: str = None,
@@ -726,10 +743,10 @@ class Runner:
         plan = self.sb.write_plan(name, content)
         ref = ref or self.commits[config]
         commit = commit or self.commits[config]
-        args = ["--plan", plan, "--component", component, "--base", ref]
+        args = ["--plan", plan, "--components", components, "--base", ref]
         documents = {}
         for key, flag, value, generated in (
-            ("issue_document", "--issue-document", issue, lambda: issue_document(component=component)),
+            ("issue_document", "--issue-document", issue, lambda: issue_document(components=components)),
             ("analysis", "--analysis", analysis, analysis_document),
         ):
             if value is None:
@@ -749,7 +766,7 @@ class Runner:
             name,
             proc,
             verdict,
-            {"cwd": self.sb.repo, "plan": plan, "component": component, "base": ref, **documents},
+            {"cwd": self.sb.repo, "plan": plan, "components": components, "base": ref, **documents},
             commit,
             mode,
         )
@@ -859,22 +876,22 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     expect_hit(r, "CLAUDE.md", base(files=["CLAUDE.md"]), "require-human-paths", only=True, reason="CLAUDE.md")
     expect_hit(r, "agents.md", base(files=["agents.md"]), "require-human-paths", reason="AGENTS.md")
     human_rules = ["require-human-paths", "require-human-components"]
-    expect_clean(r, "tests/e2e.rs", base(files=["tests/e2e.rs"]), human_rules, component="tooling")
-    expect_clean(r, "xtask/src/main.rs", base(files=["xtask/src/main.rs"]), human_rules, component="tooling")
+    expect_clean(r, "tests/e2e.rs", base(files=["tests/e2e.rs"]), human_rules, components="tooling")
+    expect_clean(r, "xtask/src/main.rs", base(files=["xtask/src/main.rs"]), human_rules, components="tooling")
     expect_hit(
         r,
         ".github/workflows/ci.yml",
         base(files=[".github/workflows/ci.yml"]),
         "require-human-paths",
         reason=".github/workflows/**",
-        component="tooling",
+        components="tooling",
     )
     expect_clean(
         r,
         ".github/workflows/ci.yml component",
         base(files=[".github/workflows/ci.yml"]),
         ["require-human-components"],
-        component="tooling",
+        components="tooling",
     )
     expect_hit(r, "web/index.html", base(files=["web/index.html"]), "component-scope")
     expect_clean(r, "Cargo.toml", base(files=["Cargo.toml"]), ["component-scope", "no-component"])
@@ -885,11 +902,43 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         ["no-component"],
     )
     scope_rules = ["component-scope", "no-component"]
-    expect_clean(r, "crates/rules/src/lib.rs", base(files=["crates/rules/src/lib.rs"]), scope_rules, component="domain")
     expect_clean(
-        r, "crates/github/src/lib.rs", base(files=["crates/github/src/lib.rs"]), scope_rules, component="domain"
+        r, "crates/rules/src/lib.rs", base(files=["crates/rules/src/lib.rs"]), scope_rules, components="domain"
+    )
+    expect_clean(
+        r, "crates/github/src/lib.rs", base(files=["crates/github/src/lib.rs"]), scope_rules, components="domain"
     )
     expect_clean(r, "LICENSE.md", base(files=["LICENSE.md"]), ["component-scope", "no-component"])
+    expect_clean(
+        r,
+        "a path in either of two components",
+        base(files=["crates/rules/src/lib.rs", "crates/runner/src/lib.rs"]),
+        scope_rules,
+        components="domain,runner",
+    )
+    expect_hit(
+        r,
+        "a path outside both of two components",
+        base(files=["crates/rules/src/lib.rs", "web/index.html"]),
+        "component-scope",
+        reasons=["web/index.html is outside components domain, runner and shared"],
+        components="domain,runner",
+    )
+    expect_hit(
+        r,
+        "web/index.html outside one component",
+        base(files=["web/index.html"]),
+        "component-scope",
+        reasons=["web/index.html is outside component docs and shared"],
+    )
+    expect_hit(
+        r,
+        "one of two components in require_human",
+        base(files=["docs/a.md"]),
+        "require-human-components",
+        reasons=["the issue's component agents is in require_human.components"],
+        components="docs,agents",
+    )
     expect_hit(r, "unowned-root-file", base(files=["unowned-root-file"]), "no-component")
 
     def docs_files(n: int) -> list:
@@ -933,7 +982,7 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         base(files=[".mintswarm/dogfood/render-agents.py"]),
         "gate-changes",
         reason="agents-drift",
-        component="agents",
+        components="agents",
     )
     expect_hit(r, "config.yaml", base(files=[".mintswarm/config.yaml"]), "gate-changes", reason="gates.run")
     expect_hit(
@@ -950,10 +999,10 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         base(files=[".mintswarm/dogfood/Render-Agents.py"]),
         "gate-changes",
         reason="agents-drift",
-        component="agents",
+        components="agents",
     )
     expect_hit(
-        r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, component="web", config="untested"
+        r, "tests none", base(files=["web/index.html"]), "tests-none", only=True, components="web", config="untested"
     )
     expect_clean(r, "tests none, docs only", base(), ["tests-none"], config="untested")
     expect_hit(
@@ -962,17 +1011,17 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         base(files=["CONTRIBUTING.md", "web/index.html"]),
         "tests-none",
         reasons=["gates.tests is none and web/index.html is outside component docs"],
-        component="web",
+        components="web",
         config="untested",
     )
-    expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], component="web", config="tested")
+    expect_clean(r, "tests cargo", base(files=["web/index.html"]), ["tests-none"], components="web", config="tested")
     expect_hit(
         r,
         "a script after cd",
         base(files=["web/x.sh"]),
         "gate-changes",
         reason="web/x.sh is named by gate web-script",
-        component="web",
+        components="web",
         config="cd-gates",
     )
     expect_hit(
@@ -981,11 +1030,11 @@ def check_single_rules(r: Runner, limits: dict) -> None:
         base(files=["web/apps/y.sh"]),
         "gate-changes",
         reason="web/apps/y.sh is named by gate nested-script",
-        component="web",
+        components="web",
         config="cd-gates",
     )
     expect_clean(
-        r, "a script beside the cd", base(files=["web/y.sh"]), ["gate-changes"], component="web", config="cd-gates"
+        r, "a script beside the cd", base(files=["web/y.sh"]), ["gate-changes"], components="web", config="cd-gates"
     )
     expect_hit(
         r,
@@ -1298,7 +1347,7 @@ def check_component_limits(r: Runner, limits: dict) -> None:
         base(files=tooling, estimated_lines=350),
         "limit-lines",
         reasons=[f"lines is 350, over the limit of {limits['lines']}"],
-        component="tooling",
+        components="tooling",
         config=config,
     )
     n = limits["files"]
@@ -1313,6 +1362,56 @@ def check_component_limits(r: Runner, limits: dict) -> None:
         reasons=[f"files is {n + 1}, over the limit of {n}"],
         config=config,
     )
+    both = ["docs/a.md", "web/index.html"]
+    expect_clean(
+        r,
+        "docs and web at 500",
+        base(files=both, estimated_lines=500),
+        ["limit-lines"],
+        components="docs,web",
+        config=config,
+    )
+    expect_hit(
+        r,
+        "docs and web at 501",
+        base(files=both, estimated_lines=501),
+        "limit-lines",
+        reasons=["lines is 501, over the limit of 500 (limits_by_component.web)"],
+        components="docs,web",
+        config=config,
+    )
+    expect_hit(
+        r,
+        "web and docs at 501",
+        base(files=both, estimated_lines=501),
+        "limit-lines",
+        reasons=["lines is 501, over the limit of 500 (limits_by_component.web)"],
+        components="web,docs",
+        config=config,
+    )
+    twelve = [f"docs/limit-{i}.md" for i in range(11)] + ["web/index.html"]
+    expect_clean(
+        r, "docs and web, files at 12", base(files=twelve), ["limit-files"], components="docs,web", config=config
+    )
+    expect_hit(
+        r,
+        "docs and tooling, flat files at 11",
+        base(files=[f"docs/limit-{i}.md" for i in range(10)] + tooling),
+        "limit-files",
+        reasons=[f"files is 11, over the limit of {n}"],
+        components="docs,tooling",
+        config=config,
+    )
+    for names, source in (("docs,cli", "docs"), ("cli,docs", "cli")):
+        expect_hit(
+            r,
+            f"{names} tied at 401",
+            base(files=["docs/a.md", "crates/cli/src/main.rs"], estimated_lines=401),
+            "limit-lines",
+            reasons=[f"lines is 401, over the limit of 400 (limits_by_component.{source})"],
+            components=names,
+            config=config,
+        )
 
 
 def unusable_footprints() -> list:
@@ -1409,7 +1508,7 @@ def check_base_ref(r: Runner, sb: Sandbox) -> None:
     proc, verdict = r.run(
         "base ref: --base base",
         plan_text(footprint=footprint),
-        component="agents",
+        components="agents",
         ref="base",
         commit=r.commits["real"],
     )
@@ -1422,7 +1521,7 @@ def check_base_ref(r: Runner, sb: Sandbox) -> None:
     proc, verdict = r.run(
         "base ref: --base HEAD",
         plan_text(footprint=footprint),
-        component="agents",
+        components="agents",
         ref="HEAD",
         commit=r.commits["dropped"],
     )
@@ -1449,7 +1548,7 @@ def check_historic(r: Runner) -> None:
     ]
     for fixture, component, hits, config in cases:
         name = f"fixture {fixture}" + (f" at {config}" if config != "real" else "")
-        proc, verdict = r.run(name, historic(fixture), component=component, config=config)
+        proc, verdict = r.run(name, historic(fixture), components=component, config=config)
         expected = {rule: ("hit" if rule in hits else "clean") for rule in RULES}
         got = results_of(verdict)
         diff = {k: got.get(k) for k in RULES if got.get(k) != expected[k]}
@@ -1971,7 +2070,6 @@ def check_first_of_kind(r: Runner) -> None:
     rule = "first-of-kind"
     for component, files in (
         ("cli", ["crates/cli/src/main.rs"]),
-        ("core", ["crates/core/src/lib.rs"]),
         ("runner", ["crates/runner/src/lib.rs"]),
         ("domain", ["crates/domain/src/lib.rs"]),
     ):
@@ -1980,20 +2078,55 @@ def check_first_of_kind(r: Runner) -> None:
             f"first {component} job",
             base(files=files),
             rule,
-            component=component,
-            reasons=[
-                "first of its kind: no commit reachable from the base commit has a subject " f"scoped ({component})"
-            ],
+            components=component,
+            reasons=[f"first of its kind: no commit reachable from the base commit has a subject scoped ({component})"],
         )
+    expect_clean(
+        r, "core job after a multi-scope commit", base(files=["crates/core/src/lib.rs"]), [rule], components="core"
+    )
+    expect_clean(
+        r,
+        "core and web job after a multi-scope commit",
+        base(files=["crates/core/src/lib.rs", "web/index.html"]),
+        [rule],
+        components="core,web",
+    )
+    expect_hit(
+        r,
+        "core and cli job, cli unscoped",
+        base(files=["crates/core/src/lib.rs", "crates/cli/src/main.rs"]),
+        rule,
+        components="core,cli",
+        reasons=["first of its kind: no commit reachable from the base commit has a subject scoped (cli)"],
+    )
+    expect_hit(
+        r,
+        "cli and runner job, both unscoped",
+        base(files=["crates/cli/src/main.rs", "crates/runner/src/lib.rs"]),
+        rule,
+        components="cli,runner",
+        reasons=[
+            "first of its kind: no commit reachable from the base commit has a subject scoped (cli)",
+            "first of its kind: no commit reachable from the base commit has a subject scoped (runner)",
+        ],
+    )
+    expect_clean(
+        r,
+        "docs and web job, header in another order",
+        base(files=["docs/a.md", "web/index.html"]),
+        [rule],
+        components="docs,web",
+        issue=issue_document(components="web,docs"),
+    )
     expect_clean(
         r,
         "cli job after a cli commit",
         base(files=["crates/cli/src/main.rs"]),
         [rule],
-        component="cli",
+        components="cli",
         config="dropped",
     )
-    expect_clean(r, "api job after a breaking api commit", base(files=["api/jobs.proto"]), [rule], component="api")
+    expect_clean(r, "api job after a breaking api commit", base(files=["api/jobs.proto"]), [rule], components="api")
     expect_clean(r, "docs job after a docs commit", base(), [rule])
     expect_hit(
         r,
@@ -2009,10 +2142,38 @@ def check_first_of_kind(r: Runner) -> None:
         "issue component differs",
         base(),
         rule,
-        reasons=["the issue's component is 'web', not --component docs"],
-        issue=issue_document(component="web"),
+        reasons=["the issue's components are 'web', not --components docs"],
+        issue=issue_document(components="web"),
     )
-    header = "- **Kind:** implementation\n- **Kind:** implementation\n- **Component:** docs\n"
+    expect_hit(
+        r,
+        "issue components differ",
+        base(files=["docs/a.md", "web/index.html"]),
+        rule,
+        only=True,
+        reasons=["the issue's components are 'docs', not --components docs,web"],
+        components="docs,web",
+        issue=issue_document(components="docs"),
+    )
+    expect_hit(
+        r,
+        "issue with an extra component",
+        base(),
+        rule,
+        only=True,
+        reasons=["the issue's components are 'docs, web', not --components docs"],
+        issue=issue_document(components="docs,web"),
+    )
+    expect_hit(
+        r,
+        "issue with the old component line",
+        base(),
+        rule,
+        only=True,
+        reasons=["the issue document's header has 0 '- **Components:**' lines, expected 1"],
+        issue=issue_document(header="- **Kind:** implementation\n- **Component:** docs\n"),
+    )
+    header = "- **Kind:** implementation\n- **Kind:** implementation\n- **Components:** docs\n"
     expect_hit(
         r,
         "issue kind twice",
@@ -2024,11 +2185,11 @@ def check_first_of_kind(r: Runner) -> None:
     )
     expect_hit(
         r,
-        "issue without a component line",
+        "issue without a components line",
         base(),
         rule,
         only=True,
-        reasons=["the issue document's header has 0 '- **Component:**' lines, expected 1"],
+        reasons=["the issue document's header has 0 '- **Components:**' lines, expected 1"],
         issue=issue_document(header="- **Kind:** implementation\n"),
     )
     expect_hit(
@@ -2047,15 +2208,19 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
     real = commits["real"]
     cases = [
         ("no arguments", []),
-        ("unknown argument", ["--plan", good, "--component", "docs", "--base", real, "--extra", "x"]),
-        ("argument twice", ["--plan", good, "--plan", good, "--component", "docs", "--base", real]),
-        ("missing value", ["--plan", good, "--component", "docs", "--base"]),
-        ("base starting with -", ["--plan", good, "--component", "docs", "--base", "-HEAD"]),
-        ("missing plan", ["--plan", "cases/missing.md", "--component", "docs", "--base", real]),
-        ("plan not UTF-8", ["--plan", not_utf8, "--component", "docs", "--base", real]),
-        ("unresolvable base", ["--plan", good, "--component", "docs", "--base", "no-such-ref"]),
-        ("base without config", ["--plan", good, "--component", "docs", "--base", commits["noconfig"]]),
-        ("unknown component", ["--plan", good, "--component", "nope", "--base", real]),
+        ("unknown argument", ["--plan", good, "--components", "docs", "--base", real, "--extra", "x"]),
+        ("argument twice", ["--plan", good, "--plan", good, "--components", "docs", "--base", real]),
+        ("missing value", ["--plan", good, "--components", "docs", "--base"]),
+        ("base starting with -", ["--plan", good, "--components", "docs", "--base", "-HEAD"]),
+        ("missing plan", ["--plan", "cases/missing.md", "--components", "docs", "--base", real]),
+        ("plan not UTF-8", ["--plan", not_utf8, "--components", "docs", "--base", real]),
+        ("unresolvable base", ["--plan", good, "--components", "docs", "--base", "no-such-ref"]),
+        ("base without config", ["--plan", good, "--components", "docs", "--base", commits["noconfig"]]),
+        ("unknown component", ["--plan", good, "--components", "nope", "--base", real]),
+        ("empty component name", ["--plan", good, "--components", "docs,", "--base", real]),
+        ("leading empty component name", ["--plan", good, "--components", ",docs", "--base", real]),
+        ("repeated component name", ["--plan", good, "--components", "docs,docs", "--base", real]),
+        ("unknown second component", ["--plan", good, "--components", "docs,nope", "--base", real]),
     ]
     for variant in (
         "no-plan-approval",
@@ -2069,10 +2234,10 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         *SIZE_INVALID,
         *REMOVED_LIMIT,
     ):
-        cases.append((f"config {variant}", ["--plan", good, "--component", "docs", "--base", commits[variant]]))
+        cases.append((f"config {variant}", ["--plan", good, "--components", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
     analysis = sb.write_plan("unusable analysis", analysis_document())
-    plain = ["--plan", good, "--component", "docs", "--base", real]
+    plain = ["--plan", good, "--components", "docs", "--base", real]
     screen = sb.write_plan("unusable screen", screen_record())
     for flag, path in (("--issue-document", issue), ("--analysis", analysis), ("--screen", screen)):
         what = flag[2:]
@@ -2108,6 +2273,14 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             target.rmdir()
         else:
             target.unlink()
+    # The --components refusals, by case: floor.py's own wording.
+    messages = {
+        "unknown component": "--components 'nope' is not a component in the config",
+        "empty component name": "--components has an empty name",
+        "leading empty component name": "--components has an empty name",
+        "repeated component name": "--components names 'docs' twice",
+        "unknown second component": "--components 'nope' is not a component in the config",
+    }
     for name, args in cases:
         proc, verdict = sb.floor(args)
         T.check(
@@ -2115,12 +2288,18 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             proc.returncode == 2 and verdict is None and len(proc.stderr.strip().splitlines()) == 1,
             f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}: {proc.stderr.strip()}",
         )
+        if name in messages:
+            T.check(
+                f"unusable {name}: the reason",
+                proc.stderr.strip() == f"floor.py: {messages[name]}",
+                proc.stderr.strip(),
+            )
 
     bindir = sb.tmp / "git-only"
     bindir.mkdir()
     (bindir / "git").symlink_to(shutil.which("git"))
     env = dict(sb.env, PATH=str(bindir))
-    proc, verdict = sb.floor(["--plan", good, "--component", "docs", "--base", real], env=env)
+    proc, verdict = sb.floor(["--plan", good, "--components", "docs", "--base", real], env=env)
     T.check(
         "unusable yq missing: exit 2, no verdict",
         proc.returncode == 2 and verdict is None,
@@ -2134,7 +2313,7 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
         "verdict errors no footprint", plan_text(section="", opener="Nothing here.", block="", closer="\n")
     )
     args = [
-        "--component",
+        "--components",
         "docs",
         "--base",
         commits["real"],
@@ -2324,6 +2503,12 @@ DECIDER_PLANS = {
         1,
     ),
     "kind plan": (plan_text(), issue_document(kind="plan"), analysis_document(), 1),
+    "two components": (
+        plan_text(footprint=base(files=["docs/a.md", "web/index.html"])),
+        issue_document(components="docs,web"),
+        analysis_document(),
+        0,
+    ),
     "packages": (
         plan_text(footprint=base(new_dependencies=declared("good-pkg", "bad-pkg"))),
         issue_document(),
@@ -2355,6 +2540,8 @@ DECIDER_PLANS = {
         0,
     ),
 }
+# The --components value Decider gives floor.py, and decision.py by default, for a plan; "docs" when not listed.
+DECIDER_COMPONENTS = {"two components": "docs,web"}
 # The result records Decider writes beside the analysis and the plan: (analysis's, plan's).
 DECIDER_RECORDS = {
     "recorded": (
@@ -2402,7 +2589,7 @@ class Decider:
     ) -> bytes:
         """floor.py's verdict for ctx's plan, with ctx's documents, other ones, or none; screen: "ctx" (ctx's
         screen record, if any), None (none) or a path."""
-        args = ["--plan", ctx["plan"], "--component", ctx["component"], "--base", ctx["commit"]]
+        args = ["--plan", ctx["plan"], "--components", ctx["components"], "--base", ctx["commit"]]
         if documents:
             args += ["--issue-document", issue or ctx["issue"], "--analysis", analysis or ctx["analysis"]]
         screen = ctx["screen"] if screen == "ctx" else screen
@@ -2422,7 +2609,7 @@ class Decider:
                 "issue": self.sb.write_plan(f"decision {config} {plan} issue", issue),
                 "analysis": self.sb.write_plan(f"decision {config} {plan} analysis", analysis),
                 "commit": self.commits[config],
-                "component": "docs",
+                "components": DECIDER_COMPONENTS.get(plan, "docs"),
                 "screen": None,
             }
             if plan in DECIDER_SCREENS:
@@ -2434,8 +2621,8 @@ class Decider:
                 [
                     "--plan",
                     ctx["plan"],
-                    "--component",
-                    "docs",
+                    "--components",
+                    ctx["components"],
                     "--base",
                     ctx["commit"],
                     "--issue-document",
@@ -2462,9 +2649,11 @@ class Decider:
         model: str = "sonnet",
         artifact: str = ARTIFACT,
         screen="ctx",
+        components: str = None,
     ):
         """verdict: "floor" (the real one), None (missing), a function editing the JSON, or bytes; screen:
-        "ctx" (the plan's screen record, if any), None (no --screen) or a path."""
+        "ctx" (the plan's screen record, if any), None (no --screen) or a path; components: the --components
+        value, the one the plan's floor ran with when None."""
         ctx = self.prepare(config, plan)
         path = self.sb.repo / VERDICT
         path.unlink(missing_ok=True)
@@ -2485,8 +2674,8 @@ class Decider:
         args = [
             "--issue",
             "34",
-            "--component",
-            ctx["component"],
+            "--components",
+            components or ctx["components"],
             "--plan",
             ctx["plan"],
             "--issue-document",
@@ -2518,6 +2707,7 @@ class Decider:
                 record = "unparsable"
         expect = {
             "ctx": ctx,
+            "components": components or ctx["components"],
             "config": config,
             "assessment": rel,
             "artifact": artifact,
@@ -2538,12 +2728,12 @@ def check_record(name: str, proc, record, expect: dict, repo: Path) -> bool:
     threshold = CONFIG_MIN_CONFIDENCE.get(expect["config"], 90)
     if list(record) != RECORD_KEYS:
         return T.check(f"{name}: record shape", False, f"keys {list(record)}")
-    if (record["tool"], record["version"], record["approval"]) != ("mintswarm-approval-decision", 2, "plan"):
+    if (record["tool"], record["version"], record["approval"]) != ("mintswarm-approval-decision", 3, "plan"):
         problems.append("tool, version or approval")
     plan_sha = hashlib.sha256((repo / ctx["plan"]).read_bytes()).hexdigest()
     subject = {
         "issue": 34,
-        "component": ctx["component"],
+        "components": expect["components"].split(","),
         "plan": {"path": ctx["plan"], "sha256": plan_sha},
         "base": {"ref": ctx["commit"], "commit": ctx["commit"]},
     }
@@ -2964,7 +3154,8 @@ def check_decision_judged(d: Decider) -> None:
     edits = [
         ("plan sha256", setter("plan", "sha256", value="0" * 64)),
         ("base commit", setter("base", "commit", value=d.commits["always"])),
-        ("component", setter("component", value="web")),
+        ("components", setter("components", value=["web"])),
+        ("components a string", setter("components", value="docs")),
         ("mode", setter("mode", value="never")),
         ("tool", setter("tool", value="another-floor")),
         ("version 1", setter("version", value=1)),
@@ -3013,6 +3204,24 @@ def check_decision_judged(d: Decider) -> None:
             isinstance(record, dict)
             and record["layers"]["judgement"]["as_configured"] is False
             and "judgement: harness or model not as configured" in record["reasons"],
+        )
+
+    expect_decision(
+        "judged two components",
+        d.run("judged two components", plan="two components"),
+        "auto",
+        "auto",
+        "usable",
+        "usable",
+    )
+    for label, components in (("reordered", "web,docs"), ("different", "docs")):
+        proc, record = d.run(f"judged components {label}", plan="two components", components=components)
+        expect_decision(f"judged components {label}", (proc, record), "human", "human", "unusable", "usable")
+        T.check(
+            f"judged components {label}: the binding problem",
+            isinstance(record, dict)
+            and record["layers"]["floor"]["problems"] == ["the floor verdict's components do not match --components"],
+            str(record and record.get("layers", {}).get("floor", {}).get("problems")),
         )
 
     clean_verdict = json.loads(d.prepare("judged", "clean")["verdict"])
@@ -3346,7 +3555,7 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
     def args(**changes) -> list:
         values = {
             "--issue": "34",
-            "--component": "docs",
+            "--components": "docs",
             "--plan": ctx["plan"],
             "--issue-document": ctx["issue"],
             "--analysis": ctx["analysis"],
@@ -3379,7 +3588,10 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
         ("plan not UTF-8", args(plan=not_utf8)),
         ("unresolvable base", args(base="no-such-ref")),
         ("base without config", args(base=d.commits["noconfig"])),
-        ("unknown component", args(component="nope")),
+        ("unknown component", args(components="nope")),
+        ("empty component name", args(components="docs,")),
+        ("repeated component name", args(components="docs,docs")),
+        ("unknown second component", args(components="docs,nope")),
         ("config mode-sometimes", args(base=d.commits["mode-sometimes"])),
         ("config unknown-key", args(base=d.commits["unknown-key"])),
         *((f"config {name}", args(base=d.commits[name])) for name in MIN_CONFIDENCE_INVALID),
@@ -3585,12 +3797,12 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
     config_args = [
         "--plan",
         write("config plan", plan_text(footprint=base(files=[".mintswarm/dogfood/github/push.sh"]))),
-        "--component",
+        "--components",
         "agents",
         "--base",
         commits["real"],
         "--issue-document",
-        write("config issue", issue_document(component="agents")),
+        write("config issue", issue_document(components="agents")),
         "--analysis",
         write("config analysis", analysis_document()),
     ]
@@ -3598,12 +3810,12 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
     history_args = [
         "--plan",
         write("history plan", plan_text(footprint=base(files=["crates/cli/src/main.rs"]))),
-        "--component",
+        "--components",
         "cli",
         "--base",
         commits["dropped"],
         "--issue-document",
-        write("history issue", issue_document(component="cli")),
+        write("history issue", issue_document(components="cli")),
         "--analysis",
         write("history analysis", analysis_document()),
     ]
@@ -3752,7 +3964,7 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
         decision_args = [
             "--issue",
             "87",
-            "--component",
+            "--components",
             "agents",
             "--plan",
             forged_args[1],
@@ -4208,7 +4420,12 @@ def build_commits(sb: Sandbox) -> tuple:
         variant(name, lambda c, change=change: approval(c).update(change))
     for name, change in REMOVED_LIMIT.items():
         variant(name, lambda c, change=change: change(approval(c)))
-    variant("component-limits", lambda c: approval(c).update(limits_by_component={"docs": {"lines": 400}}))
+    variant(
+        "component-limits",
+        lambda c: approval(c).update(
+            limits_by_component={"docs": {"lines": 400}, "web": {"lines": 500, "files": 12}, "cli": {"lines": 400}}
+        ),
+    )
     variant("tested", lambda c: c["gates"].update(tests="cargo test"))
     variant("untested", lambda c: c["gates"].update(tests="none"))
     variant(
