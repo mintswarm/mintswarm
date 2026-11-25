@@ -112,6 +112,15 @@ fn case_insensitive_matching_folds_by_lowercase() {
 }
 
 #[test]
+fn dotted_capital_i_folds_to_i_as_in_python() {
+    // U+0130's full lowercase is two characters; its simple lowercase, which `re.IGNORECASE` uses, is `i`.
+    assert!(Glob::new("\u{130}.md").matches_ci("i.md"));
+    assert!(Glob::new("i.md").matches_ci("\u{130}.md"));
+    assert!(Glob::new("I.md").matches_ci("\u{130}.md"));
+    assert!(!Glob::new("\u{130}.md").matches("i.md"));
+}
+
+#[test]
 fn matching_keeps_the_given_order() {
     let globs = ["*.md", "docs/**", "**", "README.md"];
     assert_eq!(matching(&globs, "readme.md", false), vec!["*.md", "**"]);

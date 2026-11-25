@@ -12,9 +12,8 @@
 //! `fullmatch` with `re.DOTALL` gives.
 //!
 //! Deliberate divergence: the case-insensitive mode compares characters by their simple Unicode
-//! lowercase (a character whose lowercase is more than one character compares as itself), where
-//! Python's `re.IGNORECASE` also folds a few extra pairs such as `ſ` and `s`. ASCII paths match
-//! exactly as Python matches them.
+//! lowercase, where Python's `re.IGNORECASE` also folds a few extra pairs such as `ſ` and `s`.
+//! ASCII paths match exactly as Python matches them.
 
 /// One token of a pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,8 +125,12 @@ impl Glob {
     }
 }
 
-/// The character's simple lowercase: its lowercase when that is one character, else itself.
+/// The character's simple lowercase: its lowercase when that is one character. U+0130, the only
+/// character whose full lowercase is two characters, has `i` as its simple lowercase.
 fn lower(c: char) -> char {
+    if c == '\u{130}' {
+        return 'i';
+    }
     let mut lowered = c.to_lowercase();
     match (lowered.next(), lowered.next()) {
         (Some(only), None) => only,
