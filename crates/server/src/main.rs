@@ -3,14 +3,16 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::builder::RangedU64ValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mintswarm_github::KeyStore;
 use mintswarm_server::webhooks::{
-    self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_SECRET_ENV, DeliveryLog, Limits, PATH,
-    Receiver, SecretSource,
+    self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_READ_TIMEOUT, DEFAULT_SECRET_ENV, DeliveryLog,
+    Limits, PATH, Receiver, SecretSource,
 };
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 /// The mintswarm control plane
 #[derive(Debug, Parser)]
@@ -59,6 +61,10 @@ struct WebhooksArgs {
     /// The most verified deliveries waiting for the log; one more gets 429
     #[arg(long, default_value_t = DEFAULT_QUEUED, value_parser = RangedU64ValueParser::<usize>::new().range(1..))]
     max_queued: usize,
+    /// The most seconds a request may take to arrive whole and be answered, which is GitHub's own
+    /// delivery timeout by default; a slower one gets 408 and gives back its place
+    #[arg(long, value_name = "SECONDS", default_value_t = DEFAULT_READ_TIMEOUT.as_secs(), value_parser = RangedU64ValueParser::<u64>::new().range(1..))]
+    read_timeout: u64,
 }
 
 /// The key stores `key-store.sh` writes to.
@@ -88,6 +94,7 @@ impl WebhooksArgs {
         Limits {
             in_flight: self.max_in_flight,
             queued: self.max_queued,
+            read_timeout: Duration::from_secs(self.read_timeout),
         }
     }
 
@@ -110,6 +117,8 @@ impl WebhooksArgs {
 enum MainError {
     #[error("cannot start the runtime")]
     Runtime,
+    #[error("cannot watch for SIGINT and SIGTERM")]
+    Signals,
     #[error(transparent)]
     Secret(#[from] webhooks::SecretError),
     #[error(transparent)]
@@ -132,7 +141,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Loads the secret and opens the log before binding, then serves until stopped.
+/// Loads the secret and opens the log before binding, then serves until SIGINT (Ctrl-C) or
+/// SIGTERM, and drains the queue to the log before it returns.
 fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -141,16 +151,46 @@ fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
     runtime.block_on(async {
         let secret = webhooks::load_secret(&args.secret_source(), |var| std::env::var_os(var)).await?;
         let log = DeliveryLog::open(&args.log)?;
+        let stop = Stop::watch()?;
         let listener = webhooks::bind(args.listen).await?;
         let addr = listener.local_addr().unwrap_or(args.listen);
         eprintln!(
             "mintswarm-server webhooks: listening on http://{addr}{PATH}, appending deliveries to {}",
             args.log.display()
         );
-        let (receiver, _writer) = Receiver::start(secret, log, args.limits());
-        webhooks::serve(listener, receiver).await?;
+        let (receiver, writer) = Receiver::start(secret, log, args.limits());
+        webhooks::serve(listener, receiver, writer, stop.requested()).await?;
+        eprintln!("mintswarm-server webhooks: stopped; every queued delivery was handled");
         Ok(())
     })
+}
+
+/// The signals that stop the receiver, watched from before it listens, so a stop never kills
+/// it outright with deliveries still queued.
+struct Stop {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+impl Stop {
+    fn watch() -> Result<Self, MainError> {
+        let watch = |kind| signal(kind).map_err(|_| MainError::Signals);
+        Ok(Self {
+            interrupt: watch(SignalKind::interrupt())?,
+            terminate: watch(SignalKind::terminate())?,
+        })
+    }
+
+    /// Resolves on the first SIGINT or SIGTERM.
+    async fn requested(mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+        }
+        eprintln!(
+            "mintswarm-server webhooks: stopping; finishing the requests in progress and draining the queue"
+        );
+    }
 }
 
 #[cfg(test)]

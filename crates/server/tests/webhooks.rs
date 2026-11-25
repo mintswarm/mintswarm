@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, UNIX_EPOCH};
@@ -10,12 +11,15 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_server::webhooks::{
-    BODY_LIMIT, DeliveryLog, Limits, PATH, Receiver, Secret, SecretError, SecretSource, Verdict,
-    Writer, format_rfc3339_utc, load_secret, log_line, parse_signature, router, verify,
+    BODY_LIMIT, DEFAULT_READ_TIMEOUT, DeliveryLog, Limits, PATH, Receiver, Secret, SecretError,
+    SecretSource, Verdict, Writer, bind, delivery_line, format_rfc3339_utc, load_secret, log_line,
+    parse_signature, router, serve, verify,
 };
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tower::ServiceExt;
 
 const SECRET: &[u8] = b"it's a secret to everybody";
@@ -243,6 +247,27 @@ async fn delivery_is_appended_after_existing_lines() {
 }
 
 #[tokio::test]
+async fn a_fragment_left_by_an_earlier_process_is_ended_before_the_next_line() {
+    let fx = fixture_with(Some("{\"partial\":"), Limits::default());
+    assert_eq!(
+        send(&fx.receiver, signed("issues", "d-after-crash", b"{}")).await,
+        StatusCode::ACCEPTED
+    );
+    let text = std::fs::read_to_string(&fx.finish().await.path).expect("the log is readable");
+    let mut lines = text.lines();
+    assert!(
+        lines
+            .next()
+            .is_some_and(|line| serde_json::from_str::<Value>(line).is_err()),
+        "the fragment stays a line of its own"
+    );
+    let next: Value =
+        serde_json::from_str(lines.next().expect("a second line")).expect("it is JSON");
+    assert_eq!(next["delivery"], "d-after-crash");
+    assert_eq!(lines.next(), None);
+}
+
+#[tokio::test]
 async fn concurrent_deliveries_give_whole_lines() {
     let fx = fixture();
     let big = json!({"blob": "x".repeat(1 << 20)}).to_string();
@@ -326,6 +351,51 @@ async fn send_owned(receiver: Receiver, request: Request<Body>) -> StatusCode {
     send(&receiver, request).await
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stalled_body_gets_408_at_the_deadline_and_frees_its_permit() {
+    let fx = fixture_with(
+        None,
+        Limits {
+            in_flight: 1,
+            ..Limits::default()
+        },
+    );
+    let receiver = fx.receiver.clone();
+    let held = tokio::spawn(send_owned(receiver.clone(), stalled("d-stalled")));
+    tokio::task::yield_now().await;
+    tokio::time::advance(DEFAULT_READ_TIMEOUT - Duration::from_secs(1)).await;
+    assert_eq!(
+        send(&receiver, signed("push", "d-early", b"{}")).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "before the deadline the stalled request still holds the only permit"
+    );
+    // The writer runs on a blocking thread, which keeps a paused clock from advancing by itself.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..100 {
+        if held.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(held.is_finished(), "the deadline ends the stalled request");
+    assert_eq!(
+        held.await.expect("the stalled request ends"),
+        StatusCode::REQUEST_TIMEOUT,
+        "the stalled request is refused at the deadline"
+    );
+    assert_eq!(
+        send(&receiver, signed("push", "d-late", b"{}")).await,
+        StatusCode::ACCEPTED,
+        "its permit is free again"
+    );
+    drop(receiver);
+    let logged: Vec<Value> = lines(&fx.finish().await.path)
+        .into_iter()
+        .map(|line| line["delivery"].clone())
+        .collect();
+    assert_eq!(logged, [json!("d-late")]);
+}
+
 /// A writer into a shared buffer whose first write tells `started` and then waits for `release`.
 struct Gated {
     buffer: Arc<Mutex<Vec<u8>>>,
@@ -396,6 +466,89 @@ async fn a_full_queue_is_refused_and_a_bad_signature_never_reaches_it() {
     release.send(()).expect("the writer waits for the release");
     drop(receiver);
     writer.finished().await;
+    let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
+        .expect("the log is UTF-8");
+    let deliveries: Vec<Value> = text
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).expect("each line is JSON")["delivery"].clone()
+        })
+        .collect();
+    assert_eq!(deliveries, [json!("d-1"), json!("d-2")]);
+}
+
+/// Posts a signed delivery over TCP and gives the response's status code.
+async fn post_over_tcp(addr: SocketAddr, delivery: &str, body: &[u8]) -> u16 {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("the receiver accepts");
+    let head = format!(
+        "POST {PATH} HTTP/1.1\r\nhost: {addr}\r\ncontent-type: application/json\r\n\
+         x-github-event: push\r\nx-github-delivery: {delivery}\r\n\
+         x-hub-signature-256: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        signature(SECRET, body),
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .expect("the head is sent");
+    stream.write_all(body).await.expect("the body is sent");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("the response is read");
+    let status_line = response.split(|&byte| byte == b'\n').next().unwrap_or(&[]);
+    std::str::from_utf8(status_line)
+        .ok()
+        .and_then(|line| line.split(' ').nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("an HTTP status line")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_drains_the_queue_before_serve_returns() {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let (started_tx, started) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let log = DeliveryLog::with_writer(
+        PathBuf::from("deliveries.jsonl"),
+        Gated {
+            buffer: Arc::clone(&buffer),
+            started: Some(started_tx),
+            release: release_rx,
+        },
+    );
+    let (receiver, writer) = Receiver::start(secret(), log, Limits::default());
+    let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("a local port");
+    let addr = listener.local_addr().expect("the bound address");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve(listener, receiver, writer, async {
+        let _ = stopped.await;
+    }));
+
+    assert_eq!(post_over_tcp(addr, "d-1", b"{}").await, 202);
+    tokio::task::spawn_blocking(move || started.recv())
+        .await
+        .expect("the wait ends")
+        .expect("the writer starts on the first delivery");
+    assert_eq!(post_over_tcp(addr, "d-2", b"{}").await, 202);
+
+    stop.send(()).expect("serve waits for the stop");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !server.is_finished(),
+        "serve waits while a delivery is still queued"
+    );
+    release.send(()).expect("the writer waits for the release");
+    server
+        .await
+        .expect("serve does not panic")
+        .expect("serve stops cleanly");
+
     let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
         .expect("the log is UTF-8");
     let deliveries: Vec<Value> = text
@@ -547,6 +700,23 @@ fn line_has_the_seven_keys_in_order() {
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),
         "{positions:?}"
+    );
+}
+
+#[test]
+fn delivery_line_from_header_strings_matches_log_line() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-github-delivery", "d-5".parse().expect("a header value"));
+    headers.insert("x-github-event", "push".parse().expect("a header value"));
+    let body = br#"{"action":"x","repository":{"full_name":"o/n"}}"#;
+    let at = "2024-02-29T12:34:56.789Z";
+    assert_eq!(
+        delivery_line(at, Some("d-5"), Some("push"), body),
+        log_line(at, &headers, body)
+    );
+    assert_eq!(
+        delivery_line(at, None, None, body),
+        log_line(at, &HeaderMap::new(), body)
     );
 }
 

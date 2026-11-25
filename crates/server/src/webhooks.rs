@@ -1,20 +1,23 @@
 //! A receiver for the GitHub App's webhooks. `POST /github/webhook` checks each delivery's
 //! `X-Hub-Signature-256` against the webhook secret in constant time. A verified delivery is put
-//! on a bounded queue as one JSON line and answered `202` at once; a separate task drains the
-//! queue to the log file. A missing or bad signature gets `401` and one JSON line on stderr
-//! without the body; a body over [`BODY_LIMIT`] gets `413`. When the queue is full, or
+//! on a bounded queue as it came and answered `202` at once; a separate task builds its JSON
+//! line and drains the queue to the log file. A missing or bad signature gets `401` and one JSON
+//! line on stderr without the body; a body over [`BODY_LIMIT`] gets `413`, and a request not
+//! answered within [`Limits::read_timeout`] gets `408`. When the queue is full, or
 //! [`Limits::in_flight`] requests are already being read, the request gets `429`. Nothing is
 //! filtered by event type.
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -49,6 +52,13 @@ pub const DEFAULT_IN_FLIGHT: usize = 16;
 /// falls behind while the disk stalls; at GitHub's typical few-KiB payloads 256 lines is under a
 /// few MiB, and it covers a burst such as a push to many pull requests at once.
 pub const DEFAULT_QUEUED: usize = 256;
+
+/// The default for [`Limits::read_timeout`]: GitHub's own delivery timeout. GitHub ends a delivery
+/// it has not had an answer to within 10 seconds and shows it as failed, so a request still being
+/// read after that is either not from GitHub or one GitHub has already given up on. Without the
+/// deadline, [`Limits::in_flight`] callers that send headers and then stall the body would hold
+/// every permit, and GitHub's deliveries would get `429` for as long as they kept them open.
+pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The header that carries the HMAC-SHA256 of the body.
 pub const SIGNATURE_HEADER: &str = "x-hub-signature-256";
@@ -275,8 +285,8 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 #[derive(Serialize)]
 struct Line<'a> {
     received_at: &'a str,
-    delivery: Option<String>,
-    event: Option<String>,
+    delivery: Option<&'a str>,
+    event: Option<&'a str>,
     action: &'a Value,
     installation: &'a Value,
     repository: &'a Value,
@@ -289,12 +299,29 @@ struct Line<'a> {
 /// (`payload.repository.full_name`) and `payload`. A missing header or payload key is `null`.
 /// A body that is not JSON is kept in `payload` as a string.
 pub fn log_line(received_at: &str, headers: &HeaderMap, body: &[u8]) -> Vec<u8> {
+    delivery_line(
+        received_at,
+        header_text(headers, DELIVERY_HEADER).as_deref(),
+        header_text(headers, EVENT_HEADER).as_deref(),
+        body,
+    )
+}
+
+/// [`log_line`] from the header strings already taken from the request: `delivery` and `event`
+/// are the `X-GitHub-Delivery` and `X-GitHub-Event` values, if any. The writer task calls it, so
+/// the body is parsed after the delivery has been answered.
+pub fn delivery_line(
+    received_at: &str,
+    delivery: Option<&str>,
+    event: Option<&str>,
+    body: &[u8],
+) -> Vec<u8> {
     let payload = serde_json::from_slice::<Value>(body)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(body).into_owned()));
     let line = Line {
         received_at,
-        delivery: header_text(headers, DELIVERY_HEADER),
-        event: header_text(headers, EVENT_HEADER),
+        delivery,
+        event,
         action: payload.pointer("/action").unwrap_or(&Value::Null),
         installation: payload.pointer("/installation/id").unwrap_or(&Value::Null),
         repository: payload
@@ -359,7 +386,8 @@ fn io_reason(error: &io::Error) -> &'static str {
 /// The delivery log: a file opened in append mode, created if absent. Each line is written
 /// under a mutex, so lines never interleave. When a write fails after part of a line was
 /// written, the next append first ends that fragment with `\n`, so the fragment stays a line of
-/// its own and the next delivery's line is whole.
+/// its own and the next delivery's line is whole. The same holds for a fragment an earlier
+/// process left when it was killed part-way through a line: [`DeliveryLog::open`] finds it.
 pub struct DeliveryLog {
     path: PathBuf,
     sink: Mutex<Sink>,
@@ -412,29 +440,35 @@ impl Sink {
 }
 
 impl DeliveryLog {
-    /// Opens `path` for appending, creating it if needed.
+    /// Opens `path` for appending, creating it if needed. When the file is not empty and does
+    /// not end in `\n`, an earlier process stopped part-way through a line, and the first append
+    /// ends that fragment first.
     pub fn open(path: &Path) -> Result<Self, LogError> {
+        let failed = |source: io::Error| LogError::Open {
+            path: path.to_owned(),
+            reason: io_reason(&source),
+            source,
+        };
         let file = OpenOptions::new()
+            .read(true)
             .append(true)
             .create(true)
             .open(path)
-            .map_err(|source| LogError::Open {
-                path: path.to_owned(),
-                reason: io_reason(&source),
-                source,
-            })?;
-        Ok(Self::with_writer(path.to_owned(), file))
+            .map_err(failed)?;
+        let fragment = ends_in_fragment(&file).map_err(failed)?;
+        Ok(Self::with_sink(path.to_owned(), Box::new(file), fragment))
     }
 
     /// A log that appends to `writer`, reported under `path`. [`DeliveryLog::open`] passes the
     /// file it opened; tests pass a writer that fails.
     pub fn with_writer(path: PathBuf, writer: impl Write + Send + 'static) -> Self {
+        Self::with_sink(path, Box::new(writer), false)
+    }
+
+    fn with_sink(path: PathBuf, writer: Box<dyn Write + Send>, fragment: bool) -> Self {
         Self {
             path,
-            sink: Mutex::new(Sink {
-                writer: Box::new(writer),
-                fragment: false,
-            }),
+            sink: Mutex::new(Sink { writer, fragment }),
         }
     }
 
@@ -456,13 +490,27 @@ impl DeliveryLog {
     }
 }
 
-/// The receiver's bounds. Each is at least 1; a 0 is read as 1.
+/// Whether `file` is not empty and its last byte is not `\n`.
+fn ends_in_fragment(file: &File) -> io::Result<bool> {
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(false);
+    }
+    let mut last = [0u8; 1];
+    file.read_exact_at(&mut last, len - 1)?;
+    Ok(last[0] != b'\n')
+}
+
+/// The receiver's bounds. The counts are at least 1; a 0 is read as 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// The most requests whose bodies are read and checked at once.
     pub in_flight: usize,
     /// The most verified deliveries waiting for the log.
     pub queued: usize,
+    /// How long a request may take from taking its permit to its answer, which is mostly
+    /// reading the body; past it the request gets `408`.
+    pub read_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -470,25 +518,33 @@ impl Default for Limits {
         Self {
             in_flight: DEFAULT_IN_FLIGHT,
             queued: DEFAULT_QUEUED,
+            read_timeout: DEFAULT_READ_TIMEOUT,
         }
     }
 }
 
-/// A verified delivery waiting for the log.
+/// A verified delivery waiting for the log, as it came: the writer task builds its line.
 struct Queued {
     received_at: String,
     delivery: Option<String>,
     event: Option<String>,
-    line: Vec<u8>,
+    body: Bytes,
 }
 
-/// What the receiver's handler shares: the secret, the queue to the log and the permits for
+/// What the receiver's handler shares: the secret, the queue to the log and the gate on
 /// requests in flight. Clones share all three.
 #[derive(Clone, Debug)]
 pub struct Receiver {
     secret: Arc<Secret>,
     queue: mpsc::Sender<Queued>,
-    in_flight: Arc<Semaphore>,
+    gate: Gate,
+}
+
+/// The permits for requests in flight, and how long each may hold one.
+#[derive(Clone, Debug)]
+struct Gate {
+    permits: Arc<Semaphore>,
+    read_timeout: Duration,
 }
 
 impl fmt::Debug for Queued {
@@ -520,7 +576,13 @@ impl Receiver {
         let (queue, mut drain) = mpsc::channel::<Queued>(limits.queued.max(1));
         let writer = tokio::task::spawn_blocking(move || {
             while let Some(queued) = drain.blocking_recv() {
-                if let Err(error) = log.append(&queued.line) {
+                let line = delivery_line(
+                    &queued.received_at,
+                    queued.delivery.as_deref(),
+                    queued.event.as_deref(),
+                    &queued.body,
+                );
+                if let Err(error) = log.append(&line) {
                     report_queued(&queued, Outcome::Error(&error.to_string()));
                 }
             }
@@ -528,38 +590,55 @@ impl Receiver {
         let receiver = Self {
             secret: Arc::new(secret),
             queue,
-            in_flight: Arc::new(Semaphore::new(limits.in_flight.max(1))),
+            gate: Gate {
+                permits: Arc::new(Semaphore::new(limits.in_flight.max(1))),
+                read_timeout: limits.read_timeout,
+            },
         };
         (receiver, Writer(writer))
     }
 }
 
-/// The router: `POST /github/webhook`, with bodies capped at [`BODY_LIMIT`] and requests in
-/// flight capped by the receiver's [`Limits::in_flight`].
+/// The router: `POST /github/webhook`, with bodies capped at [`BODY_LIMIT`], requests in
+/// flight capped by the receiver's [`Limits::in_flight`], and each request limited to its
+/// [`Limits::read_timeout`].
 pub fn router(receiver: Receiver) -> Router {
-    let in_flight = Arc::clone(&receiver.in_flight);
+    let gate = receiver.gate.clone();
     Router::new()
         .route(PATH, post(receive))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
-        .layer(middleware::from_fn_with_state(in_flight, limit_in_flight))
+        .layer(middleware::from_fn_with_state(gate, limit_in_flight))
         .with_state(receiver)
 }
 
-/// Answers `429` without reading the body when every permit is taken; otherwise holds a permit
-/// until the response is ready.
-async fn limit_in_flight(
-    State(in_flight): State<Arc<Semaphore>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let Ok(_permit) = in_flight.try_acquire_owned() else {
+/// Answers `429` without reading the body when every permit is taken. Otherwise holds a permit
+/// until the response is ready, and answers `408`, with a stderr line, when that takes longer
+/// than the read timeout. Once the body is read the handler runs to its answer without waiting
+/// on anything, so a delivery that was queued is never answered `408`.
+async fn limit_in_flight(State(gate): State<Gate>, request: Request, next: Next) -> Response {
+    let Ok(_permit) = gate.permits.try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    next.run(request).await
+    let received_at = format_rfc3339_utc(SystemTime::now());
+    let delivery = header_text(request.headers(), DELIVERY_HEADER);
+    let event = header_text(request.headers(), EVENT_HEADER);
+    match tokio::time::timeout(gate.read_timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => {
+            write_report(&Report {
+                received_at: &received_at,
+                outcome: Outcome::Rejected("read_timeout"),
+                delivery,
+                event,
+            });
+            StatusCode::REQUEST_TIMEOUT.into_response()
+        }
+    }
 }
 
 /// Checks the signature, queues a verified delivery for the log, and answers at once: `202`
-/// when queued, `401` for a missing or bad signature, `429` when the queue is full.
+/// when queued, `401` for a missing or bad signature, `429` when the queue is full. Only the
+/// HMAC runs here; the writer task parses the body and builds the line.
 async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Bytes) -> StatusCode {
     let received_at = format_rfc3339_utc(SystemTime::now());
     let signature = headers.get(SIGNATURE_HEADER).map(|value| value.as_bytes());
@@ -568,13 +647,11 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
         report(&received_at, &headers, Outcome::Rejected(rejected));
         return StatusCode::UNAUTHORIZED;
     }
-    let line = log_line(&received_at, &headers, &body);
-    drop(body);
     let queued = Queued {
         delivery: header_text(&headers, DELIVERY_HEADER),
         event: header_text(&headers, EVENT_HEADER),
         received_at,
-        line,
+        body,
     };
     match receiver.queue.try_send(queued) {
         Ok(()) => StatusCode::ACCEPTED,
@@ -671,13 +748,24 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener, ServeError> {
         })
 }
 
-/// Serves [`router`] on `listener` until the process stops. The receiver's [`Writer`] keeps
-/// draining the queue meanwhile.
-pub async fn serve(listener: TcpListener, receiver: Receiver) -> Result<(), ServeError> {
-    axum::serve(listener, router(receiver))
-        .await
-        .map_err(|source| ServeError::Serve {
-            reason: io_reason(&source),
-            source,
-        })
+/// Serves [`router`] on `listener` until `shutdown` resolves. It then stops accepting, lets the
+/// requests in progress finish (each within its [`Limits::read_timeout`]), and waits for
+/// `writer` to drain the queue to the log, so every delivery answered `202` is written, or
+/// reported on stderr, before it returns.
+pub async fn serve(
+    listener: TcpListener,
+    receiver: Receiver,
+    writer: Writer,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), ServeError> {
+    let served = axum::serve(listener, router(receiver))
+        .with_graceful_shutdown(shutdown)
+        .await;
+    // The server and its connections have dropped their receivers by now, so the writer ends
+    // once the queue is empty. It is awaited after an error too, to write what was answered.
+    writer.finished().await;
+    served.map_err(|source| ServeError::Serve {
+        reason: io_reason(&source),
+        source,
+    })
 }
