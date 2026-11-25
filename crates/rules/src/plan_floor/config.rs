@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use mintswarm_config::{Mode as ConfigMode, load_repo_config};
+use mintswarm_config::{Error as ConfigError, Mode as ConfigMode, load_repo_config};
 use mintswarm_domain::records::Mode;
 use serde_json::Value;
 
@@ -58,14 +58,28 @@ fn strings(value: Option<&Value>) -> Vec<String> {
     }
 }
 
+/// The unusable-input message for a config that does not load. A YAML failure is worded here
+/// from its class and key path alone, since its message may carry the YAML parser's own text; a
+/// schema failure keeps `mintswarm_config`'s own wording.
+fn load_message(error: &ConfigError) -> String {
+    match error {
+        ConfigError::Yaml { path, .. } if path.is_empty() => {
+            "config: .mintswarm/config.yaml at the base is not valid YAML".to_owned()
+        }
+        ConfigError::Yaml { path, .. } => {
+            format!("config: .mintswarm/config.yaml at the base is not valid YAML at {path}")
+        }
+        ConfigError::Schema { .. } => format!("config: {error}"),
+    }
+}
+
 /// The floor's view of the config `bytes` at the base, for `component`; unusable when the bytes
 /// are not UTF-8, the config does not load, a gate command does not split or `component` is not
 /// a defined component.
 pub fn view(bytes: &[u8], component: &str) -> Result<View, Unusable> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| Unusable::new("config: .mintswarm/config.yaml at the base is not UTF-8"))?;
-    let config =
-        load_repo_config(text).map_err(|error| Unusable::new(format!("config: {error}")))?;
+    let config = load_repo_config(text).map_err(|error| Unusable::new(load_message(&error)))?;
     let value = config.value();
     let mut paths = BTreeMap::new();
     if let Some(Value::Object(components)) = value.get("components") {
@@ -265,6 +279,20 @@ mod tests {
         assert_eq!(split("x && y"), ["x", "&&", "y"]);
         assert_eq!(shlex_split("'a"), Err(SplitError::NoClosingQuotation));
         assert_eq!(shlex_split("a\\"), Err(SplitError::NoEscapedCharacter));
+    }
+
+    #[test]
+    fn a_yaml_failure_is_worded_by_its_class_and_path() {
+        let unbalanced = view(b"a: [1\n", "core").map(|_| ()).unwrap_err();
+        assert_eq!(
+            unbalanced.message(),
+            "config: .mintswarm/config.yaml at the base is not valid YAML"
+        );
+        let duplicate = view(b"a: 1\na: 2\n", "core").map(|_| ()).unwrap_err();
+        assert_eq!(
+            duplicate.message(),
+            "config: .mintswarm/config.yaml at the base is not valid YAML at a"
+        );
     }
 
     #[test]
