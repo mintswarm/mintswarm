@@ -7,6 +7,10 @@
 //! already hold (`MINTSWARM_PG_IMAGE`, default `postgres:17`). Nothing is ever downloaded.
 //! `fsync`, `synchronous_commit` and `full_page_writes` are off.
 //!
+//! The binaries backend listens only on a Unix socket in a directory only its owner can open;
+//! the container backend listens on a loopback port and requires a password generated for the
+//! instance.
+//!
 //! When the test process ends, normally or killed, a watchdog child stops the server and
 //! deletes its directory, or removes the container.
 //!
@@ -41,6 +45,7 @@ use tokio_postgres::{Client, Config, NoTls};
 pub use discovery::Backend;
 pub use error::PgHarnessError;
 
+use container::Container;
 use discovery::Environment;
 use watchdog::Watchdog;
 
@@ -111,7 +116,7 @@ pub(crate) struct Started {
     pub(crate) config: Config,
     pub(crate) dir: Option<PathBuf>,
     pub(crate) server: Option<Child>,
-    pub(crate) container_id: Option<String>,
+    pub(crate) container: Option<Container>,
     pub(crate) watchdog: Watchdog,
 }
 
@@ -150,32 +155,32 @@ async fn start() -> Result<Instance, PgHarnessError> {
         Ok::<_, PgHarnessError>((backend, started))
     })
     .await
-    .map_err(|_| PgHarnessError::Io {
-        source: std::io::Error::other("the start task did not complete"),
-    })??;
+    .map_err(|_| unfinished("the start task did not complete"))??;
     let Started {
         config,
         dir,
         mut server,
-        container_id,
+        container,
         watchdog,
     } = started;
-    wait_ready(&config, dir.as_deref(), server.as_mut()).await?;
+    wait_ready(&config, dir.as_deref(), server.as_mut(), container.as_ref()).await?;
     Ok(Instance {
         backend,
         config,
         dir,
         server_pid: server.as_ref().map(Child::id),
-        container_id,
+        container_id: container.map(|container| container.id),
         _watchdog: watchdog,
     })
 }
 
-/// Connects and runs `SELECT 1` until it succeeds, the server exits, or the time is up.
+/// Connects and runs `SELECT 1` until it succeeds, the server or container exits, or the time
+/// is up.
 async fn wait_ready(
     config: &Config,
     dir: Option<&Path>,
     mut server: Option<&mut Child>,
+    container: Option<&Container>,
 ) -> Result<(), PgHarnessError> {
     let begun = Instant::now();
     loop {
@@ -194,12 +199,24 @@ async fn wait_ready(
                 });
             }
         }
+        if let Some(container) = container.cloned() {
+            tokio::task::spawn_blocking(move || container.ensure_running())
+                .await
+                .map_err(|_| unfinished("the container check did not complete"))??;
+        }
         if begun.elapsed() >= READY_TIMEOUT {
             return Err(PgHarnessError::NotReady {
                 waited: begun.elapsed(),
             });
         }
         tokio::time::sleep(READY_INTERVAL).await;
+    }
+}
+
+/// The error for a blocking task that did not run to its end.
+fn unfinished(what: &'static str) -> PgHarnessError {
+    PgHarnessError::Io {
+        source: std::io::Error::other(what),
     }
 }
 

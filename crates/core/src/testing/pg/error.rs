@@ -16,11 +16,23 @@ pub enum PgHarnessError {
          podman on PATH) is available; nothing is downloaded"
     )]
     NoBackend,
-    /// The container runtime does not hold the image locally, and the harness never pulls.
-    #[error("the Postgres image {image} is not present locally; nothing is pulled")]
+    /// The container runtime does not hold the image locally, and the harness never pulls, or
+    /// the runtime could not be reached to ask.
+    #[error(
+        "the Postgres image {image} is not present locally or the container runtime could not \
+         be reached; nothing is pulled; the runtime's output:\n{output}"
+    )]
     ImageMissing {
         /// The image the harness looked for.
         image: String,
+        /// What the runtime wrote to standard output and standard error.
+        output: String,
+    },
+    /// The container stopped before it accepted connections.
+    #[error("the test Postgres container exited before it was ready; its logs:\n{logs}")]
+    ContainerExited {
+        /// What the container wrote, as far as the runtime still holds it.
+        logs: String,
     },
     /// A program could not be started.
     #[error("could not start {program}")]

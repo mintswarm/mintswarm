@@ -44,7 +44,7 @@ pub(crate) fn start(bindir: &Path) -> Result<Started, PgHarnessError> {
 
     let postgres = bindir.join("postgres");
     let log = File::create(dir.join("postgres.log"))?;
-    let server = Command::new(&postgres)
+    let mut server = Command::new(&postgres)
         .arg("-D")
         .arg(&data)
         .arg("-k")
@@ -59,7 +59,14 @@ pub(crate) fn start(bindir: &Path) -> Result<Started, PgHarnessError> {
         .process_group(0)
         .spawn()
         .map_err(|source| spawn_error(&postgres, source))?;
-    watchdog.arm(&server.id().to_string())?;
+    if let Err(err) = watchdog.arm(&server.id().to_string()) {
+        // The watchdog cannot stop a server it was never told about. Best effort: the arm
+        // error is the one worth reporting.
+        let _ = server.kill();
+        let _ = server.wait();
+        let _ = fs::remove_dir_all(&dir);
+        return Err(err);
+    }
 
     let mut config = tokio_postgres::Config::new();
     config.host_path(&dir).user("postgres").dbname("postgres");
@@ -67,7 +74,7 @@ pub(crate) fn start(bindir: &Path) -> Result<Started, PgHarnessError> {
         config,
         dir: Some(dir),
         server: Some(server),
-        container_id: None,
+        container: None,
         watchdog,
     })
 }
