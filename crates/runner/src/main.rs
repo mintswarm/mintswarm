@@ -26,7 +26,10 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum Tool {
     /// Save a stage's output document and result record from its reply or transcript
-    #[command(disable_help_flag = true, override_usage = "save-output [--text] INPUT OUTPUT.md")]
+    #[command(
+        disable_help_flag = true,
+        override_usage = "mintswarm-runner tool save-output [--text] INPUT OUTPUT.md"
+    )]
     SaveOutput {
         /// `[--text] INPUT OUTPUT.md`, checked by the tool itself
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -40,7 +43,11 @@ fn main() -> ExitCode {
             // clap drops a `--` separator, which save-output.py rejects; the tool checks the
             // arguments after `tool save-output` exactly as given
             let operands: Vec<OsString> = std::env::args_os().skip(3).collect();
-            save_output::run(&operands, &mut io::stdout().lock(), &mut io::stderr().lock())
+            save_output::run(
+                &operands,
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            )
         }
     };
     ExitCode::from(exit::code(&outcome))

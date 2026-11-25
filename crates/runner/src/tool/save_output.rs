@@ -55,9 +55,7 @@ pub fn write_both(writes: &[(PathBuf, &str)]) -> io::Result<()> {
         let mut prefix = OsString::from(".");
         prefix.push(name);
         prefix.push(".");
-        let mut temp = tempfile::Builder::new()
-            .prefix(&prefix)
-            .tempfile_in(dir)?;
+        let mut temp = tempfile::Builder::new().prefix(&prefix).tempfile_in(dir)?;
         temp.write_all(text.as_bytes())?;
         temps.push(temp);
     }
