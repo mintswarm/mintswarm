@@ -48,6 +48,19 @@ pub(crate) fn check_names(owner: &str, repo: &str) -> Result<(), ClientError> {
     Ok(())
 }
 
+/// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.
+pub(crate) fn path_segment(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// GitHub's answer to one request.
 #[derive(Debug)]
 pub(crate) struct Reply {
@@ -208,5 +221,20 @@ impl Rest {
             retry_after,
             body,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_segment;
+
+    #[test]
+    fn label_names_are_encoded_as_one_path_segment() {
+        assert_eq!(path_segment("effort:S"), "effort%3AS");
+        assert_eq!(
+            path_segment("[M] size/é?#"),
+            "%5BM%5D%20size%2F%C3%A9%3F%23"
+        );
+        assert_eq!(path_segment("a-b.c_d~1"), "a-b.c_d~1");
     }
 }

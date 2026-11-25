@@ -6,10 +6,10 @@ use mintswarm_domain::ids::{PrNumber, RevId};
 use mintswarm_domain::tracker::{CheckState, Login, PullRequest, Review};
 use mintswarm_domain::vcs::BranchName;
 
-use crate::fields::path_segment;
 use crate::reads::{
     GitHubReads, ReadError, login_at, opt_str_at, str_at, text_at, u64_at, unexpected,
 };
+use crate::rest::path_segment;
 use crate::secret::Token;
 
 impl GitHubReads {

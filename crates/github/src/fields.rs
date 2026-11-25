@@ -24,7 +24,7 @@ use mintswarm_domain::field::{
 use mintswarm_domain::ids::IssueNumber;
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
-use crate::rest::{ClientError, Reply, Rest, check_names};
+use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
 use crate::secret::Token;
 
 /// The per-issue resources a pass reads.
@@ -327,19 +327,6 @@ fn resolved(field_id: Option<u64>) -> Result<u64, FieldError> {
     field_id.ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
-/// `text` percent-encoded as one path segment: every byte but RFC 3986's unreserved ones.
-pub(crate) fn path_segment(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
 /// The request that clears a field on an issue, given the issue's `issue-field-values` path.
 fn clear_request(values_path: &str, field_id: u64) -> (Method, String) {
     (Method::DELETE, format!("{values_path}/{field_id}"))
@@ -500,7 +487,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::{Op, Pattern, Resource, checked_pattern, classify, path_segment};
+    use super::{Op, Pattern, Resource, checked_pattern, classify};
     use crate::etag::EtagCache;
     use crate::rest::Reply;
 
@@ -610,16 +597,6 @@ mod tests {
         assert!(cache.get(&(2, Resource::Issue)).is_none());
         assert_eq!(cache.get(&(1, Resource::Issue)).unwrap().0, "a2");
         assert_eq!(cache.get(&(3, Resource::FieldValues)).unwrap().0, "c");
-    }
-
-    #[test]
-    fn label_names_are_encoded_as_one_path_segment() {
-        assert_eq!(path_segment("effort:S"), "effort%3AS");
-        assert_eq!(
-            path_segment("[M] size/é?#"),
-            "%5BM%5D%20size%2F%C3%A9%3F%23"
-        );
-        assert_eq!(path_segment("a-b.c_d~1"), "a-b.c_d~1");
     }
 
     #[test]

@@ -21,8 +21,7 @@ use mintswarm_domain::tracker::{
 };
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
-use crate::fields::path_segment;
-use crate::rest::{ClientError, Rest, check_names};
+use crate::rest::{ClientError, Rest, check_names, path_segment};
 use crate::secret::Token;
 use crate::token::Permissions;
 
