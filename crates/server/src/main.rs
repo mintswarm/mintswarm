@@ -38,8 +38,8 @@ struct WebhooksArgs {
     /// The file each verified delivery is appended to, as one JSON line
     #[arg(long)]
     log: PathBuf,
-    /// The variable holding the webhook secret, used when --key-store is not given
-    #[arg(long, default_value = DEFAULT_SECRET_ENV)]
+    /// The variable holding the webhook secret; cannot be given with --key-store
+    #[arg(long, default_value = DEFAULT_SECRET_ENV, conflicts_with = "key_store")]
     secret_env: String,
     /// Read the webhook secret from this key store instead of the variable
     #[arg(long, value_enum, requires_all = ["key_service", "key_account"])]

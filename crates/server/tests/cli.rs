@@ -89,3 +89,33 @@ fn webhooks_key_store_needs_service_and_account() {
     assert!(!status.success(), "--key-store alone is refused");
     assert!(!log.exists(), "the log is not created");
 }
+
+#[test]
+fn webhooks_secret_env_conflicts_with_key_store() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let log = dir.path().join("deliveries.jsonl");
+    let status = Command::new(BIN)
+        .args([
+            "webhooks",
+            "--listen",
+            "127.0.0.1:0",
+            "--secret-env",
+            "MSW_WEBHOOK_SECRET",
+            "--key-store",
+            "file",
+            "--key-service",
+            "mintswarm",
+            "--key-account",
+            "webhook",
+            "--log",
+        ])
+        .arg(&log)
+        .env("MSW_WEBHOOK_SECRET", "it's a secret to everybody")
+        .status()
+        .expect("mintswarm-server runs");
+    assert!(
+        !status.success(),
+        "--secret-env with --key-store is refused"
+    );
+    assert!(!log.exists(), "the log is not created");
+}
