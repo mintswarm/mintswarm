@@ -412,7 +412,7 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
     let signature = headers.get(SIGNATURE_HEADER).map(|value| value.as_bytes());
     let verdict = verify(&receiver.secret, &body, signature);
     if let Some(rejected) = verdict.rejection() {
-        report(&received_at, &headers, "rejected", rejected);
+        report(&received_at, &headers, Outcome::Rejected(rejected));
         return StatusCode::UNAUTHORIZED;
     }
     let line = log_line(&received_at, &headers, &body);
@@ -420,15 +420,14 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
     match tokio::task::spawn_blocking(move || log.append(&line)).await {
         Ok(Ok(())) => StatusCode::ACCEPTED,
         Ok(Err(error)) => {
-            report(&received_at, &headers, "error", &error.to_string());
+            report(&received_at, &headers, Outcome::Error(&error.to_string()));
             StatusCode::INTERNAL_SERVER_ERROR
         }
         Err(_) => {
             report(
                 &received_at,
                 &headers,
-                "error",
-                "the log write did not finish",
+                Outcome::Error("the log write did not finish"),
             );
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -436,17 +435,33 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
 }
 
 /// Writes one JSON line to stderr about a delivery that was not logged, without its body.
-fn report(received_at: &str, headers: &HeaderMap, key: &str, value: &str) {
-    let mut entry = serde_json::Map::new();
-    entry.insert("received_at".into(), received_at.into());
-    entry.insert(key.into(), value.into());
-    for (name, header) in [("delivery", DELIVERY_HEADER), ("event", EVENT_HEADER)] {
-        entry.insert(
-            name.into(),
-            header_text(headers, header).map_or(Value::Null, Value::String),
-        );
-    }
-    eprintln!("{}", Value::Object(entry));
+fn report(received_at: &str, headers: &HeaderMap, outcome: Outcome<'_>) {
+    let entry = Report {
+        received_at,
+        outcome,
+        delivery: header_text(headers, DELIVERY_HEADER),
+        event: header_text(headers, EVENT_HEADER),
+    };
+    let line = serde_json::to_string(&entry).expect("a struct of strings always serialises");
+    eprintln!("{line}");
+}
+
+/// A stderr line about a delivery that was not logged, in this key order.
+#[derive(Serialize)]
+struct Report<'a> {
+    received_at: &'a str,
+    #[serde(flatten)]
+    outcome: Outcome<'a>,
+    delivery: Option<String>,
+    event: Option<String>,
+}
+
+/// Why a delivery was not logged: `{"rejected": …}` or `{"error": …}`.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Outcome<'a> {
+    Rejected(&'static str),
+    Error(&'a str),
 }
 
 /// Why the receiver could not listen or stopped.
