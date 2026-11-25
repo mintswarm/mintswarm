@@ -5,11 +5,13 @@
 
 mod support;
 
+use std::time::Duration;
+
 use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
 use mintswarm_domain::ids::IssueNumber;
-use mintswarm_github::{FieldClient, GitHubFieldCatalogue, Token};
+use mintswarm_github::{Exhausted, Failure, FieldClient, GitHubFieldCatalogue, RetryPolicy, Token};
 use support::{Request, Responder};
 
 const TOKEN: &str = "ghs_f13ldT0kenV4lue";
@@ -61,8 +63,24 @@ fn effort_labels() -> FieldRef {
     }
 }
 
+/// A single attempt per request, so each request takes one scripted reply.
+fn single_attempt() -> RetryPolicy {
+    RetryPolicy {
+        attempts: 1,
+        ..RetryPolicy::default()
+    }
+}
+
 fn client(responder: &Responder) -> FieldClient {
-    FieldClient::new(&responder.base, "acme", "widgets").unwrap()
+    FieldClient::new(&responder.base, "acme", "widgets")
+        .unwrap()
+        .with_retry(single_attempt())
+}
+
+fn catalogue(responder: &Responder) -> GitHubFieldCatalogue {
+    GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token())
+        .unwrap()
+        .with_retry(single_attempt())
 }
 
 fn value(field_id: Option<u64>, option_id: Option<u64>, name: &str) -> FieldValue {
@@ -300,7 +318,7 @@ async fn a_forbidden_write_without_rate_limit_headers_is_rejected() {
 }
 
 #[tokio::test]
-async fn bad_gateway_and_rate_limits_are_transport() {
+async fn bad_gateway_and_rate_limits_are_exhausted() {
     let responder = Responder::start().await;
     responder.reply(502, "<html>Bad Gateway</html>");
     responder.reply_with(
@@ -317,7 +335,10 @@ async fn bad_gateway_and_rate_limits_are_transport() {
             .set_field(ISSUE, &size(), EFFORT_ID, Some("M"))
             .await
             .unwrap_err();
-        assert!(matches!(error, FieldError::Transport(_)), "{error}");
+        assert!(
+            matches!(error, FieldError::Exhausted(Exhausted { attempts: 1, .. })),
+            "{error}"
+        );
         assert!(!error.should_resolve_again());
         assert!(!error.to_string().contains(TOKEN));
     }
@@ -326,7 +347,17 @@ async fn bad_gateway_and_rate_limits_are_transport() {
         .read_field(ISSUE, &size(), EFFORT_ID)
         .await
         .unwrap_err();
-    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+    assert!(
+        matches!(
+            error,
+            FieldError::Exhausted(Exhausted {
+                attempts: 1,
+                last: Failure::Status(502),
+                ..
+            })
+        ),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -357,6 +388,39 @@ async fn a_clear_deletes_the_field_value() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "DELETE");
     assert_eq!(requests[0].path, format!("{VALUES_PATH}/101"));
+}
+
+#[tokio::test]
+async fn a_cleared_value_already_gone_after_a_retry_is_done() {
+    let fast = RetryPolicy {
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+        ..RetryPolicy::default()
+    };
+    // The first DELETE may have cleared it before its answer was lost.
+    let responder = Responder::start().await;
+    responder.reply(502, "");
+    responder.reply(404, r#"{"message":"Not Found"}"#);
+    client(&responder)
+        .with_retry(fast)
+        .pass(&token())
+        .set_field(ISSUE, &size(), EFFORT_ID, None)
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == "DELETE"));
+
+    // Without an earlier attempt, the 404 is GitHub's own and still an error.
+    let responder = Responder::start().await;
+    responder.reply(404, r#"{"message":"Not Found"}"#);
+    let error = client(&responder)
+        .with_retry(fast)
+        .pass(&token())
+        .set_field(ISSUE, &size(), EFFORT_ID, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FieldError::Transport(_)), "{error}");
 }
 
 #[tokio::test]
@@ -543,7 +607,7 @@ async fn catalogue_sends_its_token_and_lists_every_option() {
     let responder = Responder::start().await;
     responder.reply(200, ORG_FIELDS);
     responder.reply(200, ORG_FIELD);
-    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let catalogue = catalogue(&responder);
     let options = catalogue.options(&size()).await.unwrap();
     assert_eq!(
         options,
@@ -576,7 +640,7 @@ async fn catalogue_lists_matching_labels_page_by_page() {
         .collect();
     responder.reply(200, serde_json::Value::from(first).to_string());
     responder.reply(200, r#"[{"name":"Effort:XL"},{"name":"bug"}]"#);
-    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let catalogue = catalogue(&responder);
     let options = catalogue.options(&effort_labels()).await.unwrap();
     assert_eq!(
         options,
@@ -603,12 +667,12 @@ async fn catalogue_reads_a_missing_field_as_field_missing() {
     let responder = Responder::start().await;
     responder.reply(404, r#"{"message":"Not Found"}"#);
     responder.reply(502, "");
-    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let catalogue = catalogue(&responder);
     let error = catalogue.field_options(101).await.unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::FieldMissing));
     assert!(error.should_resolve_again());
     let error = catalogue.field_options(101).await.unwrap_err();
-    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+    assert!(matches!(error, FieldError::Exhausted(_)), "{error}");
 }
 
 #[tokio::test]
@@ -617,13 +681,13 @@ async fn catalogue_resolves_a_field_id_by_name() {
     responder.reply(200, ORG_FIELDS);
     responder.reply(200, ORG_FIELDS);
     responder.reply(502, "");
-    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let catalogue = catalogue(&responder);
     assert_eq!(catalogue.field_id("Effort").await, Ok(101));
     let error = catalogue.field_id("Size").await.unwrap_err();
     assert_eq!(error, FieldError::Field(FieldFinding::FieldMissing));
     assert!(error.should_resolve_again());
     let error = catalogue.field_id("Effort").await.unwrap_err();
-    assert!(matches!(error, FieldError::Transport(_)), "{error}");
+    assert!(matches!(error, FieldError::Exhausted(_)), "{error}");
     assert_token_only_in_authorization(&responder.requests());
 }
 
@@ -668,7 +732,7 @@ async fn a_label_pattern_without_its_option_is_refused_before_any_request() {
         pass.set_field(ISSUE, &field, None, None).await,
         Err(missing.clone())
     );
-    let catalogue = GitHubFieldCatalogue::new(&responder.base, "acme", "widgets", token()).unwrap();
+    let catalogue = catalogue(&responder);
     assert_eq!(catalogue.options(&field).await, Err(missing));
     assert!(responder.requests().is_empty());
 }

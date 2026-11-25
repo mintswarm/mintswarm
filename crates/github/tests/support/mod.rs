@@ -230,8 +230,12 @@ impl Request {
     }
 }
 
-/// A scripted reply: its status, extra response headers and body.
+/// A scripted reply: its status, extra response headers and body. Status [`DROP`] closes the
+/// connection without an answer.
 type Reply = (u16, Vec<(String, String)>, String);
+
+/// The scripted status that drops the connection after reading the request.
+const DROP: u16 = 0;
 
 /// An HTTP/1.1 responder on a local port that serves one connection at a time, records each
 /// request and answers from a script of `(status, headers, body)` replies, one per request.
@@ -271,6 +275,10 @@ impl Responder {
                         replies.remove(0)
                     }
                 };
+                if status == DROP {
+                    drop(stream);
+                    continue;
+                }
                 let mut response = format!("HTTP/1.1 {status} Scripted\r\n");
                 for (name, value) in &headers {
                     response.push_str(&format!("{name}: {value}\r\n"));
@@ -311,6 +319,11 @@ impl Responder {
             .lock()
             .expect("poisoned")
             .push((status, headers, body.into()));
+    }
+
+    /// Queues a dropped connection: the request is read and the connection closed unanswered.
+    pub fn drop_connection(&self) {
+        self.reply(DROP, "");
     }
 
     pub fn requests(&self) -> Vec<Request> {

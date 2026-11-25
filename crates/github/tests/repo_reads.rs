@@ -13,7 +13,7 @@ use mintswarm_domain::hosting::{RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::tracker::{IssueType, Login};
 use mintswarm_domain::vcs::RepoPath;
-use mintswarm_github::{GitHubReads, GitHubRepoReads, Kinds, Permissions, Token};
+use mintswarm_github::{GitHubReads, GitHubRepoReads, Kinds, Permissions, RetryPolicy, Token};
 use support::Responder;
 
 const TOKEN: &str = "ghs_r3p0T0kenV4lue";
@@ -46,6 +46,11 @@ fn client(responder: &Responder) -> GitHubReads {
         Login("mintswarm-dev[bot]".into()),
     )
     .unwrap()
+    // A single attempt per read, so each read takes one scripted reply.
+    .with_retry(RetryPolicy {
+        attempts: 1,
+        ..RetryPolicy::default()
+    })
 }
 
 fn path(text: &str) -> RepoPath {
@@ -444,6 +449,39 @@ async fn a_refused_credential_or_permission_is_inaccessible() {
             assert!(!error.is_rate_limited());
         }
     }
+}
+
+#[tokio::test]
+async fn a_server_error_left_after_the_retries_is_transport() {
+    let responder = Responder::start().await;
+    responder.reply(502, "<html>Bad Gateway</html>");
+    let reads = client(&responder);
+    let token = token();
+    let error = reads
+        .repo_reads(&token)
+        .read_file(&commit(), &path(CONFIG_PATH))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RepoReadError::Transport(_)), "{error:?}");
+    assert!(!error.to_string().contains(TOKEN));
+    assert_eq!(responder.requests().len(), 1);
+
+    // With more attempts, a server error followed by the file reads the file.
+    let responder = Responder::start().await;
+    responder.reply(500, "");
+    responder.reply(200, CONFIG_CONTENTS);
+    let reads = client(&responder).with_retry(RetryPolicy {
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+        ..RetryPolicy::default()
+    });
+    let bytes = reads
+        .repo_reads(&token)
+        .read_file(&commit(), &path(CONFIG_PATH))
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_deref(), Some(CONFIG));
+    assert_eq!(responder.requests().len(), 2);
 }
 
 #[tokio::test]

@@ -8,13 +8,14 @@
 //! A [`FieldClient`] is bound to one repository and keeps an ETag cache across passes. A
 //! [`FieldPass`] is one pass over issues with one token: every role of an issue is read from one
 //! response per resource, and the next pass revalidates it with `If-None-Match`. Field-class
-//! refusals become [`FieldError::Field`] and everything else [`FieldError::Transport`], in
-//! [`classify`] only.
+//! refusals become [`FieldError::Field`] and every other refusal [`FieldError::Transport`], in
+//! [`classify`] only; transient failures are the retry layer's, and end in
+//! [`FieldError::Exhausted`] when its retries run out.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -22,9 +23,10 @@ use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
 use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::retry::RetryPolicy;
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
-use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
+use crate::rest::{ClientError, Reply, Rest, check_names, error_text, path_segment};
 use crate::secret::Token;
 
 /// The per-issue resources a pass reads.
@@ -50,15 +52,22 @@ pub struct FieldClient {
 
 impl FieldClient {
     /// A client for `owner/repo` on the API at `api_base` (normally
-    /// [`GITHUB_API`](crate::GITHUB_API)).
+    /// [`GITHUB_API`](crate::GITHUB_API)), retrying with the default [`RetryPolicy`].
     pub fn new(api_base: &str, owner: &str, repo: &str) -> Result<Self, ClientError> {
         check_names(owner, repo)?;
         Ok(Self {
-            rest: Rest::new(api_base)?,
+            rest: Rest::new(api_base, RetryPolicy::default())?,
             owner: owner.to_owned(),
             repo: repo.to_owned(),
             etags: Mutex::new(EtagCache::new(ETAG_CACHE_LIMIT)),
         })
+    }
+
+    /// The client retrying with `policy` in place of the default.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.rest = self.rest.with_policy(policy);
+        self
     }
 
     /// A pass over issues with `token`, which must allow what the pass does: reading issues and
@@ -167,9 +176,14 @@ impl FieldPass<'_> {
     ) -> Result<(), FieldError> {
         let path = self.client.path(issue, Resource::FieldValues);
         let Some(value) = option else {
-            let (method, path) = clear_request(&path, field_id);
-            let reply = self.send(method, &path, None).await?;
-            return if reply.status.is_success() {
+            let reply = self
+                .client
+                .rest
+                .delete(&clear_path(&path, field_id), &self.token)
+                .await?;
+            // A 404 after an attempt that may have landed is that attempt's clear.
+            let gone = reply.status == StatusCode::NOT_FOUND && reply.after_ambiguous;
+            return if reply.status.is_success() || gone {
                 Ok(())
             } else {
                 Err(classify(&reply, Op::Write))
@@ -178,7 +192,12 @@ impl FieldPass<'_> {
         let body = serde_json::json!({
             "issue_field_values": [{"field_id": field_id, "value": value}],
         });
-        let reply = self.send(Method::POST, &path, Some(body)).await?;
+        // Setting a field to a value leaves it at that value however often it is repeated.
+        let reply = self
+            .client
+            .rest
+            .post_idempotent(&path, &self.token, &body)
+            .await?;
         if !reply.status.is_success() {
             return Err(classify(&reply, Op::Write));
         }
@@ -187,8 +206,9 @@ impl FieldPass<'_> {
         match resolve_values(&reply.json()?, name, field_id, options, &reply.endpoint) {
             Ok(FieldRead::Value(got)) if got.name == value => Ok(()),
             Err(
-                error
-                @ (FieldError::Transport(_) | FieldError::Field(FieldFinding::FieldRecreated)),
+                error @ (FieldError::Transport(_)
+                | FieldError::Exhausted(_)
+                | FieldError::Field(FieldFinding::FieldRecreated)),
             ) => Err(error),
             _ => Err(FieldError::Field(FieldFinding::WriteRejected)),
         }
@@ -218,17 +238,25 @@ impl FieldPass<'_> {
         let labels_path = format!("{}/labels", self.client.issue_path(issue));
         if let Some(option) = option.filter(|_| !present) {
             let body = serde_json::json!({ "labels": [pattern.label(option)] });
-            let reply = self.send(Method::POST, &labels_path, Some(body)).await?;
+            // Adding a label the issue already has leaves its labels as they are, so a repeat
+            // adds nothing.
+            let reply = self
+                .client
+                .rest
+                .post_idempotent(&labels_path, &self.token, &body)
+                .await?;
             if !reply.status.is_success() {
                 return Err(classify(&reply, Op::Write));
             }
         }
         for label in stale {
             let path = format!("{labels_path}/{}", path_segment(&label));
-            let reply = self.send(Method::DELETE, &path, None).await?;
-            // A label someone else removed meanwhile is already where the write wants it.
+            let reply = self.client.rest.delete(&path, &self.token).await?;
+            // A label someone else removed meanwhile, or an earlier attempt that may have landed
+            // removed, is already where the write wants it.
             let gone = reply.status == StatusCode::NOT_FOUND
-                && error_text(&reply.body).contains("label does not exist");
+                && (reply.after_ambiguous
+                    || error_text(&reply.body).contains("label does not exist"));
             if !reply.status.is_success() && !gone {
                 return Err(classify(&reply, Op::Write));
             }
@@ -270,11 +298,9 @@ impl FieldPass<'_> {
         let reply = self
             .client
             .rest
-            .send(
-                Method::GET,
+            .get(
                 &path,
                 &self.token,
-                None,
                 cached.as_ref().map(|(etag, _)| etag.as_str()),
             )
             .await?;
@@ -298,18 +324,6 @@ impl FieldPass<'_> {
         Ok(body)
     }
 
-    async fn send(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<Value>,
-    ) -> Result<Reply, FieldError> {
-        self.client
-            .rest
-            .send(method, path, &self.token, body, None)
-            .await
-    }
-
     /// Drops what this pass and the client hold for `issue`, after a write changed it.
     async fn forget(&self, issue: u64) {
         let mut memo = self.memo.lock().await;
@@ -327,9 +341,9 @@ fn resolved(field_id: Option<u64>) -> Result<u64, FieldError> {
     field_id.ok_or(FieldError::Field(FieldFinding::FieldMissing))
 }
 
-/// The request that clears a field on an issue, given the issue's `issue-field-values` path.
-fn clear_request(values_path: &str, field_id: u64) -> (Method, String) {
-    (Method::DELETE, format!("{values_path}/{field_id}"))
+/// The path a DELETE clears a field on an issue at, given the issue's `issue-field-values` path.
+fn clear_path(values_path: &str, field_id: u64) -> String {
+    format!("{values_path}/{field_id}")
 }
 
 /// Resolves a field against an issue's `issue-field-values` entries: the entry with the field's
@@ -432,18 +446,13 @@ pub(crate) enum Op {
     Write,
 }
 
-/// The error for a reply that is not a success: the only place statuses become errors.
+/// The error for a reply that is not a success: the only place statuses become errors. Rate
+/// limits and server errors never get here, as the retry layer retries them and ends in
+/// [`FieldError::Exhausted`]; any such reply would be [`FieldError::Transport`].
 pub(crate) fn classify(reply: &Reply, op: Op) -> FieldError {
     let transport = || FieldError::Transport(format!("{}: {}", reply.endpoint, reply.status));
     let text = error_text(&reply.body);
-    let status = reply.status;
-    if reply.rate_limited
-        || status.is_server_error()
-        || (matches!(status.as_u16(), 403 | 429) && text.contains("rate limit"))
-    {
-        return transport();
-    }
-    match status.as_u16() {
+    match reply.status.as_u16() {
         404 | 422 if text.contains("option") => FieldError::Field(FieldFinding::OptionMissing),
         404 | 422 if text.contains("field") => FieldError::Field(FieldFinding::FieldMissing),
         422 if op == Op::Write => FieldError::Field(FieldFinding::WriteRejected),
@@ -453,30 +462,6 @@ pub(crate) fn classify(reply: &Reply, op: Op) -> FieldError {
         }),
         _ => transport(),
     }
-}
-
-/// The lower-cased `message`, `errors[].message` and `errors[].field` of an error body.
-fn error_text(body: &[u8]) -> String {
-    let Ok(body) = serde_json::from_slice::<Value>(body) else {
-        return String::new();
-    };
-    let mut parts = Vec::new();
-    if let Some(message) = body.get("message").and_then(Value::as_str) {
-        parts.push(message);
-    }
-    for error in body
-        .get("errors")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        for key in ["message", "field"] {
-            if let Some(text) = error.get(key).and_then(Value::as_str) {
-                parts.push(text);
-            }
-        }
-    }
-    parts.join("\n").to_lowercase()
 }
 
 #[cfg(test)]
@@ -491,15 +476,17 @@ mod tests {
     use crate::etag::EtagCache;
     use crate::rest::Reply;
 
-    fn reply(status: u16, rate_limited: bool, body: &str) -> Reply {
+    fn reply(status: u16, body: &str) -> Reply {
         Reply {
             endpoint: String::from("POST /repos/o/r/issues/7/issue-field-values"),
             status: StatusCode::from_u16(status).unwrap(),
             etag: None,
-            rate_limited,
+            rate_limited: false,
             retry_after: None,
+            reset_wait: None,
             next_page: None,
             body: body.as_bytes().to_vec(),
+            after_ambiguous: false,
         }
     }
 
@@ -512,23 +499,14 @@ mod tests {
     }
 
     #[test]
-    fn rate_limits_and_server_errors_are_transport() {
+    fn server_errors_that_reach_it_are_transport() {
+        // The retry layer keeps them away; one that got here would still not be drift.
         for op in [Op::Read, Op::Write] {
-            assert!(is_transport(&classify(&reply(429, true, ""), op)));
-            assert!(is_transport(&classify(&reply(403, true, ""), op)));
-            assert!(is_transport(&classify(
-                &reply(
-                    403,
-                    false,
-                    r#"{"message":"You have exceeded a secondary rate limit"}"#
-                ),
-                op
-            )));
             for status in [500, 502, 503] {
-                assert!(is_transport(&classify(&reply(status, false, ""), op)));
+                assert!(is_transport(&classify(&reply(status, ""), op)));
             }
         }
-        let error = classify(&reply(502, false, ""), Op::Write);
+        let error = classify(&reply(502, ""), Op::Write);
         assert_eq!(
             error.to_string(),
             "transport error: POST /repos/o/r/issues/7/issue-field-values: 502 Bad Gateway"
@@ -540,19 +518,16 @@ mod tests {
         let body = r#"{"message":"Validation Failed","errors":[
             {"field":"value","message":"Option 'XXL' does not exist for field Effort"}]}"#;
         assert_eq!(
-            classify(&reply(422, false, body), Op::Write),
+            classify(&reply(422, body), Op::Write),
             field(FieldFinding::OptionMissing)
         );
         assert_eq!(
-            classify(
-                &reply(404, false, r#"{"message":"Field not found"}"#),
-                Op::Read
-            ),
+            classify(&reply(404, r#"{"message":"Field not found"}"#), Op::Read),
             field(FieldFinding::FieldMissing)
         );
         let body = r#"{"message":"Validation Failed","errors":[{"field":"field_id"}]}"#;
         assert_eq!(
-            classify(&reply(422, false, body), Op::Write),
+            classify(&reply(422, body), Op::Write),
             field(FieldFinding::FieldMissing)
         );
     }
@@ -561,26 +536,26 @@ mod tests {
     fn other_refusals_split_by_status_and_operation() {
         let body = r#"{"message":"Validation Failed"}"#;
         assert_eq!(
-            classify(&reply(422, false, body), Op::Write),
+            classify(&reply(422, body), Op::Write),
             field(FieldFinding::WriteRejected)
         );
-        assert!(is_transport(&classify(&reply(422, false, body), Op::Read)));
+        assert!(is_transport(&classify(&reply(422, body), Op::Read)));
         let forbidden = r#"{"message":"Resource not accessible by integration"}"#;
         assert_eq!(
-            classify(&reply(403, false, forbidden), Op::Write),
+            classify(&reply(403, forbidden), Op::Write),
             field(FieldFinding::WriteRejected)
         );
         assert_eq!(
-            classify(&reply(403, false, forbidden), Op::Read),
+            classify(&reply(403, forbidden), Op::Read),
             field(FieldFinding::FieldMissing)
         );
         for op in [Op::Read, Op::Write] {
             assert!(is_transport(&classify(
-                &reply(404, false, r#"{"message":"Not Found"}"#),
+                &reply(404, r#"{"message":"Not Found"}"#),
                 op
             )));
-            assert!(is_transport(&classify(&reply(401, false, ""), op)));
-            assert!(is_transport(&classify(&reply(409, false, "not json"), op)));
+            assert!(is_transport(&classify(&reply(401, ""), op)));
+            assert!(is_transport(&classify(&reply(409, "not json"), op)));
         }
     }
 

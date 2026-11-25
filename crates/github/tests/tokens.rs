@@ -8,9 +8,10 @@ mod support;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
-use mintswarm_github::{Clock, Permissions, TokenClient, TokenError};
+use mintswarm_github::{Clock, Permissions, RetryPolicy, TokenClient, TokenError};
 use serde::Deserialize;
 use support::{Capture, Fakes, Home, Responder};
 
@@ -61,7 +62,12 @@ async fn setup() -> Setup {
         home.env.clone(),
         clock,
     )
-    .unwrap();
+    .unwrap()
+    // A single attempt per request, so each request takes one scripted reply.
+    .with_retry(RetryPolicy {
+        attempts: 1,
+        ..RetryPolicy::default()
+    });
     Setup {
         client,
         server,
@@ -345,4 +351,41 @@ async fn an_error_response_is_reported_without_its_body() {
         assert!(!text.contains("ghs_"), "{text}");
         assert!(!text.contains("Validation failed"), "{text}");
     }
+}
+
+#[tokio::test]
+async fn a_server_error_on_mint_is_retried() {
+    let setup = setup().await;
+    let client = setup.client.with_retry(RetryPolicy {
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+        ..RetryPolicy::default()
+    });
+    setup.server.reply(500, "");
+    setup.server.reply(200, r#"{"id": 4242}"#);
+    setup.server.reply(502, "");
+    setup.server.reply(
+        201,
+        format!(r#"{{"token": "{TOKEN}", "expires_at": "{EXPIRES_AT}"}}"#),
+    );
+    let token = client
+        .token("mintswarm", "mintswarm", &contents_read())
+        .await
+        .unwrap();
+    assert_eq!(token.expose(), TOKEN);
+    let requests: Vec<_> = setup
+        .server
+        .requests()
+        .into_iter()
+        .map(|request| (request.method, request.path))
+        .collect();
+    let lookup = (
+        String::from("GET"),
+        String::from("/repos/mintswarm/mintswarm/installation"),
+    );
+    let mint = (
+        String::from("POST"),
+        String::from("/app/installations/4242/access_tokens"),
+    );
+    assert_eq!(requests, [lookup.clone(), lookup, mint.clone(), mint]);
 }

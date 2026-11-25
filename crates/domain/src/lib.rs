@@ -11,6 +11,7 @@ pub mod priority;
 pub mod probe;
 pub mod question;
 pub mod records;
+pub mod retry;
 pub mod role;
 pub mod scale;
 pub mod tracker;
