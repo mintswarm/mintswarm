@@ -203,7 +203,8 @@ pub trait Vcs: Send + Sync {
 
     /// The commits of a range in topological order, children before their parents. With paths,
     /// only the commits whose changes touch one of them, each with those changes alone: a change
-    /// touches a path when its path is the path or lies under it as a directory.
+    /// touches a path when its path is the path or lies under it as a directory. A path ending in
+    /// `/` is refused, as `diff` refuses it.
     fn log(&self, revs: &RevRange, paths: &[RepoPath]) -> Result<Vec<CommitInfo>, Self::Error>;
 
     /// One commit, as `log` lists it without paths.
@@ -217,7 +218,8 @@ pub trait Vcs: Send + Sync {
     fn is_ancestor(&self, a: &RevId, b: &RevId) -> Result<bool, Self::Error>;
 
     /// The changes from one commit to another, limited to the paths and the trees under them;
-    /// an empty `paths` means the whole tree.
+    /// an empty `paths` means the whole tree. A path ending in `/` is refused, as `log` refuses
+    /// it.
     fn diff(
         &self,
         base: &RevId,

@@ -1,5 +1,5 @@
-//! The read operations: `resolve`, ranges, blobs, trees, logs, merge bases and ancestry. Revisions are
-//! full ids only; no revision syntax reaches git.
+//! The read operations: `resolve`, ranges, blobs, trees, logs, merge bases and ancestry.
+//! Revisions are full ids only; no revision syntax reaches git.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -79,11 +79,12 @@ pub(super) fn commit<'a>(store: &GitStore, rev: &'a RevId) -> Result<&'a str, Gi
 
 /// A path as one command-line argument, unless it cannot be one.
 fn path_arg(path: &RepoPath) -> Option<&OsStr> {
-    (!path.0.is_empty() && !path.0.contains(&0)).then(|| OsStr::from_bytes(&path.0))
+    (!path.0.is_empty() && !path.0.contains(&0) && !path.0.ends_with(b"/"))
+        .then(|| OsStr::from_bytes(&path.0))
 }
 
-/// The paths `command` limits itself to, as command-line arguments; an empty path or one with a
-/// NUL byte is refused.
+/// The paths `command` limits itself to, as command-line arguments; an empty path, one with a
+/// NUL byte or one ending in `/` is refused.
 pub(super) fn path_args<'a>(
     paths: &'a [RepoPath],
     command: &str,
@@ -93,7 +94,7 @@ pub(super) fn path_args<'a>(
         .map(|path| {
             path_arg(path).ok_or_else(|| GitError::Parse {
                 command: command.to_owned(),
-                detail: "an empty path or one with a NUL byte".to_owned(),
+                detail: "an empty path, one with a NUL byte or one ending in `/`".to_owned(),
             })
         })
         .collect()

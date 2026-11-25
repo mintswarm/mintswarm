@@ -184,7 +184,7 @@ fn diff_limits_to_paths() {
     // The whole tree without paths.
     assert_eq!(limited(&[]).unwrap().files.len(), 10);
 
-    for refused in [path(b""), path(b"a\0b")] {
+    for refused in [path(b""), path(b"a\0b"), path(b"dir/")] {
         assert!(matches!(
             limited(&[path(b"keep.txt"), refused]),
             Err(GitError::Parse { .. })
@@ -432,13 +432,15 @@ fn commit_records_follow_the_first_parent_in_topological_order() {
             .filter(|id| [&merge, &main, &side, &root].contains(&id))
             .collect::<Vec<_>>()
     );
-    for nothing in [path(b"di"), path(b"dir/"), path(b"*"), path(b"READ")] {
+    for nothing in [path(b"di"), path(b"*"), path(b"READ")] {
         assert!(store.log(&all, &[nothing]).unwrap().is_empty());
     }
-    assert!(matches!(
-        store.log(&all, &[path(b"")]),
-        Err(GitError::Parse { .. })
-    ));
+    for refused in [path(b""), path(b"dir/")] {
+        assert!(matches!(
+            store.log(&all, &[refused]),
+            Err(GitError::Parse { .. })
+        ));
+    }
 
     // A range.
     let range = RevRange {
