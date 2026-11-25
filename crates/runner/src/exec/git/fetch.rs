@@ -8,7 +8,8 @@ use mintswarm_domain::ids::RevId;
 use mintswarm_domain::plane::Credential;
 use mintswarm_domain::vcs::{FetchReport, FetchedRef, RefOrId, Remote};
 
-use super::env::success;
+use super::env::{failure, success};
+use super::read::{id_text, resolve};
 use super::{GitError, GitStore};
 
 /// Where fetched refs go: `<FETCHED>/<remote>/heads/…`, `<FETCHED>/<remote>/tags/…` and
@@ -82,7 +83,7 @@ pub(super) fn credential_command(
     }
 }
 
-/// The fetched refs, in the order of `targets`.
+/// The fetched refs, in the order of `targets`, each with the commit it ends at.
 fn read_back(store: &GitStore, targets: &[String]) -> Result<FetchReport, GitError> {
     let mut args = vec!["for-each-ref", "--format=%(refname)%00%(objectname)"];
     args.extend(targets.iter().map(String::as_str));
@@ -107,14 +108,38 @@ fn read_back(store: &GitStore, targets: &[String]) -> Result<FetchReport, GitErr
             found
                 .iter()
                 .find(|(name, _)| name == target)
-                .map(|(name, id)| FetchedRef {
-                    name: name.clone(),
-                    id: RevId(id.clone()),
-                })
                 .ok_or_else(|| GitError::NotFound(target.clone()))
+                .and_then(|(name, id)| {
+                    Ok(FetchedRef {
+                        name: name.clone(),
+                        id: peel(store, name, id)?,
+                    })
+                })
         })
         .collect::<Result<_, _>>()?;
     Ok(FetchReport { refs })
+}
+
+/// The commit the object `id` of the fetched ref `name` ends at: the object itself, or what an
+/// annotated tag peels to. A ref that ends at anything else is deleted and refused.
+fn peel(store: &GitStore, name: &str, id: &str) -> Result<RevId, GitError> {
+    let id = id_text(store, id.as_bytes(), "for-each-ref")?;
+    let spec = format!("{id}^{{commit}}");
+    let output = store.output(
+        store.command(["rev-parse", "--verify", "--quiet", spec.as_str()]),
+        "rev-parse",
+    )?;
+    match output.status.code() {
+        Some(0) => {
+            let commit = id_text(store, output.stdout.trim_ascii_end(), "rev-parse")?;
+            resolve(store, &commit)
+        }
+        Some(1) => {
+            store.git(["update-ref", "-d", name, id.as_str()])?;
+            Err(GitError::NotCommit(name.to_owned()))
+        }
+        _ => Err(failure("rev-parse", &output)),
+    }
 }
 
 /// Refuse any URL but `https://host/path` without userinfo, query or fragment; `file:///path`

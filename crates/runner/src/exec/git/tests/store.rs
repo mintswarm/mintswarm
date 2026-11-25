@@ -302,6 +302,61 @@ fn fetch_keeps_credential_out_of_argv_config_and_urls() {
 }
 
 #[test]
+fn fetch_peels_tags_and_refuses_non_commits() {
+    let fx = Fixture::new();
+    let store = fx.store("peeled");
+    let tag = RevId(text(&fixture_git(
+        &fx.source,
+        &["rev-parse", "refs/tags/v2"],
+    )));
+    assert_ne!(tag, fx.main);
+    let wants = [
+        RefOrId::Ref("refs/tags/v2".to_owned()),
+        RefOrId::Ref("refs/tags/v2-outer".to_owned()),
+        RefOrId::Id(tag.clone()),
+    ];
+    let report = store.fetch(&fx.remote(), &wants, None).unwrap();
+    for fetched in &report.refs {
+        assert_eq!(fetched.id, fx.main, "{}", fetched.name);
+        assert_eq!(store.resolve(&fetched.id.0).unwrap(), fx.main);
+    }
+    assert_eq!(report.refs.len(), 3);
+
+    let base_tree = text(&fixture_git(
+        &fx.source,
+        &["rev-parse", &format!("{}^{{tree}}", fx.base.0)],
+    ));
+    let readme = text(&fixture_git(
+        &fx.source,
+        &["rev-parse", &format!("{}:README", fx.base.0)],
+    ));
+    let non_commits = [
+        RefOrId::Ref("refs/tags/tree".to_owned()),
+        RefOrId::Id(RevId(base_tree)),
+        RefOrId::Id(RevId(readme)),
+    ];
+    for want in non_commits {
+        assert!(
+            matches!(
+                store.fetch(&fx.remote(), std::slice::from_ref(&want), None),
+                Err(GitError::NotCommit(_))
+            ),
+            "{want:?}"
+        );
+    }
+    // The refused refs are deleted; the three tag refs stay.
+    let left = fixture_git(
+        store.path(),
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/mintswarm/fetched",
+        ],
+    );
+    assert_eq!(text(&left).lines().count(), 3);
+}
+
+#[test]
 fn credential_helper_answers_only_github_https() {
     let fx = Fixture::new();
     let store = fx.store("helper");

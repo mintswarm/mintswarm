@@ -13,6 +13,13 @@ use super::{GitError, GitStore};
 /// The fields of one `log` record, as `LOG_FORMAT` writes them.
 const LOG_FIELDS: usize = 7;
 const LOG_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%cI%x00%s%x00%b";
+/// Settings `log` gets over the store's own config: no signatures in the stream, UTF-8 text,
+/// and the same commits for one path as for several.
+const LOG_CONFIG: &[&str] = &[
+    "log.showSignature=false",
+    "i18n.logOutputEncoding=UTF-8",
+    "log.follow=false",
+];
 
 impl GitStore {
     /// Whether `text` is a full id in the store's object format, other than the zero id.
@@ -183,7 +190,7 @@ pub(super) fn list_tree(store: &GitStore, rev: &RevId) -> Result<Vec<TreeEntry>,
 }
 
 /// An id git wrote, checked to be a full id.
-fn id_text(store: &GitStore, bytes: &[u8], command: &str) -> Result<String, GitError> {
+pub(super) fn id_text(store: &GitStore, bytes: &[u8], command: &str) -> Result<String, GitError> {
     let text = String::from_utf8_lossy(bytes).into_owned();
     if store.is_full_id(&text) {
         Ok(text)
@@ -217,7 +224,10 @@ pub(super) fn log(
         })?;
         args.push(arg.to_owned());
     }
-    let out = store.git(&args)?;
+    let out = success(
+        "log",
+        store.output(store.command_with(LOG_CONFIG, &args), "log")?,
+    )?;
     let Some(out) = out.strip_suffix(b"\0") else {
         return if out.is_empty() {
             Ok(Vec::new())

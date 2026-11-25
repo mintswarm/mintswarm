@@ -222,6 +222,36 @@ fn log_lists_commits_newest_first() {
 }
 
 #[test]
+fn log_ignores_the_store_log_config() {
+    let fx = Fixture::new();
+    let store = fx.fetched_store("log-config");
+    let all = RevRange {
+        from: None,
+        to: fx.orphan.clone(),
+    };
+    let side = RevRange {
+        from: None,
+        to: fx.side.clone(),
+    };
+    let observe = || {
+        (
+            store.log(&all, &[]).unwrap(),
+            store.log(&side, &[path(b"keep.txt")]).unwrap(),
+        )
+    };
+    let baseline = observe();
+    assert_eq!(baseline.0[0].subject, "unrelated café");
+    for (key, value) in [
+        ("log.showSignature", "true"),
+        ("i18n.logOutputEncoding", "ISO-8859-1"),
+        ("log.follow", "true"),
+    ] {
+        super::fixture_git(store.path(), &["config", key, value]);
+    }
+    assert_eq!(observe(), baseline);
+}
+
+#[test]
 fn merge_base_finds_the_common_ancestor() {
     let fx = Fixture::new();
     let store = fx.fetched_store("base");

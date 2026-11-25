@@ -89,7 +89,8 @@ pub(super) fn fixture_git<S: AsRef<OsStr>>(git_dir: &Path, args: &[S]) -> Vec<u8
 pub(super) struct Fixture {
     pub dir: TempDir,
     pub source: PathBuf,
-    /// The root commit, also tag `v1`.
+    /// The root commit, also the lightweight tag `v1`. The annotated tag `v2` and the tag
+    /// `v2-outer` of `v2` end at `main`; the annotated tag `tree` is of a tree.
     pub base: RevId,
     /// Branch `main`: one commit on `base`, changing `README`.
     pub main: RevId,
@@ -97,7 +98,7 @@ pub(super) struct Fixture {
     pub side: RevId,
     /// Branch `merged`: `side` merged with `main`.
     pub merged: RevId,
-    /// Branch `orphan`: a root commit sharing no history.
+    /// Branch `orphan`: a root commit sharing no history, with a non-ASCII subject.
     pub orphan: RevId,
 }
 
@@ -213,7 +214,7 @@ impl Fixture {
         let orphan = commit(
             &tree(&[file(b"other", b"o\n")]),
             &[],
-            "unrelated",
+            "unrelated café",
             1_700_000_400,
         );
 
@@ -226,6 +227,25 @@ impl Fixture {
         ] {
             fixture_git(&source, &["update-ref", name, &id.0]);
         }
+        let tag = |name: &str, kind: &str, id: &str| {
+            let input = format!(
+                "object {id}\ntype {kind}\ntag {name}\n\
+                 tagger Ada Lovelace <ada@example.com> 1700000500 +0000\n\n{name}\n"
+            );
+            let tag = text(&run_fixture(
+                fixture_command(Some(&source)),
+                &["mktag"],
+                input.as_bytes(),
+            ));
+            fixture_git(&source, &["update-ref", &format!("refs/tags/{name}"), &tag]);
+        };
+        tag("v2", "commit", &main.0);
+        tag(
+            "v2-outer",
+            "tag",
+            &text(&fixture_git(&source, &["rev-parse", "refs/tags/v2"])),
+        );
+        tag("tree", "tree", &nested);
         fixture_git(&source, &["symbolic-ref", "HEAD", "refs/heads/side"]);
         Fixture {
             dir,
@@ -348,6 +368,14 @@ const HOSTILE: &[&str] = &[
     "GIT_NO_REPLACE_OBJECTS",
     "GIT_NO_LAZY_FETCH",
     "GIT_TRACE",
+    "GIT_DEFAULT_REF_FORMAT",
+    "GIT_SMART_HTTP",
+    "GIT_SSL_VERSION",
+    "GIT_SSL_CIPHER_LIST",
+    "GIT_SSL_NO_VERIFY",
+    "GIT_HTTP_PROXY_AUTHMETHOD",
+    "GIT_HTTP_USER_AGENT",
+    "GIT_HTTP_LOW_SPEED_LIMIT",
 ];
 
 #[test]
@@ -411,6 +439,23 @@ fn hostile_parent_environment_has_no_effect() {
             &format!("refs/replace/{}", fx.side.0),
             &fx.main.0,
         ],
+    );
+    // Without the adapter's environment git reads the replacement; the adapter does not.
+    let replaced = format!("{}:README", fx.side.0);
+    assert_eq!(
+        fixture_git(store.path(), &["cat-file", "blob", &replaced]),
+        b"hello main\n"
+    );
+    assert_eq!(
+        store.read_blob(&fx.side, &path(b"README")).unwrap(),
+        Some(b"hello\n".to_vec())
+    );
+    assert!(
+        store
+            .list_tree(&fx.side)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.path == path(b"alias"))
     );
     let baseline = observe(&store, &fx);
 
@@ -482,6 +527,14 @@ fn hostile_parent_environment_has_no_effect() {
         ("GIT_GRAFT_FILE", graft.into()),
         ("GIT_NO_LAZY_FETCH", os("0")),
         ("GIT_TRACE", dir.join("trace").into()),
+        ("GIT_DEFAULT_REF_FORMAT", os("reftable")),
+        ("GIT_SMART_HTTP", os("0")),
+        ("GIT_SSL_VERSION", os("tlsv1.0")),
+        ("GIT_SSL_CIPHER_LIST", os("NULL")),
+        ("GIT_SSL_NO_VERIFY", os("1")),
+        ("GIT_HTTP_PROXY_AUTHMETHOD", os("basic")),
+        ("GIT_HTTP_USER_AGENT", os("hostile")),
+        ("GIT_HTTP_LOW_SPEED_LIMIT", os("1")),
         ("MSW_TEST_GIT_STORE", store.path().into()),
         ("MSW_TEST_GIT_DIR", dir.into()),
     ];
@@ -526,6 +579,11 @@ fn hostile_child(done: &Path) {
     ));
     assert!(!dir.join("external-ran").exists(), "the external diff ran");
     assert!(!dir.join("trace").exists(), "git traced to a file");
+    // A store created here still has the files ref format.
+    let created = super::store_path(&dir.join("state"), "created").unwrap();
+    GitStore::create(&created, &git_probe(Some("2.45.0"))).unwrap();
+    assert!(created.join("refs/heads").is_dir());
+    assert!(!created.join("reftable").exists());
 
     let command = store.command(["status"]);
     let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();

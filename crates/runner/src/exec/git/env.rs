@@ -35,6 +35,7 @@ pub(super) const DROPPED_ENV: &[&str] = &[
     "GIT_REPLACE_REF_BASE",
     "GIT_ATTR_SOURCE",
     "GIT_DEFAULT_HASH",
+    "GIT_DEFAULT_REF_FORMAT",
     "GIT_TEMPLATE_DIR",
     // Tracing, which could write a request or a credential to a file.
     "GIT_CURL_VERBOSE",
@@ -44,9 +45,7 @@ pub(super) const DROPPED_ENV: &[&str] = &[
     "GIT_SSH",
     "GIT_SSH_COMMAND",
     "GIT_PROTOCOL_FROM_USER",
-    "GIT_SSL_NO_VERIFY",
-    "GIT_SSL_CAINFO",
-    "GIT_SSL_CAPATH",
+    "GIT_SMART_HTTP",
     // Which programs git runs.
     "GIT_EXEC_PATH",
     // Pathspec magic.
@@ -57,9 +56,15 @@ pub(super) const DROPPED_ENV: &[&str] = &[
     "MSW_TOKEN",
 ];
 
-/// Prefixes of further variables removed from every git command's environment.
-pub(super) const DROPPED_ENV_PREFIXES: &[&str] =
-    &["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "GIT_TRACE"];
+/// Prefixes of further variables removed from every git command's environment: configuration,
+/// tracing, and the TLS and HTTP settings of the connection that carries the credential.
+pub(super) const DROPPED_ENV_PREFIXES: &[&str] = &[
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_TRACE",
+    "GIT_SSL_",
+    "GIT_HTTP_",
+];
 
 /// Variables every git command gets, whatever the parent environment holds.
 pub(super) const FIXED_ENV: &[(&str, &str)] = &[

@@ -38,7 +38,12 @@ pub enum GitError {
     },
     /// The store's directory does not have mode 0700.
     #[error("the store {path} has mode {mode:o}, not 700")]
-    Mode { path: PathBuf, mode: u32 },
+    Mode {
+        /// The store's directory.
+        path: PathBuf,
+        /// The mode it has.
+        mode: u32,
+    },
     /// The store is not a bare repository.
     #[error("the store {0} is not a bare repository")]
     NotBare(PathBuf),
@@ -47,7 +52,12 @@ pub enum GitError {
     Shallow(PathBuf),
     /// The store is a partial clone, so a missing object could be fetched lazily.
     #[error("the store {path} is a partial clone: `{key}` is set")]
-    Partial { path: PathBuf, key: String },
+    Partial {
+        /// The store's directory.
+        path: PathBuf,
+        /// The config key that makes it one.
+        key: String,
+    },
     /// The store borrows objects from another repository.
     #[error("the store {0} has a non-empty objects/info/alternates")]
     Alternates(PathBuf),
@@ -63,6 +73,9 @@ pub enum GitError {
     /// A remote URL the adapter does not fetch from.
     #[error("the remote URL is refused: {0}")]
     Url(String),
+    /// A fetched ref or id that does not end at a commit, such as a tree, a blob or a tag of one.
+    #[error("`{0}` is not a commit")]
+    NotCommit(String),
     /// A ref or remote name the adapter does not fetch.
     #[error("`{0}` is not a full branch or tag name")]
     RefName(String),
@@ -81,11 +94,18 @@ pub enum GitError {
     },
     /// A git command's output was not what the adapter expects.
     #[error("git {command} gave unexpected output: {detail}")]
-    Parse { command: String, detail: String },
+    Parse {
+        /// The git subcommand.
+        command: String,
+        /// What was unexpected.
+        detail: String,
+    },
     /// A file or process operation failed.
     #[error("{context}: {source}")]
     Io {
+        /// What the adapter was doing.
         context: String,
+        /// The underlying error.
         #[source]
         source: std::io::Error,
     },
