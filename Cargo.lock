@@ -1219,8 +1219,17 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "hmac",
  "mintswarm-core",
+ "mintswarm-github",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
  "tokio",
+ "tokio-stream",
+ "tower",
 ]
 
 [[package]]
