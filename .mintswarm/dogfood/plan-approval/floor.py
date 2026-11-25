@@ -77,6 +77,14 @@ run exit 2, which counts as a human decision.
   declared packages (the assess job's .mintswarm/job/outputs/screen.json,
   from .mintswarm/dogfood/dependencies/screen.py), read as UTF-8. The floor
   stays offline: it only reads the record the session made.
+- The result records of the analysis and the plan, read as UTF-8 when they
+  exist: the file beside the PATH given to --analysis, and the one beside
+  the plan's PATH, each named as .mintswarm/dogfood/save-output.py names
+  it (`<name>.md` becomes `<name>.result.json`, any other name gets
+  `.result.json` appended). A document without one is read from its
+  Markdown alone, the transition for documents written before the records.
+  The records are not bound in the verdict: decision.py reads them again
+  from the same place and recomputes the rules.
 
 Sections of the documents and the plan are found outside fenced blocks: a
 fence opens on a line whose first non-space characters are 3 or more
@@ -160,15 +168,21 @@ new dependency's `manifest`.
   tests-none                 gates.tests is `none` and a declared path is
                              outside the `docs` component's paths
   overridden-assumptions     overridden_assumptions is not empty
-  blocking-questions         the `## Questions` section of the analysis or
-                             of the plan, which runs to the next `## `
-                             heading, has a line starting with
-                             `- **Blocking:**` after any spaces or tabs
-                             (the reason names the question), a `# `
-                             heading, or any other line at column 0 that
-                             does not start with
-                             `- **Non-blocking (assumed):**`; other
-                             indented lines are skipped; no --analysis
+  blocking-questions         for the analysis and for the plan: the
+                             `## Questions` section, which runs to the next
+                             `## ` heading, has a `# ` heading or a line
+                             at column 0 that does not start with a marker
+                             (below); with a usable result record (below),
+                             each of its questions whose kind is
+                             `must_decide` or `recommended` (the question
+                             named), and bullets whose counts disagree with
+                             the record's, a line with no known marker
+                             counted as unknown (below, both sets of counts
+                             named); with an unusable one, its fixed cause;
+                             without one, each line starting with a
+                             blocking marker after any spaces or tabs (the
+                             question named); other indented lines are
+                             skipped; no --analysis
   acceptance-criteria        the criteria the first cells of the plan's
                              `## Verification` table quote are not the
                              issue's `## Acceptance criteria`, compared as
@@ -185,6 +199,24 @@ new dependency's `manifest`.
                              `<type>(NAME)`, with an optional `!`, then
                              `: `, the scope compared exactly; no
                              --issue-document
+
+The markers of `## Questions` entries are `- **Must decide:**`,
+`- **Recommended:**` and `- **Assumption:**`, and for the transition the old
+`- **Blocking:**` and `- **Non-blocking (assumed):**`. The blocking markers
+are Must decide, Recommended and Blocking; they count at any indentation,
+the other two at column 0 only. With a usable record the bullets are counted:
+M Must decide, R Recommended, B Blocking, A Assumption plus Non-blocking and
+U column-0 lines with no known marker, against the record's m `must_decide`,
+r `recommended` and a `assumption` questions. They agree when U is 0, A is a,
+M is at most m, R is at most r and (m - M) + (r - R) is B, so an old Blocking
+bullet stands for either blocking kind; no bullet is a hit of its own, and
+assumptions never are.
+
+A usable result record is strict JSON, an object whose `questions` is a list
+of objects, each with a string `question` and a `kind` of `must_decide`,
+`recommended` or `assumption`; no other field is read. With an unusable
+one, the section-level rules still run, but the bullets are neither hits
+nor counted.
 
 The limits of the limit-* rules are NAME's: limits with NAME's
 limits_by_component applied, a reason naming the override when it decides
@@ -225,14 +257,14 @@ line per evaluated rule is printed, then `floor: hit` or `floor: clean`.
 Exits 0 when clean, 1 on any hit, 2 on unusable input: bad arguments, an
 unresolvable base ref, a partial clone, a failed fetch into the object store
 (a forged or missing object, a shallow history), no config at the base, an
-invalid config, an unreadable or non-UTF-8 plan, issue document, analysis or
-screen record, git or yq missing or failing (reading the history too), a
-stale verdict that cannot be deleted, or any unexpected error. Unusable
-input leaves no verdict file, unless a stale one could not be deleted. The
-interpreter itself exits 1 when it crashes outside main(), for example at
-import time, so exit 0 or 1 counts only together with a verdict file whose
-`plan.sha256`, `base.commit` and document bindings match the request; exit 2
-never comes with a valid verdict. Standard library only, apart from running
+invalid config, an unreadable or non-UTF-8 plan, issue document, analysis,
+screen record or result record that exists, git or yq missing or failing
+(reading the history too), a stale verdict that cannot be deleted, or any
+unexpected error. Unusable input leaves no verdict file, unless a stale one
+could not be deleted. The interpreter itself exits 1 when it crashes outside
+main(), for example at import time, so exit 0 or 1 counts only together with
+a verdict file whose `plan.sha256`, `base.commit` and document bindings match
+the request; exit 2 never comes with a valid verdict. Standard library only, apart from running
 git and yq."""
 
 import contextlib
@@ -314,8 +346,21 @@ USAGE = (
 )
 FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})json", re.IGNORECASE)
 REASON_LIMIT = 200
-BLOCKING = "- **Blocking:**"
-NON_BLOCKING = "- **Non-blocking (assumed):**"
+MUST_DECIDE = "- **Must decide:**"
+RECOMMENDED = "- **Recommended:**"
+ASSUMPTION = "- **Assumption:**"
+BLOCKING = "- **Blocking:**"  # the old marker, read as either blocking kind
+NON_BLOCKING = "- **Non-blocking (assumed):**"  # the old marker, read as an assumption
+# The `## Questions` markers and what each counts as: a question kind, or `blocking` for either blocking kind.
+MARKERS = (
+    (MUST_DECIDE, "must_decide"),
+    (RECOMMENDED, "recommended"),
+    (BLOCKING, "blocking"),
+    (ASSUMPTION, "assumption"),
+    (NON_BLOCKING, "assumption"),
+)
+BLOCKING_MARKERS = (MUST_DECIDE, RECOMMENDED, BLOCKING)
+QUESTION_KINDS = ("must_decide", "recommended", "assumption")
 KIND = "- **Kind:**"
 COMPONENT = "- **Component:**"
 ITEM = re.compile(r"(?:[0-9]+[.)]|[-*+])(?:[ \t]+|$)(.*)", re.DOTALL)
@@ -376,6 +421,10 @@ class DocumentError(Exception):
 
 class ScreenError(Exception):
     """The screen record is not usable; the message is the dependency-screen rule's fixed reason."""
+
+
+class RecordError(Exception):
+    """A result record is not usable; the message is its fixed cause."""
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:
@@ -1166,28 +1215,104 @@ def flat(text: str) -> str:
     return " ".join(text.split())[:REASON_LIMIT]
 
 
-def question_reasons(text: str, what: str) -> list:
+def record_path(path: str) -> Path:
+    """The result record beside a document, named as save-output.py names it: `.md` replaced by `.result.json`."""
+    document = Path(path)
+    stem = document.name[:-3] if document.name.endswith(".md") else document.name
+    return document.with_name(stem + ".result.json")
+
+
+def read_record(path: str):
+    """The bytes of the result record beside the document at path, or None when there is none."""
+    record = record_path(path)
+    try:
+        data = record.read_bytes()
+        data.decode("utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise InputError(f"cannot read the result record {record}: {exc}") from exc
+    return data
+
+
+def record_questions(text: str) -> list:
+    """The (kind, question) pairs of a result record; raises RecordError with a fixed cause when it is not usable."""
+    try:
+        record = strict_json(text)
+    except (ValueError, RecursionError) as exc:
+        raise RecordError("it is not strict JSON") from exc
+    if not isinstance(record, dict):
+        raise RecordError("it is not a JSON object")
+    questions = record.get("questions")
+    if not isinstance(questions, list):
+        raise RecordError("its questions is not a list")
+    pairs = []
+    for question in questions:
+        if not isinstance(question, dict):
+            raise RecordError("a question is not a JSON object")
+        if question.get("kind") not in QUESTION_KINDS:
+            raise RecordError("a question's kind is not must_decide, recommended or assumption")
+        if not isinstance(question.get("question"), str):
+            raise RecordError("a question's question is not a string")
+        pairs.append((question["kind"], question["question"]))
+    return pairs
+
+
+def question_reasons(text: str, what: str, record=None) -> list:
+    """The blocking-questions reasons of one document; record is the text of its result record, or None."""
+    reasons = []
+    questions = None  # the record's (kind, question) pairs when it is usable
+    if record is not None:
+        try:
+            questions = record_questions(record)
+        except RecordError as exc:
+            # The section-level rules still run; the bullets are neither hits nor compared.
+            reasons.append(f"{what}: the result record is not usable: {exc}")
+        else:
+            for kind, question in questions:
+                if kind != "assumption":
+                    reasons.append(f"{what}: blocking question ({kind}): {flat(question)}")
     lines = document_lines(text)
     try:
         # Questions runs to the next `## ` heading, so a `# ` heading cannot end it early.
         start, body = section(lines, "Questions", what, ends=(2,))
     except DocumentError as exc:
-        return [str(exc)]
-    reasons = []
+        return reasons + [str(exc)]
+    bullets = {"must_decide": 0, "recommended": 0, "blocking": 0, "assumption": 0, "unknown": 0}
     for offset, line in enumerate(body):
         number = start + offset + 1
         entry = line.lstrip(" \t")
         if not entry:
             continue
-        if entry.startswith(BLOCKING):  # at column 0, indented, nested or after a tab
-            reasons.append(f"{what}: blocking question: {flat(entry[len(BLOCKING):])}")
-        elif line[0] in " \t":
+        indented = line[0] in " \t"
+        marker = next(((m, kind) for m, kind in MARKERS if entry.startswith(m)), None)
+        if marker is not None and (marker[0] in BLOCKING_MARKERS or not indented):
+            # A blocking marker counts at column 0, indented, nested or after a tab; an assumption at column 0.
+            if record is None and marker[0] in BLOCKING_MARKERS:  # the transition: Markdown alone
+                reasons.append(f"{what}: blocking question: {flat(entry[len(marker[0]):])}")
+            bullets[marker[1]] += 1
+        elif indented:
             continue  # a continuation or a sub-bullet
         elif line.startswith("# "):
             reasons.append(f"{what}: line {number} of '## Questions' is a '# ' heading inside the section")
-        elif not line.startswith(NON_BLOCKING):
+        else:
+            reasons.append(f"{what}: line {number} of '## Questions' is not an entry with a known marker")
+            bullets["unknown"] += 1  # with a usable record, also a disagreement in the counts
+    if questions is not None:
+        kinds = [kind for kind, _ in questions]
+        m, r, a = (kinds.count(kind) for kind in QUESTION_KINDS)
+        if not (
+            bullets["unknown"] == 0
+            and bullets["assumption"] == a
+            and bullets["must_decide"] <= m
+            and bullets["recommended"] <= r
+            and (m - bullets["must_decide"]) + (r - bullets["recommended"]) == bullets["blocking"]
+        ):
             reasons.append(
-                f"{what}: line {number} of '## Questions' is neither a " f"'{BLOCKING}' nor a '{NON_BLOCKING}' entry"
+                f"{what}: the '## Questions' bullets (must decide {bullets['must_decide']}, "
+                f"recommended {bullets['recommended']}, blocking {bullets['blocking']}, "
+                f"assumption {bullets['assumption']}, unknown {bullets['unknown']}) disagree with the "
+                f"result record (must decide {m}, recommended {r}, assumption {a})"
             )
     return reasons
 
@@ -1311,8 +1436,11 @@ def history(commit: str, git_dir=None) -> list:
     return [s for s in proc.stdout.decode("utf-8", errors="replace").split("\0") if s]
 
 
-def evaluate_documents(issue, analysis, plan_text: str, component: str, subjects: list) -> list:
-    """The three document rules; issue and analysis are text, or None when not given."""
+def evaluate_documents(
+    issue, analysis, plan_text: str, component: str, subjects: list, analysis_record=None, plan_record=None
+) -> list:
+    """The three document rules; issue and analysis are text, or None when not given, and the records the text of
+    the analysis's and the plan's result records, or None when there is none."""
     results = []
 
     def rule(name: str, reasons: list) -> None:
@@ -1321,8 +1449,8 @@ def evaluate_documents(issue, analysis, plan_text: str, component: str, subjects
     if analysis is None:
         reasons = ["no analysis given (--analysis)"]
     else:
-        reasons = question_reasons(analysis, "analysis")
-    rule("blocking-questions", reasons + question_reasons(plan_text, "plan"))
+        reasons = question_reasons(analysis, "analysis", analysis_record)
+    rule("blocking-questions", reasons + question_reasons(plan_text, "plan", plan_record))
 
     no_issue = ["no issue document given (--issue-document)"]
     rule("acceptance-criteria", no_issue if issue is None else criteria_reasons(issue, plan_text))
@@ -1330,9 +1458,20 @@ def evaluate_documents(issue, analysis, plan_text: str, component: str, subjects
     return results
 
 
-def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subjects: list, screen=None) -> tuple:
+def conclude(
+    plan_text: str,
+    issue,
+    analysis,
+    component: str,
+    cfg: dict,
+    subjects: list,
+    screen=None,
+    analysis_record=None,
+    plan_record=None,
+) -> tuple:
     """What the floor concludes: (rules, not_evaluated, footprint or None); screen is the screen record's text,
-    or None when none is given."""
+    or None when none is given, and the records the result records' texts beside the analysis and the plan, or
+    None when there is none."""
     try:
         footprint = parse_footprint(plan_text)
     except FootprintError as exc:
@@ -1341,7 +1480,7 @@ def conclude(plan_text: str, issue, analysis, component: str, cfg: dict, subject
     else:
         rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
         rules += evaluate(footprint, component, cfg, screen)
-    rules += evaluate_documents(issue, analysis, plan_text, component, subjects)
+    rules += evaluate_documents(issue, analysis, plan_text, component, subjects, analysis_record, plan_record)
     evaluated = [r["rule"] for r in rules]
     return rules, [name for name in RULES if name not in evaluated], footprint
 
@@ -1390,6 +1529,8 @@ def floor(argv: list) -> int:
         for key, what in (("issue_document", "issue document"), ("analysis", "analysis"), ("screen", "screen record")):
             path = args[key]
             documents[key] = None if path is None else (path, read_document(path, what))
+        records = {"analysis": None if args["analysis"] is None else read_record(args["analysis"])}
+        records["plan"] = read_record(args["plan"])
         subjects = history(commit, git_dir=store)
 
     texts = {key: None if doc is None else doc[1].decode("utf-8") for key, doc in documents.items()}
@@ -1401,6 +1542,7 @@ def floor(argv: list) -> int:
         cfg,
         subjects,
         texts["screen"],
+        *(None if records[key] is None else records[key].decode("utf-8") for key in ("analysis", "plan")),
     )
     hit = any(r["result"] == "hit" for r in results)
     bound = {

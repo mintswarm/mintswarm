@@ -57,7 +57,23 @@ Checks:
   inside Questions, with continuation lines named once, a variant marker,
   prose, a missing or repeated Questions section and no --analysis are
   hits; non-blocking entries only, and a Questions heading inside a fence,
-  are clean;
+  are clean; without a result record, the new Must decide and Recommended
+  markers, at column 0 or indented and in the analysis or the plan, are
+  hits naming the question, and Assumption entries only are clean; with a
+  result record beside the analysis or the plan, each `must_decide` or
+  `recommended` object is one hit naming it and an `assumption` none, with
+  the new and with the old markers (an old Blocking bullet counting for
+  either blocking kind), and the shared `needs-input` fixture gives its
+  `q1`, `q3` and `q4`; records of assumptions only, matched by Assumption
+  or by Non-blocking bullets, and an empty record with no bullets are
+  clean; a missing bullet, an extra bullet, a swapped kind, a Blocking or
+  indented Must decide bullet against no blocking object give the reason
+  naming both sets of counts, an unknown column-0 marker the known-marker
+  reason, and a missing Questions section its own reason besides the
+  object hits; a record that is not strict JSON (truncated, a duplicate
+  key, NaN), not an object, without a `questions` list, with a string
+  question, an unknown kind or a question that is not a string is a hit
+  naming its fixed cause, the section rules still applied;
 - acceptance-criteria: a dropped, added, reworded or repeated criterion, a
   criterion's indented later paragraph left out, no criteria, no criteria
   section, two Verification sections, a table without its `---` row and no
@@ -100,7 +116,8 @@ Checks:
   limits_by_component or non_production of the wrong shape, and the removed
   `new_dependencies` limit in `limits` or in limits_by_component), screen
   records (missing, unreadable, not UTF-8, given twice or with an empty
-  value) and a missing `yq`, exit 2 and leave no verdict file, even a stale
+  value), result records beside the analysis or the plan (a directory, not
+  UTF-8) and a missing `yq`, exit 2 and leave no verdict file, even a stale
   one;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
@@ -158,7 +175,11 @@ Checks:
   and documents (a `first-of-kind` hit set clean) are `human`, with the
   floor layer unusable; a harness or model other than the config's
   sets `as_configured` false and gives `human`; a `blocking-questions` hit
-  and a `footprint` hit give a usable floor layer equal to the verdict;
+  and a `footprint` hit give a usable floor layer equal to the verdict; with
+  result records beside the analysis and the plan, a `must_decide` object
+  gives a usable floor layer holding its hit and records of assumptions
+  only give `auto`, while a record rewritten after the floor ran makes the
+  floor layer unusable;
 - decision under `always`, `shadow` and `never`: `human`, `human` with
   `judged_decision` recorded, and `auto` whatever the layers say;
 - the comments: the auto-approval comment's heading, floor line,
@@ -562,6 +583,41 @@ def analysis_document(questions: str = "", heading: str = "## Questions") -> str
     )
 
 
+def result_record(questions: list) -> str:
+    """A result record as save-output.py writes it, with one question object per (kind, question) pair."""
+    objects = [
+        {
+            "id": f"q{i}",
+            "kind": kind,
+            "question": question,
+            "why": "A generated case.",
+            "shape": "yes_no",
+            "options": [],
+            "recommendation": None,
+            "references": [],
+        }
+        for i, (kind, question) in enumerate(questions, 1)
+    ]
+    status = "complete" if all(kind == "assumption" for kind, _ in questions) else "needs_input"
+    record = {
+        "status": status,
+        "artefact": "analysis",
+        "outputs": [".mintswarm/job/outputs/analysis.md"],
+        "questions": objects,
+        "reason": "",
+        "commit": None,
+        "pr_title": None,
+    }
+    return json.dumps(record, indent=2) + "\n"
+
+
+def write_record(document: Path, content) -> Path:
+    """Write the result record beside document, named as save-output.py names it; content is text or bytes."""
+    path = document.with_name(document.name[: -len(".md")] + ".result.json")
+    path.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+    return path
+
+
 def historic(fixture: str) -> bytes:
     """A historic fixture with the Verification table and Questions the plan stage now adds."""
     return (FIXTURES / fixture).read_bytes() + plan_tail().encode("utf-8")
@@ -660,9 +716,12 @@ class Runner:
         issue=DEFAULT,
         analysis=DEFAULT,
         screen=None,
+        analysis_record=None,
+        plan_record=None,
     ):
         """issue and analysis: DEFAULT (generated, clean), None (not given), or the content to give; screen:
-        None (not given) or the content of the screen record to give."""
+        None (not given) or the content of the screen record to give; analysis_record and plan_record: None (no
+        record) or the content of the result record written beside the analysis or the plan."""
         mode = mode or EXPECTED_APPROVAL["mode"]
         plan = self.sb.write_plan(name, content)
         ref = ref or self.commits[config]
@@ -678,6 +737,9 @@ class Runner:
                 continue
             documents[key] = self.sb.write_plan(f"{name} {key}", generated() if value is DEFAULT else value)
             args += [flag, documents[key]]
+        for path, record in ((documents["analysis"], analysis_record), (plan, plan_record)):
+            if record is not None:
+                write_record(self.sb.repo / path, record)
         documents["screen"] = None
         if screen is not None:
             documents["screen"] = self.sb.write_plan(f"{name} screen", screen)
@@ -1481,7 +1543,13 @@ def check_blocking_questions(r: Runner) -> None:
         analysis=analysis_document("- **Blocking**: Which component owns it?\n"),
     )
     expect_hit(
-        r, "prose in Questions", base(), rule, only=True, reason="is neither", analysis=analysis_document("None.\n")
+        r,
+        "prose in Questions",
+        base(),
+        rule,
+        only=True,
+        reason="analysis: line 11 of '## Questions' is not an entry with a known marker",
+        analysis=analysis_document("None.\n"),
     )
     expect_hit(
         r,
@@ -1536,6 +1604,249 @@ def check_blocking_questions(r: Runner) -> None:
             assumed + "\n## Next\n\n- **Blocking:** after the section\n",
             heading="```\n## Questions\n- **Blocking:** in a fence\n```\n\n" "## Questions",
         ),
+    )
+    check_question_markers(r)
+    check_question_records(r)
+
+
+SHARED_RECORD = ROOT / "crates/domain/tests/fixtures/result-blocks/needs-input/result.json"
+
+
+def count_reason(what: str, bullets: tuple, record: tuple) -> str:
+    """The blocking-questions reason for bullets (must decide, recommended, blocking, assumption and,
+    optionally, unknown) that disagree with a record's (must decide, recommended, assumption) counts."""
+    unknown = bullets[4] if len(bullets) > 4 else 0
+    return (
+        f"{what}: the '## Questions' bullets (must decide {bullets[0]}, recommended {bullets[1]}, "
+        f"blocking {bullets[2]}, assumption {bullets[3]}, unknown {unknown}) disagree with the result record "
+        f"(must decide {record[0]}, recommended {record[1]}, assumption {record[2]})"
+    )
+
+
+def check_question_markers(r: Runner) -> None:
+    """The new markers in documents without a result record: the Markdown alone, as for the old markers."""
+    rule = "blocking-questions"
+    for label, marker in (("Must decide", "- **Must decide:**"), ("Recommended", "- **Recommended:**")):
+        for where, entry in (("column 0", marker), ("indented", "  " + marker)):
+            expect_hit(
+                r,
+                f"{label} question at {where} without a record",
+                base(),
+                rule,
+                only=True,
+                reasons=["analysis: blocking question: Which component owns it?"],
+                analysis=analysis_document(
+                    f"- **Assumption:** Is the order free? → Yes.\n{entry} Which component owns it?\n"
+                ),
+            )
+    expect_hit(
+        r,
+        "Must decide question in the plan without a record",
+        base(),
+        rule,
+        only=True,
+        reasons=["plan: blocking question: Which component owns it?"],
+        tail=plan_tail(questions="- **Must decide:** Which component owns it?\n"),
+    )
+    expect_clean(
+        r,
+        "assumptions only without a record",
+        base(),
+        [rule],
+        tail=plan_tail(questions="- **Assumption:** Is the order free? → Yes.\n"),
+        analysis=analysis_document(
+            "- **Assumption:** Is the order free? → Yes.\n  with a continuation\n"
+            "- **Non-blocking (assumed):** Is the name free? → Yes.\n"
+        ),
+    )
+
+
+def check_question_records(r: Runner) -> None:
+    """Documents with a result record: the question objects decide, the bullets are counted against them."""
+    rule = "blocking-questions"
+    each_kind = [("must_decide", "Which component owns it?"), ("recommended", "Is one PR enough?")]
+    each_kind.append(("assumption", "Is the order free?"))
+    new_bullets = (
+        "- **Must decide:** Which component owns it?\n- **Recommended:** Is one PR enough? → Yes.\n"
+        "- **Assumption:** Is the order free? → Yes.\n"
+    )
+    old_bullets = (
+        "- **Blocking:** Which component owns it?\n- **Blocking:** Is one PR enough? → Yes.\n"
+        "- **Non-blocking (assumed):** Is the order free? → Yes.\n"
+    )
+    hits = [
+        "blocking question (must_decide): Which component owns it?",
+        "blocking question (recommended): Is one PR enough?",
+    ]
+    for label, bullets in (("new", new_bullets), ("old", old_bullets)):
+        expect_hit(
+            r,
+            f"record with each kind, {label} markers, in the analysis",
+            base(),
+            rule,
+            only=True,
+            reasons=[f"analysis: {hit}" for hit in hits],
+            analysis=analysis_document(bullets),
+            analysis_record=result_record(each_kind),
+        )
+        expect_hit(
+            r,
+            f"record with each kind, {label} markers, in the plan",
+            base(),
+            rule,
+            only=True,
+            reasons=[f"plan: {hit}" for hit in hits],
+            tail=plan_tail(questions=bullets),
+            plan_record=result_record(each_kind),
+        )
+    assumptions = result_record([("assumption", "Is the order free?"), ("assumption", "Is the name free?")])
+    for label, marker in (("Assumption", "- **Assumption:**"), ("Non-blocking", "- **Non-blocking (assumed):**")):
+        bullets = f"{marker} Is the order free? → Yes.\n  with a continuation\n{marker} Is the name free? → Yes.\n"
+        expect_clean(
+            r,
+            f"record of assumptions only, {label} markers",
+            base(),
+            [rule],
+            tail=plan_tail(questions=bullets),
+            analysis=analysis_document(bullets),
+            analysis_record=assumptions,
+            plan_record=assumptions,
+        )
+    expect_clean(
+        r,
+        "record with no questions and no bullets",
+        base(),
+        [rule],
+        analysis=analysis_document(""),
+        analysis_record=result_record([]),
+        plan_record=result_record([]),
+    )
+    expect_hit(
+        r,
+        "shared needs-input record",
+        base(),
+        rule,
+        only=True,
+        reasons=[
+            "analysis: blocking question (must_decide): Which component owns the parser?",
+            "analysis: blocking question (recommended): Which harnesses record replies?",
+            "analysis: blocking question (must_decide): What is the parser's module called?",
+        ],
+        analysis=analysis_document(
+            "- **Must decide:** Which component owns the parser?\n"
+            "- **Assumption:** Are trailing comments allowed? → Yes.\n"
+            "- **Recommended:** Which harnesses record replies? → Claude Code and Codex.\n"
+            "- **Must decide:** What is the parser's module called? → result_block.\n"
+        ),
+        analysis_record=SHARED_RECORD.read_text(encoding="utf-8"),
+    )
+    must = "analysis: blocking question (must_decide): Which component owns it?"
+    one_must = result_record([("must_decide", "Which component owns it?"), ("assumption", "Is the order free?")])
+    assumed = "- **Assumption:** Is the order free? → Yes.\n"
+    for label, bullets, record, reasons in (
+        (
+            "a missing bullet",
+            assumed,
+            one_must,
+            [must, count_reason("analysis", (0, 0, 0, 1), (1, 0, 1))],
+        ),
+        (
+            "an extra bullet",
+            assumed + "- **Assumption:** Is the name free? → Yes.\n",
+            result_record([("assumption", "Is the order free?")]),
+            [count_reason("analysis", (0, 0, 0, 2), (0, 0, 1))],
+        ),
+        (
+            "a swapped kind",
+            "- **Recommended:** Which component owns it? → agents.\n" + assumed,
+            one_must,
+            [must, count_reason("analysis", (0, 1, 0, 1), (1, 0, 1))],
+        ),
+        (
+            "a Blocking bullet and no blocking object",
+            "- **Blocking:** Which component owns it?\n" + assumed,
+            result_record([("assumption", "Is the order free?")]),
+            [count_reason("analysis", (0, 0, 1, 1), (0, 0, 1))],
+        ),
+        (
+            "an indented blocking bullet",
+            assumed + "  - **Must decide:** Which component owns it?\n",
+            result_record([("assumption", "Is the order free?")]),
+            [count_reason("analysis", (1, 0, 0, 1), (0, 0, 1))],
+        ),
+        (
+            "an unknown marker",
+            assumed + "- **Question:** Which component owns it?\n",
+            result_record([("assumption", "Is the order free?")]),
+            [
+                "analysis: line 12 of '## Questions' is not an entry with a known marker",
+                count_reason("analysis", (0, 0, 0, 1, 1), (0, 0, 1)),
+            ],
+        ),
+        (
+            "no Questions section",
+            None,
+            one_must,
+            [must, "analysis: no '## Questions' section"],
+        ),
+    ):
+        expect_hit(
+            r,
+            f"record against {label}",
+            base(),
+            rule,
+            only=True,
+            reasons=reasons,
+            analysis=analysis_document(heading="## Remarks") if bullets is None else analysis_document(bullets),
+            analysis_record=record,
+        )
+    expect_hit(
+        r,
+        "record against a missing bullet in the plan",
+        base(),
+        rule,
+        only=True,
+        reasons=[must.replace("analysis", "plan", 1), count_reason("plan", (0, 0, 0, 1), (1, 0, 1))],
+        tail=plan_tail(questions=assumed),
+        plan_record=one_must,
+    )
+    question = {"id": "q1", "kind": "assumption", "question": "Is the order free?"}
+    for cause, record in (
+        ("it is not strict JSON", '{"questions": ['),
+        ("it is not strict JSON", '{"questions": [], "questions": []}'),
+        ("it is not strict JSON", '{"questions": [], "n": NaN}'),
+        ("it is not a JSON object", "[]"),
+        ("its questions is not a list", '{"status": "complete"}'),
+        ("its questions is not a list", '{"questions": {}}'),
+        ("a question is not a JSON object", '{"questions": ["Is the order free?"]}'),
+        (
+            "a question's kind is not must_decide, recommended or assumption",
+            json.dumps({"questions": [dict(question, kind="blocking")]}),
+        ),
+        ("a question's question is not a string", json.dumps({"questions": [dict(question, question=None)]})),
+    ):
+        expect_hit(
+            r,
+            f"unusable record: {cause}: {record[:24]}",
+            base(),
+            rule,
+            only=True,
+            reasons=[f"analysis: the result record is not usable: {cause}"],
+            analysis=analysis_document(assumed),
+            analysis_record=record,
+        )
+    expect_hit(
+        r,
+        "unusable record with a '# ' heading in Questions",
+        base(),
+        rule,
+        only=True,
+        reasons=[
+            "analysis: the result record is not usable: it is not a JSON object",
+            "analysis: line 13 of '## Questions' is a '# ' heading inside the section",
+        ],
+        analysis=analysis_document(assumed + "\n# Note\n"),
+        analysis_record="null",
     )
 
 
@@ -1774,6 +2085,29 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             (f"{what} without a value", plain + [flag]),
             (f"{what} value an argument name", plain + [flag, "--plan"]),
         ]
+    for label, path, record in (
+        ("analysis", analysis, None),
+        ("plan", good, None),
+        ("analysis", analysis, b'{"questions": []}\xff\n'),
+        ("plan", good, b'{"questions": []}\xff\n'),
+    ):
+        target = sb.repo / path
+        target = target.with_name(target.name[: -len(".md")] + ".result.json")
+        if record is None:
+            target.mkdir()
+        else:
+            write_record(sb.repo / path, record)
+        args = plain + ["--analysis", analysis]
+        proc, verdict = sb.floor(args)
+        T.check(
+            f"unusable {label} result record {'unreadable' if record is None else 'not UTF-8'}: exit 2, no verdict",
+            proc.returncode == 2 and verdict is None and len(proc.stderr.strip().splitlines()) == 1,
+            f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}: {proc.stderr.strip()}",
+        )
+        if record is None:
+            target.rmdir()
+        else:
+            target.unlink()
     for name, args in cases:
         proc, verdict = sb.floor(args)
         T.check(
@@ -2008,6 +2342,29 @@ DECIDER_PLANS = {
         analysis_document(),
         0,
     ),
+    "recorded": (
+        plan_text(tail=plan_tail(questions="- **Assumption:** Is the order free? → Yes.\n")),
+        issue_document(),
+        analysis_document("- **Must decide:** Which component owns it?\n"),
+        1,
+    ),
+    "assumed": (
+        plan_text(tail=plan_tail(questions="- **Assumption:** Is the order free? → Yes.\n")),
+        issue_document(),
+        analysis_document("- **Non-blocking (assumed):** Is the name free? → Yes.\n"),
+        0,
+    ),
+}
+# The result records Decider writes beside the analysis and the plan: (analysis's, plan's).
+DECIDER_RECORDS = {
+    "recorded": (
+        result_record([("must_decide", "Which component owns it?")]),
+        result_record([("assumption", "Is the order free?")]),
+    ),
+    "assumed": (
+        result_record([("assumption", "Is the name free?")]),
+        result_record([("assumption", "Is the order free?")]),
+    ),
 }
 # The screen records Decider gives floor.py, and decision.py by default, for a plan.
 DECIDER_SCREENS = {
@@ -2070,6 +2427,9 @@ class Decider:
             }
             if plan in DECIDER_SCREENS:
                 ctx["screen"] = self.sb.write_plan(f"decision {config} {plan} screen", DECIDER_SCREENS[plan])
+            if plan in DECIDER_RECORDS:
+                for document, record in zip(("analysis", "plan"), DECIDER_RECORDS[plan]):
+                    ctx[f"{document}_record"] = write_record(self.sb.repo / ctx[document], record)
             proc = self.sb.exec(
                 [
                     "--plan",
@@ -2698,6 +3058,30 @@ def check_decision_documents(d: Decider) -> None:
         "judged blocking question: the floor layer holds the blocking-questions hit",
         [r["rule"] for r in floor_.get("rules", []) if r["result"] == "hit"] == ["blocking-questions"],
         str(floor_.get("rules")),
+    )
+    proc, record = d.run("judged recorded must_decide question", plan="recorded")
+    expect_decision("judged recorded must_decide question", (proc, record), "human", "human", "usable", "usable")
+    floor_ = record.get("layers", {}).get("floor", {}) if isinstance(record, dict) else {}
+    T.check(
+        "judged recorded must_decide question: the floor layer holds the record's blocking-questions hit",
+        [(r["rule"], r["reasons"]) for r in floor_.get("rules", []) if r["result"] == "hit"]
+        == [("blocking-questions", ["analysis: blocking question (must_decide): Which component owns it?"])],
+        str(floor_.get("rules")),
+    )
+    proc, record = d.run("judged recorded assumptions", plan="assumed")
+    expect_decision("judged recorded assumptions", (proc, record), "auto", "auto", "usable", "usable")
+    assumed = d.prepare("judged", "assumed")
+    kept = assumed["analysis_record"].read_bytes()
+    assumed["analysis_record"].write_text(result_record([("recommended", "Is the name free?")]), encoding="utf-8")
+    try:
+        proc, record = d.run("judged record rewritten after the floor", plan="assumed")
+    finally:
+        assumed["analysis_record"].write_bytes(kept)
+    expect_decision("judged record rewritten after the floor", (proc, record), "human", "human", "unusable", "usable")
+    T.check(
+        "judged record rewritten after the floor: the recomputed rules differ",
+        floor_problems(record) == ["the floor verdict's rules differ from what floor.py gives for this plan and base"],
+        str(floor_problems(record)),
     )
     proc, record = d.run("judged footprint hit", plan="no footprint")
     expect_decision("judged footprint hit", (proc, record), "human", "human", "usable", "usable")
