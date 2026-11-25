@@ -71,7 +71,7 @@ components:
     paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
-    paths: ["crates/core/**", "crates/server/**"]
+    paths: ["crates/core/**", "crates/server/**", "crates/steward/**"]
   runner:
     description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
     paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
