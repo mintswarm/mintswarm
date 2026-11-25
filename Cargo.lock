@@ -1202,6 +1202,7 @@ name = "mintswarm-runner"
 version = "0.1.0"
 dependencies = [
  "mintswarm-domain",
+ "mintswarm-rules",
  "tempfile",
  "thiserror",
  "tracing",

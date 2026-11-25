@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 mintswarm-domain = { path = "../domain" }
+mintswarm-rules = { path = "../rules" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
