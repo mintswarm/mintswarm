@@ -14,6 +14,7 @@ mod outbox;
 mod schema;
 #[cfg(test)]
 mod tests;
+mod unrecognised;
 
 use std::ffi::OsStr;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions};
@@ -31,6 +32,7 @@ pub use blobs::BlobId;
 pub use leases::{Lease, LeaseResource};
 pub use outbox::{Effect, EffectKind, EffectState, NewEffect};
 pub use schema::SCHEMA_VERSION;
+pub use unrecognised::{NewUnrecognised, Unrecognised};
 
 /// The mode of the state directory and of every directory the store creates in it.
 const DIR_MODE: u32 = 0o700;
@@ -418,6 +420,18 @@ impl StoreTx<'_> {
     /// not inserted again: the existing row's id is returned and nothing changes.
     pub fn insert_effect(&self, effect: &NewEffect) -> Result<i64, StoreError> {
         outbox::insert(&self.tx, &self.ctx.root, self.ctx.mode, effect)
+    }
+
+    /// Record a failure an adapter did not recognise, at the store clock's time: a new
+    /// `(adapter, signature)` gets a count of 1, and a known one has its count raised by 1 and
+    /// its excerpt, status and `last_seen_at` replaced by the latest.
+    pub fn record_unrecognised(&self, failure: &NewUnrecognised) -> Result<(), StoreError> {
+        unrecognised::record(&self.tx, self.ctx.clock.now_ms(), failure)
+    }
+
+    /// The failures recorded for `adapter`, the most often seen first.
+    pub fn unrecognised(&self, adapter: &str) -> Result<Vec<Unrecognised>, StoreError> {
+        unrecognised::list(&self.tx, adapter)
     }
 }
 
