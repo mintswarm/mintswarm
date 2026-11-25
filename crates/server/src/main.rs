@@ -1,33 +1,38 @@
 //! The mintswarm control-plane server binary.
 
-use clap::Command;
+use clap::{Parser, Subcommand};
 
-/// The command line: `serve` and `migrate`, which only parse for now.
-fn cli() -> Command {
-    Command::new("mintswarm-server")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("The mintswarm control plane")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(Command::new("serve").about("Run the control-plane server"))
-        .subcommand(Command::new("migrate").about("Apply the database migrations"))
+/// The mintswarm control plane
+#[derive(Debug, Parser)]
+#[command(name = "mintswarm-server", version, arg_required_else_help = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// The subcommands, which only parse for now.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the control-plane server
+    Serve,
+    /// Apply the database migrations
+    Migrate,
 }
 
 fn main() {
-    let matches = cli().get_matches();
-    match matches.subcommand() {
-        Some(("serve", _)) => {}
-        Some(("migrate", _)) => {}
-        _ => unreachable!("clap requires a known subcommand"),
+    match Cli::parse().command {
+        Command::Serve => {}
+        Command::Migrate => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::cli;
+    use super::Cli;
+    use clap::CommandFactory;
 
     #[test]
     fn command_definition_is_valid() {
-        cli().debug_assert();
+        Cli::command().debug_assert();
     }
 }
