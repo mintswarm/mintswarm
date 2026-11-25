@@ -214,6 +214,17 @@ fn a_newer_schema_version_is_refused() {
 }
 
 #[test]
+fn a_negative_schema_version_is_refused() {
+    let (_tmp, state) = fresh_state();
+    drop(open(&state, OutboxMode::Live).unwrap());
+    let conn = Connection::open(state.join("runner.sqlite")).unwrap();
+    conn.pragma_update(None, "user_version", -1).unwrap();
+    drop(conn);
+    let err = open(&state, OutboxMode::Live).unwrap_err();
+    assert!(matches!(err, StoreError::SchemaInvalid(-1)), "{err:?}");
+}
+
+#[test]
 fn the_outbox_refuses_an_unknown_state() {
     let (_tmp, state) = fresh_state();
     let store = open(&state, OutboxMode::Live).unwrap();

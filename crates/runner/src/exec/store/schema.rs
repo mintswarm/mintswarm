@@ -180,8 +180,9 @@ CREATE TABLE shadow (
 
 /// Apply the migrations `conn` has not had, in one transaction, and set its `user_version`.
 ///
-/// A database already at [`SCHEMA_VERSION`] is left unchanged, and one with a newer version is
-/// refused with [`StoreError::SchemaTooNew`].
+/// A database already at [`SCHEMA_VERSION`] is left unchanged. One with a newer version is
+/// refused with [`StoreError::SchemaTooNew`], and one with a negative version with
+/// [`StoreError::SchemaInvalid`].
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -189,6 +190,9 @@ pub(super) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     let found: i64 = tx
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(sql("cannot read the schema version"))?;
+    if found < 0 {
+        return Err(StoreError::SchemaInvalid(found));
+    }
     if found > SCHEMA_VERSION {
         return Err(StoreError::SchemaTooNew {
             found,
@@ -199,7 +203,7 @@ pub(super) fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         return Ok(());
     }
     // `found` is between 0 and SCHEMA_VERSION here, so it indexes the list.
-    let applied = usize::try_from(found).unwrap_or(0);
+    let applied = usize::try_from(found).map_err(|_| StoreError::SchemaInvalid(found))?;
     for (index, script) in MIGRATIONS.iter().enumerate().skip(applied) {
         tx.execute_batch(script)
             .map_err(sql(&format!("cannot apply migration {}", index + 1)))?;
