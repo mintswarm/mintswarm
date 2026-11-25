@@ -389,6 +389,64 @@ async fn an_unnameable_path_is_refused_before_any_request() {
 }
 
 #[tokio::test]
+async fn a_rev_that_is_not_a_full_commit_id_is_refused_before_any_request() {
+    let responder = Responder::start().await;
+    let reads = client(&responder);
+    let token = token();
+    let repo = reads.repo_reads(&token);
+    for bad in [
+        "",
+        "master",
+        "v1.0",
+        &COMMIT[..7],
+        COMMIT.to_uppercase().as_str(),
+        format!("{COMMIT}0").as_str(),
+    ] {
+        let error = repo
+            .read_file(&RevId(bad.to_owned()), &path(CONFIG_PATH))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, RepoReadError::InvalidRev),
+            "{bad:?}: {error:?}"
+        );
+    }
+    assert!(responder.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_credential_or_permission_is_inaccessible() {
+    let refusals = [
+        (401, r#"{"message":"Bad credentials","status":"401"}"#),
+        (
+            403,
+            r#"{"message":"Resource not accessible by integration","status":"403"}"#,
+        ),
+    ];
+    for (status, body) in refusals {
+        for head in [false, true] {
+            let responder = Responder::start().await;
+            responder.reply(status, body);
+            let reads = client(&responder);
+            let token = token();
+            let repo = reads.repo_reads(&token);
+            let error = if head {
+                repo.default_branch_head().await.unwrap_err()
+            } else {
+                repo.read_file(&commit(), &path(CONFIG_PATH))
+                    .await
+                    .unwrap_err()
+            };
+            assert!(
+                matches!(error, RepoReadError::Inaccessible),
+                "{status}, head {head}: {error:?}"
+            );
+            assert!(!error.is_rate_limited());
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_rate_limit_pauses_the_next_read() {
     let responder = Responder::start().await;
     responder.reply_with(403, &[("retry-after", "1")], LIMITED);

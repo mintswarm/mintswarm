@@ -4,6 +4,10 @@
 //! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache and its
 //! `retry-after` pause. A file is read inline from the contents API; a file above its 1 MB
 //! inline limit is refused as [`RepoReadError::TooLarge`].
+//!
+//! A file is read only at a full commit id; any other revision is refused as
+//! [`RepoReadError::InvalidRev`] before a request, since the contents API would read a branch or
+//! tag name, or the default branch for an empty one, as a moving ref.
 
 use std::future::Future;
 
@@ -21,6 +25,11 @@ use crate::token::Permissions;
 
 /// Reads of one repository's default-branch head and files at a commit, over a borrowed
 /// [`GitHubReads`] and a token its caller minted with [`GitHubRepoReads::permissions`].
+///
+/// GitHub answers 404 for a file that is missing, but also for a commit it does not know and a
+/// repository the token cannot see, so [`RepoReads::read_file`] reads all of these as `None`.
+/// Pin the revision with [`RepoReads::default_branch_head`] through the same reader first: it
+/// reports lost access as [`RepoReadError::Inaccessible`], and the commit it returns is known.
 #[derive(Clone, Copy, Debug)]
 pub struct GitHubRepoReads<'a> {
     reads: &'a GitHubReads,
@@ -69,6 +78,9 @@ impl GitHubRepoReads<'_> {
     }
 
     async fn file(&self, rev: &RevId, path: &RepoPath) -> Result<Option<Vec<u8>>, RepoReadError> {
+        if !is_commit_id(&rev.0) {
+            return Err(RepoReadError::InvalidRev);
+        }
         let segments = checked_path(path)?;
         let contents_path = format!(
             "{}/contents/{}?ref={}",
@@ -173,12 +185,17 @@ fn head_error(error: ReadError) -> RepoReadError {
     }
 }
 
-/// A read error as its repository-read class; GitHub's text never passes through.
+/// A read error as its repository-read class; GitHub's text never passes through. A 401 or a
+/// 403 that is not a rate limit is a credential or permission fault, so it is
+/// [`RepoReadError::Inaccessible`].
 fn read_error(error: ReadError) -> RepoReadError {
     match error {
         ReadError::RateLimited { retry_after, .. } => RepoReadError::RateLimited { retry_after },
         ReadError::Transport(detail) => RepoReadError::Transport(detail),
-        ReadError::NotFound { .. } => RepoReadError::Inaccessible,
+        ReadError::NotFound { .. }
+        | ReadError::Status {
+            status: 401 | 403, ..
+        } => RepoReadError::Inaccessible,
         ReadError::Status { .. }
         | ReadError::Unexpected { .. }
         | ReadError::TooManyPages { .. } => RepoReadError::Unexpected,
