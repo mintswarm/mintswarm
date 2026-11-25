@@ -74,13 +74,13 @@ impl BundleError {
     }
 }
 
-/// The plan floor's bundle for the plan at `base`: the config and the raw subjects from `store` at
-/// `base.commit`, and the documents and the result records beside the analysis and the plan read
-/// under `root`.
+/// The plan floor's bundle for the plan at `base` and the issue's `components`: the config and the
+/// raw subjects from `store` at `base.commit`, and the documents and the result records beside the
+/// analysis and the plan read under `root`.
 pub fn plan_floor_bundle(
     store: &GitStore,
     base: BaseRef,
-    component: &str,
+    components: &[String],
     root: &Path,
     documents: &Documents,
 ) -> Result<Bundle, BundleError> {
@@ -125,7 +125,7 @@ pub fn plan_floor_bundle(
             reference: base.reference,
             commit,
         },
-        component: component.to_owned(),
+        components: components.to_vec(),
         plan,
         issue_document,
         analysis,
