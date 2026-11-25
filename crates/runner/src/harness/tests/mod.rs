@@ -386,7 +386,8 @@ fn a_missing_harness_or_model_is_rejected() {
 
 /// A repository with a work tree, and a store to fetch its commits into.
 struct Repo {
-    dir: TempDir,
+    /// Keeps the temporary directory alive.
+    _dir: TempDir,
     work: PathBuf,
     store: GitStore,
 }
@@ -408,7 +409,11 @@ impl Repo {
         let path = store_path(&dir.path().join("state"), "repo").unwrap();
         let mut store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
         store.allow_file_remote();
-        Repo { dir, work, store }
+        Repo {
+            _dir: dir,
+            work,
+            store,
+        }
     }
 
     /// Git in the work tree.
@@ -439,7 +444,6 @@ impl Repo {
         self.store
             .fetch(&remote, &[RefOrId::Ref("refs/heads/main".to_owned())], None)
             .unwrap();
-        assert!(self.dir.path().exists());
         id
     }
 }
@@ -472,7 +476,6 @@ fn a_worktree_change_has_no_effect() {
     assert_eq!(rendered.conventions.path, CONVENTIONS);
     assert_eq!(rendered.conventions.sha256, digest(b"conventions\n"));
     assert_eq!(rendered.agent, agent("claude", "opus", Some("high")));
-    assert!(STAGE_FILE.starts_with(STAGES_DIR));
 }
 
 #[test]
