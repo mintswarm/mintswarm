@@ -878,6 +878,7 @@ dependencies = [
 name = "mintswarm-proto"
 version = "0.1.0"
 dependencies = [
+ "mintswarm-proto",
  "prost",
  "prost-types",
  "protox",

@@ -23,6 +23,9 @@ pub mod runner {
     }
 }
 
-/// Test fakes of the protocol's services, filled by later changes.
+/// The protocol's conformance scenarios and, in later changes, fakes of its
+/// services.
 #[cfg(feature = "fakes")]
-pub mod fakes {}
+pub mod fakes {
+    pub mod scenarios;
+}
