@@ -26,6 +26,10 @@ id!(
     WorkerId(String)
 );
 id!(
+    /// A project the plane serves: one repository with its config.
+    ProjectId(String)
+);
+id!(
     /// A runner daemon.
     RunnerId(String)
 );
@@ -47,7 +51,7 @@ id!(
 );
 id!(
     /// A harness account, by the nickname the runner config gives it.
-    AccountName(String)
+    AccountNickname(String)
 );
 id!(
     /// The fence of an attempt's lease: the plane raises it on every reassignment, so writes

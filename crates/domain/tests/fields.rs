@@ -10,7 +10,7 @@ use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldRead, FieldRef,
     FieldValue, LabelPattern, OptionSpec, SourceSpec, read_labels,
 };
-use mintswarm_domain::ids::{AccountName, IssueNumber, PrNumber};
+use mintswarm_domain::ids::{AccountNickname, IssueNumber, PrNumber};
 use mintswarm_domain::scale::{Scale, Size};
 use mintswarm_domain::tracker::{
     Artifact, AssignmentReason, Comment, Cursor, Issue, IssueRead, IssueType, Link, Login, SubItem,
@@ -221,7 +221,7 @@ fn label_pattern_is_the_one_labels_matcher() {
 fn no_cost_model_is_none() {
     let model = NoCostModel;
     for account in ["main", "spare", ""] {
-        let account = AccountName(account.into());
+        let account = AccountNickname(account.into());
         for &size in Size::ALL {
             assert_eq!(model.cost(&account, size), None);
         }
