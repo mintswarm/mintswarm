@@ -2,9 +2,10 @@
 //! `.mintswarm/dogfood/plan-approval/floor.py`.
 //!
 //! [`floor`] takes a [`Bundle`], what `floor.py` reads from git and from files, each item held to
-//! its sha256, and gives the verdict `floor.py` writes to `floor.json`, byte for byte, or
-//! [`Unusable`] where `floor.py` exits 2. It reads nothing itself: extracting the bundle from git
-//! and writing the verdict belong to the caller.
+//! its sha256, and gives the `floor.json` record with the verdict and each rule's outcome that
+//! `floor.py` gives, or [`Unusable`] where `floor.py` exits 2. A reason that carries a parser's
+//! error is the floor's own wording, never the parser's. It reads nothing itself: extracting the
+//! bundle from git and writing the verdict belong to the caller.
 //!
 //! - [`footprint`]: the footprint parser and the `footprint` rule's reasons;
 //! - [`config`]: the floor's view of the config at the base, with the gate words;

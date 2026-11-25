@@ -154,7 +154,7 @@ pub fn command_words(words: &[String]) -> Vec<String> {
     out
 }
 
-/// Why a command does not split, worded as Python's `shlex` words it.
+/// Why a command does not split as Python's `shlex.split` splits it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitError {
     /// A quote is not closed.
@@ -166,8 +166,8 @@ pub enum SplitError {
 impl std::fmt::Display for SplitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            SplitError::NoClosingQuotation => "No closing quotation",
-            SplitError::NoEscapedCharacter => "No escaped character",
+            SplitError::NoClosingQuotation => "a quote is not closed",
+            SplitError::NoEscapedCharacter => "a backslash ends the command",
         })
     }
 }

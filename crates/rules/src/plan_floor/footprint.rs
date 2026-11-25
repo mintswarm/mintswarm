@@ -326,10 +326,7 @@ pub fn parse(text: &str) -> Parsed<Footprint> {
     let lines = document_lines(text);
     let block = locate(&lines)?;
     let document = json::read(&block).map_err(|error| {
-        FootprintError::new(format!(
-            "the footprint is not valid JSON: {}",
-            error.python_message()
-        ))
+        FootprintError::new(format!("the footprint is not strict JSON: {error}"))
     })?;
     let footprint = match &document {
         Json::Object(entries) if entries.len() == 1 && entries[0].0 == "footprint" => &entries[0].1,

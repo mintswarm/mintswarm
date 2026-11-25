@@ -14,14 +14,12 @@
 //! - nesting deeper than [`MAX_DEPTH`] containers (Python raises `RecursionError` far deeper) is
 //!   [`ReadErrorKind::TooDeep`].
 //!
-//! A [`ReadError`] is structured. [`ReadError::python_message`] words it as Python's `json` module
-//! (CPython 3.11) and the tools' hooks word it, for the tools that quote that message.
+//! Python's error wording is not reproduced: a [`ReadError`] is structured, and each tool phrases
+//! its own message from it.
 
 use std::fmt;
 
 use mintswarm_domain::records::Json;
-
-use crate::py;
 
 /// The deepest nesting of arrays and objects [`read`] accepts.
 pub const MAX_DEPTH: usize = 512;
@@ -29,9 +27,8 @@ pub const MAX_DEPTH: usize = 512;
 /// Why a text is not strict JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadErrorKind {
-    /// The text is not JSON at all: Python's `JSONDecodeError` for anything not listed below,
-    /// with the scanner's message.
-    Syntax(Scanner),
+    /// The text is not JSON at all: Python's `JSONDecodeError` for anything not listed below.
+    Syntax,
     /// An object holds the key twice, found when the object closes as `object_pairs_hook` finds it.
     DuplicateKey(String),
     /// One of the constants `NaN`, `Infinity` or `-Infinity`, as written.
@@ -55,7 +52,7 @@ pub enum ReadErrorKind {
 impl fmt::Display for ReadErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ReadErrorKind::Syntax(_) => f.write_str("not valid JSON"),
+            ReadErrorKind::Syntax => f.write_str("not valid JSON"),
             ReadErrorKind::DuplicateKey(key) => write!(f, "duplicate key {key:?}"),
             ReadErrorKind::Constant(name) => write!(f, "{name} is not allowed"),
             ReadErrorKind::NonFinite => f.write_str("a number is not finite"),
@@ -69,40 +66,6 @@ impl fmt::Display for ReadErrorKind {
     }
 }
 
-/// Which of the CPython `json` scanner's syntax errors a [`ReadErrorKind::Syntax`] stands for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Scanner {
-    /// No value starts here.
-    ExpectingValue,
-    /// An object has something other than a string where a key belongs.
-    ExpectingPropertyName,
-    /// An array or object item is followed by something other than `,` or its close.
-    ExpectingComma,
-    /// An object key is not followed by `:`.
-    ExpectingColon,
-    /// A string runs to the end of the text; the error is at its opening quote.
-    UnterminatedString,
-    /// A backslash followed by a character that is no escape.
-    InvalidEscape,
-    /// A `\u` escape without four hex digits.
-    InvalidUnicodeEscape,
-}
-
-impl Scanner {
-    /// The message Python's `JSONDecodeError` gives, without its position.
-    pub fn message(self) -> &'static str {
-        match self {
-            Scanner::ExpectingValue => "Expecting value",
-            Scanner::ExpectingPropertyName => "Expecting property name enclosed in double quotes",
-            Scanner::ExpectingComma => "Expecting ',' delimiter",
-            Scanner::ExpectingColon => "Expecting ':' delimiter",
-            Scanner::UnterminatedString => "Unterminated string starting at",
-            Scanner::InvalidEscape => "Invalid \\escape",
-            Scanner::InvalidUnicodeEscape => "Invalid \\uXXXX escape",
-        }
-    }
-}
-
 /// A text that is not strict JSON, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadError {
@@ -112,38 +75,6 @@ pub struct ReadError {
     pub line: usize,
     /// The 1-based column of the offending character, counted in characters as Python counts them.
     pub column: usize,
-    /// The 0-based offset of the offending character in the text, in characters.
-    pub offset: usize,
-}
-
-impl ReadError {
-    /// The error as `str()` of the exception Python raises for the same text gives it.
-    ///
-    /// A syntax error, a control character, extra data and a byte order mark read as a
-    /// `JSONDecodeError`, `<message>: line L column C (char N)`. A duplicate key and a constant read
-    /// as the tools' hooks raise them, `duplicate key '<key>'` with the key as Python's `repr`
-    /// writes it, and `NaN is not allowed`. The kinds Python accepts, the deliberate divergences
-    /// listed above, read as their [`Display`](fmt::Display) form.
-    pub fn python_message(&self) -> String {
-        let decode = |message: &str| {
-            format!(
-                "{message}: line {} column {} (char {})",
-                self.line, self.column, self.offset
-            )
-        };
-        match &self.kind {
-            ReadErrorKind::Syntax(scanner) => decode(scanner.message()),
-            ReadErrorKind::ControlCharacter => decode("Invalid control character at"),
-            ReadErrorKind::ExtraData => decode("Extra data"),
-            ReadErrorKind::Bom => decode("Unexpected UTF-8 BOM (decode using utf-8-sig)"),
-            ReadErrorKind::DuplicateKey(key) => format!("duplicate key {}", py::repr_str(key)),
-            ReadErrorKind::Constant(name) => format!("{name} is not allowed"),
-            ReadErrorKind::NonFinite
-            | ReadErrorKind::LoneSurrogate
-            | ReadErrorKind::IntegerOutOfRange
-            | ReadErrorKind::TooDeep => self.to_string(),
-        }
-    }
 }
 
 impl fmt::Display for ReadError {
@@ -196,12 +127,11 @@ impl Reader<'_> {
             kind,
             line: before.matches('\n').count() + 1,
             column: before[line_start..].chars().count() + 1,
-            offset: before.chars().count(),
         }
     }
 
-    fn syntax(&self, scanner: Scanner, at: usize) -> ReadError {
-        self.error(ReadErrorKind::Syntax(scanner), at)
+    fn syntax(&self, at: usize) -> ReadError {
+        self.error(ReadErrorKind::Syntax, at)
     }
 
     fn peek(&self) -> Option<u8> {
@@ -267,7 +197,7 @@ impl Reader<'_> {
             Some(b'1'..=b'9') => {
                 self.digits();
             }
-            _ => return Err(self.syntax(Scanner::ExpectingValue, start)),
+            _ => return Err(self.syntax(start)),
         }
         let mut float = false;
         if self.peek() == Some(b'.') && matches!(self.bytes.get(self.at + 1), Some(b'0'..=b'9')) {
@@ -302,14 +232,12 @@ impl Reader<'_> {
         }
     }
 
-    /// The four hex digits of a `\u` escape, the reader past its `u`. As Python's scanner
-    /// requires, at least one more character must follow them; the error is at the `u`.
     fn hex4(&mut self) -> Result<u32, ReadError> {
         let digits = self
             .bytes
             .get(self.at..self.at + 4)
-            .filter(|d| d.iter().all(u8::is_ascii_hexdigit) && self.at + 4 < self.bytes.len())
-            .ok_or_else(|| self.syntax(Scanner::InvalidUnicodeEscape, self.at - 1))?;
+            .filter(|d| d.iter().all(u8::is_ascii_hexdigit))
+            .ok_or_else(|| self.syntax(self.at))?;
         self.at += 4;
         let mut value = 0;
         for digit in digits {
@@ -333,7 +261,7 @@ impl Reader<'_> {
             }
             out.push_str(&self.text[run..self.at]);
             match self.peek() {
-                None => return Err(self.syntax(Scanner::UnterminatedString, open)),
+                None => return Err(self.syntax(open)),
                 Some(b'"') => {
                     self.at += 1;
                     return Ok(out);
@@ -355,8 +283,7 @@ impl Reader<'_> {
                             out.push(self.unicode_escape(escape)?);
                             continue;
                         }
-                        None => return Err(self.syntax(Scanner::UnterminatedString, open)),
-                        _ => return Err(self.syntax(Scanner::InvalidEscape, escape)),
+                        _ => return Err(self.syntax(escape)),
                     };
                     self.at += 1;
                     out.push(c);
@@ -371,8 +298,7 @@ impl Reader<'_> {
     fn unicode_escape(&mut self, escape: usize) -> Result<char, ReadError> {
         let first = self.hex4()?;
         let code = match first {
-            // Python pairs only when more than the six characters of the second escape follow
-            0xd800..=0xdbff if self.rest_starts_with("\\u") && self.at + 6 < self.bytes.len() => {
+            0xd800..=0xdbff if self.rest_starts_with("\\u") => {
                 let mark = self.at;
                 self.at += 2;
                 let second = self.hex4()?;
@@ -418,7 +344,7 @@ impl Reader<'_> {
                     self.at += 1;
                     self.skip_whitespace();
                 }
-                _ => return Err(self.syntax(Scanner::ExpectingComma, self.at)),
+                _ => return Err(self.syntax(self.at)),
             }
         }
     }
@@ -436,13 +362,13 @@ impl Reader<'_> {
         }
         loop {
             if self.peek() != Some(b'"') {
-                return Err(self.syntax(Scanner::ExpectingPropertyName, self.at));
+                return Err(self.syntax(self.at));
             }
             key_offsets.push(self.at);
             let key = self.string()?;
             self.skip_whitespace();
             if self.peek() != Some(b':') {
-                return Err(self.syntax(Scanner::ExpectingColon, self.at));
+                return Err(self.syntax(self.at));
             }
             self.at += 1;
             self.skip_whitespace();
@@ -458,7 +384,7 @@ impl Reader<'_> {
                     self.at += 1;
                     self.skip_whitespace();
                 }
-                _ => return Err(self.syntax(Scanner::ExpectingComma, self.at)),
+                _ => return Err(self.syntax(self.at)),
             }
         }
         for (index, (key, _)) in entries.iter().enumerate() {
