@@ -233,10 +233,11 @@ pub fn shlex_split(text: &str) -> Result<Vec<String>, SplitError> {
                 }
             }
             State::Escape(within) => {
-                if let Some(quote) = within {
-                    if c != quote && c != '\\' {
-                        token.push('\\');
-                    }
+                if let Some(quote) = within
+                    && c != quote
+                    && c != '\\'
+                {
+                    token.push('\\');
                 }
                 token.push(c);
                 state = within.map_or(State::Word, State::Quote);
