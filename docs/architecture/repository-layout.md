@@ -49,7 +49,7 @@ mintswarm/
 │   │   └── migrations/     # SQL, append-only
 │   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
 │   ├── steward/            # `mintswarm-steward` binary: the process that holds the deployment's signing keys apart from the control plane
-│   ├── runner/             # `mintswarm-runner` library: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations
+│   ├── runner/             # `mintswarm-runner` library: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations; `exec::store`, the runner's local state: the locked state directory, SQLite with the tables of design §12, the sha256 blob store, the outbox (suppressed in M1) and leases
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` binary: CLI and `mcp console`
 │
