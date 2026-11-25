@@ -9,7 +9,8 @@ import "mintswarm/runner/v1/common.proto";
 //
 // Every sha256 in this service is the lowercase hex digest of the bytes it
 // names. The fence on the blob calls is the design's §7.4
-// `(attempt_id, lease_epoch)` pair, written inline as on `RunnerEvent`.
+// `(attempt_id, lease_epoch)` pair, written inline as `attempt_id` and
+// `lease_epoch`.
 service RunnerService {
   // Registers a new runner (design §9.1). Needs no access token: the request
   // carries the registration token.
@@ -36,6 +37,8 @@ service RunnerService {
   //
   // Errors: `DATA_LOSS` when the bytes do not hash to the header's sha256;
   // `RESOURCE_EXHAUSTED` when the blob is over the plane's `max_blob_bytes`.
+  // A stale fence does not fail the call: the blob is still stored, since it
+  // is content-addressed (design §7.4).
   rpc PutBlob(stream PutBlobRequest) returns (PutBlobResponse);
 
   // Downloads one blob that belongs to the fenced attempt's job (design
