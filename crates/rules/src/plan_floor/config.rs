@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use mintswarm_config::{Error as ConfigError, Mode as ConfigMode, load_repo_config};
-use mintswarm_domain::records::Mode;
+use mintswarm_domain::records::{ExpectedJudge, Mode};
 use serde_json::Value;
 
 use crate::exit::Unusable;
@@ -23,6 +23,11 @@ pub struct View {
     pub shared: Vec<String>,
     /// `pipeline.plan_approval.mode`.
     pub mode: Mode,
+    /// `pipeline.plan_approval.min_confidence`, 90 when absent.
+    pub min_confidence: u64,
+    /// The assess harness and model the config names: `agents.stages.assess` over
+    /// `agents.default`, as `decision.py`'s `expected_judge` reads them.
+    pub expected_judge: ExpectedJudge,
     /// `require_human.components`.
     pub rh_components: Vec<String>,
     /// `require_human.paths`.
@@ -55,6 +60,32 @@ fn strings(value: Option<&Value>) -> Vec<String> {
             .filter_map(|item| item.as_str().map(str::to_owned))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// `agents.stages.assess` over `agents.default`: for each of the harness and the model, the
+/// stage's key when it has one, else the default's; `None` for a missing key or a value that is not
+/// a string. A section that is not a mapping counts as an empty one.
+fn expected_judge(value: &Value) -> ExpectedJudge {
+    let agents = value.get("agents").filter(|v| v.is_object());
+    let default = agents
+        .and_then(|a| a.get("default"))
+        .filter(|v| v.is_object());
+    let assess = agents
+        .and_then(|a| a.get("stages"))
+        .filter(|v| v.is_object())
+        .and_then(|s| s.get("assess"))
+        .filter(|v| v.is_object());
+    let pick = |key: &str| {
+        let value = match assess.and_then(|a| a.get(key)) {
+            Some(value) => Some(value),
+            None => default.and_then(|d| d.get(key)),
+        };
+        value.and_then(Value::as_str).map(str::to_owned)
+    };
+    ExpectedJudge {
+        harness: pick("harness"),
+        model: pick("model"),
     }
 }
 
@@ -133,6 +164,8 @@ pub fn view(bytes: &[u8], component: &str) -> Result<View, Unusable> {
             ConfigMode::Judged => Mode::Judged,
             ConfigMode::Never => Mode::Never,
         },
+        min_confidence: approval.min_confidence,
+        expected_judge: expected_judge(value),
         rh_components: approval.require_human.components.clone(),
         rh_paths: approval.require_human.paths.clone(),
         limits: [0, 1, 2].map(|i| over[i].unwrap_or(flat[i])),

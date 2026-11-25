@@ -14,6 +14,10 @@
 //!   on the outcome.
 //! - [`plan_floor`]: the plan floor, `plan-approval/floor.py`'s rules over a sha256-bound input
 //!   bundle.
+//! - [`plan_decision`]: the plan-approval decision, `plan-approval/decision.py`'s two layers and
+//!   mode over the same bundle, with the `decision.json` record.
+//! - [`render`]: the plan-approval comment bodies, and the confinement of model and session text
+//!   in them.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
@@ -25,6 +29,8 @@ pub mod glob;
 pub mod json;
 pub mod markdown;
 pub mod output;
+pub mod plan_decision;
 pub mod plan_floor;
 pub mod py;
+pub mod render;
 pub mod size;
