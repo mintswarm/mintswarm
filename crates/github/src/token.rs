@@ -7,14 +7,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+
+use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 
 use crate::config::{AppConfig, ConfigError};
 use crate::jwt::{JwtError, app_jwt};
 use crate::key_store::{KeyStoreEnv, KeyStoreError, Tools, read_key};
+use crate::rest::Rest;
 use crate::secret::Token;
 
 /// GitHub's REST API.
@@ -106,12 +108,9 @@ pub enum TokenError {
     /// The HTTP client could not be built.
     #[error("cannot build the HTTP client")]
     Client,
-    /// The request did not complete.
-    #[error("{endpoint}: the request failed")]
-    Request {
-        /// The method and path.
-        endpoint: String,
-    },
+    /// The request kept failing transiently until its retries ran out.
+    #[error(transparent)]
+    Exhausted(#[from] Exhausted),
     /// GitHub answered with an error status.
     #[error("{endpoint}: GitHub answered {status}")]
     Status {
@@ -157,7 +156,7 @@ impl fmt::Debug for Cache {
 
 /// Mints installation tokens as the App configured at `app_config_path`.
 pub struct TokenClient {
-    http: reqwest::Client,
+    rest: Rest,
     api_base: String,
     app_config_path: PathBuf,
     tools: Tools,
@@ -194,7 +193,8 @@ struct AccessToken {
 
 impl TokenClient {
     /// A client for the API at `api_base` (normally [`GITHUB_API`]), reading the App's
-    /// configuration from `app_config_path` and its key with `tools` in `env`.
+    /// configuration from `app_config_path` and its key with `tools` in `env`, retrying with
+    /// the default [`RetryPolicy`].
     pub fn new(
         api_base: impl Into<String>,
         app_config_path: PathBuf,
@@ -202,20 +202,23 @@ impl TokenClient {
         env: KeyStoreEnv,
         clock: Clock,
     ) -> Result<Self, TokenError> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|_| TokenError::Client)?;
+        let api_base = api_base.into().trim_end_matches('/').to_owned();
         Ok(Self {
-            http,
-            api_base: api_base.into().trim_end_matches('/').to_owned(),
+            rest: Rest::new(&api_base, RetryPolicy::default()).map_err(|_| TokenError::Client)?,
+            api_base,
             app_config_path,
             tools,
             env,
             clock,
             cache: Mutex::new(Cache::default()),
         })
+    }
+
+    /// The client retrying with `policy` in place of the default.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.rest = self.rest.with_policy(policy);
+        self
     }
 
     /// An installation token for `owner/repo` with read access to `permissions` only: the
@@ -287,14 +290,14 @@ impl TokenClient {
         };
 
         let path = format!("/repos/{owner}/{repo}/installation");
-        let installation: Installation = self.call(Method::GET, &path, &jwt, None).await?;
+        let installation: Installation = self.call(&path, &jwt, None).await?;
 
         let path = format!("/app/installations/{}/access_tokens", installation.id);
         let body = serde_json::json!({
             "repositories": [repo],
             "permissions": permissions.body(),
         });
-        let response: AccessToken = self.call(Method::POST, &path, &jwt, Some(body)).await?;
+        let response: AccessToken = self.call(&path, &jwt, Some(&body)).await?;
         let endpoint = || format!("POST {path}");
         if !response.token.starts_with("ghs_") || response.token.len() <= 4 {
             return Err(TokenError::Response {
@@ -316,51 +319,27 @@ impl TokenClient {
         Ok(Token::new(response.token, expires_at))
     }
 
+    /// A GET of `path`, or a POST of `body` to it, with `jwt`, answered as JSON.
     async fn call<T: for<'de> Deserialize<'de>>(
         &self,
-        method: Method,
         path: &str,
         jwt: &Token,
-        body: Option<serde_json::Value>,
+        body: Option<&serde_json::Value>,
     ) -> Result<T, TokenError> {
-        let endpoint = format!("{method} {path}");
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", jwt.expose()))
-            .map_err(|_| TokenError::Request {
-                endpoint: endpoint.clone(),
-            })?;
-        authorization.set_sensitive(true);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github+json"),
-        );
-        headers.insert(
-            "x-github-api-version",
-            HeaderValue::from_static("2022-11-28"),
-        );
-        headers.insert(USER_AGENT, HeaderValue::from_static("mintswarm"));
-        headers.insert(AUTHORIZATION, authorization);
-        let mut request = self
-            .http
-            .request(method, format!("{}{path}", self.api_base))
-            .headers(headers);
-        if let Some(body) = body {
-            request = request
-                .header(CONTENT_TYPE, "application/json")
-                .body(body.to_string());
+        let reply = match body {
+            None => self.rest.get(path, jwt, None).await?,
+            // Minting mints a new token each time; a repeat after a first that landed costs one
+            // more token, which simply goes unused, and changes nothing else.
+            Some(body) => self.rest.post_idempotent(path, jwt, body).await?,
+        };
+        if !reply.status.is_success() {
+            return Err(TokenError::Status {
+                endpoint: reply.endpoint,
+                status: reply.status,
+            });
         }
-        let response = request.send().await.map_err(|_| TokenError::Request {
-            endpoint: endpoint.clone(),
-        })?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(TokenError::Status { endpoint, status });
-        }
-        let bytes = response.bytes().await.map_err(|_| TokenError::Request {
-            endpoint: endpoint.clone(),
-        })?;
-        serde_json::from_slice(&bytes).map_err(|_| TokenError::Response {
-            endpoint,
+        serde_json::from_slice(&reply.body).map_err(|_| TokenError::Response {
+            endpoint: reply.endpoint,
             what: "not the expected JSON",
         })
     }

@@ -1,22 +1,23 @@
-//! A minimal authenticated REST helper for the field client, the field catalogue and the reads:
-//! one request with a caller's token, answered with its status, ETag, rate-limit state,
-//! `retry-after` and raw body.
+//! GitHub's REST API for every client in this crate: [`Http`] sends one request with a
+//! caller's token and answers with its status, ETag, rate-limit state, `retry-after`,
+//! `x-ratelimit-reset` wait and raw body, and [`Rest`] is the retry layer over it, the only way
+//! to reach it.
 //!
-//! A pausing helper ([`Rest::pausing`]) also honours `retry-after`: after a rate-limited reply
-//! that carries it, every later request waits until that long has passed.
+//! A pausing layer ([`Rest::pausing`]) also makes every later call wait out a rate limit's
+//! named wait.
 
+use reqwest::StatusCode;
 use reqwest::header::{
-    ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, HeaderMap, HeaderValue, IF_NONE_MATCH, LINK,
-    RETRY_AFTER, USER_AGENT,
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH,
+    LINK, RETRY_AFTER, USER_AGENT,
 };
-use reqwest::{Method, StatusCode};
-use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
-use tokio::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mintswarm_domain::field::FieldError;
+use mintswarm_domain::retry::{Failure, RetryPolicy};
 
-use crate::secret::Token;
+use crate::retry::{Attempt, Request, Retrying, Transport};
+
 use crate::token::{CONNECT_TIMEOUT, REQUEST_TIMEOUT};
 
 /// Why a GitHub field client could not be built. No variant carries a credential.
@@ -75,19 +76,25 @@ fn links_next(link: &str) -> bool {
 }
 
 /// GitHub's answer to one request.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Reply {
     /// The method and path, for error messages; never the token.
     pub endpoint: String,
     pub status: StatusCode,
     pub etag: Option<String>,
-    /// A 429, or a 403 with `x-ratelimit-remaining: 0` or a `retry-after` header.
+    /// A 429, or a 403 with `x-ratelimit-remaining: 0`, a `retry-after` header or a message
+    /// naming a rate limit.
     pub rate_limited: bool,
     /// The `retry-after` header in delta-seconds; an HTTP-date is ignored.
     pub retry_after: Option<Duration>,
+    /// With `x-ratelimit-remaining: 0`, the time until `x-ratelimit-reset`.
+    pub reset_wait: Option<Duration>,
     /// Whether the `Link` header names a `rel="next"` page; `None` when there is no `Link`.
     pub next_page: Option<bool>,
     pub body: Vec<u8>,
+    /// Whether an earlier attempt of the same call may have been carried out, so a DELETE's 404
+    /// may be that attempt's doing. Set by the retry layer.
+    pub after_ambiguous: bool,
 }
 
 impl Reply {
@@ -98,30 +105,17 @@ impl Reply {
     }
 }
 
-/// An HTTP client for GitHub's REST API at one base URL.
+/// GitHub's REST API at one base URL, one attempt per request: the only HTTP client in this
+/// crate. Only this module can build one, and only [`Rest`] holds one.
 #[derive(Debug)]
-pub(crate) struct Rest {
+pub(crate) struct Http {
     http: reqwest::Client,
     base: String,
-    /// For a pausing client, the instant before which no request is sent; `None` inside when
-    /// no pause was asked for yet.
-    pause: Option<Mutex<Option<Instant>>>,
 }
 
-impl Rest {
-    /// A client for the API at `api_base`, with the token client's timeouts. It does not pause
-    /// on `retry-after`.
-    pub fn new(api_base: &str) -> Result<Self, ClientError> {
-        Self::build(api_base, None)
-    }
-
-    /// A client like [`Rest::new`] that, after a rate-limited reply carrying `retry-after`,
-    /// sends no request until that long has passed.
-    pub fn pausing(api_base: &str) -> Result<Self, ClientError> {
-        Self::build(api_base, Some(Mutex::new(None)))
-    }
-
-    fn build(api_base: &str, pause: Option<Mutex<Option<Instant>>>) -> Result<Self, ClientError> {
+impl Http {
+    /// A client for the API at `api_base`, with the token client's timeouts.
+    fn new(api_base: &str) -> Result<Self, ClientError> {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -130,53 +124,33 @@ impl Rest {
         Ok(Self {
             http,
             base: api_base.trim_end_matches('/').to_owned(),
-            pause,
         })
     }
+}
 
-    /// The instant before which a pausing client sends nothing, if it is still ahead.
-    fn deadline(&self) -> Option<Instant> {
-        let pause = self.pause.as_ref()?;
-        let deadline = *pause.lock().unwrap_or_else(PoisonError::into_inner);
-        deadline.filter(|deadline| *deadline > Instant::now())
+/// The class of a failed send: nothing was sent without a connection, a timeout is its own
+/// class, and anything else broke a request that may have been sent. reqwest's own error, and
+/// its text, go no further.
+fn send_failure(error: &reqwest::Error) -> Failure {
+    if error.is_connect() {
+        Failure::Connect
+    } else if error.is_timeout() {
+        Failure::Timeout
+    } else {
+        Failure::Reset
     }
+}
 
-    /// What is left of a pausing client's pause; zero when there is none.
-    pub fn pause_remaining(&self) -> Duration {
-        self.deadline()
-            .map_or(Duration::ZERO, |deadline| deadline - Instant::now())
-    }
-
-    /// Moves a pausing client's deadline to `wait` from now, never earlier than it is.
-    fn pause_for(&self, wait: Duration) {
-        let Some(pause) = &self.pause else {
-            return;
-        };
-        let until = Instant::now() + wait;
-        let mut deadline = pause.lock().unwrap_or_else(PoisonError::into_inner);
-        if deadline.is_none_or(|deadline| deadline < until) {
-            *deadline = Some(until);
-        }
-    }
-
-    /// Sends one request to `path` with `token`, a JSON `body` if any, and `If-None-Match` if
-    /// an ETag is given. Only a failure to send or to read the body is an error here; statuses
-    /// are the caller's to classify.
-    pub async fn send(
-        &self,
-        method: Method,
-        path: &str,
-        token: &Token,
-        body: Option<serde_json::Value>,
-        if_none_match: Option<&str>,
-    ) -> Result<Reply, FieldError> {
-        if let Some(deadline) = self.deadline() {
-            tokio::time::sleep_until(deadline).await;
-        }
-        let endpoint = format!("{method} {path}");
-        let failed = || FieldError::Transport(format!("{endpoint}: the request failed"));
+impl Transport for Http {
+    /// Sends one request with the caller's token, a JSON body if any, and `If-None-Match` if an
+    /// ETag is given. Only a failure to send or to read the body is a [`Failure`] here; statuses
+    /// are the layer's and the caller's to classify. A header that cannot be built means
+    /// nothing was sent, a [`Failure::Connect`].
+    async fn send(&self, request: &Request<'_>) -> Attempt {
+        let endpoint = request.endpoint();
         let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {}", token.expose())).map_err(|_| failed())?;
+            HeaderValue::from_str(&format!("Bearer {}", request.token.expose()))
+                .map_err(|_| Failure::Connect)?;
         authorization.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -189,22 +163,25 @@ impl Rest {
         );
         headers.insert(USER_AGENT, HeaderValue::from_static("mintswarm"));
         headers.insert(AUTHORIZATION, authorization);
-        if let Some(etag) = if_none_match {
+        if let Some(etag) = request.if_none_match {
             headers.insert(
                 IF_NONE_MATCH,
-                HeaderValue::from_str(etag).map_err(|_| failed())?,
+                HeaderValue::from_str(etag).map_err(|_| Failure::Connect)?,
             );
         }
-        let mut request = self
+        let mut builder = self
             .http
-            .request(method, format!("{}{path}", self.base))
+            .request(
+                request.method.clone(),
+                format!("{}{}", self.base, request.path),
+            )
             .headers(headers);
-        if let Some(body) = body {
-            request = request
+        if let Some(body) = request.body {
+            builder = builder
                 .header(CONTENT_TYPE, "application/json")
                 .body(body.to_string());
         }
-        let response = request.send().await.map_err(|_| failed())?;
+        let response = builder.send().await.map_err(|error| send_failure(&error))?;
         let status = response.status();
         let header = |name| {
             response
@@ -214,31 +191,79 @@ impl Rest {
                 .map(str::to_owned)
         };
         let etag = header(ETAG);
-        let rate_limited = status == StatusCode::TOO_MANY_REQUESTS
-            || (status == StatusCode::FORBIDDEN
-                && (header(reqwest::header::HeaderName::from_static(
-                    "x-ratelimit-remaining",
-                ))
-                .is_some_and(|remaining| remaining.trim() == "0")
-                    || header(RETRY_AFTER).is_some()));
+        let exhausted = header(HeaderName::from_static("x-ratelimit-remaining"))
+            .is_some_and(|remaining| remaining.trim() == "0");
         let retry_after = header(RETRY_AFTER)
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
+        let reset_wait = header(HeaderName::from_static("x-ratelimit-reset"))
+            .filter(|_| exhausted)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|reset| {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs());
+                Duration::from_secs(reset.saturating_sub(now))
+            });
         let next_page = header(LINK).map(|link| links_next(&link));
-        let body = response.bytes().await.map_err(|_| failed())?.to_vec();
-        if let Some(wait) = retry_after.filter(|_| rate_limited) {
-            self.pause_for(wait);
-        }
+        let has_retry_after = header(RETRY_AFTER).is_some();
+        let body = response.bytes().await.map_err(|_| Failure::Body)?.to_vec();
+        let rate_limited = status == StatusCode::TOO_MANY_REQUESTS
+            || (status == StatusCode::FORBIDDEN
+                && (exhausted || has_retry_after || error_text(&body).contains("rate limit")));
         Ok(Reply {
             endpoint,
             status,
             etag,
             rate_limited,
             retry_after,
+            reset_wait,
             next_page,
             body,
+            after_ambiguous: false,
         })
     }
+}
+
+/// The retry layer over GitHub's REST API: what every client in this crate holds.
+pub(crate) type Rest = Retrying<Http>;
+
+impl Rest {
+    /// A layer over the API at `api_base` with `policy`. It does not make later calls wait out
+    /// a rate limit.
+    pub fn new(api_base: &str, policy: RetryPolicy) -> Result<Self, ClientError> {
+        Ok(Self::wrap(Http::new(api_base)?, policy, false))
+    }
+
+    /// A layer like [`Rest::new`] that, after a rate-limited reply naming a wait, sends no
+    /// request of any call until that long has passed.
+    pub fn pausing(api_base: &str, policy: RetryPolicy) -> Result<Self, ClientError> {
+        Ok(Self::wrap(Http::new(api_base)?, policy, true))
+    }
+}
+
+/// The lower-cased `message`, `errors[].message` and `errors[].field` of an error body.
+pub(crate) fn error_text(body: &[u8]) -> String {
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    if let Some(message) = body.get("message").and_then(serde_json::Value::as_str) {
+        parts.push(message);
+    }
+    for error in body
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for key in ["message", "field"] {
+            if let Some(text) = error.get(key).and_then(serde_json::Value::as_str) {
+                parts.push(text);
+            }
+        }
+    }
+    parts.join("\n").to_lowercase()
 }
 
 #[cfg(test)]

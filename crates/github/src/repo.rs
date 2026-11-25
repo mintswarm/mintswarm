@@ -1,8 +1,8 @@
 //! Repository reads without a clone, design §9.4: the default branch's head and a file's bytes
 //! at a commit, through the contents, repository and branch endpoints.
 //!
-//! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache and its
-//! `retry-after` pause. A file is read inline from the contents API; a file above its 1 MB
+//! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache, its retry
+//! layer and policy, and its rate-limit pause. A file is read inline from the contents API; a file above its 1 MB
 //! inline limit is refused as [`RepoReadError::TooLarge`].
 //!
 //! A file is read only at a full commit id; any other revision is refused as
@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use mintswarm_domain::hosting::{RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
+use mintswarm_domain::retry::{Exhausted, Failure};
 use mintswarm_domain::vcs::RepoPath;
 
 use crate::key_store::decode_base64;
@@ -185,12 +186,19 @@ fn head_error(error: ReadError) -> RepoReadError {
     }
 }
 
-/// A read error as its repository-read class; GitHub's text never passes through. A 401 or a
+/// A read error as its repository-read class; GitHub's text never passes through. A read whose
+/// retries ran out on a rate limit is [`RepoReadError::RateLimited`] with the wait GitHub named,
+/// and one that ran out on another transient failure is [`RepoReadError::Transport`]. A 401 or a
 /// 403 that is not a rate limit is a credential or permission fault, so it is
 /// [`RepoReadError::Inaccessible`].
 fn read_error(error: ReadError) -> RepoReadError {
     match error {
-        ReadError::RateLimited { retry_after, .. } => RepoReadError::RateLimited { retry_after },
+        ReadError::Exhausted(Exhausted {
+            last: Failure::RateLimited { wait },
+            ..
+        }) => RepoReadError::RateLimited { retry_after: wait },
+        // Our own text, with the attempt count and the last failure's class.
+        ReadError::Exhausted(exhausted) => RepoReadError::Transport(exhausted.to_string()),
         ReadError::Transport(detail) => RepoReadError::Transport(detail),
         ReadError::NotFound { .. }
         | ReadError::Status {

@@ -2,12 +2,13 @@
 //! uses the token its caller gives it, never one the runner mints. Fields are configured by
 //! name, so it also resolves a field's id from its name.
 
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
 use serde_json::Value;
 
 use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRef, FieldSource, FieldValue,
 };
+use mintswarm_domain::retry::RetryPolicy;
 
 use crate::fields::{Op, checked_pattern, classify};
 use crate::rest::{ClientError, Reply, Rest, check_names};
@@ -28,21 +29,27 @@ pub struct GitHubFieldCatalogue {
 }
 
 impl GitHubFieldCatalogue {
-    /// A catalogue for `owner/repo` on the API at `api_base`, calling with `token`.
+    /// A catalogue for `owner/repo` on the API at `api_base`, calling with `token` and retrying
+    /// with the default [`RetryPolicy`].
     pub fn new(api_base: &str, owner: &str, repo: &str, token: Token) -> Result<Self, ClientError> {
         check_names(owner, repo)?;
         Ok(Self {
-            rest: Rest::new(api_base)?,
+            rest: Rest::new(api_base, RetryPolicy::default())?,
             owner: owner.to_owned(),
             repo: repo.to_owned(),
             token,
         })
     }
 
+    /// The catalogue retrying with `policy` in place of the default.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.rest = self.rest.with_policy(policy);
+        self
+    }
+
     async fn get(&self, path: &str) -> Result<Reply, FieldError> {
-        self.rest
-            .send(Method::GET, path, &self.token, None, None)
-            .await
+        Ok(self.rest.get(path, &self.token, None).await?)
     }
 
     /// The id of the organisation's issue field named `name`, or `field_missing` when the

@@ -13,7 +13,8 @@ use mintswarm_domain::tracker::{
 };
 use mintswarm_domain::vcs::BranchName;
 use mintswarm_github::{
-    GitHubReads, Kinds, NOTE_MARKER, ReadError, STEER_MARKER, Token, comment_mark,
+    Exhausted, Failure, GitHubReads, Kinds, NOTE_MARKER, ReadError, RetryPolicy, STEER_MARKER,
+    Token, comment_mark,
 };
 use support::{Request, Responder};
 
@@ -42,6 +43,23 @@ fn client(responder: &Responder) -> GitHubReads {
     client_with(responder, kinds())
 }
 
+/// A single attempt per read, so each read takes one scripted reply.
+fn single_attempt() -> RetryPolicy {
+    RetryPolicy {
+        attempts: 1,
+        ..RetryPolicy::default()
+    }
+}
+
+/// Four attempts with millisecond waits, for the retries on a real socket.
+fn fast_retries() -> RetryPolicy {
+    RetryPolicy {
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+        ..RetryPolicy::default()
+    }
+}
+
 fn client_with(responder: &Responder, kinds: Kinds) -> GitHubReads {
     GitHubReads::new(
         &responder.base,
@@ -52,6 +70,7 @@ fn client_with(responder: &Responder, kinds: Kinds) -> GitHubReads {
         Login(BOT.into()),
     )
     .unwrap()
+    .with_retry(single_attempt())
 }
 
 /// A comment in GitHub's JSON shape.
@@ -288,10 +307,13 @@ async fn retry_after_pauses_the_client() {
         let error = client.read_issue(&token(), ISSUE, None).await.unwrap_err();
         assert_eq!(
             error,
-            ReadError::RateLimited {
+            ReadError::Exhausted(Exhausted {
                 endpoint: format!("GET {ISSUE_PATH}"),
-                retry_after: Some(Duration::from_secs(1)),
-            },
+                attempts: 1,
+                last: Failure::RateLimited {
+                    wait: Some(Duration::from_secs(1))
+                },
+            }),
             "status {status}"
         );
         assert_eq!(responder.requests().len(), 1, "status {status}");
@@ -314,7 +336,17 @@ async fn pause_remaining_follows_retry_after() {
     let client = client(&responder);
     assert_eq!(client.pause_remaining(), Duration::ZERO);
     let error = client.read_issue(&token(), ISSUE, None).await.unwrap_err();
-    assert!(matches!(error, ReadError::RateLimited { .. }), "{error:?}");
+    assert!(
+        matches!(
+            error,
+            ReadError::Exhausted(Exhausted {
+                attempts: 1,
+                last: Failure::RateLimited { .. },
+                ..
+            })
+        ),
+        "{error:?}"
+    );
     let remaining = client.pause_remaining();
     assert!(
         remaining > Duration::from_secs(119) && remaining <= Duration::from_secs(120),
@@ -340,10 +372,11 @@ async fn other_failures_are_classified_without_the_token() {
             ReadError::NotFound {
                 endpoint: endpoint.clone()
             },
-            ReadError::Status {
+            ReadError::Exhausted(Exhausted {
                 endpoint: endpoint.clone(),
-                status: 502
-            },
+                attempts: 1,
+                last: Failure::Status(502),
+            }),
             ReadError::Unexpected { endpoint },
         ]
     );
@@ -353,6 +386,59 @@ async fn other_failures_are_classified_without_the_token() {
     }
     // A 502 is not a rate limit: no pause follows it.
     assert_eq!(client.pause_remaining(), Duration::ZERO);
+}
+
+#[tokio::test]
+async fn a_dropped_connection_is_retried() {
+    let responder = Responder::start().await;
+    responder.drop_connection();
+    responder.reply(200, ISSUE_JSON);
+    responder.reply(200, "[]");
+    let client = client(&responder).with_retry(fast_retries());
+    let read = client.read_issue(&token(), ISSUE, None).await.unwrap();
+    assert_eq!(read.issue.number, ISSUE);
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].path, requests[1].path);
+    assert_token_only_in_authorization(&requests);
+}
+
+#[tokio::test]
+async fn a_server_error_then_success_reads() {
+    let responder = Responder::start().await;
+    responder.reply(500, "");
+    responder.reply(503, "");
+    responder.reply(200, ISSUE_JSON);
+    responder.reply(200, "[]");
+    let client = client(&responder).with_retry(fast_retries());
+    let read = client.read_issue(&token(), ISSUE, None).await.unwrap();
+    assert_eq!(read.issue.number, ISSUE);
+    assert_eq!(responder.requests().len(), 4);
+    // Server errors are no rate limit: no pause follows them.
+    assert_eq!(client.pause_remaining(), Duration::ZERO);
+
+    // Four server errors use up the four attempts.
+    let responder = Responder::start().await;
+    for _ in 0..4 {
+        responder.reply(502, "");
+    }
+    let error = client_with(&responder, kinds())
+        .with_retry(fast_retries())
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ReadError::Exhausted(Exhausted {
+                attempts: 4,
+                last: Failure::Status(502),
+                ..
+            })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(responder.requests().len(), 4);
 }
 
 #[test]

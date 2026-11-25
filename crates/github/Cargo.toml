@@ -17,7 +17,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "test-util"] }
 
 [lints]
 workspace = true

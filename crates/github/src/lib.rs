@@ -11,6 +11,10 @@
 //! [`GitHubRepoReads`] reads the default branch's head and a file's bytes at a commit through
 //! the same GET path, so the plane needs no clone. [`ContentLimiter`] budgets content-creating
 //! requests for the writes to come.
+//!
+//! Every request goes through one retry layer: a transient failure is retried within a
+//! [`RetryPolicy`], with bounded, jittered backoff and the waits a rate limit names, and a call
+//! whose retries run out ends in [`Exhausted`].
 
 mod catalogue;
 mod config;
@@ -23,6 +27,7 @@ mod pulls;
 mod reads;
 mod repo;
 mod rest;
+mod retry;
 mod secret;
 mod token;
 
@@ -32,12 +37,14 @@ pub use fields::{FieldClient, FieldPass};
 pub use jwt::{JWT_BACKDATE_SECS, JWT_LIFETIME_SECS, JwtError, app_jwt};
 pub use key_store::{DEFAULT_TIMEOUT, KeyStoreEnv, KeyStoreError, Tools, read_key};
 pub use limit::{CONTENT_PER_HOUR, CONTENT_PER_MINUTE, ContentLimiter};
+pub use mintswarm_domain::retry::{Exhausted, Failure, RetryPolicy};
 pub use reads::{
     GitHubReads, KindSource, Kinds, MAX_PAGES, NOTE_MARKER, PER_PAGE, ReadError, STEER_MARKER,
     comment_mark,
 };
 pub use repo::GitHubRepoReads;
 pub use rest::ClientError;
+pub use retry::SECONDARY_LIMIT_WAIT;
 pub use secret::{SecretBytes, Token};
 pub use token::{
     CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,

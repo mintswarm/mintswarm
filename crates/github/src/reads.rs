@@ -4,18 +4,20 @@
 //! Every GET goes through one ETag cache, so a repeated read is revalidated with
 //! `If-None-Match` and a 304 is served from the cache. Lists are read with `per_page=100`, page
 //! by page, following the `Link` header's `rel="next"`, and a list with a page after its 30th
-//! is refused. After a rate-limited reply with
-//! `retry-after` the client sends nothing until that long has passed; the rate-limited read
-//! itself fails with [`ReadError::RateLimited`] and is not retried.
+//! is refused. Every GET goes through the retry layer: a transient failure is retried within the
+//! client's [`RetryPolicy`], and a read whose retries run out fails with [`ReadError::Exhausted`].
+//! After a rate-limited reply that names a wait, the client sends nothing until that long has
+//! passed.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
 use serde_json::Value;
 
 use mintswarm_domain::field::FieldError;
 use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 use mintswarm_domain::tracker::{
     Artifact, ArtifactSummary, Comment, CommentMark, Cursor, Issue, IssueRead, IssueType, Link,
     LinkKind, Login,
@@ -56,14 +58,11 @@ pub enum ReadError {
         /// The HTTP status.
         status: u16,
     },
-    /// GitHub refused the request for a rate limit; later requests wait for `retry_after`.
-    #[error("{endpoint}: rate limited")]
-    RateLimited {
-        /// The method and path.
-        endpoint: String,
-        /// The `retry-after` GitHub gave, if any.
-        retry_after: Option<Duration>,
-    },
+    /// The read kept failing transiently, on server errors, broken connections, timeouts or
+    /// rate limits, until its retries ran out; a rate limit's named wait also pauses later
+    /// reads.
+    #[error(transparent)]
+    Exhausted(#[from] Exhausted),
     /// The list needs more than [`MAX_PAGES`] pages.
     #[error("{endpoint}: more than {MAX_PAGES} pages")]
     TooManyPages {
@@ -82,6 +81,7 @@ impl From<FieldError> for ReadError {
     fn from(error: FieldError) -> Self {
         match error {
             FieldError::Transport(message) => Self::Transport(message),
+            FieldError::Exhausted(exhausted) => Self::Exhausted(exhausted),
             other => Self::Transport(other.to_string()),
         }
     }
@@ -193,7 +193,7 @@ struct Page {
 impl GitHubReads {
     /// Reads of `owner/repo` on the API at `api_base` (normally
     /// [`GITHUB_API`](crate::GITHUB_API)): `kinds` maps issue kinds, and `trusted` and `bot`
-    /// are the logins [`comment_mark`] is given.
+    /// are the logins [`comment_mark`] is given. It retries with the default [`RetryPolicy`].
     pub fn new(
         api_base: &str,
         owner: &str,
@@ -204,7 +204,7 @@ impl GitHubReads {
     ) -> Result<Self, ClientError> {
         check_names(owner, repo)?;
         Ok(Self {
-            rest: Rest::pausing(api_base)?,
+            rest: Rest::pausing(api_base, RetryPolicy::default())?,
             owner: owner.to_owned(),
             repo: repo.to_owned(),
             kinds,
@@ -214,13 +214,20 @@ impl GitHubReads {
         })
     }
 
+    /// The reads retrying with `policy` in place of the default.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.rest = self.rest.with_policy(policy);
+        self
+    }
+
     /// The permissions a token for these reads asks for, from its
     /// [`TokenClient`](crate::TokenClient).
     pub fn permissions() -> Permissions {
         Permissions::read(["issues", "pull_requests", "checks", "statuses", "metadata"])
     }
 
-    /// What is left of the pause a `retry-after` started; zero when there is none.
+    /// What is left of the pause a rate limit's named wait started; zero when there is none.
     pub fn pause_remaining(&self) -> Duration {
         self.rest.pause_remaining()
     }
@@ -372,13 +379,7 @@ impl GitHubReads {
         let cached = self.cache().get(&path.to_owned());
         let reply = self
             .rest
-            .send(
-                Method::GET,
-                path,
-                token,
-                None,
-                cached.as_ref().map(|(etag, _)| etag.as_str()),
-            )
+            .get(path, token, cached.as_ref().map(|(etag, _)| etag.as_str()))
             .await?;
         if reply.status == StatusCode::NOT_MODIFIED {
             let (_, page) = cached.ok_or_else(|| {
@@ -401,12 +402,7 @@ impl GitHubReads {
             }
             return Ok(page);
         }
-        Err(if reply.rate_limited {
-            ReadError::RateLimited {
-                endpoint: reply.endpoint,
-                retry_after: reply.retry_after,
-            }
-        } else if reply.status == StatusCode::NOT_FOUND {
+        Err(if reply.status == StatusCode::NOT_FOUND {
             ReadError::NotFound {
                 endpoint: reply.endpoint,
             }
