@@ -180,7 +180,7 @@ fn log_lists_commits_newest_first() {
     );
     assert_eq!(commits[1].subject, "side work");
     assert_eq!(commits[1].body, "body line\n");
-    assert_eq!(commits[1].parents, [fx.base.clone()]);
+    assert_eq!(commits[1].parents, std::slice::from_ref(&fx.base));
 
     let all = RevRange {
         from: None,

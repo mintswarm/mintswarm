@@ -137,10 +137,10 @@ impl FieldPass<'_> {
         field_id: Option<u64>,
         option: Option<&str>,
     ) -> Result<(), FieldError> {
-        if let Some(name) = option {
-            if !field.options.iter().any(|known| known == name) {
-                return Err(FieldError::Field(FieldFinding::OptionUnmapped));
-            }
+        if let Some(name) = option
+            && !field.options.iter().any(|known| known == name)
+        {
+            return Err(FieldError::Field(FieldFinding::OptionUnmapped));
         }
         match &field.source {
             FieldSource::Field { name } => {

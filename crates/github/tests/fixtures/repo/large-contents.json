@@ -1,0 +1,18 @@
+{
+  "type": "file",
+  "encoding": "none",
+  "size": 1572864,
+  "name": "big.bin",
+  "path": "assets/big.bin",
+  "content": "",
+  "sha": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+  "url": "https://api.github.com/repos/acme/widgets/contents/assets/big.bin?ref=master",
+  "git_url": "https://api.github.com/repos/acme/widgets/git/blobs/9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+  "html_url": "https://github.com/acme/widgets/blob/master/assets/big.bin",
+  "download_url": "https://raw.githubusercontent.com/acme/widgets/master/assets/big.bin",
+  "_links": {
+    "self": "https://api.github.com/repos/acme/widgets/contents/assets/big.bin?ref=master",
+    "git": "https://api.github.com/repos/acme/widgets/git/blobs/9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+    "html": "https://github.com/acme/widgets/blob/master/assets/big.bin"
+  }
+}

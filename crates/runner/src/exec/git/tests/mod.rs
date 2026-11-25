@@ -21,7 +21,7 @@ use super::env::{DROPPED_ENV, FIXED_ENV};
 use super::{GitError, GitStore};
 
 /// A `tool.git` probe result of `version`, or `unknown`.
-pub(super) fn git_probe(version: Option<&str>) -> ProbeResult {
+pub(crate) fn git_probe(version: Option<&str>) -> ProbeResult {
     ProbeResult {
         namespace: "tool.git".parse().unwrap(),
         value: match version {
@@ -37,7 +37,7 @@ pub(super) fn git_probe(version: Option<&str>) -> ProbeResult {
 
 /// git for building fixtures, with no system or global config and fixed identities; `GIT_DIR`
 /// is `git_dir` when given.
-pub(super) fn fixture_command(git_dir: Option<&Path>) -> Command {
+pub(crate) fn fixture_command(git_dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
     command.env_clear();
     if let Some(path) = std::env::var_os("PATH") {
@@ -59,7 +59,7 @@ pub(super) fn fixture_command(git_dir: Option<&Path>) -> Command {
 }
 
 /// Run fixture git with `stdin` and return its output; it must succeed.
-pub(super) fn run_fixture<S: AsRef<OsStr>>(
+pub(crate) fn run_fixture<S: AsRef<OsStr>>(
     mut command: Command,
     args: &[S],
     stdin: &[u8],
@@ -83,7 +83,7 @@ pub(super) fn run_fixture<S: AsRef<OsStr>>(
 }
 
 /// Fixture git on the repository at `git_dir`.
-pub(super) fn fixture_git<S: AsRef<OsStr>>(git_dir: &Path, args: &[S]) -> Vec<u8> {
+pub(crate) fn fixture_git<S: AsRef<OsStr>>(git_dir: &Path, args: &[S]) -> Vec<u8> {
     run_fixture(fixture_command(Some(git_dir)), args, b"")
 }
 
@@ -314,7 +314,7 @@ pub(super) fn commit_with(
 }
 
 /// Output as text without its final newline.
-pub(super) fn text(out: &[u8]) -> String {
+pub(crate) fn text(out: &[u8]) -> String {
     String::from_utf8(out.to_vec())
         .unwrap()
         .trim_end()
@@ -322,7 +322,7 @@ pub(super) fn text(out: &[u8]) -> String {
 }
 
 /// A repository path.
-pub(super) fn path(bytes: &[u8]) -> RepoPath {
+pub(crate) fn path(bytes: &[u8]) -> RepoPath {
     RepoPath(bytes.to_vec())
 }
 

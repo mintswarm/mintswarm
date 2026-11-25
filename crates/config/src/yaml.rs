@@ -323,10 +323,11 @@ fn resolve_plain(text: &str) -> Result<Value, String> {
         b'.' => {
             // yaml.v3 tries Go's ParseFloat on the text as written.
             let plain = text.replace('_', "");
-            if underscores_ok(text) && float_form(&plain) {
-                if let Some(float) = finite(&plain) {
-                    return Ok(float_value(float));
-                }
+            if underscores_ok(text)
+                && float_form(&plain)
+                && let Some(float) = finite(&plain)
+            {
+                return Ok(float_value(float));
             }
             Ok(Value::String(text.to_owned()))
         }
@@ -337,16 +338,16 @@ fn resolve_plain(text: &str) -> Result<Value, String> {
                     format!("{text} does not convert: yq reads it as an integer it cannot marshal")
                 });
             }
-            if float_form(&plain) {
-                if let Some(float) = finite(&plain) {
-                    // yq parses the text as written, where Go allows `_` only between digits.
-                    if !underscores_ok(text) {
-                        return Err(format!(
-                            "{text} does not convert: yq cannot parse the float"
-                        ));
-                    }
-                    return Ok(float_value(float));
+            if float_form(&plain)
+                && let Some(float) = finite(&plain)
+            {
+                // yq parses the text as written, where Go allows `_` only between digits.
+                if !underscores_ok(text) {
+                    return Err(format!(
+                        "{text} does not convert: yq cannot parse the float"
+                    ));
                 }
+                return Ok(float_value(float));
             }
             Ok(Value::String(text.to_owned()))
         }

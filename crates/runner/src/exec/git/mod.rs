@@ -13,7 +13,7 @@ mod read;
 mod snapshot;
 mod store;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::{Path, PathBuf};
 
