@@ -1613,11 +1613,12 @@ SHARED_RECORD = ROOT / "crates/domain/tests/fixtures/result-blocks/needs-input/r
 
 
 def count_reason(what: str, bullets: tuple, record: tuple) -> str:
-    """The blocking-questions reason for bullets (must decide, recommended, blocking, assumption) that disagree
-    with a record's (must decide, recommended, assumption) counts."""
+    """The blocking-questions reason for bullets (must decide, recommended, blocking, assumption and,
+    optionally, unknown) that disagree with a record's (must decide, recommended, assumption) counts."""
+    unknown = bullets[4] if len(bullets) > 4 else 0
     return (
         f"{what}: the '## Questions' bullets (must decide {bullets[0]}, recommended {bullets[1]}, "
-        f"blocking {bullets[2]}, assumption {bullets[3]}) disagree with the result record "
+        f"blocking {bullets[2]}, assumption {bullets[3]}, unknown {unknown}) disagree with the result record "
         f"(must decide {record[0]}, recommended {record[1]}, assumption {record[2]})"
     )
 
@@ -1777,7 +1778,10 @@ def check_question_records(r: Runner) -> None:
             "an unknown marker",
             assumed + "- **Question:** Which component owns it?\n",
             result_record([("assumption", "Is the order free?")]),
-            ["analysis: line 12 of '## Questions' is not an entry with a known marker"],
+            [
+                "analysis: line 12 of '## Questions' is not an entry with a known marker",
+                count_reason("analysis", (0, 0, 0, 1, 1), (0, 0, 1)),
+            ],
         ),
         (
             "no Questions section",

@@ -176,7 +176,8 @@ new dependency's `manifest`.
                              each of its questions whose kind is
                              `must_decide` or `recommended` (the question
                              named), and bullets whose counts disagree with
-                             the record's (below, both sets of counts
+                             the record's, a line with no known marker
+                             counted as unknown (below, both sets of counts
                              named); with an unusable one, its fixed cause;
                              without one, each line starting with a
                              blocking marker after any spaces or tabs (the
@@ -204,10 +205,10 @@ The markers of `## Questions` entries are `- **Must decide:**`,
 `- **Blocking:**` and `- **Non-blocking (assumed):**`. The blocking markers
 are Must decide, Recommended and Blocking; they count at any indentation,
 the other two at column 0 only. With a usable record the bullets are counted:
-M Must decide, R Recommended, B Blocking and A Assumption plus Non-blocking,
-against the record's m `must_decide`, r `recommended` and a `assumption`
-questions. They agree when A is a, M is at most m, R is at most r and
-(m - M) + (r - R) is B, so an old Blocking bullet stands for either blocking
+M Must decide, R Recommended, B Blocking, A Assumption plus Non-blocking and
+U column-0 lines with no known marker, against the record's m `must_decide`,
+r `recommended` and a `assumption` questions. They agree when U is 0, A is a,
+M is at most m, R is at most r and (m - M) + (r - R) is B, so an old Blocking bullet stands for either blocking
 kind; no bullet is a hit of its own, and assumptions never are.
 
 A usable result record is strict JSON, an object whose `questions` is a list
@@ -258,12 +259,11 @@ unresolvable base ref, a partial clone, a failed fetch into the object store
 invalid config, an unreadable or non-UTF-8 plan, issue document, analysis,
 screen record or result record that exists, git or yq missing or failing
 (reading the history too), a stale verdict that cannot be deleted, or any
-unexpected error. Unusable
-input leaves no verdict file, unless a stale one could not be deleted. The
-interpreter itself exits 1 when it crashes outside main(), for example at
-import time, so exit 0 or 1 counts only together with a verdict file whose
-`plan.sha256`, `base.commit` and document bindings match the request; exit 2
-never comes with a valid verdict. Standard library only, apart from running
+unexpected error. Unusable input leaves no verdict file, unless a stale one
+could not be deleted. The interpreter itself exits 1 when it crashes outside
+main(), for example at import time, so exit 0 or 1 counts only together with
+a verdict file whose `plan.sha256`, `base.commit` and document bindings match
+the request; exit 2 never comes with a valid verdict. Standard library only, apart from running
 git and yq."""
 
 import contextlib
@@ -1277,7 +1277,7 @@ def question_reasons(text: str, what: str, record=None) -> list:
         start, body = section(lines, "Questions", what, ends=(2,))
     except DocumentError as exc:
         return reasons + [str(exc)]
-    bullets = {"must_decide": 0, "recommended": 0, "blocking": 0, "assumption": 0}
+    bullets = {"must_decide": 0, "recommended": 0, "blocking": 0, "assumption": 0, "unknown": 0}
     for offset, line in enumerate(body):
         number = start + offset + 1
         entry = line.lstrip(" \t")
@@ -1296,11 +1296,13 @@ def question_reasons(text: str, what: str, record=None) -> list:
             reasons.append(f"{what}: line {number} of '## Questions' is a '# ' heading inside the section")
         else:
             reasons.append(f"{what}: line {number} of '## Questions' is not an entry with a known marker")
+            bullets["unknown"] += 1  # with a usable record, also a disagreement in the counts
     if questions is not None:
         kinds = [kind for kind, _ in questions]
         m, r, a = (kinds.count(kind) for kind in QUESTION_KINDS)
         if not (
-            bullets["assumption"] == a
+            bullets["unknown"] == 0
+            and bullets["assumption"] == a
             and bullets["must_decide"] <= m
             and bullets["recommended"] <= r
             and (m - bullets["must_decide"]) + (r - bullets["recommended"]) == bullets["blocking"]
@@ -1308,8 +1310,8 @@ def question_reasons(text: str, what: str, record=None) -> list:
             reasons.append(
                 f"{what}: the '## Questions' bullets (must decide {bullets['must_decide']}, "
                 f"recommended {bullets['recommended']}, blocking {bullets['blocking']}, "
-                f"assumption {bullets['assumption']}) disagree with the result record "
-                f"(must decide {m}, recommended {r}, assumption {a})"
+                f"assumption {bullets['assumption']}, unknown {bullets['unknown']}) disagree with the "
+                f"result record (must decide {m}, recommended {r}, assumption {a})"
             )
     return reasons
 
