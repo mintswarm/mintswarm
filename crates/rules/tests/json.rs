@@ -6,7 +6,7 @@ use mintswarm_domain::records::{
     DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
 };
 use mintswarm_rules::json::{
-    MAX_DEPTH, ReadError, ReadErrorKind, Style, dumps, read, to_file_text, to_json,
+    MAX_DEPTH, ReadError, ReadErrorKind, Scanner, Style, dumps, read, to_file_text, to_json,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -36,7 +36,10 @@ fn duplicate_keys_are_rejected_at_top_level_and_nested() {
 #[test]
 fn duplicates_are_found_when_the_object_closes() {
     // object_pairs_hook only runs on a complete object, so a syntax error inside comes first
-    assert_eq!(kind(r#"{"a": 1, "a": 2, "b" 3}"#), ReadErrorKind::Syntax);
+    assert_eq!(
+        kind(r#"{"a": 1, "a": 2, "b" 3}"#),
+        ReadErrorKind::Syntax(Scanner::ExpectingColon)
+    );
     // and an inner object closes before its outer one
     assert_eq!(
         kind(r#"{"x": 1, "x": {"y": 1, "y": 2}}"#),
@@ -128,10 +131,86 @@ fn malformed_text_is_a_syntax_error() {
         "\u{a0}1",
         "[1 2]",
     ] {
-        assert_eq!(kind(text), ReadErrorKind::Syntax, "{text:?}");
+        assert!(matches!(kind(text), ReadErrorKind::Syntax(_)), "{text:?}");
     }
     let error = at("[1,\n  ]");
     assert_eq!((error.line, error.column), (2, 3));
+}
+
+/// Texts and the message `str()` of the exception gives for `json.loads` with the tools' hooks,
+/// as CPython 3.11 prints them.
+const PYTHON_MESSAGES: &[(&str, &str)] = &[
+    ("", "Expecting value: line 1 column 1 (char 0)"),
+    (" ", "Expecting value: line 1 column 2 (char 1)"),
+    ("-", "Expecting value: line 1 column 1 (char 0)"),
+    ("[1,]", "Expecting value: line 1 column 4 (char 3)"),
+    (
+        "{\"a\": 1,}",
+        "Expecting property name enclosed in double quotes: line 1 column 9 (char 8)",
+    ),
+    (
+        "{'a': 1}",
+        "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+    ),
+    (
+        "\"abc",
+        "Unterminated string starting at: line 1 column 1 (char 0)",
+    ),
+    ("\"\\x\"", "Invalid \\escape: line 1 column 2 (char 1)"),
+    (
+        "\"\\u12g4\"",
+        "Invalid \\uXXXX escape: line 1 column 3 (char 2)",
+    ),
+    ("nul", "Expecting value: line 1 column 1 (char 0)"),
+    ("+1", "Expecting value: line 1 column 1 (char 0)"),
+    (".5", "Expecting value: line 1 column 1 (char 0)"),
+    ("\u{a0}1", "Expecting value: line 1 column 1 (char 0)"),
+    ("[1 2]", "Expecting ',' delimiter: line 1 column 4 (char 3)"),
+    (
+        "{ not json",
+        "Expecting property name enclosed in double quotes: line 1 column 3 (char 2)",
+    ),
+    (
+        "{\"a\" 1}",
+        "Expecting ':' delimiter: line 1 column 6 (char 5)",
+    ),
+    (
+        "{\"a\": 1 \"b\": 2}",
+        "Expecting ',' delimiter: line 1 column 9 (char 8)",
+    ),
+    ("[1] x", "Extra data: line 1 column 5 (char 4)"),
+    (
+        "\"a\\",
+        "Unterminated string starting at: line 1 column 1 (char 0)",
+    ),
+    (
+        "\"\\u0041",
+        "Invalid \\uXXXX escape: line 1 column 3 (char 2)",
+    ),
+    (
+        "\"\\ud800\\uzzzz\"",
+        "Invalid \\uXXXX escape: line 1 column 9 (char 8)",
+    ),
+    (
+        "{\"\u{e9}\": \"a\tb\"}",
+        "Invalid control character at: line 1 column 9 (char 8)",
+    ),
+    (
+        "\u{feff}{}",
+        "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)",
+    ),
+    ("[1,\n  ]", "Expecting value: line 2 column 3 (char 6)"),
+    ("{\"a\": 1, \"a\": 2}", "duplicate key 'a'"),
+    ("{\"it's\": 1, \"it's\": 2}", "duplicate key \"it's\""),
+    ("[NaN]", "NaN is not allowed"),
+    ("-Infinity", "-Infinity is not allowed"),
+];
+
+#[test]
+fn errors_read_as_python_words_them() {
+    for (text, message) in PYTHON_MESSAGES {
+        assert_eq!(at(text).python_message(), *message, "{text:?}");
+    }
 }
 
 #[test]

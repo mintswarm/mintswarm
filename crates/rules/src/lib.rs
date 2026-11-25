@@ -8,6 +8,8 @@
 //!   - [`markdown`]: headings, sections and fenced blocks, in both of the tools' fence dialects;
 //!   - [`binding`]: sha256 digests and the bindings of files to them;
 //!   - [`exit`]: the 0, 1 and 2 exit-code contract.
+//! - [`plan_floor`]: the plan floor, `plan-approval/floor.py`'s rules over a sha256-bound input
+//!   bundle.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
@@ -18,4 +20,5 @@ pub mod field;
 pub mod glob;
 pub mod json;
 pub mod markdown;
+pub mod plan_floor;
 pub mod size;
