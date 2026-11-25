@@ -43,6 +43,7 @@ mintswarm/
 │   ├── domain/             # ids; job states, events and the transition table; StageJob, StepJob, Usage; pipeline records; PlaneLink, Vcs, Tracker and CodeHost traits; Question objects and their checks; scales (size, priority), field maps, own level and the stride selector, cost model
 │   ├── config/             # repository config (.mintswarm/config.yaml) and runner config; native YAML loader matching yq
 │   ├── github/             # the runner's GitHub App access: App JWT, installation tokens scoped to one repository, private-key store; issue-field and label reads and writes (FieldClient, field catalogue)
+│   ├── rules/              # pure rules shared by runner and plane: tracker field writes, size resolution; Python-parity globs, strict JSON reader and json.dumps writer, Markdown sections and fences, sha256 bindings, 0/1/2 exit contract
 │   ├── proto/              # Rust generated from api/proto by build.rs (protox) into OUT_DIR, not committed; `fakes` feature for test fakes
 │   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
 │   │   └── migrations/     # SQL, append-only
