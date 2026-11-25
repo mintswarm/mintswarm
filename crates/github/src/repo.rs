@@ -2,8 +2,8 @@
 //! at a commit, through the contents, repository and branch endpoints.
 //!
 //! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache, its retry
-//! layer and policy, and its rate-limit pause. A file is read inline from the contents API; a file above its 1 MB
-//! inline limit is refused as [`RepoReadError::TooLarge`].
+//! layer and policy, and its rate-limit pause. A file is read inline from the contents API; a
+//! file above its 1 MB inline limit is refused as [`RepoReadError::TooLarge`].
 //!
 //! A file is read only at a full commit id; any other revision is refused as
 //! [`RepoReadError::InvalidRev`] before a request, since the contents API would read a branch or
