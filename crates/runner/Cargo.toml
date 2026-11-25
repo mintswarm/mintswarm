@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 mintswarm-domain = { path = "../domain" }
+rusqlite = { workspace = true }
+rustix = { workspace = true, features = ["fs"] }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
