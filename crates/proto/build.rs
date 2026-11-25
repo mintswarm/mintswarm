@@ -1,5 +1,9 @@
 //! Compiles every `.proto` under `api/proto/` with `protox` and generates
 //! the Rust code with `tonic-prost-build` into `OUT_DIR`.
+//!
+//! `mintswarm.runner.v1.Secret` is generated without a derived `Debug`:
+//! `src/lib.rs` implements one that prints `Secret(<redacted>)`, so no secret
+//! is ever logged (design §9.5).
 
 use std::error::Error;
 use std::fs;
@@ -23,7 +27,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let fds = protox::compile(&files, [&root])?;
-    tonic_prost_build::configure().compile_fds(fds)?;
+    tonic_prost_build::configure()
+        .skip_debug([".mintswarm.runner.v1.Secret"])
+        .compile_fds(fds)?;
     Ok(())
 }
 
