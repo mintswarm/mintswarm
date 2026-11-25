@@ -3,6 +3,7 @@
 
 mod bundle;
 mod read;
+mod retry;
 mod snapshot;
 mod store;
 
