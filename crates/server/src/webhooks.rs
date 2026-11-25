@@ -1,12 +1,13 @@
 //! A receiver for the GitHub App's webhooks. `POST /github/webhook` checks each delivery's
 //! `X-Hub-Signature-256` against the webhook secret in constant time, answers `202` and appends
 //! the verified delivery to a log file as one JSON line. A missing or bad signature gets `401`
-//! and one JSON line on stderr without the body; a body over [`BODY_LIMIT`] gets `413`.
-//! Nothing is filtered by event type.
+//! and one JSON line on stderr without the body; a body over [`BODY_LIMIT`] gets `413`. At most
+//! [`IN_FLIGHT_LIMIT`] requests are handled at once; one more gets `503` before its body is
+//! read. Nothing is filtered by event type.
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::os::unix::ffi::OsStringExt;
@@ -16,8 +17,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_github::{KeyStore, KeyStoreEnv, KeyStoreError, SecretBytes, Tools, read_key};
@@ -25,12 +28,17 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::Sha256;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// The path GitHub posts deliveries to.
 pub const PATH: &str = "/github/webhook";
 
 /// The largest body accepted, in bytes: GitHub's cap of 25 MB, read as 25 MiB.
 pub const BODY_LIMIT: usize = 25 * 1024 * 1024;
+
+/// The most requests handled at once. Each may hold a body of up to [`BODY_LIMIT`] before its
+/// signature is checked, so this bounds what unauthenticated callers can make the receiver hold.
+pub const IN_FLIGHT_LIMIT: usize = 8;
 
 /// The header that carries the HMAC-SHA256 of the body.
 pub const SIGNATURE_HEADER: &str = "x-hub-signature-256";
@@ -339,11 +347,58 @@ fn io_reason(error: &io::Error) -> &'static str {
 }
 
 /// The delivery log: a file opened in append mode, created if absent. Each line is written
-/// with one `write_all` under a mutex, so lines never interleave.
-#[derive(Debug)]
+/// under a mutex, so lines never interleave. When a write fails after part of a line was
+/// written, the next append first ends that fragment with `\n`, so the fragment stays a line of
+/// its own and the next delivery's line is whole.
 pub struct DeliveryLog {
     path: PathBuf,
-    file: Mutex<File>,
+    sink: Mutex<Sink>,
+}
+
+impl fmt::Debug for DeliveryLog {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeliveryLog")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The writer and whether it ends in a fragment of a line.
+struct Sink {
+    writer: Box<dyn Write + Send>,
+    fragment: bool,
+}
+
+impl Sink {
+    /// Writes all of `bytes`, setting `fragment` when it stops after writing only part of them.
+    fn write_whole(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let mut written = 0;
+        while written < bytes.len() {
+            match self.writer.write(&bytes[written..]) {
+                Ok(0) => {
+                    self.fragment |= written > 0;
+                    return Err(io::ErrorKind::WriteZero.into());
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    self.fragment |= written > 0;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends a fragment left by a failed write, then writes `line`.
+    fn append(&mut self, line: &[u8]) -> io::Result<()> {
+        if self.fragment {
+            self.write_whole(b"\n")?;
+            self.fragment = false;
+        }
+        self.write_whole(line)?;
+        self.writer.flush()
+    }
 }
 
 impl DeliveryLog {
@@ -358,10 +413,19 @@ impl DeliveryLog {
                 reason: io_reason(&source),
                 source,
             })?;
-        Ok(Self {
-            path: path.to_owned(),
-            file: Mutex::new(file),
-        })
+        Ok(Self::with_writer(path.to_owned(), file))
+    }
+
+    /// A log that appends to `writer`, reported under `path`. [`DeliveryLog::open`] passes the
+    /// file it opened; tests pass a writer that fails.
+    pub fn with_writer(path: PathBuf, writer: impl Write + Send + 'static) -> Self {
+        Self {
+            path,
+            sink: Mutex::new(Sink {
+                writer: Box::new(writer),
+                fragment: false,
+            }),
+        }
     }
 
     /// The log's path.
@@ -369,12 +433,12 @@ impl DeliveryLog {
         &self.path
     }
 
-    /// Appends `line`, which ends in `\n`, in one `write_all`.
+    /// Appends `line`, which ends in `\n`, first ending any fragment a failed write left.
     pub fn append(&self, line: &[u8]) -> Result<(), LogError> {
-        let mut file = self.file.lock().map_err(|_| LogError::Poisoned {
+        let mut sink = self.sink.lock().map_err(|_| LogError::Poisoned {
             path: self.path.clone(),
         })?;
-        file.write_all(line).map_err(|source| LogError::Write {
+        sink.append(line).map_err(|source| LogError::Write {
             path: self.path.clone(),
             reason: io_reason(&source),
             source,
@@ -382,29 +446,54 @@ impl DeliveryLog {
     }
 }
 
-/// What the receiver's handler shares: the secret and the log.
+/// What the receiver's handler shares: the secret, the log and the permits for requests in
+/// flight. Clones share all three.
 #[derive(Clone, Debug)]
 pub struct Receiver {
     secret: Arc<Secret>,
     log: Arc<DeliveryLog>,
+    in_flight: Arc<Semaphore>,
 }
 
 impl Receiver {
-    /// A receiver that checks signatures with `secret` and appends to `log`.
+    /// A receiver that checks signatures with `secret`, appends to `log` and handles at most
+    /// [`IN_FLIGHT_LIMIT`] requests at once.
     pub fn new(secret: Secret, log: DeliveryLog) -> Self {
+        Self::with_limit(secret, log, IN_FLIGHT_LIMIT)
+    }
+
+    /// As [`Receiver::new`], handling at most `limit` requests at once.
+    pub fn with_limit(secret: Secret, log: DeliveryLog, limit: usize) -> Self {
         Self {
             secret: Arc::new(secret),
             log: Arc::new(log),
+            in_flight: Arc::new(Semaphore::new(limit)),
         }
     }
 }
 
-/// The router: `POST /github/webhook`, with bodies capped at [`BODY_LIMIT`].
+/// The router: `POST /github/webhook`, with bodies capped at [`BODY_LIMIT`] and requests in
+/// flight capped by the receiver's limit.
 pub fn router(receiver: Receiver) -> Router {
+    let in_flight = Arc::clone(&receiver.in_flight);
     Router::new()
         .route(PATH, post(receive))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(in_flight, limit_in_flight))
         .with_state(receiver)
+}
+
+/// Answers `503` without reading the body when every permit is taken; otherwise holds a permit
+/// until the response is ready.
+async fn limit_in_flight(
+    State(in_flight): State<Arc<Semaphore>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Ok(_permit) = in_flight.try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    next.run(request).await
 }
 
 async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Bytes) -> StatusCode {

@@ -1,10 +1,12 @@
 //! Drives the webhook receiver's router in-process.
 
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_server::webhooks::{
@@ -232,6 +234,128 @@ async fn concurrent_deliveries_give_whole_lines() {
         .collect();
     deliveries.sort_by_key(|value| value.to_string());
     assert_eq!(deliveries, [json!("d-a"), json!("d-b")]);
+}
+
+/// A request whose body never arrives, so the receiver holds its permit until it is dropped.
+fn stalled(delivery: &str) -> Request<Body> {
+    let body = Body::from_stream(tokio_stream::pending::<io::Result<Bytes>>());
+    Request::post(PATH)
+        .header("x-github-event", "push")
+        .header("x-github-delivery", delivery)
+        .header("x-hub-signature-256", signature(SECRET, b""))
+        .body(body)
+        .expect("a valid request")
+}
+
+#[tokio::test]
+async fn requests_over_the_limit_are_refused_until_one_finishes() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("deliveries.jsonl");
+    let log = DeliveryLog::open(&path).expect("the log opens");
+    let receiver = Receiver::with_limit(secret(), log, 2);
+    let held: Vec<_> = ["d-held-1", "d-held-2"]
+        .into_iter()
+        .map(|delivery| tokio::spawn(send_owned(receiver.clone(), stalled(delivery))))
+        .collect();
+    let mut refused = false;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+        let status = send(&receiver, signed("push", "d-over", b"{}")).await;
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            refused = true;
+            break;
+        }
+        assert_eq!(
+            status,
+            StatusCode::ACCEPTED,
+            "until both are held, it is accepted"
+        );
+    }
+    assert!(refused, "a request over the limit gets 503");
+    for task in &held {
+        task.abort();
+    }
+    for task in held {
+        let _ = task.await;
+    }
+    assert_eq!(
+        send(&receiver, signed("push", "d-after", b"{}")).await,
+        StatusCode::ACCEPTED,
+        "the permits come back when the held requests end"
+    );
+    let logged: Vec<Value> = lines(&path)
+        .into_iter()
+        .map(|line| line["delivery"].clone())
+        .collect();
+    assert_eq!(logged.last(), Some(&json!("d-after")));
+    assert!(!logged.contains(&json!("d-held-1")) && !logged.contains(&json!("d-held-2")));
+}
+
+async fn send_owned(receiver: Receiver, request: Request<Body>) -> StatusCode {
+    send(&receiver, request).await
+}
+
+/// A writer into a shared buffer that fails once, after taking `take` bytes of a write.
+struct FailOnce {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    fail_after: Option<usize>,
+}
+
+impl Write for FailOnce {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut buffer = self.buffer.lock().expect("the buffer lock");
+        match self.fail_after.take() {
+            Some(0) => Err(io::ErrorKind::StorageFull.into()),
+            Some(take) => {
+                let take = take.min(bytes.len());
+                buffer.extend_from_slice(&bytes[..take]);
+                self.fail_after = Some(0);
+                Ok(take)
+            }
+            None => {
+                buffer.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn failing_log(fail_after: usize) -> (DeliveryLog, Arc<Mutex<Vec<u8>>>) {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let writer = FailOnce {
+        buffer: Arc::clone(&buffer),
+        fail_after: Some(fail_after),
+    };
+    (
+        DeliveryLog::with_writer(PathBuf::from("deliveries.jsonl"), writer),
+        buffer,
+    )
+}
+
+#[test]
+fn a_fragment_from_a_failed_write_is_ended_before_the_next_line() {
+    let (log, buffer) = failing_log(5);
+    assert!(log.append(b"{\"n\":1}\n").is_err(), "the first write fails");
+    log.append(b"{\"n\":2}\n")
+        .expect("the second write succeeds");
+    log.append(b"{\"n\":3}\n")
+        .expect("the third write succeeds");
+    let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
+        .expect("the log is UTF-8");
+    assert_eq!(text, "{\"n\":\n{\"n\":2}\n{\"n\":3}\n");
+}
+
+#[test]
+fn a_write_that_fails_before_any_byte_adds_no_empty_line() {
+    let (log, buffer) = failing_log(0);
+    assert!(log.append(b"{\"n\":1}\n").is_err(), "the first write fails");
+    log.append(b"{\"n\":2}\n")
+        .expect("the second write succeeds");
+    assert_eq!(*buffer.lock().expect("the buffer lock"), b"{\"n\":2}\n");
 }
 
 #[test]
