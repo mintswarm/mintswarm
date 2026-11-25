@@ -10,7 +10,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::os::unix::ffi::OsStringExt;
@@ -32,8 +32,8 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::Sha256;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::{Semaphore, oneshot};
 use tokio::task::JoinHandle;
 
 /// The path GitHub posts deliveries to.
@@ -513,6 +513,15 @@ pub struct Limits {
     pub read_timeout: Duration,
 }
 
+impl Limits {
+    /// How long a stop waits for the requests in progress: twice [`Limits::read_timeout`], one
+    /// for a request head still arriving when the stop came and one for the body read after it,
+    /// which the read timeout bounds. Past it the stop ends without them; see [`serve`].
+    pub fn stop_deadline(&self) -> Duration {
+        self.read_timeout.saturating_mul(2)
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -531,13 +540,22 @@ struct Queued {
     body: Bytes,
 }
 
+/// What goes on the queue: a delivery, or the stop, after which the writer takes no more
+/// deliveries but still writes the ones already queued.
+#[derive(Debug)]
+enum Item {
+    Delivery(Queued),
+    Stop,
+}
+
 /// What the receiver's handler shares: the secret, the queue to the log and the gate on
 /// requests in flight. Clones share all three.
 #[derive(Clone, Debug)]
 pub struct Receiver {
     secret: Arc<Secret>,
-    queue: mpsc::Sender<Queued>,
+    queue: mpsc::Sender<Item>,
     gate: Gate,
+    limits: Limits,
 }
 
 /// The permits for requests in flight, and how long each may hold one.
@@ -555,8 +573,8 @@ impl fmt::Debug for Queued {
     }
 }
 
-/// The task that drains the queue to the log. It ends once every [`Receiver`] clone is dropped
-/// and the queue is empty.
+/// The task that drains the queue to the log. It ends once the queue is empty and either every
+/// [`Receiver`] clone is dropped or [`serve`] has closed the queue.
 #[derive(Debug)]
 pub struct Writer(JoinHandle<()>);
 
@@ -573,9 +591,17 @@ impl Receiver {
     /// Starts the writer that drains the queue to `log`, and returns a receiver that checks
     /// signatures with `secret` within `limits`. Call it inside a Tokio runtime.
     pub fn start(secret: Secret, log: DeliveryLog, limits: Limits) -> (Self, Writer) {
-        let (queue, mut drain) = mpsc::channel::<Queued>(limits.queued.max(1));
+        let (queue, mut drain) = mpsc::channel::<Item>(limits.queued.max(1));
         let writer = tokio::task::spawn_blocking(move || {
-            while let Some(queued) = drain.blocking_recv() {
+            while let Some(item) = drain.blocking_recv() {
+                let queued = match item {
+                    Item::Delivery(queued) => queued,
+                    Item::Stop => {
+                        // Deliveries already queued are still received; new ones are refused.
+                        drain.close();
+                        continue;
+                    }
+                };
                 let line = delivery_line(
                     &queued.received_at,
                     queued.delivery.as_deref(),
@@ -594,6 +620,7 @@ impl Receiver {
                 permits: Arc::new(Semaphore::new(limits.in_flight.max(1))),
                 read_timeout: limits.read_timeout,
             },
+            limits,
         };
         (receiver, Writer(writer))
     }
@@ -653,17 +680,23 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
         received_at,
         body,
     };
-    match receiver.queue.try_send(queued) {
-        Ok(()) => StatusCode::ACCEPTED,
-        Err(TrySendError::Full(queued)) => {
-            report_queued(&queued, Outcome::Rejected("queue_full"));
-            StatusCode::TOO_MANY_REQUESTS
-        }
-        Err(TrySendError::Closed(queued)) => {
-            report_queued(&queued, Outcome::Error("the log writer has stopped"));
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+    let (item, outcome, status) = match receiver.queue.try_send(Item::Delivery(queued)) {
+        Ok(()) => return StatusCode::ACCEPTED,
+        Err(TrySendError::Full(item)) => (
+            item,
+            Outcome::Rejected("queue_full"),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        Err(TrySendError::Closed(item)) => (
+            item,
+            Outcome::Error("the log writer has stopped"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    };
+    if let Item::Delivery(queued) = &item {
+        report_queued(queued, outcome);
     }
+    status
 }
 
 /// Writes one JSON line to stderr about a queued delivery that was not logged, without its line.
@@ -748,24 +781,65 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener, ServeError> {
         })
 }
 
-/// Serves [`router`] on `listener` until `shutdown` resolves. It then stops accepting, lets the
-/// requests in progress finish (each within its [`Limits::read_timeout`]), and waits for
-/// `writer` to drain the queue to the log, so every delivery answered `202` is written, or
-/// reported on stderr, before it returns.
+/// How a stop ended. In each case the deliveries already queued were drained to the log, or
+/// reported on stderr, before [`serve`] returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stopped {
+    /// Every request in progress was answered.
+    Drained,
+    /// [`Limits::stop_deadline`] passed with requests still open, such as a connection that
+    /// stalled before its request head was complete; they were left unanswered.
+    DeadlinePassed,
+    /// `force` resolved with requests still open; they were left unanswered.
+    Forced,
+}
+
+/// Serves [`router`] on `listener` until `shutdown` resolves. It then stops accepting and lets
+/// the requests in progress finish, until they all have, [`Limits::stop_deadline`] has passed,
+/// or `force` resolves, whichever comes first; `force` is only awaited after `shutdown`. It
+/// then closes the queue, so a request still open that later passes its signature check gets
+/// `500` and a stderr line, and waits for `writer` to drain what was queued, so every delivery
+/// answered `202` is written, or reported on stderr, before it returns.
 pub async fn serve(
     listener: TcpListener,
     receiver: Receiver,
     writer: Writer,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> Result<(), ServeError> {
-    let served = axum::serve(listener, router(receiver))
-        .with_graceful_shutdown(shutdown)
-        .await;
-    // The server and its connections have dropped their receivers by now, so the writer ends
-    // once the queue is empty. It is awaited after an error too, to write what was answered.
+    force: impl Future<Output = ()> + Send,
+) -> Result<Stopped, ServeError> {
+    let deadline = receiver.limits.stop_deadline();
+    let queue = receiver.queue.clone();
+    let (stopping, stop_started) = oneshot::channel::<()>();
+    let server = axum::serve(listener, router(receiver))
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            let _ = stopping.send(());
+        })
+        .into_future();
+    let bound = async move {
+        if stop_started.await.is_err() {
+            // The server ended without a stop; its own result decides.
+            return std::future::pending().await;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(deadline) => Stopped::DeadlinePassed,
+            () = force => Stopped::Forced,
+        }
+    };
+    let (served, stopped) = tokio::select! {
+        served = server => (served, Stopped::Drained),
+        stopped = bound => (Ok(()), stopped),
+    };
+    // Connections left open still hold receivers, so the writer is told to stop taking
+    // deliveries; it ends once what is queued is written. If the writer has already ended
+    // there is nothing to stop. It is awaited after an error too, to write what was answered.
+    let _ = queue.send(Item::Stop).await;
+    drop(queue);
     writer.finished().await;
-    served.map_err(|source| ServeError::Serve {
-        reason: io_reason(&source),
-        source,
-    })
+    served
+        .map(|()| stopped)
+        .map_err(|source| ServeError::Serve {
+            reason: io_reason(&source),
+            source,
+        })
 }

@@ -1,7 +1,9 @@
 //! Runs the built `mintswarm-server` binary.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Command, ExitStatus, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mintswarm-server");
 
@@ -187,4 +189,77 @@ fn webhooks_exits_zero_on_sigterm_and_sigint() {
         let status = child.wait().expect("mintswarm-server exits");
         assert_eq!(code(status), Some(0), "{signal} stops it cleanly");
     }
+}
+
+/// Sends `signal` to `child` with `kill`.
+fn send_signal(child: &Child, signal: &str) {
+    let killed = Command::new("kill")
+        .arg(signal)
+        .arg(child.id().to_string())
+        .status()
+        .expect("kill runs");
+    assert!(killed.success(), "the signal {signal} is sent");
+}
+
+/// Waits up to `bound` for `child` to exit, and kills it if it has not.
+fn wait_bounded(child: &mut Child, bound: Duration) -> Option<ExitStatus> {
+    let start = Instant::now();
+    while start.elapsed() < bound {
+        if let Some(status) = child.try_wait().expect("the child can be polled") {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
+#[test]
+fn webhooks_a_second_signal_ends_a_stop_held_by_a_stalled_connection() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let log = dir.path().join("deliveries.jsonl");
+    // The default read timeout gives a 20-second stop deadline, longer than the bound below.
+    let mut child = Command::new(BIN)
+        .args(["webhooks", "--listen", "127.0.0.1:0", "--log"])
+        .arg(&log)
+        .env("MSW_WEBHOOK_SECRET", "it's a secret to everybody")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("mintswarm-server starts");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
+    let mut first = String::new();
+    stderr
+        .read_line(&mut first)
+        .expect("the start line is read");
+    // The start line is ours: "... listening on http://<addr>/github/webhook, ...".
+    let addr = first
+        .split("http://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .expect("the start line gives the address")
+        .to_owned();
+    let mut stalled = TcpStream::connect(&addr).expect("the receiver accepts");
+    stalled
+        .write_all(b"POST /github/webhook HTTP/1.1\r\n")
+        .expect("the partial head is sent");
+    std::thread::sleep(Duration::from_millis(200));
+
+    send_signal(&child, "-TERM");
+    let mut stopping = String::new();
+    stderr
+        .read_line(&mut stopping)
+        .expect("the stopping line is read");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        child.try_wait().expect("the child can be polled").is_none(),
+        "the stalled connection holds the stop"
+    );
+    send_signal(&child, "-INT");
+    let status = wait_bounded(&mut child, Duration::from_secs(10))
+        .expect("the second signal ends the stop before the deadline");
+    assert_eq!(code(status), Some(0), "a forced stop still exits 0");
+    drop(stalled);
 }

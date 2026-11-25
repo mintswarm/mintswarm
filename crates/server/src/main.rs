@@ -10,9 +10,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use mintswarm_github::KeyStore;
 use mintswarm_server::webhooks::{
     self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_READ_TIMEOUT, DEFAULT_SECRET_ENV, DeliveryLog,
-    Limits, PATH, Receiver, SecretSource,
+    Limits, PATH, Receiver, SecretSource, Stopped,
 };
 use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::oneshot;
 
 /// The mintswarm control plane
 #[derive(Debug, Parser)]
@@ -62,7 +63,8 @@ struct WebhooksArgs {
     #[arg(long, default_value_t = DEFAULT_QUEUED, value_parser = RangedU64ValueParser::<usize>::new().range(1..))]
     max_queued: usize,
     /// The most seconds a request may take to arrive whole and be answered, which is GitHub's own
-    /// delivery timeout by default; a slower one gets 408 and gives back its place
+    /// delivery timeout by default; a slower one gets 408 and gives back its place. A stop waits
+    /// twice this for the requests in progress
     #[arg(long, value_name = "SECONDS", default_value_t = DEFAULT_READ_TIMEOUT.as_secs(), value_parser = RangedU64ValueParser::<u64>::new().range(1..))]
     read_timeout: u64,
 }
@@ -142,7 +144,8 @@ fn main() -> ExitCode {
 }
 
 /// Loads the secret and opens the log before binding, then serves until SIGINT (Ctrl-C) or
-/// SIGTERM, and drains the queue to the log before it returns.
+/// SIGTERM. A stop waits for the requests in progress until the stop deadline or a second
+/// signal, drains the queue to the log, and says on stderr how it ended.
 fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -158,9 +161,19 @@ fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
             "mintswarm-server webhooks: listening on http://{addr}{PATH}, appending deliveries to {}",
             args.log.display()
         );
-        let (receiver, writer) = Receiver::start(secret, log, args.limits());
-        webhooks::serve(listener, receiver, writer, stop.requested()).await?;
-        eprintln!("mintswarm-server webhooks: stopped; every queued delivery was handled");
+        let limits = args.limits();
+        let deadline = limits.stop_deadline().as_secs();
+        let (requested, forced) = stop.spawn(deadline);
+        let (receiver, writer) = Receiver::start(secret, log, limits);
+        let stopped = webhooks::serve(listener, receiver, writer, requested, forced).await?;
+        let how = match stopped {
+            Stopped::Drained => "every request in progress was answered".to_owned(),
+            Stopped::DeadlinePassed => format!(
+                "the {deadline}-second stop deadline passed, and the requests still in progress were left unanswered"
+            ),
+            Stopped::Forced => "a second signal came, and the requests still in progress were left unanswered".to_owned(),
+        };
+        eprintln!("mintswarm-server webhooks: stopped; {how}; every queued delivery was handled");
         Ok(())
     })
 }
@@ -181,15 +194,47 @@ impl Stop {
         })
     }
 
-    /// Resolves on the first SIGINT or SIGTERM.
-    async fn requested(mut self) {
+    /// Resolves on the next SIGINT or SIGTERM.
+    async fn next(&mut self) {
         tokio::select! {
             _ = self.interrupt.recv() => {}
             _ = self.terminate.recv() => {}
         }
-        eprintln!(
-            "mintswarm-server webhooks: stopping; finishing the requests in progress and draining the queue"
-        );
+    }
+
+    /// Watches the signals on a task, and gives two futures: the first resolves on the first
+    /// signal, the second on the one after it. A stop waits up to `deadline` seconds.
+    fn spawn(
+        mut self,
+        deadline: u64,
+    ) -> (
+        impl Future<Output = ()> + Send + 'static,
+        impl Future<Output = ()> + Send + 'static,
+    ) {
+        let (first_tx, first) = oneshot::channel::<()>();
+        let (second_tx, second) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            self.next().await;
+            eprintln!(
+                "mintswarm-server webhooks: stopping; waiting up to {deadline} seconds for the requests in progress (a second Ctrl-C or SIGTERM stops waiting), then draining the queue"
+            );
+            let _ = first_tx.send(());
+            self.next().await;
+            eprintln!(
+                "mintswarm-server webhooks: second signal; no longer waiting for the requests in progress, draining the queue"
+            );
+            let _ = second_tx.send(());
+        });
+        let requested = async move {
+            // The task only ends early if the runtime is shutting down, which is a stop too.
+            let _ = first.await;
+        };
+        let forced = async move {
+            if second.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        (requested, forced)
     }
 }
 

@@ -12,8 +12,8 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_server::webhooks::{
     BODY_LIMIT, DEFAULT_READ_TIMEOUT, DeliveryLog, Limits, PATH, Receiver, Secret, SecretError,
-    SecretSource, Verdict, Writer, bind, delivery_line, format_rfc3339_utc, load_secret, log_line,
-    parse_signature, router, serve, verify,
+    SecretSource, Stopped, Verdict, Writer, bind, delivery_line, format_rfc3339_utc, load_secret,
+    log_line, parse_signature, router, serve, verify,
 };
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -526,9 +526,15 @@ async fn a_stop_drains_the_queue_before_serve_returns() {
         .expect("a local port");
     let addr = listener.local_addr().expect("the bound address");
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(serve(listener, receiver, writer, async {
-        let _ = stopped.await;
-    }));
+    let server = tokio::spawn(serve(
+        listener,
+        receiver,
+        writer,
+        async {
+            let _ = stopped.await;
+        },
+        std::future::pending(),
+    ));
 
     assert_eq!(post_over_tcp(addr, "d-1", b"{}").await, 202);
     tokio::task::spawn_blocking(move || started.recv())
@@ -544,20 +550,147 @@ async fn a_stop_drains_the_queue_before_serve_returns() {
         "serve waits while a delivery is still queued"
     );
     release.send(()).expect("the writer waits for the release");
-    server
+    let stopped = server
         .await
         .expect("serve does not panic")
         .expect("serve stops cleanly");
+    assert_eq!(stopped, Stopped::Drained);
+    assert_eq!(logged_deliveries(&buffer), [json!("d-1"), json!("d-2")]);
+}
 
+/// The `delivery` of each line in `buffer`.
+fn logged_deliveries(buffer: &Mutex<Vec<u8>>) -> Vec<Value> {
     let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
         .expect("the log is UTF-8");
-    let deliveries: Vec<Value> = text
-        .lines()
+    text.lines()
         .map(|line| {
             serde_json::from_str::<Value>(line).expect("each line is JSON")["delivery"].clone()
         })
-        .collect();
-    assert_eq!(deliveries, [json!("d-1"), json!("d-2")]);
+        .collect()
+}
+
+/// Opens a connection that sends the start of a request head and then stalls, and gives the
+/// receiver time to accept it.
+async fn stalled_head(addr: SocketAddr) -> TcpStream {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("the receiver accepts");
+    stream
+        .write_all(format!("POST {PATH} HTTP/1.1\r\nhost: {addr}\r\n").as_bytes())
+        .await
+        .expect("the partial head is sent");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stream
+}
+
+/// How long the stop tests wait for `serve` before they fail instead of hanging.
+const BOUNDED_WAIT: Duration = Duration::from_secs(10);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_head_holds_a_stop_only_until_its_deadline_and_the_queue_is_still_drained() {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let (started_tx, started) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let log = DeliveryLog::with_writer(
+        PathBuf::from("deliveries.jsonl"),
+        Gated {
+            buffer: Arc::clone(&buffer),
+            started: Some(started_tx),
+            release: release_rx,
+        },
+    );
+    let limits = Limits {
+        read_timeout: Duration::from_millis(250),
+        ..Limits::default()
+    };
+    let (receiver, writer) = Receiver::start(secret(), log, limits);
+    let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("a local port");
+    let addr = listener.local_addr().expect("the bound address");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve(
+        listener,
+        receiver,
+        writer,
+        async {
+            let _ = stopped.await;
+        },
+        std::future::pending(),
+    ));
+
+    assert_eq!(post_over_tcp(addr, "d-1", b"{}").await, 202);
+    tokio::task::spawn_blocking(move || started.recv())
+        .await
+        .expect("the wait ends")
+        .expect("the writer starts on the first delivery");
+    assert_eq!(post_over_tcp(addr, "d-2", b"{}").await, 202);
+    let _stalled = stalled_head(addr).await;
+
+    stop.send(()).expect("serve waits for the stop");
+    tokio::time::sleep(limits.stop_deadline() * 2).await;
+    assert!(
+        !server.is_finished(),
+        "past the deadline, serve still waits for the queued delivery"
+    );
+    release.send(()).expect("the writer waits for the release");
+    let stopped = tokio::time::timeout(BOUNDED_WAIT, server)
+        .await
+        .expect("serve returns despite the stalled connection")
+        .expect("serve does not panic")
+        .expect("serve stops cleanly");
+    assert_eq!(stopped, Stopped::DeadlinePassed);
+    assert_eq!(logged_deliveries(&buffer), [json!("d-1"), json!("d-2")]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn force_ends_the_wait_for_a_stalled_head_before_the_deadline() {
+    let fixture = fixture();
+    let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("a local port");
+    let addr = listener.local_addr().expect("the bound address");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let (force, forced) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(serve(
+        listener,
+        fixture.receiver,
+        fixture.writer,
+        async {
+            let _ = stopped.await;
+        },
+        async {
+            let _ = forced.await;
+        },
+    ));
+
+    assert_eq!(post_over_tcp(addr, "d-1", b"{}").await, 202);
+    let _stalled = stalled_head(addr).await;
+    stop.send(()).expect("serve waits for the stop");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !server.is_finished(),
+        "serve waits for the stalled connection"
+    );
+    force.send(()).expect("serve waits for the force");
+    let stopped = tokio::time::timeout(BOUNDED_WAIT, server)
+        .await
+        .expect("serve returns once forced, well before the 20-second deadline")
+        .expect("serve does not panic")
+        .expect("serve stops cleanly");
+    assert_eq!(stopped, Stopped::Forced);
+    assert_eq!(lines(&fixture.path)[0]["delivery"], json!("d-1"));
+    drop(fixture.dir);
+}
+
+#[test]
+fn the_stop_deadline_is_twice_the_read_timeout() {
+    let limits = Limits {
+        read_timeout: Duration::from_secs(7),
+        ..Limits::default()
+    };
+    assert_eq!(limits.stop_deadline(), Duration::from_secs(14));
+    assert_eq!(Limits::default().stop_deadline(), DEFAULT_READ_TIMEOUT * 2);
 }
 
 /// A writer into a shared buffer that fails once, after taking `take` bytes of a write.
