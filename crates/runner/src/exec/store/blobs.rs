@@ -77,8 +77,9 @@ pub(super) fn blob_path(root: &Path, id: &BlobId) -> PathBuf {
 /// Store `content` and return its id.
 ///
 /// The content is written to `tmp`, synced, set to mode 0444 and renamed into place, and the
-/// directory is synced. A blob of that id already stored is verified instead; a corrupt one is
-/// replaced, with a warning.
+/// fan-out directory and its parent `blobs/sha256` are synced, so that a fan-out directory
+/// created here survives a crash too. A blob of that id already stored is verified instead; a
+/// corrupt one is replaced, with a warning.
 pub(super) fn put(root: &Path, content: &[u8]) -> Result<BlobId, StoreError> {
     let id = BlobId::of(content);
     let path = blob_path(root, &id);
@@ -102,15 +103,26 @@ pub(super) fn put(root: &Path, content: &[u8]) -> Result<BlobId, StoreError> {
             .unwrap_or_else(|| root.to_path_buf());
         ensure_dir(&dir)?;
         std::fs::rename(&tmp, &path).map_err(io(&path, "cannot store the blob"))?;
-        File::open(&dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(io(&dir, "cannot sync"))
+        sync_dir(&dir)?;
+        // Always, not only when `dir` is new here: an earlier put may have created it and
+        // failed before syncing the parent.
+        match dir.parent() {
+            Some(parent) => sync_dir(parent),
+            None => Ok(()),
+        }
     });
     if written.is_err() {
         // Best effort: `tmp` is cleared when the store is next opened anyway.
         let _ = std::fs::remove_file(&tmp);
     }
     written.map(|()| id)
+}
+
+/// Sync the directory `dir`, so that the entries made in it are durable.
+fn sync_dir(dir: &Path) -> Result<(), StoreError> {
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(io(dir, "cannot sync"))
 }
 
 /// Write `content` to the new file `tmp`, sync it and set its mode to 0444.
