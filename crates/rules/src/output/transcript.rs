@@ -49,6 +49,11 @@ pub struct TranscriptCapture {
     pub result: Result<Capture, Fault>,
 }
 
+/// Whether `value` is the string `s`.
+fn is(value: Option<&Value>, s: &str) -> bool {
+    value.and_then(Value::as_str).is_some_and(|v| v.is(s))
+}
+
 /// The text parts of a message's `content`.
 fn message_text(content: Option<&Value>) -> Vec<String> {
     let text_of = |value: Option<&Value>| {
@@ -62,8 +67,6 @@ fn message_text(content: Option<&Value>) -> Vec<String> {
         Some(Value::Array(items)) => items,
         _ => return Vec::new(),
     };
-    let is =
-        |value: Option<&Value>, s: &str| value.and_then(Value::as_str).is_some_and(|v| v.is(s));
     let mut parts = Vec::new();
     for item in items {
         let Value::Object(c) = item else { continue };
@@ -88,21 +91,13 @@ fn assistant_messages(transcript: &str) -> Vec<(Option<String>, String)> {
         let Ok(Value::Object(rec)) = pyjson::loads(line) else {
             continue;
         };
-        if !rec
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|t| t.is("assistant"))
-        {
+        if !is(rec.get("type"), "assistant") {
             continue;
         }
         let Some(Value::Object(msg)) = rec.get("message") else {
             continue;
         };
-        if !msg
-            .get("role")
-            .and_then(Value::as_str)
-            .is_some_and(|r| r.is("assistant"))
-        {
+        if !is(msg.get("role"), "assistant") {
             continue;
         }
         let parts: Vec<String> = message_text(msg.get("content"))
