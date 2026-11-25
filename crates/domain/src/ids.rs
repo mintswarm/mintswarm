@@ -49,3 +49,12 @@ id!(
     /// A harness account, by the nickname the runner config gives it.
     AccountName(String)
 );
+id!(
+    /// The fence of an attempt's lease: the plane raises it on every reassignment, so writes
+    /// from an older holder are refused.
+    LeaseEpoch(u64)
+);
+id!(
+    /// A directive, so the runner can acknowledge it with a receipt.
+    DirectiveId(String)
+);
