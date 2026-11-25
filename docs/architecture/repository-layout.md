@@ -91,6 +91,8 @@ mintswarm/
 │
 ├── docs/
 │   ├── architecture/       # how the system is built, as it stands now
+│   │   ├── repository-layout.md  # this document: where each thing goes
+│   │   └── runner-protocol.md    # the runner ⇄ plane protocol as api/proto/mintswarm/runner/v1/ defines it
 │   ├── conventions/        # Rust, TypeScript and React conventions copied from the guideline packs
 │   └── guides/             # user-facing: setup, credentials and usage policy, …
 │
@@ -110,7 +112,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
-- **Protos** (`api/proto/`): `buf lint` and `buf breaking` against `master` run in CI. Rust is generated in `build.rs` of `crates/proto`, not committed. Messages exposed over HTTP are written with the proto3 JSON mapping in mind.
+- **Protos** (`api/proto/`): `buf lint` and `buf breaking` against `master` run in CI. Rust is generated in `build.rs` of `crates/proto`, not committed. Messages exposed over HTTP are written with the proto3 JSON mapping in mind. The `runner/v1` protocol is described in [runner-protocol.md](runner-protocol.md).
 - **HTTP routes** come from `google.api.http` annotations, never from hand-written handlers. The event stream for the browser (`text/event-stream`) is the one exception if the transcoder cannot serve a server-streaming RPC as SSE.
 - **The transcoding layer is isolated.** HTTP JSON is transcoded in process by one module in core; nothing outside it names the transcoding crate, so it can be replaced.
 - **Generated contracts are committed:** `api/openapi/` (from the protos) and `api/schemas/` (from Rust types, via `cargo xtask schemas`). CI regenerates both and fails on drift. TypeScript in `web/packages/api` is generated from `api/openapi/` and not committed.
