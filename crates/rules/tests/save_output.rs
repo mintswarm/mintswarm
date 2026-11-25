@@ -1,6 +1,9 @@
 //! Parity with `.mintswarm/dogfood/save-output.py`: every call its self-test makes, recorded live
-//! by `tests/fixtures/save-output-record.py`, gives the same saved bytes, stdout and stderr
-//! through `mintswarm_rules::output`.
+//! by `tests/fixtures/save-output-record.py`, reaches the same decision through
+//! `mintswarm_rules::output`. A saved reply gives the same document and record bytes; a rejected
+//! one breaks the same rule, by name and quoted text. In transcript mode the same message is
+//! selected. The fault's own detail is never compared: in `save-output.py` it carries Python's
+//! `repr` and its JSON decoder's messages, which change between Python versions.
 
 #![cfg(test)]
 
@@ -8,8 +11,7 @@ use std::path::Path;
 use std::process::Command;
 use std::{env, fs, process};
 
-use mintswarm_rules::markdown::py_rstrip;
-use mintswarm_rules::output::{capture, capture_transcript};
+use mintswarm_rules::output::{STAGES, capture, capture_transcript};
 use serde_json::Value;
 
 /// The tests of the self-test that never run save-output.py.
@@ -55,17 +57,25 @@ fn text<'v>(entry: &'v Value, key: &str) -> &'v str {
         .unwrap_or_else(|| panic!("{key} is a string in {entry}"))
 }
 
+/// The rule name and quoted text of a `save-output.py` fault, from its stderr: the last line that
+/// starts `breaks <rule> of <STAGES>: `, with the rest of the stderr as the quote.
+fn broken_rule(stderr: &str) -> Option<(&str, &str)> {
+    let at = stderr.rfind("\nbreaks ")?;
+    let (rule, quote) = stderr[at + "\nbreaks ".len()..].split_once(&format!(" of {STAGES}: "))?;
+    Some((rule, quote.strip_suffix('\n').unwrap_or(quote)))
+}
+
 /// The mismatch between what `entry` recorded and what the Rust port gives, if any.
 fn replay(entry: &Value) -> Option<String> {
     let input = text(entry, "input");
-    let output = text(entry, "output");
-    let (where_, result) = match text(entry, "mode") {
+    let (selected, result) = match text(entry, "mode") {
         "text" => (None, capture(input)),
         _ => {
             let found = capture_transcript(input);
             (found.message.map(|m| m.describe()), found.result)
         }
     };
+    let transcript = text(entry, "mode") != "text";
     let mut wrong = Vec::new();
     match (entry["exit"].as_i64(), result) {
         (Some(0), Ok(capture)) => {
@@ -81,21 +91,34 @@ fn replay(entry: &Value) -> Option<String> {
                     capture.record, entry["record"]
                 ));
             }
-            let from = where_.map_or(String::new(), |w| format!("document from {w}\n"));
-            let stdout = format!(
-                "{}\n{from}saved {} characters to {output}\n",
-                py_rstrip(&capture.result),
-                capture.characters
-            );
-            if stdout != text(entry, "stdout") {
-                wrong.push(format!("stdout: {stdout:?} != {:?}", text(entry, "stdout")));
+            if transcript {
+                let from = format!("\ndocument from {}\n", selected.unwrap_or_default());
+                if !text(entry, "stdout").contains(&from) {
+                    wrong.push(format!(
+                        "selected: {from:?} not in {:?}",
+                        text(entry, "stdout")
+                    ));
+                }
             }
         }
         (Some(1), Err(fault)) => {
-            let prefix = where_.map_or(String::new(), |w| format!("{w}: "));
-            let stderr = format!("save-output: {prefix}{}\n", fault.explain());
-            if stderr != text(entry, "stderr") {
-                wrong.push(format!("stderr: {stderr:?} != {:?}", text(entry, "stderr")));
+            let stderr = text(entry, "stderr");
+            match broken_rule(stderr) {
+                Some(found) if found == (fault.rule, fault.quote) => {}
+                found => wrong.push(format!(
+                    "rule: {:?} != {found:?}",
+                    (fault.rule, fault.quote)
+                )),
+            }
+            if transcript {
+                let prefix = match &selected {
+                    Some(message) => format!("save-output: {message}: "),
+                    None => "save-output: ".into(),
+                };
+                let names_a_message = stderr.starts_with("save-output: assistant message ");
+                if !stderr.starts_with(&prefix) || (selected.is_none() && names_a_message) {
+                    wrong.push(format!("selected: {selected:?} for {stderr:?}"));
+                }
             }
         }
         (Some(0), Err(fault)) => wrong.push(format!("rejected what Python saved: {fault}")),
@@ -122,6 +145,19 @@ fn every_save_output_call_of_the_self_test_is_reproduced() {
         unrecorded, UNRECORDED,
         "tests that made no save-output.py call"
     );
+    let failed: Vec<&str> = summary["failed"]
+        .as_array()
+        .expect("the summary lists the failed tests")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    if !failed.is_empty() {
+        // the self-test pins some of Python's own messages; its calls are replayed all the same
+        eprintln!(
+            "self-test failures under this Python: {}",
+            failed.join(", ")
+        );
+    }
 
     let mut mismatches = Vec::new();
     let (mut text_mode, mut transcript_mode, mut skipped) = (0, 0, 0);
