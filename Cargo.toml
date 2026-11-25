@@ -23,6 +23,7 @@ chacha20poly1305 = "0.10.1"
 clap = "4.6.9"
 deadpool-postgres = "0.14.2"
 ed25519-dalek = "2.2.0"
+hmac = "0.13.0"
 jsonwebtoken = "9.3.1" # first user: hold simple_asn1 0.6.3 and time 0.3.41 in Cargo.lock, or move the toolchain to 1.88
 prost = "0.14.6"
 prost-types = "0.14.6"
@@ -43,6 +44,7 @@ tonic = "0.14.5" # 0.14.6 and later need Rust 1.88; move with the toolchain
 tonic-build = "0.14.5"
 tonic-prost = "0.14.5"
 tonic-prost-build = "0.14.5"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing = "0.1.44"
 yaml-rust2 = { version = "=0.13.2", default-features = false }
 

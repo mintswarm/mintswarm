@@ -1,0 +1,239 @@
+//! Repository reads without a clone, design §9.4: the default branch's head and a file's bytes
+//! at a commit, through the contents, repository and branch endpoints.
+//!
+//! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache and its
+//! `retry-after` pause. A file is read inline from the contents API; a file above its 1 MB
+//! inline limit is refused as [`RepoReadError::TooLarge`].
+//!
+//! A file is read only at a full commit id; any other revision is refused as
+//! [`RepoReadError::InvalidRev`] before a request, since the contents API would read a branch or
+//! tag name, or the default branch for an empty one, as a moving ref.
+
+use std::future::Future;
+
+use serde_json::Value;
+
+use mintswarm_domain::hosting::{RepoReadError, RepoReads};
+use mintswarm_domain::ids::RevId;
+use mintswarm_domain::vcs::RepoPath;
+
+use crate::key_store::decode_base64;
+use crate::reads::{GitHubReads, ReadError};
+use crate::rest::path_segment;
+use crate::secret::Token;
+use crate::token::Permissions;
+
+/// Reads of one repository's default-branch head and files at a commit, over a borrowed
+/// [`GitHubReads`] and a token its caller minted with [`GitHubRepoReads::permissions`].
+///
+/// GitHub answers 404 for a file that is missing, but also for a commit it does not know and a
+/// repository the token cannot see, so [`RepoReads::read_file`] reads all of these as `None`.
+/// Pin the revision with [`RepoReads::default_branch_head`] through the same reader first: it
+/// reports lost access as [`RepoReadError::Inaccessible`], and the commit it returns is known.
+#[derive(Clone, Copy, Debug)]
+pub struct GitHubRepoReads<'a> {
+    reads: &'a GitHubReads,
+    token: &'a Token,
+}
+
+impl GitHubReads {
+    /// Repository reads through this client with `token`.
+    pub fn repo_reads<'a>(&'a self, token: &'a Token) -> GitHubRepoReads<'a> {
+        GitHubRepoReads { reads: self, token }
+    }
+}
+
+impl GitHubRepoReads<'_> {
+    /// The permissions a token for these reads asks for, from its
+    /// [`TokenClient`](crate::TokenClient).
+    pub fn permissions() -> Permissions {
+        Permissions::read(["contents", "metadata"])
+    }
+
+    async fn head(&self) -> Result<RevId, RepoReadError> {
+        let repo_path = self.reads.repo_path();
+        let repo = self
+            .reads
+            .get(self.token, &repo_path)
+            .await
+            .map_err(head_error)?;
+        let branch = repo
+            .get("default_branch")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or(RepoReadError::Unexpected)?;
+        let branch_path = format!("{repo_path}/branches/{}", encode_segments(branch));
+        let body = self
+            .reads
+            .get(self.token, &branch_path)
+            .await
+            .map_err(head_error)?;
+        let sha = body
+            .get("commit")
+            .and_then(|commit| commit.get("sha"))
+            .and_then(Value::as_str)
+            .filter(|sha| is_commit_id(sha))
+            .ok_or(RepoReadError::Unexpected)?;
+        Ok(RevId(sha.to_owned()))
+    }
+
+    async fn file(&self, rev: &RevId, path: &RepoPath) -> Result<Option<Vec<u8>>, RepoReadError> {
+        if !is_commit_id(&rev.0) {
+            return Err(RepoReadError::InvalidRev);
+        }
+        let segments = checked_path(path)?;
+        let contents_path = format!(
+            "{}/contents/{}?ref={}",
+            self.reads.repo_path(),
+            segments,
+            path_segment(&rev.0)
+        );
+        let body = match self.reads.get(self.token, &contents_path).await {
+            Ok(body) => body,
+            Err(ReadError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(read_error(error)),
+        };
+        file_bytes(&body)
+    }
+}
+
+impl RepoReads for GitHubRepoReads<'_> {
+    fn default_branch_head(&self) -> impl Future<Output = Result<RevId, RepoReadError>> + Send {
+        self.head()
+    }
+
+    fn read_file(
+        &self,
+        rev: &RevId,
+        path: &RepoPath,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, RepoReadError>> + Send {
+        self.file(rev, path)
+    }
+}
+
+/// `path` as percent-encoded segments joined by `/`, or [`RepoReadError::InvalidPath`] when it
+/// is not UTF-8, is empty, or has an empty, `.` or `..` segment (a leading or trailing `/` makes
+/// an empty one).
+fn checked_path(path: &RepoPath) -> Result<String, RepoReadError> {
+    let text = std::str::from_utf8(&path.0).map_err(|_| RepoReadError::InvalidPath)?;
+    if text
+        .split('/')
+        .any(|segment| matches!(segment, "" | "." | ".."))
+    {
+        return Err(RepoReadError::InvalidPath);
+    }
+    Ok(encode_segments(text))
+}
+
+/// `text` with each `/`-separated segment percent-encoded and the `/` kept.
+fn encode_segments(text: &str) -> String {
+    text.split('/')
+        .map(path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Whether `sha` is a full commit id: 40 or 64 lowercase hexadecimal characters.
+fn is_commit_id(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The bytes of a contents answer: `None` for a directory (a JSON array) or an entry that is
+/// not a file (a symlink or a submodule).
+fn file_bytes(body: &Value) -> Result<Option<Vec<u8>>, RepoReadError> {
+    if body.is_array() {
+        return Ok(None);
+    }
+    let kind = body
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or(RepoReadError::Unexpected)?;
+    if kind != "file" {
+        return Ok(None);
+    }
+    match body.get("encoding").and_then(Value::as_str) {
+        Some("base64") => {}
+        Some("none") => return Err(RepoReadError::TooLarge),
+        _ => return Err(RepoReadError::Unexpected),
+    }
+    let size = body
+        .get("size")
+        .and_then(Value::as_u64)
+        .ok_or(RepoReadError::Unexpected)?;
+    let content: Vec<u8> = body
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or(RepoReadError::Unexpected)?
+        .bytes()
+        .filter(|byte| !matches!(byte, b'\n' | b'\r'))
+        .collect();
+    let bytes = decode_base64(&content).ok_or(RepoReadError::Unexpected)?;
+    if u64::try_from(bytes.len()).ok() != Some(size) {
+        return Err(RepoReadError::Unexpected);
+    }
+    Ok(Some(bytes))
+}
+
+/// A head read's error: a missing repository or branch is [`RepoReadError::Inaccessible`].
+fn head_error(error: ReadError) -> RepoReadError {
+    match error {
+        ReadError::NotFound { .. } => RepoReadError::Inaccessible,
+        other => read_error(other),
+    }
+}
+
+/// A read error as its repository-read class; GitHub's text never passes through. A 401 or a
+/// 403 that is not a rate limit is a credential or permission fault, so it is
+/// [`RepoReadError::Inaccessible`].
+fn read_error(error: ReadError) -> RepoReadError {
+    match error {
+        ReadError::RateLimited { retry_after, .. } => RepoReadError::RateLimited { retry_after },
+        ReadError::Transport(detail) => RepoReadError::Transport(detail),
+        ReadError::NotFound { .. }
+        | ReadError::Status {
+            status: 401 | 403, ..
+        } => RepoReadError::Inaccessible,
+        ReadError::Status { .. }
+        | ReadError::Unexpected { .. }
+        | ReadError::TooManyPages { .. } => RepoReadError::Unexpected,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{checked_path, is_commit_id};
+    use mintswarm_domain::hosting::RepoReadError;
+    use mintswarm_domain::vcs::RepoPath;
+
+    #[test]
+    fn a_path_is_encoded_per_segment() {
+        let path = RepoPath(b".mintswarm/stage defs/a+b.md".to_vec());
+        assert_eq!(
+            checked_path(&path).unwrap(),
+            ".mintswarm/stage%20defs/a%2Bb.md"
+        );
+    }
+
+    #[test]
+    fn commit_ids_are_full_lowercase_hex() {
+        assert!(is_commit_id(&"a".repeat(40)));
+        assert!(is_commit_id(&"0".repeat(64)));
+        assert!(!is_commit_id(&"A".repeat(40)));
+        assert!(!is_commit_id(&"a".repeat(39)));
+        assert!(!is_commit_id(&"g".repeat(40)));
+    }
+
+    #[test]
+    fn unnameable_paths_are_refused() {
+        for path in [&b""[..], b"/a", b"a/", b"a//b", b"./a", b"a/../b", b"\xff"] {
+            assert_eq!(
+                checked_path(&RepoPath(path.to_vec())),
+                Err(RepoReadError::InvalidPath),
+                "{path:?}"
+            );
+        }
+    }
+}
