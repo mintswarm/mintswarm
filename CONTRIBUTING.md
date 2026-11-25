@@ -76,7 +76,7 @@ The repository Admin role may bypass the ruleset for pull requests only; nothing
 
 The repository settings, outside the ruleset, allow squash merge only and delete head branches after merge.
 
-The `gates` workflow (`.github/workflows/gates.yml`) reports one status check per `gates.run` entry, named after the gate: `whitespace`, `agents-drift`, `packs-check`, `packs-selftest`, `python-format`, `shell-lint`, `save-output-selftest`, `msw-vcs-selftest`, `plan-approval-selftest`, `landing-floor-selftest`, `landing-facts-selftest`, `landing-judgement-selftest`, `landing-decision-selftest`, `github-selftest`, `readiness-selftest`, `rust-format`, `rust-lint`, `rust-test`, `proto-lint`, `proto-breaking`, `dependencies-selftest`, `dependencies-prefetch-selftest`, `typescript-typecheck`, `typescript-lint`, `typescript-format` and `typescript-test`. Before any of them runs, the workflow's `gates-matrix` job reads `gates.run` and reports its own check; if it fails, for example on a malformed `gates.run`, no gate runs. The ruleset does not require them yet, nor the branch being up to date with `master`.
+The `gates` workflow (`.github/workflows/gates.yml`) reports one status check per `gates.run` entry in `.mintswarm/config.yaml`, named after the gate. Before any of them runs, the workflow's `gates-matrix` job reads `gates.run` and reports its own check; if it fails, for example on a malformed `gates.run`, no gate runs. The ruleset does not require them yet, nor the branch being up to date with `master`.
 
 ## Releases
 
@@ -87,37 +87,8 @@ The `gates` workflow (`.github/workflows/gates.yml`) reports one status check pe
 
 ## Local checks
 
-CI runs each entry of `gates.run` in `.mintswarm/config.yaml` as its own check, and before pushing you run the same commands. Run each line on its own from the repository root, for example in a subshell `( … )`: the `typescript-*` lines `cd` into `web/`, and the next line expects the root again.
+The gates are the `gates.run` entries of `.mintswarm/config.yaml`; `.github/workflows/gates.yml` runs each one as its own check. Before pushing, run the same commands: each entry's `command`, on its own from the repository root, for example in a subshell `( … )`, since some of them `cd` into `web/` and the next one expects the root again.
 
-```
-git diff --check origin/master...HEAD
-python3 .mintswarm/dogfood/render-agents.py --check
-python3 .mintswarm/dogfood/packs/pack.py check --base origin/master
-python3 .mintswarm/dogfood/packs/selftest.py
-black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs
-bash .mintswarm/dogfood/shell-lint.sh
-python3 .mintswarm/dogfood/save-output-selftest.py
-python3 .mintswarm/dogfood/msw-vcs-selftest.py
-python3 .mintswarm/dogfood/plan-approval/selftest.py
-python3 .mintswarm/dogfood/landing/floor-selftest.py
-python3 .mintswarm/dogfood/landing/facts-selftest.py
-python3 .mintswarm/dogfood/landing/judgement-selftest.py
-python3 .mintswarm/dogfood/landing/decision-selftest.py
-bash .mintswarm/dogfood/github/selftest.sh
-python3 .mintswarm/dogfood/readiness/selftest.py
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace && cargo test --doc --workspace
-buf lint api/proto
-git rev-parse --verify -q origin/master >/dev/null || { echo 'proto-breaking: origin/master not found; fetch it before running this gate'; exit 1; }; if git cat-file -e origin/master:api/proto/buf.yaml 2>/dev/null; then buf breaking api/proto --against '.git#ref=origin/master,subdir=api/proto'; else echo 'proto-breaking: origin/master has no api/proto yet; nothing to compare'; fi
-python3 .mintswarm/dogfood/dependencies/selftest.py
-python3 .mintswarm/dogfood/dependencies/prefetch-selftest.py
-bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/tsc --noEmit
-bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/eslint .
-bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check .
-bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run
-```
+`whitespace` and `proto-breaking` need `origin/master` fetched. Some gates need tools beyond the Rust and Python toolchains: `black` for `python-format`, `cargo-nextest` for `rust-test`, `buf` for `proto-lint` and `proto-breaking`, and Node for the `typescript-*` gates. Use the versions CI uses: `.github/workflows/gates.yml` pins `cargo-nextest` and `buf`, `pyproject.toml` pins `black` (`required-version`), and `web/.node-version` pins Node.
 
-`whitespace` and `proto-breaking` need `origin/master` fetched, `python-format` needs `black`, `rust-test` needs `cargo-nextest` `0.9.152`, and `proto-lint` and `proto-breaking` need `buf` `v1.75.0`; both versions are the ones `.github/workflows/gates.yml` pins.
-
-The listed commands write their build output only under the git-ignored `build/` at the repository root, never next to sources. The dependency install (`web-install.sh`) writes `node_modules/` under `web/`, which is a dependency install, not build output.
+The gate commands write their build output only under the git-ignored `build/` at the repository root, never next to sources. The dependency install (`web-install.sh`) writes `node_modules/` under `web/`, which is a dependency install, not build output.
