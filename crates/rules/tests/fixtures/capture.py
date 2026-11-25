@@ -20,8 +20,9 @@ writes one JSON object per line to OUT:
 It reads `.mintswarm/dogfood/` and never modifies it. Run it with PYTHONDONTWRITEBYTECODE=1. Two runs
 write the same bytes.
 
-No gate runs it, so the committed fixture is refreshed by hand. Refresh it whenever a change touches
-one of those helpers, the record fixtures or the edge documents:
+`tests/fixture.rs` runs it into a temporary file and fails when the committed fixture differs.
+Refresh the fixture whenever a change touches one of those helpers, the record fixtures or the edge
+documents:
 
     PYTHONDONTWRITEBYTECODE=1 python3 crates/rules/tests/fixtures/capture.py \
         crates/rules/tests/fixtures/python.jsonl
