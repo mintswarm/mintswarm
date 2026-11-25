@@ -293,12 +293,11 @@ fn diff_reports_kinds_modes_and_lines() {
     .collect();
     assert_eq!(kinds, expected);
     assert!(plain.patch.is_none());
-    assert!(
-        plain
-            .files
-            .iter()
-            .all(|file| file.old_mode.is_none() && file.new_mode.is_none() && file.lines.is_none())
-    );
+    assert!(plain.files.iter().all(|file| file.old_mode.is_none()
+        && file.new_mode.is_none()
+        && file.old_blob.is_none()
+        && file.new_blob.is_none()
+        && file.lines.is_none()));
 
     let full = store
         .diff(
@@ -329,6 +328,41 @@ fn diff_reports_kinds_modes_and_lines() {
     assert_eq!(
         (file(b"sub").old_mode, file(b"sub").new_mode),
         (None, Some(0o160000))
+    );
+    // The blob ids are fixture git's, and `None` on a missing side.
+    let blob = |commit: &RevId, name: &str| {
+        Some(RevId(super::text(&super::fixture_git(
+            &fx.source,
+            &["rev-parse", &format!("{}:{name}", commit.0)],
+        ))))
+    };
+    for name in ["keep.txt", "script.sh", "bin.dat", "link"] {
+        assert_eq!(
+            (
+                file(name.as_bytes()).old_blob.clone(),
+                file(name.as_bytes()).new_blob.clone()
+            ),
+            (blob(&fx.base, name), blob(&fx.side, name)),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        (
+            file(b"gone.txt").old_blob.clone(),
+            file(b"gone.txt").new_blob.clone()
+        ),
+        (blob(&fx.base, "gone.txt"), None)
+    );
+    assert_eq!(
+        (
+            file(b"new file.txt").old_blob.clone(),
+            file(b"new file.txt").new_blob.clone()
+        ),
+        (None, blob(&fx.side, "new file.txt"))
+    );
+    assert_eq!(
+        (file(b"sub").old_blob.clone(), file(b"sub").new_blob.clone()),
+        (None, Some(RevId(GITLINK.to_owned())))
     );
     assert_eq!(file(b"keep.txt").lines, Some((2, 1)));
     assert_eq!(file(b"gone.txt").lines, Some((0, 1)));

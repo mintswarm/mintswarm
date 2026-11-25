@@ -92,6 +92,10 @@ pub struct FileChange {
     pub kind: ChangeKind,
     pub old_mode: Option<u32>,
     pub new_mode: Option<u32>,
+    /// The blob or gitlink id before the change; `None` when the path did not exist.
+    pub old_blob: Option<RevId>,
+    /// The blob or gitlink id after the change; `None` when the path no longer exists.
+    pub new_blob: Option<RevId>,
     /// Added and deleted lines; `None` for a binary file or without `numstat`.
     pub lines: Option<(u64, u64)>,
 }
