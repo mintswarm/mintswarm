@@ -1,0 +1,562 @@
+syntax = "proto3";
+
+package mintswarm.runner.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "mintswarm/runner/v1/common.proto";
+import "mintswarm/runner/v1/events.proto";
+import "mintswarm/runner/v1/steps.proto";
+
+// One message from a runner on the `Connect` stream: the design's
+// `RunnerMessage` (design §5.1).
+//
+// `Hello` is the first message on every stream (design §5.3). A receiver
+// ignores an unknown case and counts it, never treating it as fatal.
+message ConnectRequest {
+  // What the runner says.
+  oneof body {
+    // Opens the session; always the first message.
+    Hello hello = 1;
+    // An idle worker asks for work.
+    Claim claim = 2;
+    // Withdraws a claim.
+    CancelClaim cancel_claim = 3;
+    // The runner's periodic state; renews its leases.
+    Heartbeat heartbeat = 4;
+    // Outbox items, in contiguous `seq` order.
+    EventBatch events = 5;
+
+    // Field 6 is left unused for the credential request case, which a later
+    // change adds; it is deliberately not `reserved`.
+
+    // Presents a refreshed access token.
+    Reauthenticate reauthenticate = 7;
+    // The runner's full set of probe results, sent when they change.
+    CapabilitiesUpdate capabilities = 8;
+    // The runner's periodic host metrics.
+    HostMetrics metrics = 9;
+    // The runner's last message before it closes the stream.
+    Goodbye goodbye = 10;
+  }
+}
+
+// One message from the plane on the `Connect` stream: the design's
+// `PlaneMessage` (design §5.1).
+//
+// `HelloAck` is the first message on every stream (design §5.3). A receiver
+// ignores an unknown case and counts it, never treating it as fatal.
+message ConnectResponse {
+  // What the plane says.
+  oneof body {
+    // Answers `Hello`; always the first message.
+    HelloAck hello_ack = 1;
+    // Answers a claim.
+    ClaimResult claim_result = 2;
+    // Answers a heartbeat with the state of each lease.
+    HeartbeatAck heartbeat_ack = 3;
+    // Acknowledges outbox items up to a `seq`.
+    Ack ack = 4;
+    // An operator or plane command for the runner.
+    Directive directive = 5;
+
+    // Field 6 is left unused for the credential response case, which a later
+    // change adds; it is deliberately not `reserved`.
+
+    // Accepts a refreshed access token.
+    Reauthenticated reauthenticated = 7;
+    // Asks for the blobs an outbox item names.
+    NeedBlobs need_blobs = 8;
+    // Asks the runner to resend its outbox from a `seq`.
+    Resend resend = 9;
+    // The plane's last message before it closes the stream.
+    GoAway go_away = 10;
+  }
+}
+
+// Opens a session (design §6.1).
+message Hello {
+  // The runner's release version.
+  string runner_version = 1;
+  // The protocol minor version the runner speaks (design §10).
+  uint32 protocol_minor = 2;
+  // The optional features the runner supports (design §10).
+  repeated string features = 3;
+  // Every step kind the runner can execute (design §10).
+  repeated StepKind step_kinds = 4;
+  // The runner's outbox epoch, a random 128-bit id (design §8.3).
+  string outbox_epoch = 5;
+  // The first outbox `seq` the plane has not acknowledged.
+  uint64 first_unacked_seq = 6;
+  // The last outbox `seq` the runner has written.
+  uint64 last_seq = 7;
+  // The runner's host name.
+  string host = 8;
+  // The runner's operating system.
+  string os = 9;
+  // The runner's CPU architecture.
+  string arch = 10;
+  // The harnesses the runner's probes found.
+  repeated Harness harnesses = 11;
+  // The runner's probe results; their schema is contract C7.
+  repeated ProbeResult capabilities = 12;
+  // The runner's tags.
+  repeated string tags = 13;
+  // The nickname of the harness account the runner works as.
+  string account = 14;
+  // How many workers the runner runs at once.
+  uint32 workers_total = 15;
+  // The repository the runner serves, from its trusted store.
+  HelloRepository repository = 16;
+  // Whether the runner claims work.
+  RunnerMode mode = 17;
+  // Every attempt the runner believes it is running.
+  repeated HeldAttempt held_attempts = 18;
+}
+
+// A harness a runner's probes found (design §6.1).
+message Harness {
+  // The harness's id, for example `claude-code`.
+  string id = 1;
+  // The harness's version.
+  string version = 2;
+  // Whether the harness is logged in.
+  bool logged_in = 3;
+  // How the harness holds its credentials; the values are #152's.
+  string credential_mode = 4;
+  // The models the harness offers.
+  repeated string models = 5;
+}
+
+// One probe result (design §6.1); the schema is contract C7.
+message ProbeResult {
+  // The probe's namespaced id.
+  string id = 1;
+  // The probed value.
+  string value = 2;
+  // Where the value came from.
+  string source = 3;
+  // When the probe observed the value.
+  google.protobuf.Timestamp observed_at = 4;
+}
+
+// The repository a runner serves, as `Hello` reports it (design §6.1).
+//
+// The plane checks `remote` against the project's repository at every
+// `Hello`. It reads the default-branch head itself, so the runner's head only
+// says how far behind its store is.
+message HelloRepository {
+  // The repository's remote URL.
+  string remote = 1;
+  // The default branch's head in the runner's trusted store.
+  string default_branch_head = 2;
+}
+
+// An attempt as the runner sees it (design §6.1, §7.3).
+message HeldAttempt {
+  // The attempt's id.
+  string attempt_id = 1;
+  // The attempt's lease epoch.
+  uint64 lease_epoch = 2;
+  // The attempt's phase in the runner; the values are #152's.
+  string phase = 3;
+}
+
+// Whether a runner claims work (design §6.1, contract C14).
+enum RunnerMode {
+  // Not set; never sent.
+  RUNNER_MODE_UNSPECIFIED = 0;
+  // Claims work.
+  RUNNER_MODE_WORKER = 1;
+  // Never claims work: sends hello, heartbeats, events and records only.
+  RUNNER_MODE_OBSERVER = 2;
+}
+
+// Answers `Hello`: a rejection or an acceptance (design §6.2).
+message HelloAck {
+  // Whether the plane accepts the session.
+  oneof result {
+    // The plane refuses the session and closes the stream.
+    HelloRejected rejected = 1;
+    // The plane accepts the session.
+    HelloAccepted accepted = 2;
+  }
+}
+
+// A refused session (design §6.2).
+message HelloRejected {
+  // Why the plane refuses the session.
+  HelloRejectionStatus status = 1;
+  // A human-readable explanation.
+  string detail = 2;
+  // The lowest protocol minor version the plane accepts; set for
+  // `upgrade_required`.
+  uint32 min_protocol_minor = 3;
+  // The plane's version, if known; set for `upgrade_required`.
+  string plane_version = 4;
+}
+
+// Why the plane refuses a session (design §6.2).
+//
+// A superseded stream is never refused here: it gets a `GoAway` (design
+// §6.4).
+enum HelloRejectionStatus {
+  // Not set; never sent.
+  HELLO_REJECTION_STATUS_UNSPECIFIED = 0;
+  // The runner's protocol minor version is too old.
+  HELLO_REJECTION_STATUS_UPGRADE_REQUIRED = 1;
+  // The runner's public key was deleted.
+  HELLO_REJECTION_STATUS_REVOKED = 2;
+  // The runner's remote no longer matches the project's repository.
+  HELLO_REJECTION_STATUS_REPOSITORY_MISMATCH = 3;
+}
+
+// An accepted session (design §6.2).
+message HelloAccepted {
+  // The plane's id for this stream, logged on both sides.
+  string session_id = 1;
+  // The protocol minor version the plane speaks.
+  uint32 protocol_minor = 2;
+  // The negotiated features: those both sides support.
+  repeated string features = 3;
+  // The last `seq` acknowledged for the runner's `outbox_epoch`.
+  uint64 acked_seq = 4;
+  // What the runner must stay within on this stream.
+  SessionLimits limits = 5;
+  // The intervals the runner uses on this stream (design §7.5).
+  SessionTimings timings = 6;
+  // Every attempt the plane believes this runner holds (design §6.3).
+  repeated PlaneHeldAttempt held_attempts = 7;
+  // Directives sent before and not yet receipted (design §7.6).
+  repeated Directive pending_directives = 8;
+}
+
+// What a runner must stay within on a stream (design §6.2, §8.3).
+message SessionLimits {
+  // The largest message either side sends on the stream, in bytes.
+  uint64 max_message_bytes = 1;
+  // The largest blob the plane stores, in bytes.
+  uint64 max_blob_bytes = 2;
+  // How many outbox items may be unacknowledged on the stream at once.
+  uint32 max_in_flight_events = 3;
+  // How many bytes of outbox items may be unacknowledged at once.
+  uint64 max_in_flight_bytes = 4;
+  // How long the plane holds a claim before it answers `no_work`.
+  uint32 claim_wait_seconds = 5;
+}
+
+// The intervals a runner uses on a stream, so a plane can tune them without
+// a runner release (design §6.2, §7.5).
+message SessionTimings {
+  // How often the runner sends a heartbeat.
+  uint32 heartbeat_seconds = 1;
+  // How long a lease runs after each renewal.
+  uint32 lease_seconds = 2;
+  // How often the runner sends host metrics.
+  uint32 metrics_seconds = 3;
+}
+
+// An attempt as the plane sees it (design §6.2).
+message PlaneHeldAttempt {
+  // The attempt's id.
+  string attempt_id = 1;
+  // The attempt's current lease epoch.
+  uint64 lease_epoch = 2;
+  // How far the attempt has got, as the plane knows it.
+  PlaneAttemptState state = 3;
+}
+
+// How far an attempt the plane holds for a runner has got (design §6.2).
+enum PlaneAttemptState {
+  // Not set; never sent.
+  PLANE_ATTEMPT_STATE_UNSPECIFIED = 0;
+  // Sent to the runner, with no `attempt_started` received.
+  PLANE_ATTEMPT_STATE_ASSIGNED = 1;
+  // The runner reported `attempt_started`.
+  PLANE_ATTEMPT_STATE_STARTED = 2;
+}
+
+// An idle worker asks for work (design §7.1).
+message Claim {
+  // The runner's id for this claim, unique within the stream (design §5.3).
+  string request_id = 1;
+  // The worker that claims.
+  string worker_id = 2;
+}
+
+// Withdraws a claim (design §7.1). If the plane has already assigned, the
+// assignment still arrives.
+message CancelClaim {
+  // The claim's `request_id`.
+  string request_id = 1;
+}
+
+// Answers a claim, exactly once (design §7.1).
+message ClaimResult {
+  // The claim's `request_id`.
+  string request_id = 1;
+
+  // What the claim got.
+  oneof result {
+    // Field 2 is left unused for the assignment case, which a later change
+    // adds; it is deliberately not `reserved`.
+
+    // Nothing eligible within `claim_wait_seconds`; the worker claims again.
+    NoWork no_work = 3;
+    // The runner may not claim now.
+    ClaimRefused refused = 4;
+  }
+}
+
+// Nothing eligible for a claim within `claim_wait_seconds` (design §7.1).
+message NoWork {}
+
+// A claim the plane refuses (design §7.1).
+message ClaimRefused {
+  // Why the runner may not claim now.
+  ClaimRefusalReason reason = 1;
+}
+
+// Why the plane refuses a claim (design §7.1).
+enum ClaimRefusalReason {
+  // Not set; never sent.
+  CLAIM_REFUSAL_REASON_UNSPECIFIED = 0;
+  // The runner is draining.
+  CLAIM_REFUSAL_REASON_DRAINING = 1;
+  // The runner's harness account is rate-limited.
+  CLAIM_REFUSAL_REASON_THROTTLED = 2;
+  // The runner connected in `observer` mode.
+  CLAIM_REFUSAL_REASON_OBSERVER = 3;
+  // The runner is paused.
+  CLAIM_REFUSAL_REASON_PAUSED = 4;
+}
+
+// A runner's periodic state (design §7.3). It renews the lease of every
+// listed attempt whose fence is current; there is no other renewal.
+message Heartbeat {
+  // The runner's state.
+  RunnerState state = 1;
+  // How many workers are idle.
+  uint32 workers_free = 2;
+  // How many workers the runner runs at once.
+  uint32 workers_total = 3;
+  // A summary of the host's load.
+  LoadSummary load = 4;
+  // Until when the runner's harness account is rate-limited, if it is.
+  google.protobuf.Timestamp throttled_until = 5;
+  // Every attempt the runner holds; their leases are renewed.
+  repeated HeldAttempt held = 6;
+  // The runner's outbox head, for monitoring.
+  uint64 last_seq = 7;
+  // The lowercase hex sha256 of the runner's current probe results.
+  string capabilities_digest = 8;
+}
+
+// A runner's state (design §7.3).
+enum RunnerState {
+  // Not set; never sent.
+  RUNNER_STATE_UNSPECIFIED = 0;
+  // Connected and claiming.
+  RUNNER_STATE_ONLINE = 1;
+  // Finishing its attempts and claiming nothing new.
+  RUNNER_STATE_DRAINING = 2;
+  // Connected and claiming nothing.
+  RUNNER_STATE_PAUSED = 3;
+}
+
+// A summary of a host's load (design §7.3).
+message LoadSummary {
+  // CPU use, in percent.
+  double cpu_pct = 1;
+  // The one-minute load average.
+  double load_1m = 2;
+  // Memory use, in percent.
+  double mem_used_pct = 3;
+  // Whether free disk space is low.
+  bool disk_low = 4;
+}
+
+// Answers a heartbeat (design §7.3).
+message HeartbeatAck {
+  // The state of each lease the heartbeat listed.
+  repeated LeaseState leases = 1;
+  // The plane's clock when it answered.
+  google.protobuf.Timestamp plane_time = 2;
+  // Whether the capabilities digest differs from the last update the plane
+  // stored, so the runner must send its full set again.
+  bool resend_capabilities = 3;
+}
+
+// The state of one lease, as the plane holds it (design §7.3).
+message LeaseState {
+  // The attempt has been re-granted elsewhere or cancelled; the runner
+  // aborts it (design §7.4).
+  message Revoked {}
+
+  // The attempt's id.
+  string attempt_id = 1;
+  // The attempt's lease epoch.
+  uint64 lease_epoch = 2;
+
+  // Whether the lease runs on.
+  oneof state {
+    // The lease was renewed and runs until then, by the plane's clock.
+    google.protobuf.Timestamp expires_at = 3;
+    // The lease is revoked.
+    Revoked revoked = 4;
+  }
+}
+
+// An operator or plane command for a runner (design §7.6).
+//
+// Delivered at least once, until the runner's `directive_receipt` event
+// arrives; the runner deduplicates by `directive_id`.
+message Directive {
+  // Stops an attempt.
+  message Cancel {
+    // The attempt's id.
+    string attempt_id = 1;
+    // The attempt's lease epoch.
+    uint64 lease_epoch = 2;
+  }
+
+  // Interrupts an attempt's harness session.
+  message Interrupt {
+    // The attempt's id.
+    string attempt_id = 1;
+    // The attempt's lease epoch.
+    uint64 lease_epoch = 2;
+    // A message for the session after the interrupt, if any.
+    optional string message = 3;
+  }
+
+  // Delivers an operator's message to an attempt.
+  message Deliver {
+    // The attempt's id.
+    string attempt_id = 1;
+    // The attempt's lease epoch.
+    uint64 lease_epoch = 2;
+    // The message.
+    string message = 3;
+  }
+
+  // Stops claiming, finishes or cancels the runner's attempts, then says
+  // `Goodbye{reason: drained}`.
+  message Drain {
+    // When the attempts must be finished or cancelled by, if at all.
+    google.protobuf.Timestamp deadline = 1;
+  }
+
+  // The plane refuses this runner's protocol minor version from now on; the
+  // runner drains and stops reconnecting until it is upgraded.
+  message UpgradeRequired {
+    // The lowest protocol minor version the plane accepts.
+    uint32 min_protocol_minor = 1;
+    // A human-readable explanation.
+    string detail = 2;
+  }
+
+  // The plane's id for the directive, stable across resends.
+  string directive_id = 1;
+
+  // What the runner is asked to do.
+  oneof kind {
+    // Stops an attempt.
+    Cancel cancel = 2;
+    // Interrupts an attempt's session.
+    Interrupt interrupt = 3;
+    // Delivers a message to an attempt.
+    Deliver deliver = 4;
+    // Drains the runner.
+    Drain drain = 5;
+    // Requires the runner to upgrade.
+    UpgradeRequired upgrade = 6;
+  }
+}
+
+// Acknowledges outbox items (design §8.3): every item up to and including
+// `seq` is durably stored, or durably recorded as fenced or ignored.
+message Ack {
+  // The last acknowledged `seq`.
+  uint64 seq = 1;
+}
+
+// Asks the runner to resend its outbox after a gap (design §8.3).
+message Resend {
+  // The first `seq` to resend.
+  uint64 from = 1;
+}
+
+// Asks for the blobs an outbox item names, which the plane lacks (design
+// §8.2). The plane acknowledges the item once they arrive.
+message NeedBlobs {
+  // The outbox item's `seq`.
+  uint64 seq = 1;
+  // The lowercase hex sha256 of each missing blob.
+  repeated string sha256 = 2;
+}
+
+// Presents a refreshed access token on the stream (design §9.4).
+message Reauthenticate {
+  // The new access token.
+  Secret access_token = 1;
+}
+
+// Accepts a refreshed access token (design §9.4).
+message Reauthenticated {
+  // When the new access token expires.
+  google.protobuf.Timestamp expires_at = 1;
+}
+
+// The runner's full set of probe results, sent whenever they change (design
+// §5.2, §7.3).
+message CapabilitiesUpdate {
+  // Every probe result; the schema is contract C7.
+  repeated ProbeResult capabilities = 1;
+  // Every harness the probes found.
+  repeated Harness harnesses = 2;
+}
+
+// The runner's periodic host metrics (design §5.2, §7.5).
+message HostMetrics {
+  // When the runner sampled the metrics.
+  google.protobuf.Timestamp observed_at = 1;
+  // The host's load.
+  LoadSummary load = 2;
+}
+
+// The runner's last message before it closes the stream (design §7.6).
+message Goodbye {
+  // Why the runner closes the stream.
+  GoodbyeReason reason = 1;
+}
+
+// Why a runner closes its stream (design §7.6).
+enum GoodbyeReason {
+  // Not set; never sent.
+  GOODBYE_REASON_UNSPECIFIED = 0;
+  // The runner finished draining and its outbox is acknowledged.
+  GOODBYE_REASON_DRAINED = 1;
+}
+
+// The plane's last message before it closes the stream (design §6.4, §9.4,
+// §11.3).
+message GoAway {
+  // Why the plane closes the stream.
+  GoAwayReason reason = 1;
+  // How long the runner waits before it reconnects, overriding its backoff;
+  // when unset, the runner uses its backoff.
+  google.protobuf.Duration reconnect_after = 2;
+}
+
+// Why the plane closes a stream (design §6.4, §9.4, §11.3).
+enum GoAwayReason {
+  // Not set; never sent.
+  GO_AWAY_REASON_UNSPECIFIED = 0;
+  // A newer stream authenticated for the same runner.
+  GO_AWAY_REASON_SUPERSEDED = 1;
+  // The stream's access token expired without a refresh.
+  GO_AWAY_REASON_TOKEN_EXPIRED = 2;
+  // The plane is shutting down.
+  GO_AWAY_REASON_SHUTDOWN = 3;
+}
