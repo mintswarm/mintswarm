@@ -1,0 +1,14 @@
+[package]
+name = "mintswarm-steward"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mintswarm-steward"
+path = "src/main.rs"
+
+[dependencies]
