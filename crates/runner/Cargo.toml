@@ -1,0 +1,16 @@
+[package]
+name = "mintswarm-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mintswarm-domain = { path = "../domain" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
