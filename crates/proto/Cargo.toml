@@ -16,7 +16,9 @@ tonic-prost = { workspace = true }
 
 [dev-dependencies]
 # Builds this crate with `fakes` for its own tests and lints; a plain
-# `cargo build -p mintswarm-proto` stays without it.
+# `cargo build -p mintswarm-proto` stays without it. Feature unification means
+# workspace-wide test and lint runs build every crate against proto with
+# `fakes`, so each crate that uses the fakes must declare the feature itself.
 mintswarm-proto = { path = ".", features = ["fakes"] }
 
 [build-dependencies]
