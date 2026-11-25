@@ -926,7 +926,7 @@ def check_single_rules(r: Runner, limits: dict) -> None:
     )
     expect_hit(
         r,
-        "web/index.html outside one component",
+        "web/index.html outside a single component",
         base(files=["web/index.html"]),
         "component-scope",
         reasons=["web/index.html is outside component docs and shared"],
