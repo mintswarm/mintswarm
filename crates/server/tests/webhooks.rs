@@ -3,15 +3,15 @@
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{Hmac, KeyInit, Mac};
 use mintswarm_server::webhooks::{
-    BODY_LIMIT, DeliveryLog, PATH, Receiver, Secret, SecretError, SecretSource, Verdict,
-    format_rfc3339_utc, load_secret, log_line, parse_signature, router, verify,
+    BODY_LIMIT, DeliveryLog, Limits, PATH, Receiver, Secret, SecretError, SecretSource, Verdict,
+    Writer, format_rfc3339_utc, load_secret, log_line, parse_signature, router, verify,
 };
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -33,19 +33,48 @@ fn secret() -> Secret {
 }
 
 struct Fixture {
-    _dir: TempDir,
+    dir: TempDir,
     path: PathBuf,
     receiver: Receiver,
+    writer: Writer,
+}
+
+/// The log after the writer has drained the queue.
+struct Done {
+    _dir: TempDir,
+    path: PathBuf,
+}
+
+impl Fixture {
+    /// Drops the receiver and waits until the writer has drained the queue to the log.
+    async fn finish(self) -> Done {
+        drop(self.receiver);
+        self.writer.finished().await;
+        Done {
+            _dir: self.dir,
+            path: self.path,
+        }
+    }
 }
 
 fn fixture() -> Fixture {
+    fixture_with(None, Limits::default())
+}
+
+/// A fixture whose log starts with `existing`, if given, within `limits`.
+fn fixture_with(existing: Option<&str>, limits: Limits) -> Fixture {
     let dir = TempDir::new().expect("a temporary directory");
     let path = dir.path().join("deliveries.jsonl");
+    if let Some(existing) = existing {
+        std::fs::write(&path, existing).expect("the log is writable");
+    }
     let log = DeliveryLog::open(&path).expect("the log opens");
+    let (receiver, writer) = Receiver::start(secret(), log, limits);
     Fixture {
-        _dir: dir,
+        dir,
         path,
-        receiver: Receiver::new(secret(), log),
+        receiver,
+        writer,
     }
 }
 
@@ -92,7 +121,7 @@ async fn valid_signature_is_accepted_and_logged() {
         send(&fx.receiver, signed("issues", "d-1", body)).await,
         StatusCode::ACCEPTED
     );
-    let lines = lines(&fx.path);
+    let lines = lines(&fx.finish().await.path);
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["delivery"], "d-1");
 }
@@ -119,7 +148,7 @@ async fn bad_signatures_are_refused_and_not_logged() {
             "{header:?}"
         );
     }
-    assert!(read(&fx.path).is_empty());
+    assert!(read(&fx.finish().await.path).is_empty());
 }
 
 #[test]
@@ -166,7 +195,7 @@ async fn oversize_body_is_refused_and_not_logged() {
         send(&fx.receiver, signed("push", "d-big", &body)).await,
         StatusCode::PAYLOAD_TOO_LARGE
     );
-    assert!(read(&fx.path).is_empty());
+    assert!(read(&fx.finish().await.path).is_empty());
 }
 
 #[tokio::test]
@@ -177,7 +206,7 @@ async fn body_at_the_limit_is_accepted() {
         send(&fx.receiver, signed("push", "d-max", &body)).await,
         StatusCode::ACCEPTED
     );
-    assert_eq!(lines(&fx.path).len(), 1);
+    assert_eq!(lines(&fx.finish().await.path).len(), 1);
 }
 
 #[tokio::test]
@@ -193,7 +222,7 @@ async fn ping_and_unknown_events_are_logged() {
             StatusCode::ACCEPTED
         );
     }
-    let events: Vec<Value> = lines(&fx.path)
+    let events: Vec<Value> = lines(&fx.finish().await.path)
         .into_iter()
         .map(|line| line["event"].clone())
         .collect();
@@ -202,15 +231,12 @@ async fn ping_and_unknown_events_are_logged() {
 
 #[tokio::test]
 async fn delivery_is_appended_after_existing_lines() {
-    let dir = TempDir::new().expect("a temporary directory");
-    let path = dir.path().join("deliveries.jsonl");
-    std::fs::write(&path, "{\"earlier\":true}\n").expect("the log is writable");
-    let receiver = Receiver::new(secret(), DeliveryLog::open(&path).expect("the log opens"));
+    let fx = fixture_with(Some("{\"earlier\":true}\n"), Limits::default());
     assert_eq!(
-        send(&receiver, signed("issues", "d-2", b"{}")).await,
+        send(&fx.receiver, signed("issues", "d-2", b"{}")).await,
         StatusCode::ACCEPTED
     );
-    let lines = lines(&path);
+    let lines = lines(&fx.finish().await.path);
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0], json!({"earlier": true}));
     assert_eq!(lines[1]["delivery"], "d-2");
@@ -228,7 +254,7 @@ async fn concurrent_deliveries_give_whole_lines() {
         (first, second),
         (StatusCode::ACCEPTED, StatusCode::ACCEPTED)
     );
-    let mut deliveries: Vec<Value> = lines(&fx.path)
+    let mut deliveries: Vec<Value> = lines(&fx.finish().await.path)
         .into_iter()
         .map(|line| line["delivery"].clone())
         .collect();
@@ -249,10 +275,14 @@ fn stalled(delivery: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn requests_over_the_limit_are_refused_until_one_finishes() {
-    let dir = TempDir::new().expect("a temporary directory");
-    let path = dir.path().join("deliveries.jsonl");
-    let log = DeliveryLog::open(&path).expect("the log opens");
-    let receiver = Receiver::with_limit(secret(), log, 2);
+    let fx = fixture_with(
+        None,
+        Limits {
+            in_flight: 2,
+            ..Limits::default()
+        },
+    );
+    let receiver = fx.receiver.clone();
     let held: Vec<_> = ["d-held-1", "d-held-2"]
         .into_iter()
         .map(|delivery| tokio::spawn(send_owned(receiver.clone(), stalled(delivery))))
@@ -261,7 +291,7 @@ async fn requests_over_the_limit_are_refused_until_one_finishes() {
     for _ in 0..100 {
         tokio::task::yield_now().await;
         let status = send(&receiver, signed("push", "d-over", b"{}")).await;
-        if status == StatusCode::SERVICE_UNAVAILABLE {
+        if status == StatusCode::TOO_MANY_REQUESTS {
             refused = true;
             break;
         }
@@ -271,7 +301,7 @@ async fn requests_over_the_limit_are_refused_until_one_finishes() {
             "until both are held, it is accepted"
         );
     }
-    assert!(refused, "a request over the limit gets 503");
+    assert!(refused, "a request over the limit gets 429");
     for task in &held {
         task.abort();
     }
@@ -283,7 +313,8 @@ async fn requests_over_the_limit_are_refused_until_one_finishes() {
         StatusCode::ACCEPTED,
         "the permits come back when the held requests end"
     );
-    let logged: Vec<Value> = lines(&path)
+    drop(receiver);
+    let logged: Vec<Value> = lines(&fx.finish().await.path)
         .into_iter()
         .map(|line| line["delivery"].clone())
         .collect();
@@ -293,6 +324,87 @@ async fn requests_over_the_limit_are_refused_until_one_finishes() {
 
 async fn send_owned(receiver: Receiver, request: Request<Body>) -> StatusCode {
     send(&receiver, request).await
+}
+
+/// A writer into a shared buffer whose first write tells `started` and then waits for `release`.
+struct Gated {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    started: Option<mpsc::Sender<()>>,
+    release: mpsc::Receiver<()>,
+}
+
+impl Write for Gated {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(started) = self.started.take() {
+            started.send(()).expect("the test waits for the start");
+            self.release.recv().expect("the test releases the writer");
+        }
+        self.buffer
+            .lock()
+            .expect("the buffer lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_full_queue_is_refused_and_a_bad_signature_never_reaches_it() {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let (started_tx, started) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let log = DeliveryLog::with_writer(
+        PathBuf::from("deliveries.jsonl"),
+        Gated {
+            buffer: Arc::clone(&buffer),
+            started: Some(started_tx),
+            release: release_rx,
+        },
+    );
+    let limits = Limits {
+        queued: 1,
+        ..Limits::default()
+    };
+    let (receiver, writer) = Receiver::start(secret(), log, limits);
+    assert_eq!(
+        send(&receiver, signed("push", "d-1", b"{}")).await,
+        StatusCode::ACCEPTED,
+        "the first delivery is answered before it is written"
+    );
+    tokio::task::spawn_blocking(move || started.recv())
+        .await
+        .expect("the wait ends")
+        .expect("the writer starts on the first delivery");
+    assert_eq!(
+        send(&receiver, signed("push", "d-2", b"{}")).await,
+        StatusCode::ACCEPTED,
+        "the second delivery fills the queue"
+    );
+    assert_eq!(
+        send(&receiver, signed("push", "d-3", b"{}")).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a full queue refuses a verified delivery"
+    );
+    assert_eq!(
+        send(&receiver, request("push", "d-4", b"{}".to_vec(), None)).await,
+        StatusCode::UNAUTHORIZED,
+        "a missing signature is refused before the queue is tried"
+    );
+    release.send(()).expect("the writer waits for the release");
+    drop(receiver);
+    writer.finished().await;
+    let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
+        .expect("the log is UTF-8");
+    let deliveries: Vec<Value> = text
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).expect("each line is JSON")["delivery"].clone()
+        })
+        .collect();
+    assert_eq!(deliveries, [json!("d-1"), json!("d-2")]);
 }
 
 /// A writer into a shared buffer that fails once, after taking `take` bytes of a write.
@@ -347,6 +459,34 @@ fn a_fragment_from_a_failed_write_is_ended_before_the_next_line() {
     let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
         .expect("the log is UTF-8");
     assert_eq!(text, "{\"n\":\n{\"n\":2}\n{\"n\":3}\n");
+}
+
+#[tokio::test]
+async fn a_failed_write_is_answered_202_and_later_lines_stay_whole() {
+    let (log, buffer) = failing_log(5);
+    let (receiver, writer) = Receiver::start(secret(), log, Limits::default());
+    for delivery in ["d-1", "d-2"] {
+        assert_eq!(
+            send(&receiver, signed("push", delivery, b"{}")).await,
+            StatusCode::ACCEPTED,
+            "{delivery} is answered before it is written"
+        );
+    }
+    drop(receiver);
+    writer.finished().await;
+    let text = String::from_utf8(buffer.lock().expect("the buffer lock").clone())
+        .expect("the log is UTF-8");
+    let mut lines = text.lines();
+    assert!(
+        lines
+            .next()
+            .is_some_and(|line| serde_json::from_str::<Value>(line).is_err()),
+        "the fragment is a line of its own"
+    );
+    let second: Value =
+        serde_json::from_str(lines.next().expect("a second line")).expect("it is JSON");
+    assert_eq!(second["delivery"], "d-2");
+    assert_eq!(lines.next(), None);
 }
 
 #[test]
@@ -495,8 +635,8 @@ async fn load_secret_refuses_an_empty_value() {
     }
 }
 
-#[test]
-fn debug_output_hides_the_secret() {
+#[tokio::test]
+async fn debug_output_hides_the_secret() {
     let fx = fixture();
     let text = format!("{:?}", fx.receiver);
     let secret = std::str::from_utf8(SECRET).expect("UTF-8");

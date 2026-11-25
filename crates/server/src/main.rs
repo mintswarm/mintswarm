@@ -4,10 +4,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::builder::RangedU64ValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mintswarm_github::KeyStore;
 use mintswarm_server::webhooks::{
-    self, DEFAULT_SECRET_ENV, DeliveryLog, PATH, Receiver, SecretSource,
+    self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_SECRET_ENV, DeliveryLog, Limits, PATH,
+    Receiver, SecretSource,
 };
 
 /// The mintswarm control plane
@@ -50,6 +52,13 @@ struct WebhooksArgs {
     /// The key store's account name for the secret
     #[arg(long, requires = "key_store")]
     key_account: Option<String>,
+    /// The most requests read at once, each holding up to 25 MiB until its signature is
+    /// checked; one more gets 429
+    #[arg(long, default_value_t = DEFAULT_IN_FLIGHT, value_parser = RangedU64ValueParser::<usize>::new().range(1..))]
+    max_in_flight: usize,
+    /// The most verified deliveries waiting for the log; one more gets 429
+    #[arg(long, default_value_t = DEFAULT_QUEUED, value_parser = RangedU64ValueParser::<usize>::new().range(1..))]
+    max_queued: usize,
 }
 
 /// The key stores `key-store.sh` writes to.
@@ -75,6 +84,13 @@ impl From<StoreArg> for KeyStore {
 }
 
 impl WebhooksArgs {
+    fn limits(&self) -> Limits {
+        Limits {
+            in_flight: self.max_in_flight,
+            queued: self.max_queued,
+        }
+    }
+
     fn secret_source(&self) -> SecretSource {
         match (self.key_store, &self.key_service, &self.key_account) {
             (Some(store), Some(service), Some(account)) => SecretSource::KeyStore {
@@ -131,7 +147,8 @@ fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
             "mintswarm-server webhooks: listening on http://{addr}{PATH}, appending deliveries to {}",
             args.log.display()
         );
-        webhooks::serve(listener, Receiver::new(secret, log)).await?;
+        let (receiver, _writer) = Receiver::start(secret, log, args.limits());
+        webhooks::serve(listener, receiver).await?;
         Ok(())
     })
 }

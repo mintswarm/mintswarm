@@ -1,9 +1,10 @@
 //! A receiver for the GitHub App's webhooks. `POST /github/webhook` checks each delivery's
-//! `X-Hub-Signature-256` against the webhook secret in constant time, answers `202` and appends
-//! the verified delivery to a log file as one JSON line. A missing or bad signature gets `401`
-//! and one JSON line on stderr without the body; a body over [`BODY_LIMIT`] gets `413`. At most
-//! [`IN_FLIGHT_LIMIT`] requests are handled at once; one more gets `503` before its body is
-//! read. Nothing is filtered by event type.
+//! `X-Hub-Signature-256` against the webhook secret in constant time. A verified delivery is put
+//! on a bounded queue as one JSON line and answered `202` at once; a separate task drains the
+//! queue to the log file. A missing or bad signature gets `401` and one JSON line on stderr
+//! without the body; a body over [`BODY_LIMIT`] gets `413`. When the queue is full, or
+//! [`Limits::in_flight`] requests are already being read, the request gets `429`. Nothing is
+//! filtered by event type.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -29,6 +30,8 @@ use serde_json::Value;
 use sha2::Sha256;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::task::JoinHandle;
 
 /// The path GitHub posts deliveries to.
 pub const PATH: &str = "/github/webhook";
@@ -36,9 +39,16 @@ pub const PATH: &str = "/github/webhook";
 /// The largest body accepted, in bytes: GitHub's cap of 25 MB, read as 25 MiB.
 pub const BODY_LIMIT: usize = 25 * 1024 * 1024;
 
-/// The most requests handled at once. Each may hold a body of up to [`BODY_LIMIT`] before its
-/// signature is checked, so this bounds what unauthenticated callers can make the receiver hold.
-pub const IN_FLIGHT_LIMIT: usize = 8;
+/// The default for [`Limits::in_flight`]. A request holds its body, up to [`BODY_LIMIT`], until
+/// its signature is checked, so callers without the secret can make the receiver hold at most
+/// this many bodies: 16 x 25 MiB = 400 MiB. GitHub sends each delivery as one request and the
+/// receiver answers as soon as the signature is checked, so GitHub's own requests rarely overlap.
+pub const DEFAULT_IN_FLIGHT: usize = 16;
+
+/// The default for [`Limits::queued`]. Only verified deliveries are queued, and the writer only
+/// falls behind while the disk stalls; at GitHub's typical few-KiB payloads 256 lines is under a
+/// few MiB, and it covers a burst such as a push to many pull requests at once.
+pub const DEFAULT_QUEUED: usize = 256;
 
 /// The header that carries the HMAC-SHA256 of the body.
 pub const SIGNATURE_HEADER: &str = "x-hub-signature-256";
@@ -446,34 +456,86 @@ impl DeliveryLog {
     }
 }
 
-/// What the receiver's handler shares: the secret, the log and the permits for requests in
-/// flight. Clones share all three.
-#[derive(Clone, Debug)]
-pub struct Receiver {
-    secret: Arc<Secret>,
-    log: Arc<DeliveryLog>,
-    in_flight: Arc<Semaphore>,
+/// The receiver's bounds. Each is at least 1; a 0 is read as 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// The most requests whose bodies are read and checked at once.
+    pub in_flight: usize,
+    /// The most verified deliveries waiting for the log.
+    pub queued: usize,
 }
 
-impl Receiver {
-    /// A receiver that checks signatures with `secret`, appends to `log` and handles at most
-    /// [`IN_FLIGHT_LIMIT`] requests at once.
-    pub fn new(secret: Secret, log: DeliveryLog) -> Self {
-        Self::with_limit(secret, log, IN_FLIGHT_LIMIT)
-    }
-
-    /// As [`Receiver::new`], handling at most `limit` requests at once.
-    pub fn with_limit(secret: Secret, log: DeliveryLog, limit: usize) -> Self {
+impl Default for Limits {
+    fn default() -> Self {
         Self {
-            secret: Arc::new(secret),
-            log: Arc::new(log),
-            in_flight: Arc::new(Semaphore::new(limit)),
+            in_flight: DEFAULT_IN_FLIGHT,
+            queued: DEFAULT_QUEUED,
         }
     }
 }
 
+/// A verified delivery waiting for the log.
+struct Queued {
+    received_at: String,
+    delivery: Option<String>,
+    event: Option<String>,
+    line: Vec<u8>,
+}
+
+/// What the receiver's handler shares: the secret, the queue to the log and the permits for
+/// requests in flight. Clones share all three.
+#[derive(Clone, Debug)]
+pub struct Receiver {
+    secret: Arc<Secret>,
+    queue: mpsc::Sender<Queued>,
+    in_flight: Arc<Semaphore>,
+}
+
+impl fmt::Debug for Queued {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Queued")
+            .field("delivery", &self.delivery)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The task that drains the queue to the log. It ends once every [`Receiver`] clone is dropped
+/// and the queue is empty.
+#[derive(Debug)]
+pub struct Writer(JoinHandle<()>);
+
+impl Writer {
+    /// Waits until the queue is drained and the writer has ended.
+    pub async fn finished(self) {
+        // The writer only ends by draining the queue; a panic in it has already been reported
+        // on stderr by the runtime, and there is nothing left to write.
+        let _ = self.0.await;
+    }
+}
+
+impl Receiver {
+    /// Starts the writer that drains the queue to `log`, and returns a receiver that checks
+    /// signatures with `secret` within `limits`. Call it inside a Tokio runtime.
+    pub fn start(secret: Secret, log: DeliveryLog, limits: Limits) -> (Self, Writer) {
+        let (queue, mut drain) = mpsc::channel::<Queued>(limits.queued.max(1));
+        let writer = tokio::task::spawn_blocking(move || {
+            while let Some(queued) = drain.blocking_recv() {
+                if let Err(error) = log.append(&queued.line) {
+                    report_queued(&queued, Outcome::Error(&error.to_string()));
+                }
+            }
+        });
+        let receiver = Self {
+            secret: Arc::new(secret),
+            queue,
+            in_flight: Arc::new(Semaphore::new(limits.in_flight.max(1))),
+        };
+        (receiver, Writer(writer))
+    }
+}
+
 /// The router: `POST /github/webhook`, with bodies capped at [`BODY_LIMIT`] and requests in
-/// flight capped by the receiver's limit.
+/// flight capped by the receiver's [`Limits::in_flight`].
 pub fn router(receiver: Receiver) -> Router {
     let in_flight = Arc::clone(&receiver.in_flight);
     Router::new()
@@ -483,7 +545,7 @@ pub fn router(receiver: Receiver) -> Router {
         .with_state(receiver)
 }
 
-/// Answers `503` without reading the body when every permit is taken; otherwise holds a permit
+/// Answers `429` without reading the body when every permit is taken; otherwise holds a permit
 /// until the response is ready.
 async fn limit_in_flight(
     State(in_flight): State<Arc<Semaphore>>,
@@ -491,11 +553,13 @@ async fn limit_in_flight(
     next: Next,
 ) -> Response {
     let Ok(_permit) = in_flight.try_acquire_owned() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     next.run(request).await
 }
 
+/// Checks the signature, queues a verified delivery for the log, and answers at once: `202`
+/// when queued, `401` for a missing or bad signature, `429` when the queue is full.
 async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Bytes) -> StatusCode {
     let received_at = format_rfc3339_utc(SystemTime::now());
     let signature = headers.get(SIGNATURE_HEADER).map(|value| value.as_bytes());
@@ -505,33 +569,48 @@ async fn receive(State(receiver): State<Receiver>, headers: HeaderMap, body: Byt
         return StatusCode::UNAUTHORIZED;
     }
     let line = log_line(&received_at, &headers, &body);
-    let log = Arc::clone(&receiver.log);
-    match tokio::task::spawn_blocking(move || log.append(&line)).await {
-        Ok(Ok(())) => StatusCode::ACCEPTED,
-        Ok(Err(error)) => {
-            report(&received_at, &headers, Outcome::Error(&error.to_string()));
-            StatusCode::INTERNAL_SERVER_ERROR
+    drop(body);
+    let queued = Queued {
+        delivery: header_text(&headers, DELIVERY_HEADER),
+        event: header_text(&headers, EVENT_HEADER),
+        received_at,
+        line,
+    };
+    match receiver.queue.try_send(queued) {
+        Ok(()) => StatusCode::ACCEPTED,
+        Err(TrySendError::Full(queued)) => {
+            report_queued(&queued, Outcome::Rejected("queue_full"));
+            StatusCode::TOO_MANY_REQUESTS
         }
-        Err(_) => {
-            report(
-                &received_at,
-                &headers,
-                Outcome::Error("the log write did not finish"),
-            );
+        Err(TrySendError::Closed(queued)) => {
+            report_queued(&queued, Outcome::Error("the log writer has stopped"));
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
 }
 
+/// Writes one JSON line to stderr about a queued delivery that was not logged, without its line.
+fn report_queued(queued: &Queued, outcome: Outcome<'_>) {
+    write_report(&Report {
+        received_at: &queued.received_at,
+        outcome,
+        delivery: queued.delivery.clone(),
+        event: queued.event.clone(),
+    });
+}
+
 /// Writes one JSON line to stderr about a delivery that was not logged, without its body.
 fn report(received_at: &str, headers: &HeaderMap, outcome: Outcome<'_>) {
-    let entry = Report {
+    write_report(&Report {
         received_at,
         outcome,
         delivery: header_text(headers, DELIVERY_HEADER),
         event: header_text(headers, EVENT_HEADER),
-    };
-    let line = serde_json::to_string(&entry).expect("a struct of strings always serialises");
+    });
+}
+
+fn write_report(report: &Report<'_>) {
+    let line = serde_json::to_string(report).expect("a struct of strings always serialises");
     eprintln!("{line}");
 }
 
@@ -592,7 +671,8 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener, ServeError> {
         })
 }
 
-/// Serves [`router`] on `listener` until the process stops.
+/// Serves [`router`] on `listener` until the process stops. The receiver's [`Writer`] keeps
+/// draining the queue meanwhile.
 pub async fn serve(listener: TcpListener, receiver: Receiver) -> Result<(), ServeError> {
     axum::serve(listener, router(receiver))
         .await

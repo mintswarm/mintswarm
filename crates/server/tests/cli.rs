@@ -45,7 +45,14 @@ fn help_lists_webhooks() {
 #[test]
 fn webhooks_help_lists_listen_and_log() {
     let stdout = stdout_of(&["webhooks", "--help"]);
-    for option in ["--listen", "--log", "--secret-env", "--key-store"] {
+    for option in [
+        "--listen",
+        "--log",
+        "--secret-env",
+        "--key-store",
+        "--max-in-flight",
+        "--max-queued",
+    ] {
         assert!(
             stdout.contains(option),
             "webhooks help lists {option}: {stdout}"
@@ -118,4 +125,20 @@ fn webhooks_secret_env_conflicts_with_key_store() {
         "--secret-env with --key-store is refused"
     );
     assert!(!log.exists(), "the log is not created");
+}
+
+#[test]
+fn webhooks_limits_must_be_at_least_one() {
+    for option in ["--max-in-flight", "--max-queued"] {
+        let dir = tempfile::TempDir::new().expect("a temporary directory");
+        let log = dir.path().join("deliveries.jsonl");
+        let status = Command::new(BIN)
+            .args(["webhooks", "--listen", "127.0.0.1:0", option, "0", "--log"])
+            .arg(&log)
+            .env("MSW_WEBHOOK_SECRET", "it's a secret to everybody")
+            .status()
+            .expect("mintswarm-server runs");
+        assert!(!status.success(), "{option} 0 is refused");
+        assert!(!log.exists(), "the log is not created");
+    }
 }
