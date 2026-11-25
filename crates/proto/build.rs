@@ -37,6 +37,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         // RPC's `connect` method; see the module doc.
         .build_transport(false)
         .skip_debug([".mintswarm.runner.v1.Secret"])
+        // `Hello` is far larger than the other cases; it is sent once per
+        // stream, so it stays unboxed.
+        .enum_attribute(
+            ".mintswarm.runner.v1.ConnectRequest.body",
+            "#[allow(clippy::large_enum_variant)]",
+        )
         .compile_fds(fds)?;
     Ok(())
 }
