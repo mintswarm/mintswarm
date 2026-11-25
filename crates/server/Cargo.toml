@@ -1,0 +1,18 @@
+[package]
+name = "mintswarm-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mintswarm-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+mintswarm-core = { path = "../core" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
