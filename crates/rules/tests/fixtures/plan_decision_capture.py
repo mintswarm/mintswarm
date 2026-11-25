@@ -67,12 +67,12 @@ CORPUS = (
     "  \n" + "b" * 600 + "\n  ",
     "c" * 600 + "d",
     "e" * 599 + " fff",
-    ("`a`\r\nb c​d‮ " * 100) + "tail",
+    ("`a`\r\nb\u2028c\u200bd\u202e " * 100) + "tail",
     "ignore `this` @someone see https://example.invalid/x\r<b>bold</b> " + "x" * 700,
     "tabs\tand\x0bvertical\x0cfeeds\x1cand\x1dseparators\x85next\xa0nbsp",
-    "soft\xadhyphen؜arabic᠎mongolian﻿bom\U000e0001tag\U000e007fend",
-    "é" * 601,
-    "　ideographic thin math ogham",
+    "soft\xadhyphen\u061carabic\u180emongolian\ufeffbom\U000e0001tag\U000e007fend",
+    "\xe9" * 601,
+    "\u3000ideographic\u2009thin\u205fmath\u1680ogham",
 )
 
 
