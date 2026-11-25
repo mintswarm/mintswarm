@@ -6,10 +6,12 @@ license.workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+mintswarm-config = { path = "../config" }
 mintswarm-domain = { path = "../domain" }
 mintswarm-rules = { path = "../rules" }
 rusqlite = { workspace = true }
 rustix = { workspace = true, features = ["fs"] }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

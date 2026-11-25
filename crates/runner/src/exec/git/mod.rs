@@ -10,7 +10,7 @@ mod fetch;
 mod read;
 mod store;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::path::{Path, PathBuf};
 
