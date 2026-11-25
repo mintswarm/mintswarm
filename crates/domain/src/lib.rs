@@ -7,6 +7,7 @@ pub mod ids;
 pub mod job;
 pub mod plane;
 pub mod priority;
+pub mod probe;
 pub mod question;
 pub mod records;
 pub mod role;
