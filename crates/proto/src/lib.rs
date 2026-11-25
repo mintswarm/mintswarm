@@ -5,12 +5,22 @@
 
 /// The `mintswarm.runner.v1` package.
 pub mod runner {
-    /// Version 1 of the runner protocol.
-    ///
-    /// The package has no definitions yet, so prost emits no file for it; the
-    /// first change that adds messages includes the generated code here with
-    /// `tonic::include_proto!("mintswarm.runner.v1")`.
-    pub mod v1 {}
+    /// Version 1 of the runner protocol: `RunnerService`, its messages and
+    /// `Secret`, with the generated tonic client and server.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.runner.v1");
+
+        /// Prints `Secret(<redacted>)`, never the value (design §9.5).
+        ///
+        /// `build.rs` skips prost's derived `Debug` for `Secret`, so every
+        /// message that contains one redacts it through its own derived
+        /// `Debug`.
+        impl std::fmt::Debug for Secret {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Secret(<redacted>)")
+            }
+        }
+    }
 }
 
 /// Test fakes of the protocol's services, filled by later changes.
