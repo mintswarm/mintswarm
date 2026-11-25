@@ -54,22 +54,6 @@ pub struct Scenario {
     pub steps: &'static [Step],
 }
 
-impl Scenario {
-    /// Whether the scenario assigns work, so a fake must hold attempts.
-    pub fn needs_assignments(&self) -> bool {
-        self.steps.iter().any(|step| {
-            matches!(
-                step,
-                Step::Action(
-                    Action::PlaneSendsAssignment { .. }
-                        | Action::PlaneSendsSecondAttempt { .. }
-                        | Action::PlaneGrantsPushCredential { .. }
-                )
-            )
-        })
-    }
-}
-
 /// One step of a scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -226,6 +210,12 @@ pub enum Expectation {
         /// The seq of the record.
         seq: u64,
     },
+    /// The runner uploads again the blobs of `attempt` the plane asked for,
+    /// then resends the record that references them.
+    RunnerReuploadsBlobs {
+        /// The attempt.
+        attempt: Attempt,
+    },
     /// The runner reports `attempt_started` for `attempt`.
     AttemptStarted {
         /// The attempt.
@@ -348,6 +338,10 @@ pub static SCENARIOS: &[Scenario] = &[
                 attempt: A,
                 epoch: 1,
                 outcome: Outcome::Lost,
+            }),
+            Do(RunnerReportsProgress {
+                attempt: A,
+                epoch: 1,
             }),
             Then(E::EventFenced {
                 attempt: A,
@@ -474,6 +468,10 @@ pub static SCENARIOS: &[Scenario] = &[
                 epoch: 1,
                 outcome: Outcome::Lost,
             }),
+            Do(RunnerReportsProgress {
+                attempt: A,
+                epoch: 1,
+            }),
             Then(E::EventFenced {
                 attempt: A,
                 epoch: 1,
@@ -504,7 +502,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "need_blobs",
-        summary: "§8.2: a record whose blobs the plane lost is answered with need_blobs",
+        summary: "§8.2: a record whose blobs the plane lost is answered with need_blobs, and acknowledged once the runner uploads them again",
         steps: &[
             CONNECT,
             ASSIGN_A1,
@@ -513,6 +511,7 @@ pub static SCENARIOS: &[Scenario] = &[
             Inject(PlaneLosesUncommittedBlobs),
             Do(RunnerSendsRecordPut { attempt: A }),
             Then(E::PlaneAsksForBlobs { seq: 2 }),
+            Then(E::RunnerReuploadsBlobs { attempt: A }),
             Then(E::Acked { seq: 2 }),
         ],
     },

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use mintswarm_proto::fakes::scenarios::{SCENARIOS, Scenario, Step};
+use mintswarm_proto::fakes::scenarios::{SCENARIOS, Step};
 
 const EXPECTED: [&str; 15] = [
     "reconnect_and_replay",
@@ -23,13 +23,6 @@ const EXPECTED: [&str; 15] = [
     "new_outbox_epoch",
     "directive_latency",
 ];
-
-fn scenario(name: &str) -> &'static Scenario {
-    SCENARIOS
-        .iter()
-        .find(|scenario| scenario.name == name)
-        .unwrap_or_else(|| panic!("no scenario named {name}"))
-}
 
 #[test]
 fn every_expected_scenario_is_present() {
@@ -70,10 +63,4 @@ fn every_scenario_ends_with_an_expectation() {
             scenario.name
         );
     }
-}
-
-#[test]
-fn needs_assignments_tells_work_from_stream_only_scenarios() {
-    assert!(scenario("lease_lost_mid_step").needs_assignments());
-    assert!(!scenario("reconnect_and_replay").needs_assignments());
 }
