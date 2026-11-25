@@ -3,6 +3,7 @@
 
 pub mod cost;
 pub mod field;
+pub mod hosting;
 pub mod ids;
 pub mod job;
 pub mod plane;
