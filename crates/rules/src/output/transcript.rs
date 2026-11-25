@@ -9,9 +9,12 @@
 //! input of its `SubagentHandback` tool calls, joined by newlines; messages whose text is blank
 //! are not counted.
 //!
-//! Divergences, both where Python would fail rather than select: a lone surrogate in extracted
-//! text becomes U+FFFD (Python fails to write the document), and a `text` or `message` value that
-//! is not a string counts as empty (Python fails to join it).
+//! Divergences: any record on which `save-output.py` raises is read leniently here, so a
+//! transcript Python fails on still selects a reply. A lone surrogate in extracted text or in a
+//! `message.id` becomes U+FFFD (Python fails to write the document or to print the id), a `text`
+//! or `message` value that is not a string counts as empty (Python fails to join it), and a
+//! `SubagentHandback` `input` that is not an object counts as having no `message` (Python fails
+//! to call `.get` on it).
 
 use super::pyjson::{self, PyStr, Value};
 use super::{Capture, Fault, extract, opener};
