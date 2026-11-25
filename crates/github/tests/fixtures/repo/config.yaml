@@ -1,0 +1,6 @@
+# Sample repository config for the contents fixtures — read at a commit.
+project:
+  name: widgets
+pipeline:
+  review:
+    clear: major

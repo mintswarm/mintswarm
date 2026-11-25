@@ -1,0 +1,18 @@
+{
+  "type": "file",
+  "encoding": "base64",
+  "size": 137,
+  "name": "config.yaml",
+  "path": ".mintswarm/config.yaml",
+  "content": "IyBTYW1wbGUgcmVwb3NpdG9yeSBjb25maWcgZm9yIHRoZSBjb250ZW50cyBm\naXh0dXJlcyDigJQgcmVhZCBhdCBhIGNvbW1pdC4KcHJvamVjdDoKICBuYW1l\nOiB3aWRnZXRzCnBpcGVsaW5lOgogIHJldmlldzoKICAgIGNsZWFyOiBtYWpv\ncgo=\n",
+  "sha": "3f1c2a9e8b7d6c5f4e3a2b1c0d9e8f7a6b5c4d3e",
+  "url": "https://api.github.com/repos/acme/widgets/contents/.mintswarm/config.yaml?ref=master",
+  "git_url": "https://api.github.com/repos/acme/widgets/git/blobs/3f1c2a9e8b7d6c5f4e3a2b1c0d9e8f7a6b5c4d3e",
+  "html_url": "https://github.com/acme/widgets/blob/master/.mintswarm/config.yaml",
+  "download_url": "https://raw.githubusercontent.com/acme/widgets/master/.mintswarm/config.yaml",
+  "_links": {
+    "self": "https://api.github.com/repos/acme/widgets/contents/.mintswarm/config.yaml?ref=master",
+    "git": "https://api.github.com/repos/acme/widgets/git/blobs/3f1c2a9e8b7d6c5f4e3a2b1c0d9e8f7a6b5c4d3e",
+    "html": "https://github.com/acme/widgets/blob/master/.mintswarm/config.yaml"
+  }
+}
