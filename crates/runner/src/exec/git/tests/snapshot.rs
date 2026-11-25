@@ -34,7 +34,7 @@ fn mode(meta: &std::fs::Metadata) -> u32 {
     meta.permissions().mode() & 0o7777
 }
 
-/// `side`'s tree with its non-UTF-8 name made UTF-8, which some file systems (APFS) refuse,
+/// `side`'s tree with its non-UTF-8 name made UTF-8, for file systems (APFS) that refuse it,
 /// committed and fetched into `store`: nested directories, an executable, two symlinks and a
 /// gitlink.
 fn portable_side(fx: &Fixture, store: &GitStore) -> RevId {
@@ -60,13 +60,53 @@ fn portable_side(fx: &Fixture, store: &GitStore) -> RevId {
     hostile(fx, store, "portable", &tree)
 }
 
+/// `EILSEQ`, which a file system that takes only UTF-8 names (APFS) gives for any other name.
+#[cfg(target_os = "macos")]
+const ILLEGAL_BYTE_SEQUENCE: i32 = 92;
+/// `EILSEQ`, which a file system that takes only UTF-8 names gives for any other name.
+#[cfg(not(target_os = "macos"))]
+const ILLEGAL_BYTE_SEQUENCE: i32 = 84;
+
+/// Whether `error` is the file system refusing a name, by its error class.
+fn name_refused(error: &GitError) -> bool {
+    match error {
+        GitError::Io { source, .. } => {
+            source.kind() == std::io::ErrorKind::InvalidFilename
+                || source.raw_os_error() == Some(ILLEGAL_BYTE_SEQUENCE)
+        }
+        _ => false,
+    }
+}
+
+/// `side` materialised read-only at `dest` with its non-UTF-8 name as is; where the file system
+/// refuses that name, and only there, `portable_side` instead. On Linux the name must be taken.
+fn materialise_side(fx: &Fixture, store: &GitStore, dest: &Path) -> (RevId, Workspace) {
+    match store.materialise(&fx.side, dest, TreeMode::ReadOnly) {
+        Ok(workspace) => (fx.side.clone(), workspace),
+        Err(error) if !cfg!(target_os = "linux") && name_refused(&error) => {
+            assert!(!dest.exists(), "a refused snapshot left {dest:?}");
+            let side = portable_side(fx, store);
+            let workspace = store.materialise(&side, dest, TreeMode::ReadOnly).unwrap();
+            (side, workspace)
+        }
+        Err(error) => panic!("materialising side: {error:?}"),
+    }
+}
+
 #[test]
 fn read_only_snapshot_matches_the_commit() {
     let fx = Fixture::new();
     let store = fx.fetched_store("snapshot");
-    let side = portable_side(&fx, &store);
     let dest = fx.dir.path().join("snapshot");
-    let workspace = store.materialise(&side, &dest, TreeMode::ReadOnly).unwrap();
+    let (side, workspace) = materialise_side(&fx, &store, &dest);
+    if side == fx.side {
+        assert!(
+            walk(&dest)
+                .iter()
+                .any(|(path, _)| path.as_slice() == b"odd\xff\nname"),
+            "the non-UTF-8 name is missing"
+        );
+    }
     assert_eq!(
         workspace,
         Workspace {
