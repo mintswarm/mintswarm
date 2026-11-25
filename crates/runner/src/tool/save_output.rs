@@ -38,6 +38,12 @@ pub fn record_path(output: &Path) -> Option<PathBuf> {
     Some(output.with_file_name(record))
 }
 
+/// `output` normalised as `pathlib.Path` does on POSIX: a trailing `/`, repeated `/` and `.`
+/// components dropped, so `out/review.md/` is `out/review.md` and `out/.` is `out`.
+pub fn normalised(output: &Path) -> PathBuf {
+    output.components().collect()
+}
+
 /// Writes every `(path, text)` all or none: each text to a temporary file beside its path,
 /// named `.<name>.` and a random suffix, then each temporary renamed onto its path. Parent
 /// directories are created as needed. On any error, the temporaries and the files already renamed
@@ -116,7 +122,7 @@ pub fn run(operands: &[OsString], stdout: &mut impl Write, stderr: &mut impl Wri
         }
     };
 
-    let path = PathBuf::from(output);
+    let path = normalised(Path::new(output));
     let Some(record) = record_path(&path) else {
         return unusable(
             stderr,
@@ -223,6 +229,26 @@ mod tests {
         }
         assert_eq!(record_path(Path::new("/")), None);
         assert_eq!(record_path(Path::new("..")), None);
+    }
+
+    #[test]
+    fn output_is_normalised_as_pathlib_does() {
+        let cases = [
+            ("out/review.md", "out/review.md"),
+            ("out/review.md/", "out/review.md"),
+            ("out//review.md", "out/review.md"),
+            ("out/./review.md", "out/review.md"),
+            ("out/.", "out"),
+            ("/abs/review.md/", "/abs/review.md"),
+            ("out/../review.md", "out/../review.md"),
+        ];
+        for (output, path) in cases {
+            assert_eq!(
+                normalised(Path::new(output)),
+                PathBuf::from(path),
+                "{output}"
+            );
+        }
     }
 
     #[test]

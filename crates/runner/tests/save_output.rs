@@ -324,6 +324,23 @@ fn the_reply_used_by_the_cli_tests_is_saved() {
 }
 
 #[test]
+fn an_output_with_a_trailing_slash_is_saved_as_pathlib_reads_it() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    fs::write(dir.path().join("input"), REPLY).expect("the input is written");
+    let run = save_output(dir.path(), &["--text", "input", "out/review.md/"]);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert!(
+        String::from_utf8_lossy(&run.stdout).ends_with("saved 20 characters to out/review.md/\n"),
+        "{run:?}"
+    );
+    assert_eq!(names(dir.path()), set(&["input", "out"]));
+    assert_eq!(
+        names(&dir.path().join("out")),
+        set(&["review.md", "review.result.json"])
+    );
+}
+
+#[test]
 fn usage_errors_leave_the_directory_empty() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let usage = "usage: mintswarm-runner tool save-output [--text] INPUT OUTPUT.md\n";
