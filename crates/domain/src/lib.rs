@@ -14,6 +14,7 @@ pub mod records;
 pub mod retry;
 pub mod role;
 pub mod scale;
+pub mod time;
 pub mod tracker;
 pub mod vcs;
 pub mod watch;
