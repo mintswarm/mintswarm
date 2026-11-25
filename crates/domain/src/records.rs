@@ -177,7 +177,8 @@ pub struct FloorRecord {
     pub issue_document: Option<Bound>,
     pub analysis: Option<Bound>,
     pub screen: Option<Bound>,
-    pub component: String,
+    /// The issue's components, in the issue's order.
+    pub components: Vec<String>,
     pub base: BaseRef,
     pub config: String,
     pub mode: Mode,
@@ -188,7 +189,7 @@ pub struct FloorRecord {
 
 impl FloorRecord {
     pub const TOOL: &'static str = "mintswarm-plan-floor";
-    pub const VERSION: u32 = 3;
+    pub const VERSION: u32 = 4;
 }
 
 /// Whether an approval goes ahead on its own or waits for a human.
@@ -223,7 +224,8 @@ pub enum Band {
 #[serde(deny_unknown_fields)]
 pub struct Subject {
     pub issue: IssueNumber,
-    pub component: String,
+    /// The issue's components, in the issue's order.
+    pub components: Vec<String>,
     pub plan: Bound,
     pub base: BaseRef,
 }
@@ -305,7 +307,7 @@ pub struct DecisionRecord {
 
 impl DecisionRecord {
     pub const TOOL: &'static str = "mintswarm-approval-decision";
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 }
 
 /// The kind of a kept round.
@@ -517,7 +519,8 @@ pub struct LandingFloorRecord {
     pub version: u32,
     pub plan: Bound,
     pub facts: FactsBound,
-    pub component: String,
+    /// The issue's components, in the issue's order.
+    pub components: Vec<String>,
     pub base: BaseRef,
     pub head: BaseRef,
     pub merge_base: RevId,
@@ -533,5 +536,5 @@ pub struct LandingFloorRecord {
 
 impl LandingFloorRecord {
     pub const TOOL: &'static str = "mintswarm-landing-floor";
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 }

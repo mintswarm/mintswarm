@@ -123,7 +123,7 @@ fn stage_job() -> StageJob {
         job: JobId("job-164".into()),
         attempt: AttemptId("att-1".into()),
         issue: IssueNumber(164),
-        component: "domain".into(),
+        components: vec!["domain".into()],
         stage: "implement".into(),
         harness: "claude".into(),
         model: "opus".into(),

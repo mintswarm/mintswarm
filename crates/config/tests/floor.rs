@@ -287,7 +287,10 @@ fn plan_approval_accepted() -> Vec<(&'static str, Change)> {
         ),
         (
             "component-limits",
-            approval_update("limits_by_component", json!({"docs": {"lines": 400}})),
+            approval_update(
+                "limits_by_component",
+                json!({"docs": {"lines": 400}, "web": {"lines": 500, "files": 12}, "cli": {"lines": 400}}),
+            ),
         ),
         (
             "tested",
@@ -354,12 +357,16 @@ fn selftest_accepted_variants_load() {
     assert_eq!(config.landing().lines_factor, 1.15);
     let config = load_repo_config(&variant(approval_update(
         "limits_by_component",
-        json!({"docs": {"lines": 400}}),
+        json!({"docs": {"lines": 400}, "web": {"lines": 500, "files": 12}, "cli": {"lines": 400}}),
     )))
     .expect("component-limits loads");
     assert_eq!(
         config.plan_approval().limits_by_component["docs"].lines,
         Some(400)
+    );
+    assert_eq!(
+        config.plan_approval().limits_by_component["web"].files,
+        Some(12)
     );
 }
 
