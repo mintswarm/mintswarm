@@ -27,7 +27,7 @@ use mintswarm_domain::work::{OutcomeStatus, StageOutcome};
 use crate::json::{self, Style};
 use crate::markdown::py_strip;
 
-pub use repr::py_repr;
+use repr::py_repr;
 pub use transcript::{Selected, TranscriptCapture, capture_transcript};
 
 /// The file every rule is quoted from.
