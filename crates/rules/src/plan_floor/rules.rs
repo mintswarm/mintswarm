@@ -182,7 +182,7 @@ fn screen_reasons(footprint: &Footprint, screen: Option<&str>) -> Vec<String> {
 /// gives them; `screen` is the screen record's text, or `None` when none is given.
 pub fn evaluate(
     footprint: &Footprint,
-    component: &str,
+    components: &[String],
     view: &View,
     screen: Option<&str>,
 ) -> Vec<RuleResult> {
@@ -200,10 +200,12 @@ pub fn evaluate(
     results.push(rule("require-human-paths", reasons));
 
     let mut reasons = Vec::new();
-    if view.rh_components.iter().any(|c| c == component) {
-        reasons.push(format!(
-            "the issue's component {component} is in require_human.components"
-        ));
+    for component in components {
+        if view.rh_components.contains(component) {
+            reasons.push(format!(
+                "the issue's component {component} is in require_human.components"
+            ));
+        }
     }
     for path in &declared {
         for name in &view.rh_components {
@@ -217,10 +219,19 @@ pub fn evaluate(
     results.push(rule("require-human-components", reasons));
 
     let in_shared = |path: &str| !matching(&view.shared, path, false).is_empty();
+    let outside = match components {
+        [one] => format!("component {one}"),
+        _ => format!("components {}", components.join(", ")),
+    };
     let reasons = declared
         .iter()
-        .filter(|path| matching(paths_of(component), path, false).is_empty() && !in_shared(path))
-        .map(|path| format!("{path} is outside component {component} and shared"))
+        .filter(|path| {
+            components
+                .iter()
+                .all(|c| matching(paths_of(c), path, false).is_empty())
+                && !in_shared(path)
+        })
+        .map(|path| format!("{path} is outside {outside} and shared"))
         .collect();
     results.push(rule("component-scope", reasons));
 

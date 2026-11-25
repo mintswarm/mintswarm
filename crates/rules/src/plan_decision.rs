@@ -223,7 +223,7 @@ pub fn decide(inputs: &Inputs<'_>) -> Result<Decided, Unusable> {
         analysis: &analysis.sha256,
         screen: bundle.screen.as_ref().map(|s| s.sha256.as_str()),
         commit: &bundle.base.commit.0,
-        component: &bundle.component,
+        components: &bundle.components,
         mode,
     };
     let floor = verdict::floor_layer(
@@ -247,7 +247,7 @@ pub fn decide(inputs: &Inputs<'_>) -> Result<Decided, Unusable> {
         approval: "plan".to_owned(),
         subject: Subject {
             issue: IssueNumber(inputs.issue),
-            component: bundle.component.clone(),
+            components: bundle.components.clone(),
             plan: bind(bundle.plan.path.clone(), &bundle.plan.bytes),
             base: bundle.base.clone(),
         },

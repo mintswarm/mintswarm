@@ -115,8 +115,8 @@ pub struct Bundle {
     pub subjects: Subjects,
     /// The base ref as given and the commit it resolves to.
     pub base: BaseRef,
-    /// The issue's component.
-    pub component: String,
+    /// The issue's components, in the issue's order.
+    pub components: Vec<String>,
     /// The plan.
     pub plan: Item,
     /// The issue document, when given.
@@ -268,7 +268,10 @@ fn record_json(record: &FloorRecord) -> Json {
         ),
         ("analysis".into(), bound_json(record.analysis.as_ref())),
         ("screen".into(), bound_json(record.screen.as_ref())),
-        ("component".into(), string(&record.component)),
+        (
+            "components".into(),
+            Json::Array(record.components.iter().map(|s| string(s)).collect()),
+        ),
         (
             "base".into(),
             Json::Object(vec![
@@ -313,7 +316,7 @@ fn bound(item: &Item) -> Bound {
 /// `floor.py`'s `conclude` returns, which `decision.py` reuses.
 #[derive(Clone, Debug)]
 pub(crate) struct Evaluation {
-    /// The config's view for the bundle's component.
+    /// The config's view for the bundle's components.
     pub view: config::View,
     /// The rules evaluated, in [`RULES`] order.
     pub rules: Vec<RuleResult>,
@@ -333,7 +336,7 @@ pub(crate) fn evaluate(bundle: &Bundle) -> Result<Evaluation, Unusable> {
         }
     }
     let plan = text("plan", &bundle.plan)?;
-    let view = config::view(&bundle.config.bytes, &bundle.component)?;
+    let view = config::view(&bundle.config.bytes, &bundle.components)?;
     let issue = optional_text("issue document", bundle.issue_document.as_ref())?;
     let analysis = optional_text("analysis", bundle.analysis.as_ref())?;
     let screen = optional_text("screen record", bundle.screen.as_ref())?;
@@ -352,7 +355,7 @@ pub(crate) fn evaluate(bundle: &Bundle) -> Result<Evaluation, Unusable> {
         ),
         Ok(parsed) => {
             let mut results = vec![rule("footprint", Vec::new())];
-            results.extend(rules::evaluate(&parsed, &bundle.component, &view, screen));
+            results.extend(rules::evaluate(&parsed, &bundle.components, &view, screen));
             (results, Some(parsed))
         }
     };
@@ -365,7 +368,7 @@ pub(crate) fn evaluate(bundle: &Bundle) -> Result<Evaluation, Unusable> {
     };
     results.extend(documents::evaluate(
         &documents,
-        &bundle.component,
+        &bundle.components,
         &subjects,
     ));
     let not_evaluated = RULES
@@ -385,7 +388,7 @@ pub(crate) fn evaluate(bundle: &Bundle) -> Result<Evaluation, Unusable> {
 ///
 /// Every item's binding is checked first: an item whose bytes do not have the sha256 it holds is
 /// unusable input. Then, as `floor.py` reads them: the plan, the documents and the result records
-/// must be UTF-8; the config must load and define the bundle's component. The rules run in
+/// must be UTF-8; the config must load and define each of the bundle's components. The rules run in
 /// [`RULES`] order; after a `footprint` hit, the rules that read the footprint are not evaluated.
 pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
     let evaluation = evaluate(bundle)?;
@@ -402,7 +405,7 @@ pub fn floor(bundle: &Bundle) -> Result<Floor, Unusable> {
             issue_document: bundle.issue_document.as_ref().map(bound),
             analysis: bundle.analysis.as_ref().map(bound),
             screen: bundle.screen.as_ref().map(bound),
-            component: bundle.component.clone(),
+            components: bundle.components.clone(),
             base: bundle.base.clone(),
             config: CONFIG.to_owned(),
             mode: evaluation.view.mode,
