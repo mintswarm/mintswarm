@@ -5,7 +5,7 @@ How Rust code in this repository is built, formatted, linted, tested and organis
 
 ## Toolchain and edition
 
-- The toolchain is Rust `1.87`, pinned in `rust-toolchain.toml` with the `rustfmt` and `clippy` components.
+- The toolchain is Rust `1.89`, pinned in `rust-toolchain.toml` with the `rustfmt` and `clippy` components.
 - The edition is `2024`. It is set once, in `[workspace.package]` of the root `Cargo.toml`, and every crate inherits it with `edition.workspace = true`.
 - The toolchain is at least Rust 1.85, the first release with edition 2024 and rustfmt's `style_edition`.
 

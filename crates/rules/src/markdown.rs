@@ -59,10 +59,12 @@ pub fn headings(lines: &[&str]) -> Vec<(usize, u8)> {
         let stripped = line.trim_start_matches([' ', '\t']);
         let run = fence_run(stripped);
         if let Some((open, open_len)) = fence {
-            if let Some((c, len)) = run {
-                if c == open && len >= open_len && py_strip(&stripped[len..]).is_empty() {
-                    fence = None;
-                }
+            if let Some((c, len)) = run
+                && c == open
+                && len >= open_len
+                && py_strip(&stripped[len..]).is_empty()
+            {
+                fence = None;
             }
             continue;
         }

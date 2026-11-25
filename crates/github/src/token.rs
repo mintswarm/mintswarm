@@ -253,11 +253,11 @@ impl TokenClient {
         let slot = Arc::clone(self.cache.lock().await.0.entry(key).or_default());
         let mut slot = slot.lock().await;
         let now = self.clock.now();
-        if let Some(token) = slot.as_ref() {
-            if token.expires_at() >= now + REFRESH_MARGIN_SECS {
-                tracing::debug!(owner, repo, "using the cached installation token");
-                return Ok(token.clone());
-            }
+        if let Some(token) = slot.as_ref()
+            && token.expires_at() >= now + REFRESH_MARGIN_SECS
+        {
+            tracing::debug!(owner, repo, "using the cached installation token");
+            return Ok(token.clone());
         }
         let token = self.mint(owner, repo, permissions, now).await?;
         *slot = Some(token.clone());
