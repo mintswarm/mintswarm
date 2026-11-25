@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a finished change against its approved plan: the landing floor.
 
-    floor.py --plan PATH --component NAME --base REF --head REF --facts PATH
+    floor.py --plan PATH --components NAMES --base REF --head REF --facts PATH
 
 Dogfooding stand-in for the deterministic rules that run on a finished
 change before any landing decision. It needs git alone, never GitHub. Every
@@ -27,7 +27,7 @@ Inputs:
 
 - PATH after --plan, the approved plan, read as UTF-8. Its footprint is parsed exactly
   as the plan floor parses it (see plan-approval/floor.py).
-- NAME, the issue's component.
+- NAMES, the issue's components, comma-separated in the issue's order.
 - REF after --base, the base ref. The configuration is .mintswarm/config.yaml
   at the commit it resolves to, read with `git show` and converted with
   `yq -p=yaml -o=json`. The worktree's config is never opened, and neither
@@ -115,7 +115,8 @@ core.attributesFile and its default $XDG_CONFIG_HOME/git/attributes (or
 ~/.config/git/attributes), and the system file.
 
 The configuration must pass the plan floor's checks (components, shared,
-pipeline.plan_approval and gates) and NAME must be a defined component.
+pipeline.plan_approval and gates, NAMES among them: each non-empty, given
+once and a defined component).
 `pipeline.landing` must then be a mapping with only these keys; any failure
 is unusable input:
 
@@ -129,7 +130,7 @@ is unusable input:
   min_confidence   optional integer, never a boolean, from 90 to 100; 95
                    when absent. The landing decision reads it (see
                    landing/judgement.py); no rule here does, and the
-                   verdict (version 2) does not record it
+                   verdict (version 3) does not record it
 
 Globs follow the plan floor: a glob matches the whole path, `**` matches
 anything including `/`, `**/` zero or more directories, `*` anything within
@@ -151,12 +152,13 @@ footprint's `files` plus each new dependency's `manifest`.
   require-human-paths        a changed path that is not covered (see
                              below) matches require_human.paths, compared
                              case-insensitively
-  require-human-components   NAME is in require_human.components, unless
-                             the plan was approved by a human, the
-                             footprint is usable and every changed path in
-                             NAME's paths is covered; or a changed path
-                             that is not covered is in the paths of one of
-                             them, compared case-insensitively
+  require-human-components   per name of NAMES in require_human.components,
+                             in NAMES order, unless the plan was approved
+                             by a human, the footprint is usable and every
+                             changed path in that component's paths is
+                             covered; or a changed path that is not
+                             covered is in the paths of one of them,
+                             compared case-insensitively
   protected                  a changed path that is not covered is
                              .mintswarm/config.yaml, a word of a gates.run
                              command at the base
@@ -269,10 +271,10 @@ this script's.
 
 The verdict is .mintswarm/job/outputs/landing-floor.json, written to a
 temporary file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-landing-floor`), `version` (2), `plan` ({`path`, `sha256` of its
+(`mintswarm-landing-floor`), `version` (3), `plan` ({`path`, `sha256` of its
 bytes}), `facts` ({`path` as given, `sha256` of its bytes, `checks`: the
 checks it lists, each {`name`, `conclusion`, `source`, `app`}, in file
-order}), `component`, `base` and `head` ({`ref` as given, `commit`, the full
+order}), `components` (NAMES as a list), `base` and `head` ({`ref` as given, `commit`, the full
 hash}), `merge_base` (the full hash), `config` (`.mintswarm/config.yaml`),
 `mode` (pipeline.landing.mode as read), `verdict` (`hit` or `clean`),
 `rules` (one {`rule`, `result`, `reasons`} per evaluated rule, in the order
@@ -319,7 +321,7 @@ PLAN_FLOOR = Path(__file__).resolve().parent.parent / "plan-approval" / "floor.p
 VERDICT = Path(".mintswarm/job/outputs/landing-floor.json")
 CONFIG = ".mintswarm/config.yaml"
 TOOL = "mintswarm-landing-floor"
-VERSION = 2
+VERSION = 3
 MODES = ("always", "shadow", "judged", "never")
 MIN_CONFIDENCE = 90  # the lowest pipeline.landing.min_confidence allowed
 DEFAULT_MIN_CONFIDENCE = 95  # pipeline.landing.min_confidence when absent
@@ -341,8 +343,8 @@ DIFF_RULES = ("undeclared-files", "undeclared-new-files", "size")
 CODEOWNERS = ("codeowners", ".github/codeowners", "docs/codeowners")
 PROTECTED_DIRS = (".github/workflows",)
 PROTECTED_GLOBS = (".github/workflows/**",)
-ARGS = ("--plan", "--component", "--base", "--head", "--facts")
-USAGE = "usage: floor.py --plan PATH --component NAME --base REF --head REF --facts PATH"
+ARGS = ("--plan", "--components", "--base", "--head", "--facts")
+USAGE = "usage: floor.py --plan PATH --components NAMES --base REF --head REF --facts PATH"
 FACTS_TOOL = "mintswarm-landing-facts"  # collect-facts.py's TOOL and VERSION; floor-selftest.py checks both
 FACTS_VERSION = 3
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -449,7 +451,7 @@ def parse_args(argv: list) -> dict:
             raise InputError(f"{name} must not start with '-': {args[name]!r}")
     return {
         "plan": args["--plan"],
-        "component": args["--component"],
+        "components": args["--components"].split(","),
         "base": args["--base"],
         "head": args["--head"],
         "facts": args["--facts"],
@@ -971,7 +973,7 @@ def coverage(changed: list, footprint, cause, cfg: dict, above: dict) -> tuple:
     return covered, missing
 
 
-def policy_rules(entries: list, component: str, cfg: dict, landing: dict, footprint=None, cause=None) -> list:
+def policy_rules(entries: list, components: list, cfg: dict, landing: dict, footprint=None, cause=None) -> list:
     """The require-human and protected rules; `footprint` is the usable footprint or None, `cause` is
     plan_approval()'s result. A covered path gives no reason in any of the three."""
     changed = [path for path, _, _ in entries]
@@ -1007,7 +1009,9 @@ def policy_rules(entries: list, component: str, cfg: dict, landing: dict, footpr
     rule("require-human-paths", reasons, matched)
 
     reasons, matched = [], []
-    if component in landing["rh_components"]:
+    for component in components:
+        if component not in landing["rh_components"]:
+            continue
         own = [path for path in changed if P.matching(paths[component], path, ci=True)]
         if cause is not None or footprint is None or not all(path in covered for path in own):
             reasons.append(f"the issue's component {component} is in require_human.components")
@@ -1149,7 +1153,7 @@ def landing_floor(argv: list) -> int:
 
 def judge(args: dict, store: str, base: str, head: str) -> int:
     config = P.load_config(base, git_dir=store)
-    cfg = P.validate_config(config, args["component"])
+    cfg = P.validate_config(config, args["components"])
     landing = validate_landing(config, cfg["paths"])
     merge = merge_base(base, head, store)
     facts_data, facts = read_facts(args["facts"], base, head)
@@ -1167,7 +1171,7 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
         rules, evidence = footprint_rules(footprint, entries, new, gitlinks, landing, cfg)
         results += rules
     cause = plan_approval(facts, hashlib.sha256(data).hexdigest())
-    results += policy_rules(entries, args["component"], cfg, landing, footprint, cause)
+    results += policy_rules(entries, args["components"], cfg, landing, footprint, cause)
     results += facts_rules(facts, base, head, store)
     evaluated = [r["rule"] for r in results]
     hit = any(r["result"] == "hit" for r in results)
@@ -1183,7 +1187,7 @@ def judge(args: dict, store: str, base: str, head: str) -> int:
                 for c in facts["checks"]
             ],
         },
-        "component": args["component"],
+        "components": args["components"],
         "base": {"ref": args["base"], "commit": base},
         "head": {"ref": args["head"], "commit": head},
         "merge_base": merge,
