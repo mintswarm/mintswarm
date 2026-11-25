@@ -188,19 +188,29 @@ pub(super) fn success(name: &str, output: Output) -> Result<Vec<u8>, GitError> {
 
 /// The error for a git command that failed.
 pub(super) fn failure(name: &str, output: &Output) -> GitError {
+    GitError::Git {
+        command: name.to_owned(),
+        status: status_text(output),
+        stderr: stderr_start(output),
+    }
+}
+
+/// A command's exit status, in our words: `exit code N` or `no exit code`.
+pub(super) fn status_text(output: &Output) -> String {
+    output.status.code().map_or_else(
+        || "no exit code".to_owned(),
+        |code| format!("exit code {code}"),
+    )
+}
+
+/// The start of what a command wrote to standard error: trimmed, and cut to 500 characters
+/// with `…` after the cut.
+pub(super) fn stderr_start(output: &Output) -> String {
     const LIMIT: usize = 500;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
-    let stderr = match stderr.char_indices().nth(LIMIT) {
+    match stderr.char_indices().nth(LIMIT) {
         Some((end, _)) => format!("{}…", &stderr[..end]),
         None => stderr.to_owned(),
-    };
-    GitError::Git {
-        command: name.to_owned(),
-        status: output.status.code().map_or_else(
-            || "no exit code".to_owned(),
-            |code| format!("exit code {code}"),
-        ),
-        stderr,
     }
 }

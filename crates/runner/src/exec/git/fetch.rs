@@ -10,6 +10,7 @@ use mintswarm_domain::vcs::{FetchReport, FetchedRef, RefOrId, Remote};
 
 use super::env::{failure, success};
 use super::read::{id_text, resolve};
+use super::retry::{self, random_unit};
 use super::{GitError, GitStore};
 
 /// Where fetched refs go: `<FETCHED>/<remote>/heads/…`, `<FETCHED>/<remote>/tags/…` and
@@ -20,7 +21,8 @@ pub(super) const FETCHED: &str = "refs/mintswarm/fetched";
 /// with the token from `MSW_TOKEN` in its own environment.
 pub(super) const CREDENTIAL_HELPER: &str = r#"credential.helper=!f() { test "$1" = get || exit 0; p=; h=; while IFS= read -r l; do case "$l" in "") break;; protocol=https) p=1;; host=github.com) h=1;; esac; done; test "$p$h" = 11 && printf "username=x-access-token\npassword=%s\n" "$MSW_TOKEN"; }; f"#;
 
-/// Fetch `wants` from `from` into the store.
+/// Fetch `wants` from `from` into the store, retrying a transient failure of `git fetch` under
+/// the store's retry policy; see [`super::retry`].
 pub(super) fn fetch(
     store: &GitStore,
     from: &Remote,
@@ -61,7 +63,13 @@ pub(super) fn fetch(
         from.url.as_str(),
     ];
     args.extend(refspecs.iter().map(String::as_str));
-    let output = store.output(credential_command(store, cred, &args), "fetch")?;
+    let output = retry::run(
+        &store.retry,
+        cred.map(|c| c.token.as_str()),
+        || store.output(credential_command(store, cred, &args), "fetch"),
+        random_unit,
+        std::thread::sleep,
+    )?;
     success("fetch", output)?;
     read_back(store, &targets)
 }

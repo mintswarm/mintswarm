@@ -6,13 +6,17 @@
 //! store's own code reads, and `CHECK` lists for the outbox's `kind` and `state` and the
 //! records' `kind`. Every `*_at` column holds integer unix milliseconds, and every JSON column
 //! is `TEXT`.
+//!
+//! Migration 2 adds `unrecognised_failures`, beyond design §12: the failures of an outside
+//! command, such as `git fetch`, that the runner's classifier did not recognise, counted per
+//! adapter and signature for a later step to learn from.
 
 use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StoreError, sql};
 
 /// The migrations, in order; migration `n` is `MIGRATIONS[n - 1]`. Only ever append to it.
-pub(super) const MIGRATIONS: &[&str] = &[MIGRATION_1];
+pub(super) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2];
 
 /// The schema version a fully migrated database has.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -175,6 +179,22 @@ CREATE TABLE shadow (
     reference_sha256 TEXT,
     field_diffs TEXT,
     PRIMARY KEY (job_id, item)
+) STRICT;
+"#;
+
+/// The failures the runner's classifiers did not recognise, beyond design §12: one row per
+/// adapter and signature, with the latest redacted excerpt and status, and how often and when
+/// it was seen.
+const MIGRATION_2: &str = r#"
+CREATE TABLE unrecognised_failures (
+    adapter TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    status TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY (adapter, signature)
 ) STRICT;
 "#;
 

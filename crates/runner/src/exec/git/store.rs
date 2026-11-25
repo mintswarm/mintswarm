@@ -6,6 +6,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use mintswarm_domain::probe::{Check, ProbeResult, ProbeValue, VersionRequirement};
+use mintswarm_domain::retry::RetryPolicy;
 
 use super::{GitError, GitStore};
 
@@ -105,6 +106,7 @@ impl GitStore {
             id_len: 40,
             warnings: Vec::new(),
             allow_file: false,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -159,6 +161,18 @@ impl GitStore {
     fn line<const N: usize>(&self, args: [&str; N]) -> Result<String, GitError> {
         let out = self.git(args)?;
         Ok(String::from_utf8_lossy(&out).trim_end().to_owned())
+    }
+
+    /// Set how `fetch` retries a transient failure; [`RetryPolicy::default`] until set.
+    ///
+    /// A network failure gets the policy's `attempts`; an unrecognised failure, or a fetch
+    /// stopped by a signal, gets at most two. The policy's `total` bounds only the waits: a
+    /// wait that would end after it is not started, and a running fetch is never cut off. A
+    /// fetch that gives up on an unrecognised failure logs a warning, and its
+    /// [`GitError::FetchExhausted`] carries a redacted record for the caller to keep in the
+    /// runner's store.
+    pub fn set_retry_policy(&mut self, policy: RetryPolicy) {
+        self.retry = policy;
     }
 
     /// Allow `file://` remotes: the test-only remote.

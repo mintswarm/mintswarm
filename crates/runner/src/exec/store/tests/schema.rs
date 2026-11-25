@@ -1,4 +1,5 @@
-//! Tests of the migrations: every table of design §12 with its columns, and re-running them.
+//! Tests of the migrations: every table of design §12 with its columns, the
+//! `unrecognised_failures` table of migration 2 beyond §12, and re-running them.
 
 use rusqlite::Connection;
 
@@ -6,7 +7,7 @@ use super::super::schema::migrate;
 use super::super::{OutboxMode, SCHEMA_VERSION, StoreError};
 use super::{fresh_state, open};
 
-/// The tables of design §12 and their columns, in order.
+/// The tables of design §12 and `unrecognised_failures`, beyond it, and their columns, in order.
 const TABLES: &[(&str, &[&str])] = &[
     (
         "artefacts",
@@ -111,6 +112,18 @@ const TABLES: &[(&str, &[&str])] = &[
             "guard_inputs",
             "to_state",
             "at",
+        ],
+    ),
+    (
+        "unrecognised_failures",
+        &[
+            "adapter",
+            "signature",
+            "excerpt",
+            "status",
+            "count",
+            "first_seen_at",
+            "last_seen_at",
         ],
     ),
     (
