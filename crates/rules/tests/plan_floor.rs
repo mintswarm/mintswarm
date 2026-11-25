@@ -1,6 +1,10 @@
 //! The plan floor against `plan-approval/floor.py`: every pure-floor run of its self-test,
 //! captured by `tests/fixtures/plan_floor_capture.py` into `tests/fixtures/plan_floor.jsonl`, and
 //! the refusal of a bundle whose bindings do not hold.
+//!
+//! Parity is the exit class, the verdict, each rule's id and outcome, and the rules not
+//! evaluated. Reasons are not compared: a reason can carry a parser's message, whose wording is
+//! the parser's own and changes between versions.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,12 +47,13 @@ fn item(value: &Value) -> Option<Item> {
     Some(Item::new(path, bytes(&value["bytes"])))
 }
 
-/// One captured run: its name, the bundle it stands for, its exit code and its `floor.json`.
+/// One captured run: its name, the bundle it stands for, its exit code and the decision of its
+/// `floor.json`, as [`decision`] gives it.
 struct Run {
     name: String,
     bundle: Bundle,
     exit: u8,
-    floor: Option<String>,
+    floor: Option<Value>,
 }
 
 fn runs() -> Vec<Run> {
@@ -95,10 +100,26 @@ fn runs() -> Vec<Run> {
             ),
             bundle,
             exit: u8::try_from(entry["exit"].as_u64().expect("an exit code")).expect("0 to 255"),
-            floor: entry["floor"].as_str().map(str::to_owned),
+            floor: Some(entry["floor"].clone()).filter(|floor| !floor.is_null()),
         });
     }
     runs
+}
+
+/// What the parity compares of a `floor.json` text, as `plan_floor_capture.py` records it.
+fn decision(text: &str) -> Value {
+    let floor: Value = serde_json::from_str(text).expect("floor.json is JSON");
+    let rules: Vec<Value> = floor["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .map(|rule| serde_json::json!([rule["rule"], rule["result"]]))
+        .collect();
+    serde_json::json!({
+        "verdict": floor["verdict"],
+        "rules": rules,
+        "not_evaluated": floor["not_evaluated"],
+    })
 }
 
 fn outcome(bundle: &Bundle) -> (Outcome, Option<String>) {
@@ -118,14 +139,22 @@ fn every_selftest_floor_case_matches() {
     for run in &runs {
         let (outcome, text) = outcome(&run.bundle);
         let code = exit::code(&outcome);
-        if code != run.exit || text != run.floor {
+        let got = text.as_deref().map(decision);
+        if code != run.exit || got != run.floor {
             failures.push(format!(
                 "{}: exit {code}, expected {}\n--- got\n{}\n--- expected\n{}",
                 run.name,
                 run.exit,
-                text.as_deref()
-                    .unwrap_or_else(|| outcome.as_ref().err().map_or("", |e| e.message())),
-                run.floor.as_deref().unwrap_or("(none)")
+                got.map_or_else(
+                    || outcome
+                        .as_ref()
+                        .err()
+                        .map_or_else(String::new, |e| e.message().to_owned()),
+                    |got| got.to_string()
+                ),
+                run.floor
+                    .as_ref()
+                    .map_or_else(|| "(none)".to_owned(), Value::to_string)
             ));
         }
     }
@@ -142,17 +171,14 @@ fn every_selftest_floor_case_matches() {
 fn malformed_footprints_have_the_footprint_rule() {
     let mut checked = 0;
     for run in runs() {
-        let Some(text) = &run.floor else { continue };
-        let captured: Value = serde_json::from_str(text).expect("floor.json is JSON");
+        let Some(captured) = &run.floor else { continue };
         let rule = &captured["rules"][0];
-        assert_eq!(rule["rule"], "footprint", "{}", run.name);
-        if rule["result"] != "hit" {
+        assert_eq!(rule[0], "footprint", "{}", run.name);
+        if rule[1] != "hit" {
             continue;
         }
-        let reason = rule["reasons"][0].as_str().expect("a reason");
         let plan = std::str::from_utf8(&run.bundle.plan.bytes).expect("a UTF-8 plan");
-        let error = footprint::parse(plan).expect_err(&run.name);
-        assert_eq!(error.message(), reason, "{}", run.name);
+        footprint::parse(plan).expect_err(&run.name);
         let floor = plan_floor::floor(&run.bundle).expect(&run.name);
         let first = &floor.record().rules[0];
         assert_eq!(

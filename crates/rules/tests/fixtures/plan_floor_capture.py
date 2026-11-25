@@ -14,7 +14,11 @@ repository, and runs the check groups that exercise the pure floor: GROUPS below
 - `{"kind": "run", "group", "case", "base", "component", "config", "history", "plan",
   "issue_document", "analysis", "screen", "analysis_record", "plan_record", "exit", "floor"}`: one
   run, its config and history named by sha256, each document `{"path", "bytes"}` or null, its exit
-  code, and the exact text of the `floor.json` it wrote, or null when it wrote none.
+  code, and what the parity test compares of the `floor.json` it wrote, or null when it wrote none:
+  `{"verdict", "rules", "not_evaluated"}`, each rule as `[rule, result]`.
+
+Reasons are not recorded: a reason can carry a Python library's error message, which changes between
+Python versions, and the parity is the decision and the exit class, not the wording.
 
 Bytes are `{"utf8": text}`, or `{"hex": digits}` when they are not valid UTF-8. Each config and
 history line is written once, before the runs. A run is not recorded when its arguments
@@ -80,6 +84,12 @@ def blob(data: bytes) -> dict:
         return {"utf8": data.decode("utf-8")}
     except UnicodeDecodeError:
         return {"hex": data.hex()}
+
+
+def decision(floor: dict) -> dict:
+    """What the parity test compares of a `floor.json`: no reason, whose wording may be Python's."""
+    rules = [[rule["rule"], rule["result"]] for rule in floor["rules"]]
+    return {"verdict": floor["verdict"], "rules": rules, "not_evaluated": floor["not_evaluated"]}
 
 
 class Capture:
@@ -160,7 +170,7 @@ class Capture:
         run["analysis_record"] = None if analysis is None else self.document(sb, str(self.floor.record_path(analysis)))
         run["plan_record"] = self.document(sb, str(self.floor.record_path(args["plan"])))
         run["exit"] = proc.returncode
-        run["floor"] = verdict.read_bytes().decode("utf-8") if verdict.exists() else None
+        run["floor"] = decision(json.loads(verdict.read_bytes())) if verdict.exists() else None
         self.runs.append(run)
 
     def lines(self) -> list:
