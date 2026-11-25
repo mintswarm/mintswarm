@@ -11,7 +11,8 @@ mintswarm-server webhooks --listen 127.0.0.1:8787 --log ~/.local/state/mintswarm
 - It accepts `POST /github/webhook` and checks `X-Hub-Signature-256` against the webhook secret in constant time.
 - A verified delivery gets `202` and one JSON line in the `--log` file, which is opened in append mode and created if absent; its directory must exist.
 - A missing or bad signature gets `401` and one JSON line on stderr without the body, such as `{"received_at":"…","rejected":"bad_signature","delivery":"…","event":"ping"}`.
-- A body over 25 MiB gets `413` and is not logged. A log write that fails gets `500`, so GitHub shows the delivery as failed and it can be redelivered.
+- A body over 25 MiB gets `413` and is not logged. A log write that fails gets `500`, so GitHub shows the delivery as failed and it can be redelivered; if the failure left part of a line, that part stays in the log as a line that does not parse.
+- At most eight requests are handled at once; one more gets `503` before its body is read, so callers without the secret cannot make the receiver hold more than eight bodies.
 - Every event is logged, `ping` and unknown ones included.
 - On start it prints one line on stderr with the address and the log path. It runs until stopped; on a secret, log or address error it exits 1 before listening.
 - The log is never rotated. To start a new one, stop the receiver, move the file and start it again.
@@ -28,7 +29,7 @@ The secret is never logged. Either form works; the key store is safer, since an 
     --key-store keychain --key-service mintswarm-webhook --key-account github
   ```
 
-  `--key-store` takes `keychain`, `secret-service`, `pass`, `systemd-creds` or `file`, the backend `key-store.sh backend` prints, and needs `--key-service` and `--key-account`. When it is given, the variable is not read.
+  `--key-store` takes `keychain`, `secret-service`, `pass`, `systemd-creds` or `file`, the backend `key-store.sh backend` prints, and needs `--key-service` and `--key-account`. When it is given, the variable is not read, and `--secret-env` is refused.
 
 - **Environment variable:** export `MSW_WEBHOOK_SECRET`, or name another variable with `--secret-env`.
 
@@ -92,7 +93,9 @@ Each line is one compact JSON object with these keys, in this order:
 | `repository` | `payload.repository.full_name`, such as `owner/name` |
 | `payload` | the body as parsed JSON, or as a string if it is not JSON |
 
-A header or payload key that is absent is `null`. Each line is written whole under a lock, so readers see complete lines; a very large line may arrive in parts, which `jq` waits for.
+A header or payload key that is absent is `null`. Each line is written whole under a lock, so readers see complete lines; a very large line may arrive in parts, which `jq` waits for. After a `500`, a line that does not parse may come before the next one.
+
+Only `payload` is authenticated: the signature covers the body and nothing else. `delivery` and `event` come from the `X-GitHub-Delivery` and `X-GitHub-Event` headers, which are not signed, so a line's `event` and `delivery` may not be what GitHub sent. A valid delivery can also be replayed: anyone who has seen one, for example through the smee channel, can post it again and it is logged again as a new line. Consumers that act on lines should deduplicate on ids inside `payload`, such as `payload.comment.id`, not on `delivery`, and should read the kind of event from `payload` rather than trust `event` alone.
 
 Follow new comments on one repository:
 
