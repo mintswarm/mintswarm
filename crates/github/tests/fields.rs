@@ -5,11 +5,11 @@
 
 mod support;
 
+use std::time::Duration;
+
 use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
-use std::time::Duration;
-
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_github::{Exhausted, Failure, FieldClient, GitHubFieldCatalogue, RetryPolicy, Token};
 use support::{Request, Responder};
