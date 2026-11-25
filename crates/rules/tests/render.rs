@@ -157,6 +157,51 @@ fn session_bodies_match_the_posted_ones() {
 }
 
 #[test]
+fn the_package_lists_the_authority_triggers() {
+    let job = &fixture("plan_session.jsonl")[0];
+    let urls = &job["urls"];
+    let url = |key: &str| urls[key].as_str().expect("a URL");
+    let mut record: DecisionRecord =
+        serde_json::from_str(text(job, "decision")).expect("a decision record");
+    let floor: FloorRecord = serde_json::from_str(text(job, "floor")).expect("a floor record");
+    let confidence_row = |record: &DecisionRecord| -> String {
+        let package = approval_package(&Package {
+            plan: text(job, "plan").as_bytes(),
+            tldr_url: url("tldr"),
+            plan_url: url("plan"),
+            note: text(job, "note"),
+            size: &[],
+            floor: &floor,
+            packages: &[],
+            decision: record,
+            assessment_url: url("assessment"),
+            decision_url: url("decision"),
+            shadow_url: Some(url("shadow")),
+            commands: None,
+        });
+        package
+            .lines()
+            .find(|line| line.starts_with("- **Confidence: "))
+            .expect("a Confidence row")
+            .to_owned()
+    };
+    assert!(record.layers.judgement.hard_triggers.is_empty());
+    let plain = confidence_row(&record);
+    assert!(!plain.contains("requires the maintainer"), "{plain}");
+    record.layers.judgement.hard_triggers = vec![
+        "criterion-not-met".to_owned(),
+        "weakens-safeguard".to_owned(),
+        "credentials".to_owned(),
+    ];
+    let listed = confidence_row(&record);
+    let (band, rest) = plain.split_once("** (").expect("the band closes the bold");
+    assert_eq!(
+        listed,
+        format!("{band}** · requires the maintainer: `weakens-safeguard`, `credentials` ({rest}")
+    );
+}
+
+#[test]
 fn shadow_records_match_without_their_url_line() {
     for job in fixture("plan_session.jsonl") {
         let posted = text(&job, "shadow_record");

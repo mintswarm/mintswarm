@@ -5,9 +5,16 @@
 //!
 //! The session's own prose, the size lines, the Package rows, the Commands section and every URL
 //! are the caller's: this module fixes the order and the wording around them.
+//!
+//! The approval package follows the bodies the session posted rather than the README's list
+//! ("The approval package"): its Confidence row gives the band, the confidence, the authority
+//! triggers listed and the reason, but not the threshold, the unusable hard triggers or the
+//! doubts, and its Floor row names the hit rules without their reasons. The decision record and
+//! the shadow record it links carry those.
 
 use mintswarm_domain::records::{Decision, DecisionRecord, FloorRecord, LayerStatus, Verdict};
 
+use super::comment::requires_maintainer;
 use super::{bounded, code_list};
 use crate::binding::digest;
 use crate::markdown::py_strip;
@@ -237,7 +244,7 @@ fn reason_text(reason: &str) -> String {
 
 /// The approval package: the marker and `Plan sha256:` lines, the heading, the TL;DR and plan
 /// links, the session's note, the size lines, the floor's hit rules, the Package rows, the band
-/// and confidence with the assessment's reason, the mode and decision with their artifacts, and
+/// and confidence with the authority triggers listed and the assessment's reason, the mode and decision with their artifacts, and
 /// the Commands section.
 pub fn approval_package(package: &Package<'_>) -> String {
     let mut out = format!(
@@ -272,8 +279,9 @@ pub fn approval_package(package: &Package<'_>) -> String {
     let judgement = &package.decision.layers.judgement;
     let confidence = match (judgement.status, judgement.band, judgement.confidence) {
         (LayerStatus::Usable, Some(band), Some(confidence)) => format!(
-            "- **Confidence: {} · {confidence}** ([Plan assessment]({})): {}",
+            "- **Confidence: {} · {confidence}**{} ([Plan assessment]({})): {}",
             band_name(band),
+            requires_maintainer(judgement),
             package.assessment_url,
             reason_text(judgement.reasons.first().map_or("", String::as_str))
         ),

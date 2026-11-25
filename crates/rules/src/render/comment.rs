@@ -29,6 +29,23 @@ pub fn floor_line(layer: &FloorLayer) -> String {
     }
 }
 
+/// ` · requires the maintainer: ` and the authority triggers the layer lists, in code spans; empty
+/// when it lists none.
+pub(crate) fn requires_maintainer(layer: &JudgementLayer) -> String {
+    let listed = code_list(
+        layer
+            .hard_triggers
+            .iter()
+            .map(String::as_str)
+            .filter(|t| AUTHORITY_TRIGGERS.contains(t)),
+    );
+    if listed.is_empty() {
+        String::new()
+    } else {
+        format!(" · requires the maintainer: {listed}")
+    }
+}
+
 /// The band and score, then ` · requires the maintainer: …` for the authority triggers listed,
 /// the threshold and the reason; or `unusable` with the threshold.
 pub fn confidence_line(layer: &JudgementLayer, min_confidence: u32) -> String {
@@ -37,18 +54,7 @@ pub fn confidence_line(layer: &JudgementLayer, min_confidence: u32) -> String {
     else {
         return format!("unusable (min_confidence {min_confidence})");
     };
-    let listed = code_list(
-        layer
-            .hard_triggers
-            .iter()
-            .map(String::as_str)
-            .filter(|t| AUTHORITY_TRIGGERS.contains(t)),
-    );
-    let requires = if listed.is_empty() {
-        String::new()
-    } else {
-        format!(" · requires the maintainer: {listed}")
-    };
+    let requires = requires_maintainer(layer);
     let reason = layer.reasons.first().map_or("", String::as_str);
     format!(
         "`{} · {confidence}`{requires} (min_confidence {min_confidence}), {}",
