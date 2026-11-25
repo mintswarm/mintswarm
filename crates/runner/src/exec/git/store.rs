@@ -163,7 +163,7 @@ impl GitStore {
 
     /// Allow `file://` remotes: the test-only remote.
     #[cfg(test)]
-    pub(super) fn allow_file_remote(&mut self) {
+    pub(crate) fn allow_file_remote(&mut self) {
         self.allow_file = true;
     }
 
