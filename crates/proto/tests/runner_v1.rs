@@ -171,7 +171,10 @@ fn client_and_server_are_exported() {
 /// Calls the `Connect` stub with a request stream and binds its answer to a
 /// response stream, so the generated client is proven bidirectional. Never
 /// run: it only has to compile.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "compile-only proof that the Connect client stub is bidirectional"
+)]
 async fn connect_is_bidirectional(
     client: &mut runner_service_client::RunnerServiceClient<tonic::transport::Channel>,
 ) {
