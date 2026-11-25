@@ -12,7 +12,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 
 ## Inputs
 
-- `.mintswarm/job/inputs/issue.md`: the implementation issue, with its component.
+- `.mintswarm/job/inputs/issue.md`: the implementation issue, with its components.
 - `.mintswarm/job/inputs/artefacts/analysis.md`: the analysis of this issue.
 - `.mintswarm/job/inputs/parent/`: artefacts of the parent plan and design issues.
 - `.mintswarm/config.yaml`: components, their paths, and the gates.
@@ -22,7 +22,7 @@ You plan one implementation issue so that the implement stage can carry it out w
 1. Choose one approach and say why in two or three sentences; mention the rejected ones in one line each.
 2. Steps are ordered, each small enough to verify on its own, each naming the files it touches. A step names them after `files:` as paths in backticks, separated by `, `, up to the first `;`; a step that changes no file writes `files: none;`. Only the backticked paths there count, and together over all steps they are exactly the paths in the footprint's `files`.
 3. Every acceptance criterion maps to a test or, where no test is possible, to a stated manual check. If the project has no tests (`gates.tests: none`), say how each criterion will be verified instead.
-4. Stay inside the issue's component. If the work cannot be done without touching another component (apart from the config's `shared` paths), stop with `needs_input` and recommend a split as a `- **Recommended:**` question whose options are to split the issue into one-component children or to keep it in one component.
+4. Stay inside the union of the paths of the issue's components and the config's `shared` paths. If the work cannot be done without touching a component the issue lacks, stop with `needs_input` and ask a `- **Recommended:**` question whose options are to add that component's label to the issue or to leave that part of the work to another issue.
 5. Name the gates from the config that the change must pass.
 6. The Verification table has one row per acceptance criterion of the issue, in the issue's order, and no other rows. Its first cell is the criterion verbatim: without its list marker (a number, `-` or `- [ ]`), with no added emphasis, quotes or rewording. Write any `|` in either cell as `\|`, and join a criterion that spans several lines with single spaces.
 7. List questions in `## Questions`, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question the implement stage cannot proceed sensibly without is a `Must decide`, or a `Recommended` when you have a recommendation; a decision the plan went ahead with and works on is an `Assumption`.

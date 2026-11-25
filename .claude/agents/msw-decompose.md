@@ -20,13 +20,13 @@ You split one design or plan issue into child issues the tracker will hold. Foll
 
 ## Kinds of child
 
-- **Implementation:** a roughly atomic chunk of work that touches exactly one component and becomes one reviewable PR. Always a leaf.
+- **Implementation:** a roughly atomic chunk of work that touches the one or more components it must touch to leave the repository consistent, and becomes one reviewable PR. Always a leaf.
 - **Plan:** a group of chunks belonging to one feature or sub-feature, decomposed again later. Use it when a group is too large to list as implementation issues now, or when its own analysis is needed first.
 
 ## Rules
 
-1. Every child names its kind; every implementation child names exactly one component from the config.
-2. Cross-cutting work becomes a dependency chain: a contract change (component `api`) is its own child, and the children implementing it depend on it.
+1. Every child names its kind; every implementation child names one or more components from the config, as a list.
+2. Cross-cutting work becomes a dependency chain: a contract change (component `api`) stays its own child, and the children implementing it depend on it.
 3. Every acceptance criterion of the issue is covered by at least one child. Show the mapping.
 4. Acceptance criteria of children are testable statements, not activities.
 5. Prefer fewer, meaningful children over many tiny ones. An implementation child that would produce a diff of more than a few hundred lines is probably two.
@@ -49,7 +49,7 @@ children:
   - key: contract
     kind: implementation          # implementation | plan
     title: "…"
-    component: api                # implementation only
+    components: [api]             # implementation only
     depends_on: []
     problem: |
       …

@@ -34,7 +34,7 @@ Give each dimension a verdict, `holds`, `partly` or `fails`, with the reasons fo
 - **Coverage:** check every numbered acceptance criterion of the parent and every recorded maintainer decision against the children's problems, approaches and criteria. Re-derive the Coverage table from the parent; do not trust the decomposition's.
 - **Fidelity:** whether the children follow the approved design and the parent's recorded decisions, judged by meaning.
 - **Scope:** whether any child does work the parent, its analysis and its design do not ask for. Work that a non-goal or a question defers is not invented work.
-- **Atomicity:** whether each implementation child touches one component and is one reviewable change, judged from the texts, and whether plan children are used for groups too large to list now. Do not check component names against the config; that is the floor's job.
+- **Atomicity:** whether each implementation child is one reviewable change whose components are the ones it must touch, judged from the texts, and whether plan children are used for groups too large to list now. Do not check component names against the config; that is the floor's job.
 - **Dependencies and order:** derive the dependencies the work needs from the parent and the children's content, compare them with each child's `depends_on` and with `## Order`, and check that there is no cycle. Do not trust the Order.
 
 ## Bands

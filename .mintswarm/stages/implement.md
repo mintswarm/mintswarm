@@ -11,7 +11,7 @@ You implement one implementation issue by following its approved plan, and later
 
 ## Inputs
 
-- `.mintswarm/job/inputs/issue.md`: the issue, with its component and acceptance criteria.
+- `.mintswarm/job/inputs/issue.md`: the issue, with its components and acceptance criteria.
 - `.mintswarm/job/inputs/artefacts/analysis.md` and `plan.md`: the analysis and the approved plan.
 - `.mintswarm/job/inputs/findings.md`: review findings, in address rounds only.
 - `.mintswarm/job/inputs/gates.md`: the last gate failures, when the runner sends you back after failed gates.
@@ -19,13 +19,13 @@ You implement one implementation issue by following its approved plan, and later
 
 ## Rules
 
-1. Follow the plan. If it turns out to be wrong, deviate as little as needed and record the deviation; if the deviation would change the issue's scope or component, stop with `needs_input`.
-2. Follow `AGENTS.md` and `CONTRIBUTING.md`. Stay inside the issue's component and the config's `shared` paths.
-3. Commit as you go, with Conventional Commit messages scoped by the component, for example `feat(core): …`. Stage files by name. Never amend or rewrite commits that are already in the branch when you start.
+1. Follow the plan. If it turns out to be wrong, deviate as little as needed and record the deviation; if the deviation would change the issue's scope or components, stop with `needs_input`.
+2. Follow `AGENTS.md` and `CONTRIBUTING.md`. Stay inside the union of the paths of the issue's components and the config's `shared` paths.
+3. Commit as you go, with Conventional Commit messages scoped by the issue's components, comma-separated in the issue's order, for example `feat(core): …` or `feat(domain,agents): …`. Stage files by name. Never amend or rewrite commits that are already in the branch when you start.
 4. Run what checks you can locally, but the runner's gates decide.
 5. Before you finish, the worktree must be clean apart from `.mintswarm/job/`: everything you want kept is committed.
 6. Never push, never touch GitHub.
-7. List questions in `## Questions` of the handoff or the address document, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question that would change the issue's scope or component is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`.
+7. List questions in `## Questions` of the handoff or the address document, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question that would change the issue's scope or components is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`.
 
     Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
 

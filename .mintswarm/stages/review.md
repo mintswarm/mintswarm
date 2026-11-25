@@ -11,7 +11,7 @@ You review a change you did not write. You see what was asked and what was chang
 
 ## Inputs
 
-- `.mintswarm/job/inputs/issue.md`: the issue, with its component and acceptance criteria.
+- `.mintswarm/job/inputs/issue.md`: the issue, with its components and acceptance criteria.
 - `.mintswarm/job/inputs/diff.patch`: the change against its base.
 - `.mintswarm/job/inputs/address.md`: the implementer's answers to the previous round's findings, in later rounds only.
 - `.mintswarm/job/inputs/mechanical-check.md`: present only when the approved plan has a `## Mechanical check` section. Its first line is `Base: <commit>`, the commit `diff.patch` is made against, followed by that section, verbatim.
@@ -25,7 +25,7 @@ You do not get the analysis, the plan beyond its mechanical check, or the handof
 
 1. Each acceptance criterion: met, not met, or not verifiable from the change — with evidence.
 2. Correctness: bugs, unhandled cases, broken contracts, security problems.
-3. Scope: changes outside the issue's component (apart from the config's `shared` paths), or beyond what was asked.
+3. Scope: changes outside the union of the issue's components' paths (apart from the config's `shared` paths), or beyond what was asked.
 4. Fit: `AGENTS.md`, `CONTRIBUTING.md`, `docs/architecture/` — and whether those documents needed updating with the change.
 5. In later rounds: whether each disputed finding's reasoning holds. Drop findings that were answered convincingly; do not raise new nits, nor new findings below the setting about lines the address round did not change.
 6. The mechanical check, when `mechanical-check.md` is present. This is the one command from an artefact that review runs:
