@@ -4,57 +4,57 @@ One repository holds the Rust workspace, the TypeScript web UI, the API contract
 
 ```
 mintswarm/
-├── Cargo.toml              # workspace: members, [workspace.dependencies], [workspace.lints]
+├── Cargo.toml              # Cargo workspace manifest
 ├── Cargo.lock
-├── rust-toolchain.toml     # pinned toolchain + rustfmt, clippy
+├── rust-toolchain.toml     # pinned Rust toolchain
 ├── rustfmt.toml
 ├── clippy.toml             # clippy settings for the workspace
-├── deny.toml               # cargo-deny: licences, advisories, duplicates
-├── compose.yaml            # development: Postgres; profile `image` builds and runs the local image
-├── .dockerignore           # build context is the repo root
+├── deny.toml               # cargo-deny dependency policy
+├── compose.yaml            # development compose file
+├── .dockerignore           # Docker build context filter
 ├── AGENTS.md               # conventions for any coding agent
 ├── CLAUDE.md               # Claude Code entry point
 ├── CONTRIBUTING.md
 ├── LICENSE.md              # FSL-1.1-ALv2
 ├── README.md
-├── .cargo/config.toml      # Cargo: target-dir = "build/target"
+├── .cargo/config.toml      # Cargo build settings
 │
-├── .claude/agents/         # stage agents for Claude Code, generated from `.mintswarm/stages/`; dogfooding only
+├── .claude/agents/         # generated Claude Code agents
 ├── .mintswarm/             # this repository's own mintswarm config
-│   ├── config.yaml         # tracker mapping, components, stage models, pipeline, gates
+│   ├── config.yaml         # repository mintswarm config
 │   ├── stages.md           # conventions every stage agent follows
-│   ├── stages/             # harness-neutral stage definitions: capabilities, model tier, instructions
-│   ├── dogfood/            # stand-ins for runner and control-plane functions while mintswarm does not run; each script, and github/README.md, says what it replaces
-│   ├── job/                # per-job inputs and outputs inside a worktree, never committed
-│   └── worktrees/          # job worktrees created by the session acting as runner, never committed
+│   ├── stages/             # harness-neutral stage definitions
+│   ├── dogfood/            # temporary runner and plane stand-ins
+│   ├── job/                # uncommitted per-job inputs and outputs
+│   └── worktrees/          # uncommitted job worktrees
 │
-├── build/                  # build output, git-ignored: build/target/ (Cargo), build/web/ui/ (Vite build of apps/ui), build/cache/vite/ (Vite and Vitest cache)
+├── build/                  # git-ignored build output
 │
 ├── api/                    # every contract, language-neutral
 │   ├── proto/              # the only hand-written API contract
-│   │   ├── buf.yaml        # module root; lint (STANDARD) and breaking-change (FILE) rules
-│   │   ├── buf.gen.yaml    # generator plugins; none yet, Rust comes from crates/proto/build.rs
+│   │   ├── buf.yaml        # buf module and rules
+│   │   ├── buf.gen.yaml    # buf generator plugins
 │   │   └── mintswarm/
-│   │       └── runner/v1/  # runner ⇄ plane stream (gRPC only)
-│   ├── openapi/            # generated from proto; committed so PRs show JSON-level changes
-│   └── schemas/            # JSON Schemas generated from Rust types (config, ticket, StageJob, plan.json, findings); committed
+│   │       └── runner/v1/  # runner ⇄ plane gRPC stream
+│   ├── openapi/            # OpenAPI generated from proto
+│   └── schemas/            # JSON Schemas from Rust types
 │
-├── crates/                 # Rust, Cargo workspace members
-│   ├── domain/             # ids; job states, events and the transition table; StageJob, StepJob, Usage; pipeline records; PlaneLink, Vcs, Tracker, CodeHost and RepoReads traits; Question objects and their checks; scales (size, priority), field maps, own level and the stride selector, cost model; capability probe results, namespaces and version requirements
-│   ├── config/             # repository config (.mintswarm/config.yaml) and runner config; capability probe definitions and their built-in, machine and repository merge; native YAML loader matching yq
-│   ├── github/             # the runner's GitHub App access: App JWT, installation tokens scoped to one repository, private-key store; issue-field and label reads and writes (FieldClient, field catalogue); GET-only issue, comment, link, artifact and PR reads (GitHubReads: paging, ETags, a retry-after pause), default-branch head and file-at-commit reads (GitHubRepoReads), comment marks, content-creation limiter
-│   ├── rules/              # pure rules shared by runner and plane: tracker field writes, size resolution; Python-parity globs, strict JSON reader and json.dumps writer, Markdown sections and fences, sha256 bindings, 0/1/2 exit contract; stage output capture (rules 1–6 and the msw-result block, with Claude Code transcript selection) and the stage-aware result checks; the plan floor over a sha256-bound input bundle
-│   ├── proto/              # Rust generated from api/proto by build.rs (protox) into OUT_DIR, not committed; `fakes` feature for test fakes
-│   ├── core/               # control plane library: store, scheduler, ingest, event log, trackers, ext traits, HTTP transcoding layer
-│   │   └── migrations/     # SQL, append-only
-│   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
-│   ├── steward/            # `mintswarm-steward` binary: the process that holds the deployment's signing keys apart from the control plane
-│   ├── runner/             # `mintswarm-runner` library and binary: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations, read-only snapshots shared per commit, and the plan floor's input bundle; `exec::store`, the runner's local state: the locked state directory, SQLite with the tables of design §12, the sha256 blob store, the outbox (suppressed in M1) and leases; `harness::render`, the stage definitions read from the trusted store at the base commit, with the agent chosen from config and both files bound by sha256; `tool save-output`, the Rust port of `save-output.py`
+├── crates/                 # Rust workspace members
+│   ├── domain/             # shared types and traits
+│   ├── config/             # repository and runner config
+│   ├── github/             # GitHub App client
+│   ├── rules/              # shared pure rules
+│   ├── proto/              # Rust generated from protos
+│   ├── core/               # control plane library
+│   │   └── migrations/     # append-only SQL migrations
+│   ├── server/             # `mintswarm-server` binary
+│   ├── steward/            # `mintswarm-steward` signing-key binary
+│   ├── runner/             # `mintswarm-runner` daemon
 │   ├── console-mcp/        # console MCP server (library)
-│   └── cli/                # `mintswarm` binary: CLI and `mcp console`
+│   └── cli/                # `mintswarm` CLI binary
 │
-├── web/                    # TypeScript, pnpm workspace; its root is here, not at the repo root
-│   ├── package.json        # workspace scripts; packageManager pins pnpm
+├── web/                    # TypeScript pnpm workspace root
+│   ├── package.json        # pnpm workspace scripts
 │   ├── pnpm-workspace.yaml
 │   ├── pnpm-lock.yaml
 │   ├── .node-version
@@ -64,40 +64,40 @@ mintswarm/
 │   ├── .prettierrc.json    # formatter settings
 │   ├── .prettierignore
 │   ├── apps/
-│   │   └── ui/             # React + Vite; builds static files for the image
+│   │   └── ui/             # React + Vite UI
 │   └── packages/
-│       └── api/            # @mintswarm/api: TS types and client generated from api/openapi
+│       └── api/            # generated `@mintswarm/api` client
 │
 ├── docker/
 │   ├── control-plane/
-│   │   ├── Dockerfile      # stages: rust build → web build → runtime (nginx + core + UI)
-│   │   ├── nginx/          # nginx.conf: TLS, static UI, /api + SSE, grpc_pass for runners
-│   │   └── s6/             # s6-overlay service definitions: nginx, core
-│   └── compose.yaml        # self-hosting example: released image + Postgres
+│   │   ├── Dockerfile      # control-plane image build
+│   │   ├── nginx/          # nginx front-end config
+│   │   └── s6/             # s6-overlay service definitions
+│   └── compose.yaml        # self-hosting compose example
 │
 ├── packaging/              # native runner distribution
 │   ├── systemd/            # user unit template
 │   ├── launchd/            # agent plist template
-│   └── macos/              # .pkg build, entitlements for notarisation
+│   └── macos/              # macOS .pkg and notarisation
 │
-├── defaults/               # data embedded into binaries at build time
+├── defaults/               # data embedded into binaries
 │   ├── probes/             # built-in capability probes
 │   ├── lsp/                # language-server definitions
-│   └── prompts/            # stage instructions and artefact templates, versioned
+│   └── prompts/            # versioned stage prompts and templates
 │
 ├── tests/
-│   └── e2e/                # end-to-end: plane + runner + Postgres + a scratch repo
-├── xtask/                  # cargo xtask: codegen, schema export, drift checks, release helpers
+│   └── e2e/                # end-to-end system tests
+├── xtask/                  # `cargo xtask` repository tasks
 │
 ├── docs/
-│   ├── architecture/       # how the system is built, as it stands now
-│   │   ├── repository-layout.md  # this document: where each thing goes
-│   │   └── runner-protocol.md    # the runner ⇄ plane protocol as api/proto/mintswarm/runner/v1/ defines it
-│   ├── conventions/        # Rust, TypeScript and React conventions copied from the guideline packs
-│   └── guides/             # user-facing: setup, credentials and usage policy, …
+│   ├── architecture/       # how the system is built
+│   │   ├── repository-layout.md  # where each thing goes
+│   │   └── runner-protocol.md    # runner ⇄ plane protocol
+│   ├── conventions/        # Rust, TypeScript and React conventions
+│   └── guides/             # user-facing setup and usage guides
 │
 └── .github/
-    ├── workflows/          # gates.yml (one check per gates.run entry), image.yml (path-filtered), release.yml
+    ├── workflows/          # GitHub Actions CI workflows
     ├── CODEOWNERS
     └── pull_request_template.md
 ```
@@ -107,8 +107,20 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 ## Rules
 
 - **Current state only.** Documents describe the system as it is and are edited in place when it changes. Proposals, alternatives and the reasoning behind changes live in the tracker (design issues, PRs) and in git history, never as files here.
+- **Briefs only.** Each entry in the tree above is a 3–5 word brief saying what the directory or file is, never what it contains. Adding a module, type or subcommand needs no edit to this document; only a new directory, a new dependency edge or a changed rule does.
 - **Rust:** crate names are `mintswarm-<dir>`; every crate inherits `version`, `edition`, `license` and `lints` from the workspace.
-- **Dependency direction is one-way** (`A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement): `domain` ← `config` ← `proto` ← {`core`, `runner`, `console-mcp`} ← {`server`, `cli`}, beside it `domain` ← `github` ← {`core`, `runner`}, and `domain` ← `config` ← `rules` ← `runner`; `proto` never depends on `github`. `core` and `runner` never depend on each other; anything they share goes down a level. Today `github` depends only on `domain`, `runner` on `domain`, `config` and `rules`, `rules` on `domain` and `config`, `config` only on `domain`, and `domain` and `proto` on no other workspace crate. `steward` stands apart: it depends on no workspace crate today.
+- **Dependency direction is one-way.** `A` ← `B` means `B` may depend on `A` and `A` never on `B`; `domain` holds the shared abstractions that the crates above build on or implement. The allowed edges between workspace crates:
+  - `domain` ← `config`
+  - `domain` ← `github`
+  - `domain` ← `rules`
+  - `config` ← `rules`
+  - `domain` ← `runner`
+  - `config` ← `runner`
+  - `rules` ← `runner`
+  - `core` ← `server`
+  - `github` ← `server`
+
+  `core` and `runner` never depend on each other; anything they share goes down a level. `proto` never depends on `github`. `steward` stands apart and depends on no workspace crate.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
