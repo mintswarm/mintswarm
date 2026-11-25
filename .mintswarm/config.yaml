@@ -110,6 +110,7 @@ shared:                              # any component may touch these
   - .cargo/config.toml
   - pyproject.toml
   - .shellcheckrc
+  - docs/architecture/repository-layout.md   # describes every crate; CONTRIBUTING.md requires same-PR updates
 
 # Chooses the model at run time; the tier in .mintswarm/stages/<stage>.md is the stage default that .claude/agents/ is rendered with.
 agents:
