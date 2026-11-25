@@ -26,7 +26,7 @@ fn round_trip(result: &ProbeResult, expected: serde_json::Value) {
 #[test]
 fn tool_result_round_trips() {
     let result = ProbeResult {
-        namespace: Namespace::new(ProbeKind::Tool, "git"),
+        namespace: Namespace::new(ProbeKind::Tool, "git").unwrap(),
         value: known("2.47.1"),
         observed_at: "2026-11-25T10:00:00Z".to_owned(),
     };
@@ -51,7 +51,7 @@ fn harness_result_round_trips_with_facts() {
         ("accounts".to_owned(), Fact::Integer(2)),
     ]);
     let result = ProbeResult {
-        namespace: Namespace::new(ProbeKind::Harness, "claude"),
+        namespace: Namespace::new(ProbeKind::Harness, "claude").unwrap(),
         value: ProbeValue::Known {
             version: Some("2.1.3".to_owned()),
             facts,
@@ -74,7 +74,7 @@ fn harness_result_round_trips_with_facts() {
 #[test]
 fn unknown_is_a_value_not_an_error() {
     let result = ProbeResult {
-        namespace: Namespace::new(ProbeKind::Toolchain, "rust"),
+        namespace: Namespace::new(ProbeKind::Toolchain, "rust").unwrap(),
         value: ProbeValue::Unknown,
         observed_at: "2026-11-25T10:00:00Z".to_owned(),
     };
@@ -110,12 +110,12 @@ fn known_without_version_or_facts_reads() {
 #[test]
 fn namespace_parsing() {
     let namespace: Namespace = "tool.git".parse().unwrap();
-    assert_eq!(namespace, Namespace::new(ProbeKind::Tool, "git"));
+    assert_eq!(namespace, Namespace::new(ProbeKind::Tool, "git").unwrap());
     let namespace: Namespace = "toolchain.c.cpp".parse().unwrap();
-    assert_eq!(namespace.id, "c.cpp");
+    assert_eq!(namespace.id(), "c.cpp");
     for kind in ProbeKind::ALL {
         let namespace: Namespace = format!("{kind}.x").parse().unwrap();
-        assert_eq!(namespace.kind, kind);
+        assert_eq!(namespace.kind(), kind);
     }
     for text in ["git", "bogus.git", "tool.", ".git", ""] {
         assert!(text.parse::<Namespace>().is_err(), "{text}");
@@ -125,6 +125,27 @@ fn namespace_parsing() {
     }))
     .expect_err("an unknown kind");
     assert!(error.to_string().contains("bogus.git"), "{error}");
+}
+
+#[test]
+fn namespace_rejects_an_empty_id() {
+    let error = Namespace::new(ProbeKind::Tool, "").expect_err("an empty id");
+    assert_eq!(error.message, "the id is empty");
+    let namespace = Namespace::new(ProbeKind::Tool, "c.cpp").unwrap();
+    let read: Namespace = namespace.to_string().parse().expect("reads back");
+    assert_eq!(read, namespace);
+}
+
+#[test]
+fn misspelt_keys_are_rejected() {
+    let error = serde_json::from_value::<ProbeValue>(json!({"known": {"versoin": "2.47.1"}}))
+        .expect_err("a misspelt key in known");
+    assert!(error.to_string().contains("versoin"), "{error}");
+    let error = serde_json::from_value::<ProbeResult>(json!({
+        "namespace": "tool.git", "value": "unknown", "observed_at": "t", "observed": "t",
+    }))
+    .expect_err("an unknown key in the result");
+    assert!(error.to_string().contains("observed"), "{error}");
 }
 
 #[test]

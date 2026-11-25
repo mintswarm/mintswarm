@@ -63,22 +63,36 @@ impl fmt::Display for ProbeKind {
 }
 
 /// A result's namespace: the probe's kind and id, written `<kind>.<id>` (`tool.git`).
+///
+/// The id is never empty, so every namespace written reads back.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Namespace {
-    /// The probe's kind.
-    pub kind: ProbeKind,
-    /// The probe's id, never empty.
-    pub id: String,
+    kind: ProbeKind,
+    id: String,
 }
 
 impl Namespace {
-    /// The namespace of the probe `id` of `kind`.
-    pub fn new(kind: ProbeKind, id: impl Into<String>) -> Self {
-        Namespace {
-            kind,
-            id: id.into(),
+    /// The namespace of the probe `id` of `kind`; an empty id is rejected.
+    pub fn new(kind: ProbeKind, id: impl Into<String>) -> Result<Self, NamespaceError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(NamespaceError {
+                namespace: format!("{kind}."),
+                message: "the id is empty".to_owned(),
+            });
         }
+        Ok(Namespace { kind, id })
+    }
+
+    /// The probe's kind.
+    pub fn kind(&self) -> ProbeKind {
+        self.kind
+    }
+
+    /// The probe's id, never empty.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 }
 
@@ -122,10 +136,7 @@ impl FromStr for Namespace {
             .split_once('.')
             .ok_or_else(|| error("expected `<kind>.<id>`"))?;
         let kind = ProbeKind::from_name(kind).ok_or_else(|| error("unknown kind"))?;
-        if id.is_empty() {
-            return Err(error("the id is empty"));
-        }
-        Ok(Namespace::new(kind, id))
+        Namespace::new(kind, id).map_err(|rejected| error(&rejected.message))
     }
 }
 
@@ -164,7 +175,7 @@ pub enum Fact {
 /// `unknown` is written as the plain string `"unknown"`, and a known value as
 /// `{"known": {"version": …, "facts": {…}}}`, with each part left out when it is empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProbeValue {
     /// The probe failed, timed out or found nothing it could report.
     Unknown,
@@ -181,12 +192,14 @@ pub enum ProbeValue {
 
 /// A probe's result, as the runner keeps and reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeResult {
     /// Which probe it is.
     pub namespace: Namespace,
     /// What it found.
     pub value: ProbeValue,
-    /// When it was observed, as an RFC 3339 timestamp.
+    /// When it was observed, as an RFC 3339 timestamp. The shape is not checked when it is
+    /// read; the producer of the result is responsible for it.
     pub observed_at: String,
 }
 
