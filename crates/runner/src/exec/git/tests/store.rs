@@ -357,6 +357,33 @@ fn fetch_peels_tags_and_refuses_non_commits() {
 }
 
 #[test]
+fn fetch_deletes_every_non_commit_in_one_call() {
+    let fx = Fixture::new();
+    let store = fx.store("peel-all");
+    let readme = text(&fixture_git(
+        &fx.source,
+        &["rev-parse", &format!("{}:README", fx.base.0)],
+    ));
+    let wants = [
+        RefOrId::Ref("refs/tags/tree".to_owned()),
+        RefOrId::Id(RevId(readme)),
+    ];
+    assert!(matches!(
+        store.fetch(&fx.remote(), &wants, None),
+        Err(GitError::NotCommit(_))
+    ));
+    let left = fixture_git(
+        store.path(),
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/mintswarm/fetched",
+        ],
+    );
+    assert_eq!(text(&left), "", "both refused refs are deleted");
+}
+
+#[test]
 fn credential_helper_answers_only_github_https() {
     let fx = Fixture::new();
     let store = fx.store("helper");

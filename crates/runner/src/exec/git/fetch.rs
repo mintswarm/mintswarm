@@ -83,7 +83,8 @@ pub(super) fn credential_command(
     }
 }
 
-/// The fetched refs, in the order of `targets`, each with the commit it ends at.
+/// The fetched refs, in the order of `targets`, each with the commit it ends at. Every target is
+/// peeled; when any is refused, the first refusal is returned.
 fn read_back(store: &GitStore, targets: &[String]) -> Result<FetchReport, GitError> {
     let mut args = vec!["for-each-ref", "--format=%(refname)%00%(objectname)"];
     args.extend(targets.iter().map(String::as_str));
@@ -102,21 +103,22 @@ fn read_back(store: &GitStore, targets: &[String]) -> Result<FetchReport, GitErr
         };
         found.push((name.to_owned(), id.to_owned()));
     }
-    let refs = targets
+    // Peel every target before returning, so that each one that does not end at a commit is
+    // deleted, not only the first.
+    let peeled: Vec<Result<FetchedRef, GitError>> = targets
         .iter()
         .map(|target| {
-            found
+            let (name, id) = found
                 .iter()
                 .find(|(name, _)| name == target)
-                .ok_or_else(|| GitError::NotFound(target.clone()))
-                .and_then(|(name, id)| {
-                    Ok(FetchedRef {
-                        name: name.clone(),
-                        id: peel(store, name, id)?,
-                    })
-                })
+                .ok_or_else(|| GitError::NotFound(target.clone()))?;
+            Ok(FetchedRef {
+                name: name.clone(),
+                id: peel(store, name, id)?,
+            })
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
+    let refs = peeled.into_iter().collect::<Result<_, _>>()?;
     Ok(FetchReport { refs })
 }
 
