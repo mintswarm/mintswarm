@@ -25,22 +25,9 @@ You implement one implementation issue by following its approved plan, and later
 4. Run what checks you can locally, but the runner's gates decide.
 5. Before you finish, the worktree must be clean apart from `.mintswarm/job/`: everything you want kept is committed.
 6. Never push, never touch GitHub.
-7. List questions in `## Questions` of the handoff or the address document, each as one bullet with one of three markers. A question that would change the issue's scope or component is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`:
-    - `- **Must decide:** <question>`: a person must answer; there is no recommendation, or only a weak one.
-    - `- **Recommended:** <question> → <answer>`: a person should confirm the recommended answer.
-    - `- **Assumption:** <question> → <answer>`: you went ahead with the answer.
+7. List questions in `## Questions` of the handoff or the address document, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question that would change the issue's scope or component is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`.
 
-    Under each bullet, indented sub-bullets follow in this order: `Why:`; then `Options:` on a `Must decide` or `Recommended`, or `Alternatives:` on an `Assumption`, where it is required; then `Recommendation:` on a `Must decide`, an optional weak recommendation, or `Reason:` on the other two. `Shape:` (`one`, `several`, `yes_no` or `open`) and `References:` are optional. Options are written `(a) <label>: <consequence; trade-off> · (b) …`, and their letters are the option ids. The answer after `→` starts with the letter of the chosen option, for example `→ (a) …`; on an `Assumption` the answer is option `(a)`, and `Alternatives:` lists `(b)` onwards. With `Shape: yes_no` the answer is `yes` or `no` and no options are listed; an `Assumption` then names the other answer under `Alternatives:`. The section holds only such bullets, with no prose, and any continuation line or sub-bullet is indented; with no questions it is left empty, without a placeholder such as `None`.
-
-    Each bullet corresponds to one object in the result block's `questions` ("Questions" in `.mintswarm/stages.md`), in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text:
-    - `id` is `q1`, `q2` and so on, in bullet order;
-    - `question` is the text after the marker, up to the first ` → ` when there is one;
-    - `Why:` gives `why`; `Shape:` gives `shape`, which without it is `one` when options are listed and `open` when none are;
-    - `Options:` gives `options`; on an `Assumption`, `options` holds `(a)`, the answer, followed by the `Alternatives:`, except with `Shape: yes_no`, which lists none;
-    - the `→` answer gives `recommendation.choice` and `Reason:` gives `recommendation.reason`; `Recommendation:` on a `Must decide` gives its optional weak `recommendation`;
-    - `References:` gives `references`.
-
-    The status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
+    Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
 
 ## Address rounds
 
@@ -68,15 +55,16 @@ First round: return `handoff.md` as `.mintswarm/stages.md` describes:
 ## Questions
 - **Must decide:** <question>
   - Why: <what it blocks, what changes with the answer>
-  - Options: (a) <label>: <consequence; trade-off> · (b) …
-  - Recommendation: <weak recommendation, if any> (<reason>)
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
 - **Recommended:** <question> → (a) <recommended answer>
   - Why: …
-  - Options: (a) … · (b) …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
   - Reason: …
-- **Assumption:** <question> → (a) <what the stage goes on with>
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
   - Why: …
-  - Alternatives: (b) … · (c) …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
   - Reason: …
 ```
 
@@ -96,15 +84,16 @@ Address rounds: return `address.md` as `.mintswarm/stages.md` describes:
 ## Questions
 - **Must decide:** <question>
   - Why: <what it blocks, what changes with the answer>
-  - Options: (a) <label>: <consequence; trade-off> · (b) …
-  - Recommendation: <weak recommendation, if any> (<reason>)
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
+  - Recommendation: (a) <weak recommendation, if any>
+  - Reason: <why, only with a Recommendation>
 - **Recommended:** <question> → (a) <recommended answer>
   - Why: …
-  - Options: (a) … · (b) …
+  - Options: (a) <label>: <consequence>; <trade-off> · (b) …
   - Reason: …
-- **Assumption:** <question> → (a) <what the stage goes on with>
+- **Assumption:** <question> → (a) <label>: <consequence>; <trade-off>
   - Why: …
-  - Alternatives: (b) … · (c) …
+  - Alternatives: (b) <label>: <consequence>; <trade-off> · (c) …
   - Reason: …
 ```
 
