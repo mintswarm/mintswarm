@@ -44,9 +44,12 @@ fn command(text: Option<&str>) -> CommandEvent {
     }
 }
 
+/// A `WatchEvent` constructor that wraps a command.
+type CommandVariant = fn(CommandEvent) -> WatchEvent;
+
 #[test]
 fn every_command_has_a_variant_that_round_trips() {
-    let commands: [(&str, fn(CommandEvent) -> WatchEvent); 9] = [
+    let commands: [(&str, CommandVariant); 9] = [
         ("approve", WatchEvent::Approve),
         ("changes", WatchEvent::Changes),
         ("reject", WatchEvent::Reject),
