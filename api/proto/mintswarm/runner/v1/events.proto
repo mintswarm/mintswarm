@@ -68,12 +68,10 @@ message AttemptStartFailed {
 enum AttemptStartFailedReason {
   // Not set; never sent.
   ATTEMPT_START_FAILED_REASON_UNSPECIFIED = 0;
-  // The runner never received the attempt's assignment in full.
-  ATTEMPT_START_FAILED_REASON_NOT_RECEIVED = 1;
   // The runner already runs or ran this attempt.
-  ATTEMPT_START_FAILED_REASON_DUPLICATE = 2;
+  ATTEMPT_START_FAILED_REASON_DUPLICATE = 1;
   // The runner cannot run what the assignment asks for.
-  ATTEMPT_START_FAILED_REASON_UNSUPPORTED = 3;
+  ATTEMPT_START_FAILED_REASON_UNSUPPORTED = 2;
 }
 
 // The attempt ended.
@@ -309,7 +307,7 @@ message StageResult {
   StageStatus status = 1;
   // The artefact the stage returns, for example `plan`.
   string artefact = 2;
-  // The output files the stage wrote.
+  // Where the runner saves the stage's output documents.
   repeated string outputs = 3;
   // The stage's open questions and assumptions.
   repeated Question questions = 4;

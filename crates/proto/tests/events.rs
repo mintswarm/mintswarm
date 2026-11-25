@@ -238,6 +238,35 @@ fn attempt_outcome_kinds() {
 }
 
 #[test]
+fn attempt_start_failed_reasons() {
+    let all = [
+        AttemptStartFailedReason::Unspecified,
+        AttemptStartFailedReason::Duplicate,
+        AttemptStartFailedReason::Unsupported,
+    ];
+    for reason in all {
+        // Wildcard-free: a value added to the enum fails compilation here.
+        match reason {
+            AttemptStartFailedReason::Unspecified
+            | AttemptStartFailedReason::Duplicate
+            | AttemptStartFailedReason::Unsupported => {}
+        }
+    }
+    let pairs: Vec<(&str, i32)> = all
+        .iter()
+        .map(|reason| (reason.as_str_name(), *reason as i32))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("ATTEMPT_START_FAILED_REASON_UNSPECIFIED", 0),
+            ("ATTEMPT_START_FAILED_REASON_DUPLICATE", 1),
+            ("ATTEMPT_START_FAILED_REASON_UNSUPPORTED", 2),
+        ]
+    );
+}
+
+#[test]
 fn directive_dispositions() {
     let all = [
         DirectiveDisposition::Unspecified,
