@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
 use mintswarm_domain::ids::RunnerId;
 use tempfile::TempDir;
@@ -47,8 +48,29 @@ pub(super) fn fresh_state() -> (TempDir, PathBuf) {
     (tmp, state)
 }
 
-/// Open the store at `state` with the system clock and `mode`.
+/// How long [`open`] retries a store that reads as locked.
+const LOCKED_RETRY: Duration = Duration::from_secs(5);
+
+/// Open the store at `state` with the system clock and `mode`, retrying while it reads as
+/// locked.
+///
+/// Other tests in this binary spawn processes. A child forked while a test holds a store's lock
+/// shares the lock until it execs, so a reopen right after a drop can briefly read as locked.
+/// The tests of the lock itself use [`open_once`].
 pub(super) fn open(state: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
+    let deadline = Instant::now() + LOCKED_RETRY;
+    loop {
+        match open_once(state, mode) {
+            Err(StoreError::Locked { .. }) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Open the store at `state` with the system clock and `mode`, once.
+pub(super) fn open_once(state: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
     Store::open(state, SystemClock, mode)
 }
 
@@ -141,7 +163,27 @@ fn open_refuses_a_file_in_place_of_the_state_directory() {
     let (_tmp, state) = fresh_state();
     std::fs::write(&state, b"").unwrap();
     let err = open(&state, OutboxMode::Live).unwrap_err();
-    assert!(matches!(err, StoreError::Mode { .. }), "{err:?}");
+    assert!(matches!(err, StoreError::NotADirectory { .. }), "{err:?}");
+}
+
+#[test]
+fn open_refuses_a_symlink_in_place_of_the_state_directory() {
+    let (tmp, state) = fresh_state();
+    let target = tmp.path().join("target");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&target)
+        .unwrap();
+    std::os::unix::fs::symlink(&target, &state).unwrap();
+    let err = open(&state, OutboxMode::Live).unwrap_err();
+    assert!(matches!(err, StoreError::NotADirectory { .. }), "{err:?}");
+}
+
+#[test]
+fn a_database_not_in_write_ahead_logging_is_refused() {
+    // An in-memory database has no write-ahead log and stays in journal mode `memory`.
+    let err = super::open_database(Path::new(":memory:")).unwrap_err();
+    assert!(matches!(err, StoreError::JournalMode(_)), "{err:?}");
 }
 
 #[test]
@@ -158,7 +200,7 @@ fn open_clears_stale_files_in_tmp() {
 fn a_second_open_in_the_same_process_is_locked_out() {
     let (_tmp, state) = fresh_state();
     let first = open(&state, OutboxMode::Live).unwrap();
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    let err = open_once(&state, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::Locked { .. }), "{err:?}");
     drop(first);
     open(&state, OutboxMode::Live).unwrap();
@@ -215,7 +257,7 @@ fn another_process_holding_the_lock_locks_out_open() {
     }
     assert!(held, "the child process never held the store");
 
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    let err = open_once(&state, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::Locked { .. }), "{err:?}");
 
     drop(child.stdin.take());

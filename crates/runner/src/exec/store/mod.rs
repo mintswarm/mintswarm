@@ -86,13 +86,20 @@ pub enum StoreError {
     /// Neither `XDG_STATE_HOME` nor `HOME` is an absolute path.
     #[error("neither XDG_STATE_HOME nor HOME is set to an absolute path")]
     NoStateHome,
-    /// The state directory exists with a mode other than 0700, or is not a directory.
+    /// The state directory exists with a mode other than 0700.
     #[error("the state directory {path} has mode {mode:o}, not 700")]
     Mode {
         /// The state directory.
         path: PathBuf,
-        /// The mode it has, with the file type bits when it is not a directory.
+        /// Its permission bits.
         mode: u32,
+    },
+    /// Something other than a directory, such as a file or a symbolic link, is at the state
+    /// directory's path.
+    #[error("the state directory {path} is not a directory")]
+    NotADirectory {
+        /// The state directory.
+        path: PathBuf,
     },
     /// The database was migrated by a newer runner than this one.
     #[error("the database has schema version {found}, newer than the known {known}")]
@@ -102,6 +109,13 @@ pub enum StoreError {
         /// The newest version this runner knows, [`SCHEMA_VERSION`].
         known: i64,
     },
+    /// The database's `user_version` is negative, which no runner writes.
+    #[error("the database has schema version {0}, which no runner writes")]
+    SchemaInvalid(i64),
+    /// The database stays in another journal mode when write-ahead logging is asked for, for
+    /// example on a filesystem without shared memory.
+    #[error("the database uses journal mode `{0}`, not write-ahead logging")]
+    JournalMode(String),
     /// Text that is not a blob id: 64 lowercase hexadecimal digits.
     #[error("`{0}` is not a sha256 blob id")]
     BlobId(String),
@@ -425,9 +439,8 @@ fn prepare_root(root: &Path) -> Result<(), StoreError> {
         Ok(meta) => {
             let mode = meta.permissions().mode();
             if !meta.is_dir() {
-                return Err(StoreError::Mode {
+                return Err(StoreError::NotADirectory {
                     path: root.to_path_buf(),
-                    mode,
                 });
             }
             if mode & 0o7777 != DIR_MODE {
@@ -501,14 +514,20 @@ fn clear_tmp(tmp: &Path) -> Result<(), StoreError> {
 }
 
 /// Open the database with foreign keys on, write-ahead logging and a busy timeout.
+///
+/// A database that stays in another journal mode is refused with [`StoreError::JournalMode`].
 fn open_database(path: &Path) -> Result<Connection, StoreError> {
     let conn = Connection::open(path).map_err(sql("cannot open the database"))?;
     conn.pragma_update(None, "foreign_keys", true)
         .map_err(sql("cannot enable foreign keys"))?;
-    conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
-        row.get::<_, String>(0)
-    })
-    .map_err(sql("cannot set the journal mode"))?;
+    let journal_mode = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(sql("cannot set the journal mode"))?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(StoreError::JournalMode(journal_mode));
+    }
     conn.busy_timeout(BUSY_TIMEOUT)
         .map_err(sql("cannot set the busy timeout"))?;
     Ok(conn)
