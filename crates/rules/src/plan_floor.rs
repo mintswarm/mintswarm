@@ -286,8 +286,9 @@ fn record_json(record: &FloorRecord) -> Json {
 fn text<'b>(what: &str, item: &'b Item) -> Result<&'b str, Unusable> {
     std::str::from_utf8(&item.bytes).map_err(|error| {
         Unusable::new(format!(
-            "cannot read the {what} {}: it is not UTF-8: {error}",
-            item.path
+            "cannot read the {what} {}: it is not UTF-8 at byte {}",
+            item.path,
+            error.valid_up_to()
         ))
     })
 }
