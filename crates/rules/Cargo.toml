@@ -8,6 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+mintswarm-config = { path = "../config" }
 mintswarm-domain = { path = "../domain" }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -892,6 +892,7 @@ dependencies = [
 name = "mintswarm-rules"
 version = "0.1.0"
 dependencies = [
+ "mintswarm-config",
  "mintswarm-domain",
  "serde",
  "serde_json",
