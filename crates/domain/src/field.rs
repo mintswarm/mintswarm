@@ -9,6 +9,7 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
+use crate::retry::Exhausted;
 use crate::scale::{Scale, ScaleRange, ScaleRangeError};
 
 /// Where a role's value lives on the tracker. A role whose source is `off` has no map at all.
@@ -462,8 +463,17 @@ impl fmt::Display for FieldFinding {
 pub enum FieldError {
     /// A drift-class refusal.
     Field(FieldFinding),
-    /// A transport, rate-limit or server error; not drift.
+    /// A transport or unexpected-answer error; not drift.
     Transport(String),
+    /// A transient failure, such as a server error or a rate limit, that went on until the
+    /// call's retries ran out; not drift.
+    Exhausted(Exhausted),
+}
+
+impl From<Exhausted> for FieldError {
+    fn from(exhausted: Exhausted) -> Self {
+        Self::Exhausted(exhausted)
+    }
 }
 
 impl fmt::Display for FieldError {
@@ -471,6 +481,7 @@ impl fmt::Display for FieldError {
         match self {
             Self::Field(finding) => write!(f, "field error: {finding}"),
             Self::Transport(detail) => write!(f, "transport error: {detail}"),
+            Self::Exhausted(exhausted) => write!(f, "transport error: {exhausted}"),
         }
     }
 }
@@ -509,6 +520,7 @@ mod tests {
         FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldSource, OptionSpec,
         SourceSpec,
     };
+    use crate::retry::{Exhausted, Failure};
     use crate::scale::Size;
 
     fn option(name: &str, range: &str) -> OptionSpec {
@@ -560,6 +572,12 @@ mod tests {
             assert!(!again(finding), "{finding}");
         }
         assert!(!FieldError::Transport("GET /x: 502".into()).should_resolve_again());
+        let exhausted = Exhausted {
+            endpoint: "GET /x".into(),
+            attempts: 4,
+            last: Failure::Status(502),
+        };
+        assert!(!FieldError::Exhausted(exhausted).should_resolve_again());
     }
 
     #[test]
