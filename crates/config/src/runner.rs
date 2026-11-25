@@ -1,5 +1,5 @@
 //! The runner config: where a runner keeps its state, how many jobs it runs at once, how often
-//! it polls, and the wall-clock limit of each stage.
+//! it polls, the wall-clock limit of each stage, and how GitHub calls are retried.
 //!
 //! The caller finds and reads the file; this module parses its text.
 
@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use mintswarm_domain::retry::RetryPolicy;
 use serde_json::Value;
 
 use crate::{Error, Path, parse_yaml};
@@ -88,6 +89,7 @@ pub struct RunnerConfig {
     workers: u64,
     poll_interval: Duration,
     wall_clock: BTreeMap<Stage, Duration>,
+    github_retry: RetryPolicy,
 }
 
 impl RunnerConfig {
@@ -113,13 +115,25 @@ impl RunnerConfig {
             .copied()
             .unwrap_or(DEFAULT_WALL_CLOCK)
     }
+
+    /// `github_retry`: how GitHub calls are retried after a transient failure, each key the
+    /// `mintswarm-domain` default ([`RetryPolicy::default`]) when absent.
+    pub fn github_retry(&self) -> RetryPolicy {
+        self.github_retry
+    }
 }
 
 /// Parse and validate a runner config.
 ///
 /// The keys are `state_dir` (a non-empty string, required), `workers` (an integer of 1 or more,
 /// default 1), `poll_interval` (whole seconds from 10 to 60, default 30) and `wall_clock` (a
-/// positive number of seconds per stage, default 3600). Any other key is rejected.
+/// positive number of seconds per stage, default 3600), and `github_retry`, a mapping of
+/// `attempts` (an integer of 1 or more, default
+/// [`DEFAULT_ATTEMPTS`](mintswarm_domain::retry::DEFAULT_ATTEMPTS), 4), `base_delay` (default
+/// [`DEFAULT_BASE_DELAY`](mintswarm_domain::retry::DEFAULT_BASE_DELAY), 1 s), `max_delay` (not
+/// below `base_delay`, default [`DEFAULT_MAX_DELAY`](mintswarm_domain::retry::DEFAULT_MAX_DELAY),
+/// 20 s) and `total` (default [`DEFAULT_TOTAL`](mintswarm_domain::retry::DEFAULT_TOTAL), 127 s),
+/// the last three in positive seconds. Any other key is rejected, under `github_retry` too.
 pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
     let value = parse_yaml(text)?;
     let root = Path::root();
@@ -127,7 +141,14 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
         .as_object()
         .ok_or_else(|| Error::schema(&root, "the runner config must be a mapping"))?;
     if let Some(key) = map.keys().find(|key| {
-        !["state_dir", "workers", "poll_interval", "wall_clock"].contains(&key.as_str())
+        ![
+            "state_dir",
+            "workers",
+            "poll_interval",
+            "wall_clock",
+            "github_retry",
+        ]
+        .contains(&key.as_str())
     }) {
         return Err(Error::schema(&root.key(key), "unknown key"));
     }
@@ -176,23 +197,70 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
             let stage_path = path.key(name);
             let stage =
                 Stage::from_name(name).ok_or_else(|| Error::schema(&stage_path, "unknown key"))?;
-            let limit = seconds
-                .as_f64()
-                .filter(|s| s.is_finite() && *s > 0.0)
-                .and_then(|s| Duration::try_from_secs_f64(s).ok())
-                // A value too small for a nanosecond converts to zero, which is not positive.
-                .filter(|limit| !limit.is_zero())
-                .ok_or_else(|| {
-                    Error::schema(&stage_path, "must be a positive number of seconds")
-                })?;
-            wall_clock.insert(stage, limit);
+            wall_clock.insert(stage, positive_seconds(seconds, &stage_path)?);
         }
     }
+
+    let github_retry = match map.get("github_retry") {
+        None => RetryPolicy::default(),
+        Some(value) => retry_policy(value, &root.key("github_retry"))?,
+    };
 
     Ok(RunnerConfig {
         state_dir,
         workers,
         poll_interval: Duration::from_secs(poll_interval),
         wall_clock,
+        github_retry,
     })
+}
+
+/// A positive number of seconds.
+fn positive_seconds(value: &Value, path: &Path) -> Result<Duration, Error> {
+    value
+        .as_f64()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+        // A value too small for a nanosecond converts to zero, which is not positive.
+        .filter(|limit| !limit.is_zero())
+        .ok_or_else(|| Error::schema(path, "must be a positive number of seconds"))
+}
+
+/// The `github_retry` mapping at `path`, each missing key at its default.
+fn retry_policy(value: &Value, path: &Path) -> Result<RetryPolicy, Error> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| Error::schema(path, "must be a mapping"))?;
+    if let Some(key) = map
+        .keys()
+        .find(|key| !["attempts", "base_delay", "max_delay", "total"].contains(&key.as_str()))
+    {
+        return Err(Error::schema(&path.key(key), "unknown key"));
+    }
+    let mut policy = RetryPolicy::default();
+    if let Some(value) = map.get("attempts") {
+        policy.attempts = value
+            .as_u64()
+            .filter(|&n| n >= 1)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| {
+                Error::schema(&path.key("attempts"), "must be an integer of 1 or more")
+            })?;
+    }
+    for (key, slot) in [
+        ("base_delay", &mut policy.base_delay),
+        ("max_delay", &mut policy.max_delay),
+        ("total", &mut policy.total),
+    ] {
+        if let Some(value) = map.get(key) {
+            *slot = positive_seconds(value, &path.key(key))?;
+        }
+    }
+    if policy.max_delay < policy.base_delay {
+        return Err(Error::schema(
+            &path.key("max_delay"),
+            "must not be below base_delay",
+        ));
+    }
+    Ok(policy)
 }

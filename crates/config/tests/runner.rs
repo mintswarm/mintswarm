@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use mintswarm_config::{DEFAULT_WALL_CLOCK, Stage, load_runner_config};
+use mintswarm_domain::retry::RetryPolicy;
 
 #[test]
 fn poll_interval_bounds() {
@@ -83,6 +84,52 @@ fn runner_values_rejected() {
         ("[state_dir]\n", ""),
     ] {
         let error = load_runner_config(text).expect_err(text);
+        assert_eq!(error.path(), path, "{text}: {error}");
+    }
+}
+
+#[test]
+fn github_retry_defaults_bounds_and_unknown_keys() {
+    let config = load_runner_config("state_dir: s\n").expect("loads");
+    assert_eq!(config.github_retry(), RetryPolicy::default());
+
+    let config = load_runner_config("state_dir: s\ngithub_retry: {attempts: 6, total: 300}\n")
+        .expect("loads");
+    let policy = config.github_retry();
+    assert_eq!(policy.attempts, 6);
+    assert_eq!(policy.total, Duration::from_secs(300));
+    assert_eq!(policy.base_delay, RetryPolicy::default().base_delay);
+    assert_eq!(policy.max_delay, RetryPolicy::default().max_delay);
+
+    let config = load_runner_config(
+        "state_dir: s\ngithub_retry: {attempts: 1, base_delay: 0.5, max_delay: 0.5, total: 2}\n",
+    )
+    .expect("loads");
+    assert_eq!(
+        config.github_retry(),
+        RetryPolicy {
+            attempts: 1,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_millis(500),
+            total: Duration::from_secs(2),
+        }
+    );
+
+    for (retry, path) in [
+        ("{attempts: 0}", "github_retry.attempts"),
+        ("{attempts: 1.5}", "github_retry.attempts"),
+        ("{attempts: 4294967296}", "github_retry.attempts"),
+        ("{base_delay: 0}", "github_retry.base_delay"),
+        ("{max_delay: '20'}", "github_retry.max_delay"),
+        ("{total: -1}", "github_retry.total"),
+        ("{base_delay: 5, max_delay: 2}", "github_retry.max_delay"),
+        // A base delay above the default cap needs a cap of its own.
+        ("{base_delay: 30}", "github_retry.max_delay"),
+        ("{retries: 3}", "github_retry.retries"),
+        ("[attempts]", "github_retry"),
+    ] {
+        let text = format!("state_dir: s\ngithub_retry: {retry}\n");
+        let error = load_runner_config(&text).expect_err(&text);
         assert_eq!(error.path(), path, "{text}: {error}");
     }
 }
