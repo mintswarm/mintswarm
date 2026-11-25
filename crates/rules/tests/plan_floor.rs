@@ -2,8 +2,9 @@
 //! captured by `tests/fixtures/plan_floor_capture.py` into `tests/fixtures/plan_floor.jsonl`, and
 //! the refusal of a bundle whose bindings do not hold.
 //!
-//! Parity is the exit class, the verdict, each rule's id and outcome, and the rules not
-//! evaluated. Reasons are not compared: a reason can carry a parser's message, whose wording is
+//! Parity is the exit class and the whole `floor.json` record, its bindings, mode and verdict,
+//! each rule's id and outcome, and the rules not evaluated, but not the rules' reasons. Reasons are
+//! not compared: a reason can carry a parser's message, whose wording is
 //! the parser's own and changes between versions.
 
 use std::collections::HashMap;
@@ -108,18 +109,15 @@ fn runs() -> Vec<Run> {
 
 /// What the parity compares of a `floor.json` text, as `plan_floor_capture.py` records it.
 fn decision(text: &str) -> Value {
-    let floor: Value = serde_json::from_str(text).expect("floor.json is JSON");
+    let mut floor: Value = serde_json::from_str(text).expect("floor.json is JSON");
     let rules: Vec<Value> = floor["rules"]
         .as_array()
         .expect("rules")
         .iter()
         .map(|rule| serde_json::json!([rule["rule"], rule["result"]]))
         .collect();
-    serde_json::json!({
-        "verdict": floor["verdict"],
-        "rules": rules,
-        "not_evaluated": floor["not_evaluated"],
-    })
+    floor["rules"] = Value::Array(rules);
+    floor
 }
 
 fn outcome(bundle: &Bundle) -> (Outcome, Option<String>) {

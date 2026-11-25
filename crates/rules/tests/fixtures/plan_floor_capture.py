@@ -15,7 +15,7 @@ repository, and runs the check groups that exercise the pure floor: GROUPS below
   "issue_document", "analysis", "screen", "analysis_record", "plan_record", "exit", "floor"}`: one
   run, its config and history named by sha256, each document `{"path", "bytes"}` or null, its exit
   code, and what the parity test compares of the `floor.json` it wrote, or null when it wrote none:
-  `{"verdict", "rules", "not_evaluated"}`, each rule as `[rule, result]`.
+  every field of the record, with each rule as `[rule, result]`, its reasons dropped.
 
 Reasons are not recorded: a reason can carry a Python library's error message, which changes between
 Python versions, and the parity is the decision and the exit class, not the wording.
@@ -87,9 +87,10 @@ def blob(data: bytes) -> dict:
 
 
 def decision(floor: dict) -> dict:
-    """What the parity test compares of a `floor.json`: no reason, whose wording may be Python's."""
-    rules = [[rule["rule"], rule["result"]] for rule in floor["rules"]]
-    return {"verdict": floor["verdict"], "rules": rules, "not_evaluated": floor["not_evaluated"]}
+    """What the parity test compares of a `floor.json`: all of it but the reasons, whose wording may be Python's."""
+    record = dict(floor)
+    record["rules"] = [[rule["rule"], rule["result"]] for rule in floor["rules"]]
+    return record
 
 
 class Capture:
