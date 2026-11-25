@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::AccountName;
+use crate::ids::AccountNickname;
 use crate::scale::Size;
 
 /// The learned phase 2 cost of a size, in percent of the account's 5 h window.
@@ -19,7 +19,7 @@ pub struct LearnedCost {
 /// The learned costs of sizes, per account.
 pub trait CostModel: Send + Sync {
     /// The learned cost of `size` on `account`, or `None` while there are too few actuals.
-    fn cost(&self, account: &AccountName, size: Size) -> Option<LearnedCost>;
+    fn cost(&self, account: &AccountNickname, size: Size) -> Option<LearnedCost>;
 }
 
 /// A cost model that has learned nothing: every cost is `None`.
@@ -27,7 +27,7 @@ pub trait CostModel: Send + Sync {
 pub struct NoCostModel;
 
 impl CostModel for NoCostModel {
-    fn cost(&self, _account: &AccountName, _size: Size) -> Option<LearnedCost> {
+    fn cost(&self, _account: &AccountNickname, _size: Size) -> Option<LearnedCost> {
         None
     }
 }
