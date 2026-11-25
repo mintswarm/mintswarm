@@ -82,7 +82,7 @@ pub(super) fn resolve(store: &GitStore, rev: &str) -> Result<RevId, GitError> {
 }
 
 /// A commit's id, after checking it is a full id naming a commit in the store.
-fn commit<'a>(store: &GitStore, rev: &'a RevId) -> Result<&'a str, GitError> {
+pub(super) fn commit<'a>(store: &GitStore, rev: &'a RevId) -> Result<&'a str, GitError> {
     let id = store.checked_id(rev)?;
     resolve(store, id)?;
     Ok(id)
@@ -267,6 +267,23 @@ pub(super) fn log(
             })
         })
         .collect()
+}
+
+/// The raw subjects of every commit reachable from `rev`, as
+/// `git -c log.showSignature=false log -z --format=%s <commit> --` writes them: neither re-encoded
+/// nor decoded, so their digest is the one `plan-approval/floor.py` binds.
+pub(crate) fn subjects(store: &GitStore, rev: &RevId) -> Result<Vec<u8>, GitError> {
+    let id = commit(store, rev)?;
+    success(
+        "log",
+        store.output(
+            store.command_with(
+                &["log.showSignature=false"],
+                ["log", "-z", "--format=%s", id, "--"],
+            ),
+            "log",
+        )?,
+    )
 }
 
 /// The best common ancestor of two commits, or `None` when they share no history.

@@ -353,7 +353,7 @@ fn diff_reports_kinds_modes_and_lines() {
 fn write_operations_are_unsupported() {
     let fx = Fixture::new();
     let store = fx.store("unsupported");
-    let result = store.materialise(&fx.side, Path::new("/nonexistent"), TreeMode::ReadOnly);
+    let result = store.materialise(&fx.side, Path::new("/nonexistent"), TreeMode::Writable);
     assert!(matches!(result, Err(GitError::Unsupported(_))));
 }
 

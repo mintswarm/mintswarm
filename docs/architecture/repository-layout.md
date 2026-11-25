@@ -49,7 +49,7 @@ mintswarm/
 │   │   └── migrations/     # SQL, append-only
 │   ├── server/             # `mintswarm-server` binary: serve, migrate (the image's entry point)
 │   ├── steward/            # `mintswarm-steward` binary: the process that holds the deployment's signing keys apart from the control plane
-│   ├── runner/             # `mintswarm-runner` library and binary: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations; `harness::render`, the stage definitions read from the trusted store at the base commit, with the agent chosen from config and both files bound by sha256; `tool save-output`, the Rust port of `save-output.py`
+│   ├── runner/             # `mintswarm-runner` library and binary: `exec::git`, the git VCS adapter: trusted bare store, neutral git environment, fetch and read operations, read-only snapshots shared per commit, and the plan floor's input bundle; `harness::render`, the stage definitions read from the trusted store at the base commit, with the agent chosen from config and both files bound by sha256; `tool save-output`, the Rust port of `save-output.py`
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` binary: CLI and `mcp console`
 │
