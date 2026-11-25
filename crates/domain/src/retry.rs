@@ -123,13 +123,15 @@ impl fmt::Display for Failure {
 }
 
 /// A call that gave up: its attempts or its time ran out while it kept failing transiently, or
-/// its request could not be built ([`Failure::Request`]), which ends it after one attempt.
+/// an attempt's request could not be built ([`Failure::Request`]), which ends the call at that
+/// attempt, whichever it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Exhausted {
     /// The method and path of the call; never a credential.
     pub endpoint: String,
-    /// How many attempts were sent; 0 when a rate-limit pause already running did not fit the
-    /// call's time.
+    /// How many attempts were made; one that ended in [`Failure::Request`] is counted though
+    /// nothing was sent, and 0 when a rate-limit pause already running did not fit the call's
+    /// time.
     pub attempts: u32,
     /// How the last attempt failed.
     pub last: Failure,
