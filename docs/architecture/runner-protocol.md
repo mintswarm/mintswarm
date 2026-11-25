@@ -60,7 +60,7 @@ The envelope rules, as the proto comments state them (design §5.3):
 - its `runner_version`, its `protocol_minor`, the optional `features` it supports and every `StepKind` it executes (`step_kinds`);
 - its outbox position: `outbox_epoch`, a random 128-bit id, with `first_unacked_seq` and `last_seq`;
 - its host, `Harness` list, probe results (`ProbeResult`, whose schema is contract C7), tags, harness account and `workers_total`;
-- the repository it serves (`HelloRepository`: `remote` and the `default_branch_head` of its trusted store), which the plane checks against the project's repository at every `Hello`;
+- the repository it serves (`HelloRepository`: `remote` and the `default_branch_head` of its trusted store). The plane checks `remote` against the project's repository at every `Hello` and reads the default-branch head itself, so `default_branch_head` only shows how far behind the runner's store is;
 - its `RunnerMode`: `worker` claims work, `observer` never does;
 - every attempt it believes it runs, as `HeldAttempt` (`attempt_id`, `lease_epoch`, `phase`).
 
@@ -72,13 +72,13 @@ The envelope rules, as the proto comments state them (design §5.3):
   - `acked_seq`, the last `seq` acknowledged for the runner's `outbox_epoch`;
   - `SessionLimits`: `max_message_bytes`, `max_blob_bytes`, `max_in_flight_events`, `max_in_flight_bytes` and `claim_wait_seconds`;
   - `SessionTimings`: `heartbeat_seconds`, `lease_seconds` and `metrics_seconds`, so a plane tunes them without a runner release;
-  - every attempt the plane believes the runner holds, as `PlaneHeldAttempt` with a `PlaneAttemptState` of `assigned` or `started` (design §6.3);
+  - every attempt the plane believes the runner holds, as `PlaneHeldAttempt` with a `PlaneAttemptState` of `assigned` or `started` (design §6.3; the message that carries an assignment is not yet defined, see [Not yet defined](#not-yet-defined));
   - the `pending_directives` sent before and not yet receipted.
 
 During the session:
 
 - The runner refreshes its access token with `Reauthenticate`, and the plane answers `Reauthenticated` with the new `expires_at` (design §9.4).
-- The runner sends `CapabilitiesUpdate` with every probe result and harness whenever they change, and `HostMetrics` periodically (design §5.2, §7.5).
+- The runner sends `CapabilitiesUpdate` with every probe result and harness whenever they change (design §5.2, §7.3), and `HostMetrics` periodically (design §5.2, §7.5).
 - The runner ends with `Goodbye`; its only `GoodbyeReason` is `drained`, sent once it has finished draining and its outbox is acknowledged.
 - The plane ends with `GoAway`, whose `GoAwayReason` is `superseded` (a newer stream authenticated for the same runner), `token_expired` or `shutdown`. Its `reconnect_after`, when set, overrides the runner's reconnect backoff.
 
@@ -150,7 +150,7 @@ The plane drops a fenced event whose fence is stale. A stale fence does not fail
 ## Versioning and features
 
 - The package is `mintswarm.runner.v1`. A breaking change gets a new version directory beside `v1/` (see [repository layout](repository-layout.md)).
-- Inside `v1`, a runner reports its `protocol_minor` in `RegisterRequest` and `Hello`, and the plane its own in `HelloAccepted`. A plane that refuses a runner's minor version says so with `HelloRejected` or the `UpgradeRequired` directive, both carrying `min_protocol_minor`.
+- Inside `v1`, a runner reports its `protocol_minor` in `RegisterRequest` and `Hello`, and the plane its own in `HelloAccepted`. A plane that refuses a runner's minor version says so with `HelloRejected` or the `UpgradeRequired` directive, both carrying `min_protocol_minor`, and `Register` refuses a runner that is too old with `FAILED_PRECONDITION` and reason `upgrade_required`.
 - `features` are strings. The runner lists those it supports in `Hello`, and `HelloAccepted` returns the negotiated set: those both sides support.
 - `StepKind` is an open enum. The plane never dispatches a kind outside `Hello.step_kinds`, and a runner that receives a kind it does not know answers with `AttemptStartFailed` and reason `unsupported`.
 - The `proto-lint` gate runs `buf lint`, and the `proto-breaking` gate runs `buf breaking` against `origin/master`.
@@ -163,4 +163,4 @@ Assignment and credential messages are not yet defined. In the protos:
 - field 6 of `ConnectRequest` and of `ConnectResponse` is unused, and not `reserved`;
 - field 2 of the `ClaimResult` result is unused, and not `reserved`.
 
-The protocol has no message that hands an attempt to a runner or carries a credential to it.
+The protocol has no message that hands an attempt to a runner, and no `Connect` case that requests or delivers a credential for an attempt.
