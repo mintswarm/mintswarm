@@ -1,17 +1,17 @@
 //! The result block's content, in `save-output.py`'s strict subset of YAML, and its checks.
 //!
-//! Each function ports the Python function of the same name, message for message and line for
-//! line. Python's `str.strip()` is [`py_strip`], Rust's `trim` decides emptiness where the Python
-//! uses `rust_blank`, and ids are written by Rust's `{:?}` where the Python approximates it with
-//! `rust_debug`. Reply text holds no lone surrogate, so only decoded JSON strings are checked for
-//! one.
+//! Each function ports the Python function of the same name, decision for decision: the same
+//! input breaks the same rule. The messages are this module's own. Text quoted from the reply is
+//! written by Rust's `{:?}`, never by Python's `repr`, and a questions array that does not decode
+//! is reported without the decoder's wording or position. Python's `str.strip()` is [`py_strip`],
+//! and Rust's `trim` decides emptiness where the Python uses `rust_blank`. Reply text holds no
+//! lone surrogate, so only decoded JSON strings are checked for one.
 
 use mintswarm_domain::question::Question;
 use mintswarm_domain::records::Json;
 use mintswarm_domain::work::{OutcomeStatus, StageOutcome};
 
 use super::pyjson::{self, Object, PyStr, Value};
-use super::repr::{py_repr, py_repr_char};
 use crate::markdown::py_strip;
 
 const STATUSES: &[&str] = &["complete", "needs_input", "failed"];
@@ -157,8 +157,7 @@ fn plain_problem(text: &str) -> Option<String> {
         || ("-?:".contains(first) && second.is_none_or(|c| c == ' ' || c == '\t'))
     {
         return Some(format!(
-            "starts with {}; quote it with double quotes",
-            py_repr_char(first)
+            "starts with {first:?}; quote it with double quotes"
         ));
     }
     if text.contains(": ") || text.ends_with(':') || text.contains(":\t") {
@@ -211,8 +210,8 @@ fn read_scalar(raw: &str) -> Result<Scalar, String> {
         let after: String = chars[i + 1..].iter().collect();
         if !is_tail(&after) {
             return Err(format!(
-                "text after the closing quote: {}",
-                py_repr(py_strip(&after))
+                "text after the closing quote: {:?}",
+                py_strip(&after)
             ));
         }
         return Ok(Scalar::Str(value.into()));
@@ -249,8 +248,8 @@ fn read_outputs(raw: &str) -> Result<Vec<String>, String> {
     };
     if !is_tail(&raw[end + 1..]) {
         return Err(format!(
-            "text after outputs' closing ]: {}",
-            py_repr(py_strip(&raw[end + 1..]))
+            "text after outputs' closing ]: {:?}",
+            py_strip(&raw[end + 1..])
         ));
     }
     let inner = strip_blanks(&raw[1..end]);
@@ -272,8 +271,7 @@ fn read_outputs(raw: &str) -> Result<Vec<String>, String> {
             (None, Scalar::Null) => "is empty or null".into(),
         };
         return Err(format!(
-            "outputs item {} is not a plain string: {reason}",
-            py_repr(item)
+            "outputs item {item:?} is not a plain string: {reason}"
         ));
     }
     Ok(paths)
@@ -348,13 +346,15 @@ fn read_questions(
         Ok(decoded) => decoded,
         Err(error) => {
             let rest: String = text[error.pos.min(text.len())..].iter().collect();
+            // where decoding stopped decides between the two, as in save-output.py; neither
+            // message quotes the decoder
             let violation = if py_strip(&rest).is_empty() {
                 format!("line {}: the questions array is not closed by ]", first + k)
             } else {
-                let at = first + k + count_newlines(&text[..error.pos.min(text.len())]);
                 format!(
-                    "line {at}: the questions array is not valid JSON: {}",
-                    error.msg
+                    "line {}: the questions array is not valid JSON; write it as a JSON array of \
+                     question objects",
+                    first + k
                 )
             };
             return (None, stop, vec![violation]);
@@ -372,18 +372,17 @@ fn read_questions(
     let head = tail.next().unwrap_or("");
     if !is_tail(head) {
         violations.push(format!(
-            "line {}: text after the questions array's closing ]: {}",
+            "line {}: text after the questions array's closing ]: {:?}",
             first + k + last,
-            py_repr(py_strip(head))
+            py_strip(head)
         ));
     }
     for (j, line) in tail.enumerate() {
         let stripped = py_strip(line);
         if !stripped.is_empty() && !stripped.starts_with('#') {
             violations.push(format!(
-                "line {}: text after the questions array's closing ]: {}",
-                first + k + last + 1 + j,
-                py_repr(stripped)
+                "line {}: text after the questions array's closing ]: {stripped:?}",
+                first + k + last + 1 + j
             ));
         }
     }
@@ -661,8 +660,8 @@ pub(crate) fn parse_result(block: &[&str], first: usize) -> Result<StageOutcome,
         }
         let Some((key, raw)) = key_line(line) else {
             violations.push(format!(
-                "line {here}: expected a key indented by two spaces, found {}",
-                py_repr(py_strip(line))
+                "line {here}: expected a key indented by two spaces, found {:?}",
+                py_strip(line)
             ));
             k += 1;
             continue;
@@ -835,7 +834,7 @@ mod tests {
         );
         assert_eq!(
             read_scalar("\"a\" x").err().as_deref(),
-            Some("text after the closing quote: 'x'")
+            Some("text after the closing quote: \"x\"")
         );
     }
 }

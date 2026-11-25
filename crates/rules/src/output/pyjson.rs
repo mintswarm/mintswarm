@@ -1,16 +1,17 @@
-//! JSON as Python 3.11's default decoder reads it, for the `questions` array and transcript lines.
+//! JSON as Python's `json` module accepts it, for the `questions` array and transcript lines.
 //!
-//! Unlike [`crate::json::read`], this decoder accepts what Python's `json` module accepts and
-//! reports what it reports, because `save-output.py` turns each of these into its own message:
+//! Unlike [`crate::json::read`], this decoder accepts what `save-output.py` accepts, so that
+//! capture reaches the same decision on the same input:
 //! - `NaN`, `Infinity` and `-Infinity` are numbers;
 //! - a `\u` escape of a lone surrogate is kept: the string's [`PyStr::has_surrogate`] holds, and
 //!   its code points are kept for messages;
 //! - [`raw_decode`] keeps the first value of a repeated key and lists the repeats, as
 //!   `save-output.py`'s `JsonObject` hook does; [`loads`] keeps the last, as plain `json.loads`;
-//! - errors carry the C scanner's message and its position in characters.
+//! - an error carries only where decoding stopped, in characters, from which the caller decides
+//!   whether the text was cut short. It carries no message: callers give their own.
 //!
 //! Numbers keep no value: only their type matters to the callers. Nesting deeper than
-//! [`MAX_DEPTH`] is reported as `Expecting value` where Python would raise `RecursionError`.
+//! [`MAX_DEPTH`] is an error at the opening bracket.
 
 /// The deepest nesting of arrays and objects decoded.
 pub const MAX_DEPTH: usize = 512;
@@ -140,10 +141,9 @@ impl Value {
     }
 }
 
-/// A `json.JSONDecodeError`: its `msg` and its `pos`, a character index.
+/// Text that does not decode: where decoding stopped, a character index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError {
-    pub msg: &'static str,
     pub pos: usize,
 }
 
@@ -172,10 +172,7 @@ pub fn raw_decode(text: &[char]) -> Result<(Value, usize), DecodeError> {
 pub fn loads(text: &str) -> Result<Value, DecodeError> {
     let chars: Vec<char> = text.chars().collect();
     if chars.first() == Some(&'\u{feff}') {
-        return Err(DecodeError {
-            msg: "Unexpected UTF-8 BOM (decode using utf-8-sig)",
-            pos: 0,
-        });
+        return Err(DecodeError { pos: 0 });
     }
     let decoder = Decoder {
         s: &chars,
@@ -185,10 +182,7 @@ pub fn loads(text: &str) -> Result<Value, DecodeError> {
     let (value, end) = decoder.scan(start, 0)?;
     let end = decoder.skip_whitespace(end);
     if end != chars.len() {
-        return Err(DecodeError {
-            msg: "Extra data",
-            pos: end,
-        });
+        return Err(DecodeError { pos: end });
     }
     Ok(value)
 }
@@ -198,8 +192,8 @@ struct Decoder<'s> {
     repeats: Repeats,
 }
 
-fn error(msg: &'static str, pos: usize) -> DecodeError {
-    DecodeError { msg, pos }
+fn error(pos: usize) -> DecodeError {
+    DecodeError { pos }
 }
 
 impl Decoder<'_> {
@@ -229,9 +223,9 @@ impl Decoder<'_> {
         matches!(self.at(i), Some('0'..='9'))
     }
 
-    /// One value at `i`; a value that cannot start there is `Expecting value` at `i`.
+    /// One value at `i`; a value that cannot start there is an error at `i`.
     fn scan(&self, i: usize, depth: usize) -> Result<(Value, usize), DecodeError> {
-        let expecting = || error("Expecting value", i);
+        let expecting = || error(i);
         match self.at(i) {
             None => Err(expecting()),
             Some('"') => {
@@ -290,7 +284,7 @@ impl Decoder<'_> {
 
     /// Four hex digits after the `u` at `u`; the C scanner also wants a character after them.
     fn hex4(&self, u: usize) -> Result<u32, DecodeError> {
-        let bad = || error("Invalid \\uXXXX escape", u);
+        let bad = || error(u);
         if u + 5 >= self.s.len() {
             return Err(bad());
         }
@@ -304,7 +298,7 @@ impl Decoder<'_> {
     /// A string whose opening quote is just before `begin`; returns it and the index past its
     /// closing quote.
     fn string(&self, begin: usize) -> Result<(PyStr, usize), DecodeError> {
-        let unterminated = || error("Unterminated string starting at", begin - 1);
+        let unterminated = || error(begin - 1);
         let mut points: Vec<u32> = Vec::new();
         let mut i = begin;
         loop {
@@ -343,13 +337,13 @@ impl Decoder<'_> {
                             points.push(first);
                             continue;
                         }
-                        Some(_) => return Err(error("Invalid \\escape", escape)),
+                        Some(_) => return Err(error(escape)),
                     };
                     points.push(code);
                     i += 1;
                 }
                 Some(c) if u32::from(c) < 0x20 => {
-                    return Err(error("Invalid control character at", i));
+                    return Err(error(i));
                 }
                 Some(c) => {
                     points.push(u32::from(c));
@@ -373,7 +367,7 @@ impl Decoder<'_> {
             match self.at(i) {
                 Some(']') => return Ok((Value::Array(items), i + 1)),
                 Some(',') => i = self.skip_whitespace(i + 1),
-                _ => return Err(error("Expecting ',' delimiter", i)),
+                _ => return Err(error(i)),
             }
         }
     }
@@ -390,15 +384,12 @@ impl Decoder<'_> {
         }
         loop {
             if self.at(i) != Some('"') {
-                return Err(error(
-                    "Expecting property name enclosed in double quotes",
-                    i,
-                ));
+                return Err(error(i));
             }
             let (key, end) = self.string(i + 1)?;
             i = self.skip_whitespace(end);
             if self.at(i) != Some(':') {
-                return Err(error("Expecting ':' delimiter", i));
+                return Err(error(i));
             }
             i = self.skip_whitespace(i + 1);
             let (value, end) = self.scan(i, depth)?;
@@ -417,7 +408,7 @@ impl Decoder<'_> {
             match self.at(i) {
                 Some('}') => return Ok((Value::Object(object), i + 1)),
                 Some(',') => i = self.skip_whitespace(i + 1),
-                _ => return Err(error("Expecting ',' delimiter", i)),
+                _ => return Err(error(i)),
             }
         }
     }
@@ -427,68 +418,53 @@ impl Decoder<'_> {
 mod tests {
     use super::*;
 
-    fn decode(text: &str) -> Result<(Value, usize), (&'static str, usize)> {
+    fn decode(text: &str) -> Result<(Value, usize), usize> {
         let chars: Vec<char> = text.chars().collect();
-        raw_decode(&chars).map_err(|e| (e.msg, e.pos))
+        raw_decode(&chars).map_err(|e| e.pos)
     }
 
-    fn fails(text: &str) -> (&'static str, usize) {
-        decode(text).expect_err(text)
-    }
-
+    /// Where decoding stops, which decides whether the questions array was cut short: only
+    /// whitespace from there on.
     #[test]
-    fn errors_match_python() {
-        // each recorded from Python 3.11's json.JSONDecoder().raw_decode
-        let cases: &[(&str, &str, usize)] = &[
-            ("[", "Expecting value", 1),
-            ("[ ", "Expecting value", 2),
-            ("[1", "Expecting ',' delimiter", 2),
-            ("[1,", "Expecting value", 3),
-            ("[1,]", "Expecting value", 3),
-            ("[1 2]", "Expecting ',' delimiter", 3),
-            ("[{", "Expecting property name enclosed in double quotes", 2),
-            ("[{\"a\"", "Expecting ':' delimiter", 5),
-            ("[{\"a\":", "Expecting value", 6),
-            ("[{\"a\":1", "Expecting ',' delimiter", 7),
-            (
-                "[{\"a\":1,}",
-                "Expecting property name enclosed in double quotes",
-                8,
-            ),
-            (
-                "[{1}",
-                "Expecting property name enclosed in double quotes",
-                2,
-            ),
-            ("[\"a", "Unterminated string starting at", 1),
-            ("[\"a\\", "Unterminated string starting at", 1),
-            ("[\"a\\\"]", "Unterminated string starting at", 1),
-            ("[\"\\x\"]", "Invalid \\escape", 2),
-            ("[\"\\u12\"]", "Invalid \\uXXXX escape", 3),
-            ("[\"\\u1234", "Invalid \\uXXXX escape", 3),
-            ("[\"\\u1234\"", "Expecting ',' delimiter", 9),
-            ("[\"\\ud800\\u12\"]", "Invalid \\uXXXX escape", 9),
-            ("[\"\\ud800\\u\"]", "Invalid \\uXXXX escape", 9),
-            ("[\"\\ud800\\udc00", "Invalid \\uXXXX escape", 9),
-            ("[\"\\ud800\\udc00\n", "Invalid control character at", 14),
-            ("[\"\t\"]", "Invalid control character at", 2),
-            ("[-]", "Expecting value", 1),
-            ("[n]", "Expecting value", 1),
-            ("[tru", "Expecting value", 1),
-            ("[1.]", "Expecting ',' delimiter", 2),
-            ("[01]", "Expecting ',' delimiter", 2),
-            ("[1e", "Expecting ',' delimiter", 2),
-            ("[1\n,\n2", "Expecting ',' delimiter", 6),
-            ("[{\"a\":1}, ]", "Expecting value", 10),
-            ("[\u{661}]", "Expecting value", 1),
-            (
-                "[NaN, Infinity, -Infinity, 1e400, 1.e5]",
-                "Expecting ',' delimiter",
-                35,
-            ),
+    fn errors_stop_where_the_text_breaks() {
+        let cases: &[(&str, usize)] = &[
+            ("[", 1),
+            ("[ ", 2),
+            ("[1", 2),
+            ("[1,", 3),
+            ("[1,]", 3),
+            ("[1 2]", 3),
+            ("[{", 2),
+            ("[{\"a\"", 5),
+            ("[{\"a\":", 6),
+            ("[{\"a\":1", 7),
+            ("[{\"a\":1,}", 8),
+            ("[{1}", 2),
+            ("[\"a", 1),
+            ("[\"a\\", 1),
+            ("[\"a\\\"]", 1),
+            ("[\"\\x\"]", 2),
+            ("[\"\\u12\"]", 3),
+            ("[\"\\u1234", 3),
+            ("[\"\\u1234\"", 9),
+            ("[\"\\ud800\\u12\"]", 9),
+            ("[\"\\ud800\\u\"]", 9),
+            ("[\"\\ud800\\udc00", 9),
+            ("[\"\\ud800\\udc00\n", 14),
+            ("[\"\t\"]", 2),
+            ("[-]", 1),
+            ("[n]", 1),
+            ("[tru", 1),
+            ("[1.]", 2),
+            ("[01]", 2),
+            ("[1e", 2),
+            ("[1\n,\n2", 6),
+            ("[{\"a\":1}, ]", 10),
+            ("[\u{661}]", 1),
+            ("[NaN, Infinity, -Infinity, 1e400, 1.e5]", 35),
         ];
-        for &(text, msg, pos) in cases {
-            assert_eq!(fails(text), (msg, pos), "{text:?}");
+        for &(text, pos) in cases {
+            assert_eq!(decode(text), Err(pos), "{text:?}");
         }
     }
 
@@ -535,10 +511,7 @@ mod tests {
     #[test]
     fn loads_rules() {
         assert_eq!(loads("NaN"), Ok(Value::Number));
-        assert_eq!(
-            loads("[1] x").map_err(|e| (e.msg, e.pos)),
-            Err(("Extra data", 4))
-        );
+        assert_eq!(loads("[1] x"), Err(DecodeError { pos: 4 }));
         assert!(loads("\u{feff}[1]").is_err());
         assert!(loads("").is_err());
     }

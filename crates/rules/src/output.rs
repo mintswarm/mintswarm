@@ -1,12 +1,13 @@
 //! A stage's output document and `msw-result` block, captured from its final reply.
 //!
-//! [`capture`] is an exact port of `.mintswarm/dogfood/save-output.py --text` without its I/O: it
-//! applies rules 1–6 of "Returning the output" in `.mintswarm/stages.md`, reads the result block
-//! in the strict subset of YAML that "Result block" and "Questions" describe, and runs the
-//! question checks. It gives either the document exactly as `save-output.py` saves it, with the
-//! result record it writes beside it, or the one [`Fault`] it reports, whose
-//! [`Fault::explain`] is the text it prints after `save-output: `. [`capture_transcript`] first
-//! selects the reply from a Claude Code transcript, as `save-output.py` does without `--text`.
+//! [`capture`] ports `.mintswarm/dogfood/save-output.py --text` without its I/O: it applies rules
+//! 1–6 of "Returning the output" in `.mintswarm/stages.md`, reads the result block in the strict
+//! subset of YAML that "Result block" and "Questions" describe, and runs the question checks. It
+//! gives either the document exactly as `save-output.py` saves it, with the result record it
+//! writes beside it, or a [`Fault`] naming the rule `save-output.py` reports broken, quoted from
+//! `stages.md`. The fault's own wording is this module's: it never reproduces Python's `repr` or
+//! its JSON decoder's messages. [`capture_transcript`] first selects the reply from a Claude Code
+//! transcript, as `save-output.py` does without `--text`.
 //!
 //! Lines are split at LF only; a trailing CR is ignored when matching and kept in the saved
 //! document. Rule texts are quoted verbatim from `.mintswarm/stages.md`.
@@ -19,7 +20,6 @@
 
 mod block;
 mod pyjson;
-mod repr;
 mod transcript;
 
 use mintswarm_domain::work::{OutcomeStatus, StageOutcome};
@@ -27,7 +27,6 @@ use mintswarm_domain::work::{OutcomeStatus, StageOutcome};
 use crate::json::{self, Style};
 use crate::markdown::py_strip;
 
-use repr::py_repr;
 pub use transcript::{Selected, TranscriptCapture, capture_transcript};
 
 /// The file every rule is quoted from.
@@ -138,7 +137,8 @@ impl Fault {
         }
     }
 
-    /// The fault and the rule it breaks, as `save-output.py` prints them after `save-output: `.
+    /// The fault and the rule it breaks, in the layout `save-output.py` prints after
+    /// `save-output: `.
     pub fn explain(&self) -> String {
         format!(
             "{}\nbreaks {} of {STAGES}: {}",
@@ -295,9 +295,9 @@ fn find_result<'l>(lines: &[&'l str], after: usize) -> Result<(Vec<&'l str>, usi
     let Some(tag) = result_fence(lines[i]) else {
         return Err(Fault::new(
             format!(
-                "line {}: text between the document block and the result block: {}",
+                "line {}: text between the document block and the result block: {:?}",
                 i + 1,
-                py_repr(py_strip(lines[i]))
+                py_strip(lines[i])
             ),
             "rule 6",
         ));
@@ -307,7 +307,7 @@ fn find_result<'l>(lines: &[&'l str], after: usize) -> Result<(Vec<&'l str>, usi
         let found = if tag.is_empty() {
             "untagged".to_string()
         } else {
-            format!("tagged {}", py_repr(tag))
+            format!("tagged {tag:?}")
         };
         return Err(Fault::new(
             format!(
@@ -323,7 +323,7 @@ fn find_result<'l>(lines: &[&'l str], after: usize) -> Result<(Vec<&'l str>, usi
     {
         let found = lines
             .get(i + 1)
-            .map_or_else(|| "nothing".to_string(), |line| py_repr(line));
+            .map_or_else(|| "nothing".to_string(), |line| format!("{line:?}"));
         return Err(Fault::new(
             format!(
                 "line {}: the result block's first line is {found}; it must be 'msw-result:'",
@@ -380,9 +380,9 @@ pub fn capture(reply: &str) -> Result<Capture, Fault> {
 ///
 /// `questions` empty under `needs_input` is not checked here: [`capture`] has already rejected it
 /// under the `needs_input` status rule, quoting [`CONTENT_RULE`], with the message
-/// `needs_input needs a must_decide or recommended question`. That message names the field
-/// through the status rule rather than starting with `questions:`, because its wording is fixed
-/// by `save-output.py`, which capture matches byte for byte.
+/// `needs_input needs a must_decide or recommended question` that the domain's
+/// `StageOutcome::check` gives. That message names the field through the status rule rather than
+/// starting with `questions:`.
 pub fn check_expected(outcome: &StageOutcome, artefact: &str) -> Result<(), Fault> {
     let mut found = Vec::new();
     if outcome.artefact != artefact {
