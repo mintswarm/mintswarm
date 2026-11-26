@@ -16,6 +16,7 @@ tokio = { workspace = true, features = ["process", "time", "io-util", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+mintswarm-config = { path = "../config" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "test-util"] }
 
