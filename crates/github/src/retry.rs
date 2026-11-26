@@ -21,7 +21,8 @@
 //! The policy's total bounds the call: an attempt still running when it ends is cut off as a
 //! [`Failure::Timeout`], and a wait that would end past it is not started. When the attempts or
 //! the total run out, the call gives up with [`Exhausted`]. A create's probe is the caller's own
-//! call, not bounded by the create's total.
+//! call, not bounded by the create's total; its gate is, and a gate still waiting when the total
+//! ends is cut off and ends the call.
 
 use std::fmt;
 use std::future::Future;
@@ -83,10 +84,6 @@ pub(crate) trait Transport: sealed::Sealed + Send + Sync {
 }
 
 /// What a create's probe found out about an earlier attempt.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the M2 writes build their probes on it")
-)]
 pub(crate) enum Landing {
     /// It landed; this is what GitHub holds for it.
     Landed(Reply),
@@ -101,12 +98,17 @@ pub(crate) enum Landing {
 pub(crate) type Probe<'a> =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = Landing> + Send + 'a>> + Send + Sync + 'a>;
 
+/// Waits before each attempt of a create after the first, for example for a grant from a
+/// budget of content-creating requests.
+pub(crate) type Gate<'a> =
+    Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send + Sync + 'a>;
+
 /// Whether a request is safe to repeat.
 enum Class<'a> {
     /// Repeating it leaves GitHub as one success would.
     Idempotent,
-    /// Repeating it after it landed would make a second one.
-    Create(Probe<'a>),
+    /// Repeating it after it landed would make a second one; its probe and its gate.
+    Create(Probe<'a>, Gate<'a>),
 }
 
 /// A draw from `[0, 1]` for the jitter of a wait.
@@ -239,17 +241,17 @@ impl<T: Transport> Retrying<T> {
     /// an attempt that may have landed, `probe` is asked before the next one is sent: a landed
     /// attempt's reply is returned as the call's, and a probe that cannot tell ends the call.
     /// When the attempts or the time run out after such an attempt, the call ends in
-    /// [`Exhausted`] without asking, so the create may still have landed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the M2 writes call it with their probes")
-    )]
-    pub async fn create(
+    /// [`Exhausted`] without asking, so the create may still have landed. `gate` is awaited
+    /// before every attempt after the first, whatever ended the one before; the caller makes
+    /// the first attempt's wait itself. A gate still waiting when the total ends is cut off and
+    /// ends the call, so it must take nothing until it completes.
+    pub async fn create<'a>(
         &self,
         path: &str,
         token: &Token,
         body: &Value,
-        probe: Probe<'_>,
+        probe: Probe<'a>,
+        gate: Gate<'a>,
     ) -> Result<Reply, Exhausted> {
         let request = Request {
             method: Method::POST,
@@ -258,7 +260,7 @@ impl<T: Transport> Retrying<T> {
             body: Some(body),
             if_none_match: None,
         };
-        self.run(&request, Class::Create(probe)).await
+        self.run(&request, Class::Create(probe, gate)).await
     }
 
     /// The instant before which a pausing layer sends nothing, if it is still ahead.
@@ -369,7 +371,7 @@ impl<T: Transport> Retrying<T> {
             tokio::time::sleep_until(until).await;
             if !definite {
                 ambiguous = true;
-                if let Class::Create(probe) = &class {
+                if let Class::Create(probe, _) = &class {
                     match probe().await {
                         Landing::Landed(mut reply) => {
                             reply.after_ambiguous = true;
@@ -378,6 +380,18 @@ impl<T: Transport> Retrying<T> {
                         Landing::NotLanded => {}
                         Landing::Unknown => return Err(give_up(attempts, failure)),
                     }
+                }
+            }
+            if let Class::Create(_, gate) = &class {
+                // A gate refused at the end of the total takes nothing, so cutting it off there
+                // spends no grant on an attempt that is never sent.
+                match end {
+                    Some(end) => {
+                        if tokio::time::timeout_at(end, gate()).await.is_err() {
+                            return Err(give_up(attempts, failure));
+                        }
+                    }
+                    None => gate().await,
                 }
             }
         }
@@ -397,7 +411,8 @@ mod tests {
     use mintswarm_domain::retry::{Exhausted, Failure, RetryPolicy};
 
     use super::{
-        Attempt, Landing, Request, Retrying, SECONDARY_LIMIT_WAIT, Transport, random_unit, sealed,
+        Attempt, Gate, Landing, Request, Retrying, SECONDARY_LIMIT_WAIT, Transport, random_unit,
+        sealed,
     };
     use crate::rest::Reply;
     use crate::secret::Token;
@@ -470,6 +485,11 @@ mod tests {
 
     fn token() -> Token {
         Token::new(String::from("ghs_t0ken"), 0)
+    }
+
+    /// A gate that lets every attempt through at once.
+    fn no_gate<'a>() -> Gate<'a> {
+        Box::new(|| Box::pin(async {}))
     }
 
     /// The time from the first attempt to each later one.
@@ -672,6 +692,7 @@ mod tests {
                     asked.fetch_add(1, Ordering::Relaxed);
                     Box::pin(async { Landing::NotLanded })
                 }),
+                no_gate(),
             )
             .await
             .unwrap_err();
@@ -805,6 +826,7 @@ mod tests {
                         asked.fetch_add(1, Ordering::Relaxed);
                         Box::pin(async { Landing::Landed(reply(200)) })
                     }),
+                    no_gate(),
                 )
                 .await
                 .expect("a reply");
@@ -824,6 +846,7 @@ mod tests {
                         asked.fetch_add(1, Ordering::Relaxed);
                         Box::pin(async { Landing::NotLanded })
                     }),
+                    no_gate(),
                 )
                 .await
                 .expect("a reply");
@@ -839,6 +862,7 @@ mod tests {
                     &token(),
                     &body,
                     Box::new(|| Box::pin(async { Landing::Unknown })),
+                    no_gate(),
                 )
                 .await
                 .unwrap_err();
@@ -867,6 +891,7 @@ mod tests {
                         asked.fetch_add(1, Ordering::Relaxed);
                         Box::pin(async { Landing::Unknown })
                     }),
+                    no_gate(),
                 )
                 .await
                 .expect("a reply");
@@ -875,6 +900,79 @@ mod tests {
             assert_eq!(asked.load(Ordering::Relaxed), 0);
             assert_eq!(offsets(&layer).len(), 2);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_create_waits_on_its_gate_before_every_later_attempt() {
+        let body = serde_json::json!({"body": "hello"});
+        // An ambiguous attempt the probe finds did not land, then a refused connection.
+        let layer = scripted([Err(Failure::Reset), Err(Failure::Connect), Ok(reply(201))]);
+        let gated = AtomicUsize::new(0);
+        let got = layer
+            .create(
+                "/x",
+                &token(),
+                &body,
+                Box::new(|| Box::pin(async { Landing::NotLanded })),
+                Box::new(|| {
+                    gated.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(tokio::time::sleep(Duration::from_secs(5)))
+                }),
+            )
+            .await
+            .expect("a reply");
+        assert_eq!(got.status, StatusCode::CREATED);
+        assert_eq!(gated.load(Ordering::Relaxed), 2);
+        let offsets = offsets(&layer);
+        assert_eq!(offsets.len(), 3);
+        // Each later attempt waited on the gate as well as on the policy.
+        assert!(offsets[1] >= Duration::from_secs(5));
+        assert!(offsets[2] - offsets[1] >= Duration::from_secs(5));
+
+        // A first attempt that settles the call never waits on the gate.
+        let layer = scripted([Ok(reply(201))]);
+        let gated = AtomicUsize::new(0);
+        layer
+            .create(
+                "/x",
+                &token(),
+                &body,
+                Box::new(|| Box::pin(async { Landing::Unknown })),
+                Box::new(|| {
+                    gated.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async {})
+                }),
+            )
+            .await
+            .expect("a reply");
+        assert_eq!(gated.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_gate_that_ends_past_the_total_ends_the_create() {
+        let layer = layer_with(
+            [Err(Failure::Connect), Ok(reply(201))],
+            RetryPolicy {
+                total: Duration::from_secs(60),
+                ..RetryPolicy::default()
+            },
+            Duration::ZERO,
+        );
+        let start = Instant::now();
+        let error = layer
+            .create(
+                "/x",
+                &token(),
+                &serde_json::json!({}),
+                Box::new(|| Box::pin(async { Landing::Unknown })),
+                Box::new(|| Box::pin(tokio::time::sleep(Duration::from_secs(120)))),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(start.elapsed(), Duration::from_secs(60));
+        assert_eq!(error.attempts, 1);
+        assert_eq!(error.last, Failure::Connect);
+        assert_eq!(offsets(&layer).len(), 1);
     }
 
     #[test]

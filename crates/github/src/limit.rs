@@ -1,6 +1,7 @@
 //! The budget for content-creating requests (comments, issues, artifacts and the like), design
-//! §9: GitHub's secondary limits allow about 80 a minute and 500 an hour. M1 creates no content,
-//! so nothing calls the limiter yet; M2's writes ask it before each request.
+//! §9: GitHub's secondary limits allow about 80 a minute and 500 an hour.
+//! [`CommentClient::post_note`](crate::CommentClient::post_note) asks it before each attempt of
+//! a note.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;

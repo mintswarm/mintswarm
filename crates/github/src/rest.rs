@@ -5,6 +5,10 @@
 //!
 //! A pausing layer ([`Rest::pausing`]) also makes every later call wait out a rate limit's
 //! named wait.
+//!
+//! GraphQL (`POST` [`GRAPHQL_PATH`]) answers a rate limit with a success status and an error of
+//! type `RATE_LIMITED`, design §13, so such a reply is marked rate-limited here and the retry
+//! layer treats it as it treats a 429. Only GraphQL bodies are looked into.
 
 use reqwest::StatusCode;
 use reqwest::header::{
@@ -19,6 +23,9 @@ use mintswarm_domain::retry::{Failure, RetryPolicy};
 use crate::retry::{Attempt, Request, Retrying, Transport};
 
 use crate::token::{CONNECT_TIMEOUT, REQUEST_TIMEOUT};
+
+/// The path of GitHub's GraphQL endpoint on the API base.
+pub(crate) const GRAPHQL_PATH: &str = "/graphql";
 
 /// Why a GitHub field client could not be built. No variant carries a credential.
 #[derive(Debug, thiserror::Error)]
@@ -82,8 +89,8 @@ pub(crate) struct Reply {
     pub endpoint: String,
     pub status: StatusCode,
     pub etag: Option<String>,
-    /// A 429, or a 403 with `x-ratelimit-remaining: 0`, a `retry-after` header or a message
-    /// naming a rate limit.
+    /// A 429, a 403 with `x-ratelimit-remaining: 0`, a `retry-after` header or a message
+    /// naming a rate limit, or a successful GraphQL reply with a `RATE_LIMITED` error.
     pub rate_limited: bool,
     /// The `retry-after` header in delta-seconds; an HTTP-date is ignored.
     pub retry_after: Option<Duration>,
@@ -215,7 +222,8 @@ impl Transport for Http {
         let body = response.bytes().await.map_err(|_| Failure::Body)?.to_vec();
         let rate_limited = status == StatusCode::TOO_MANY_REQUESTS
             || (status == StatusCode::FORBIDDEN
-                && (exhausted || has_retry_after || error_text(&body).contains("rate limit")));
+                && (exhausted || has_retry_after || error_text(&body).contains("rate limit")))
+            || (request.path == GRAPHQL_PATH && status.is_success() && graphql_rate_limited(&body));
         Ok(Reply {
             endpoint,
             status,
@@ -272,12 +280,24 @@ pub(crate) fn error_text(body: &[u8]) -> String {
     parts.join("\n").to_lowercase()
 }
 
+/// Whether a GraphQL reply's body carries an error of type `RATE_LIMITED` among its `errors`.
+pub(crate) fn graphql_rate_limited(body: &[u8]) -> bool {
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    body.get("errors")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|error| error.get("type").and_then(serde_json::Value::as_str) == Some("RATE_LIMITED"))
+}
+
 #[cfg(test)]
 mod tests {
     use mintswarm_domain::retry::{DEFAULT_ATTEMPTS, DEFAULT_TOTAL, Failure, RetryPolicy};
     use reqwest::Method;
 
-    use super::{Http, links_next, path_segment};
+    use super::{Http, graphql_rate_limited, links_next, path_segment};
     use crate::retry::{Request, Transport};
     use crate::secret::Token;
     use crate::token::REQUEST_TIMEOUT;
@@ -338,5 +358,25 @@ mod tests {
             "%5BM%5D%20size%2F%C3%A9%3F%23"
         );
         assert_eq!(path_segment("a-b.c_d~1"), "a-b.c_d~1");
+    }
+
+    #[test]
+    fn a_graphql_rate_limit_is_seen_among_other_errors() {
+        let body = br#"{"data":null,"errors":[{"type":"NOT_FOUND"},{"type":"RATE_LIMITED"}]}"#;
+        assert!(graphql_rate_limited(body));
+        assert!(graphql_rate_limited(
+            br#"{"errors":[{"type":"RATE_LIMITED"}]}"#
+        ));
+    }
+
+    #[test]
+    fn other_graphql_replies_are_not_rate_limits() {
+        assert!(!graphql_rate_limited(
+            br#"{"data":null,"errors":[{"type":"NOT_FOUND"}]}"#
+        ));
+        assert!(!graphql_rate_limited(br#"{"data":{"node":null}}"#));
+        assert!(!graphql_rate_limited(br#"{"errors":"RATE_LIMITED"}"#));
+        assert!(!graphql_rate_limited(b"RATE_LIMITED"));
+        assert!(!graphql_rate_limited(b""));
     }
 }
