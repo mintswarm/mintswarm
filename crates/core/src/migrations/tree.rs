@@ -43,57 +43,28 @@ struct Key {
     value: bool,
 }
 
-/// Every recognised header key. Lifting a refusal changes one entry.
+/// A header key's table entry: where it may be used for now, and whether it takes a value.
+const fn key(name: &'static str, on_up: bool, on_down: bool, value: bool) -> Key {
+    Key {
+        name,
+        on_up,
+        on_down,
+        value,
+    }
+}
+
+/// Every recognised header key, as `key(name, on_up, on_down, value)`. Lifting a refusal
+/// changes one entry.
 const KEYS: &[Key] = &[
     // On up files, lifted by migrate-plan.
-    Key {
-        name: NO_TRANSACTION,
-        on_up: false,
-        on_down: true,
-        value: false,
-    },
-    Key {
-        name: "depends-on",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "irreversible-enum",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "code-floor",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "replaces",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "pile-hash",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "pile-commit",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
-    Key {
-        name: "declared-difference",
-        on_up: false,
-        on_down: false,
-        value: true,
-    },
+    key(NO_TRANSACTION, false, true, false),
+    key("depends-on", false, false, true),
+    key("irreversible-enum", false, false, true),
+    key("code-floor", false, false, true),
+    key("replaces", false, false, true),
+    key("pile-hash", false, false, true),
+    key("pile-commit", false, false, true),
+    key("declared-difference", false, false, true),
 ];
 
 /// Whether `name` is a valid migration name: one or more ASCII letters, digits or underscores.
