@@ -43,6 +43,8 @@ fn issue(labels: &[&str], author: &str) -> Issue {
         issue_type: None,
         author: Login(author.to_owned()),
         url: "https://example.invalid/issues/1".to_owned(),
+        sub_issues: 0,
+        blocked_by: 0,
     }
 }
 
