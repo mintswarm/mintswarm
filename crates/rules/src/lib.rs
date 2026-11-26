@@ -16,13 +16,16 @@
 //!   bundle.
 //! - [`plan_decision`]: the plan-approval decision, `plan-approval/decision.py`'s two layers and
 //!   mode over the same bundle, with the `decision.json` record.
-//! - [`render`]: the plan-approval comment bodies, and the confinement of model and session text
-//!   in them.
+//! - [`render`]: the plan-approval comment bodies, the Commands section, and the confinement of
+//!   model and session text in them.
+//! - [`command`]: the approve, reject and help commands a comment gives, the hints for near
+//!   misses, and the digest an approval package binds.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
 
 pub mod binding;
+pub mod command;
 pub mod exit;
 pub mod field;
 pub mod glob;
