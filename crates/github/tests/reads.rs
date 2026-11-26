@@ -546,6 +546,8 @@ async fn read_issue_maps_type_and_comments_since_cursor() {
     assert_eq!(read.issue.issue_type, Some(IssueType::Implementation));
     assert_eq!(read.issue.author, Login("maintainer".into()));
     assert_eq!(read.issue.url, "https://github.com/acme/widgets/issues/180");
+    assert_eq!(read.issue.sub_issues, 3);
+    assert_eq!(read.issue.blocked_by, 2);
     assert_eq!(read.comments.len(), 2);
     assert_eq!(read.comments[1].id, 8);
     assert_eq!(read.comments[1].author, Login(BOT.into()));
@@ -573,6 +575,28 @@ async fn without_new_comments_the_cursor_stays_or_starts_at_the_issue() {
     assert_eq!(read.cursor, since);
     let read = client.read_issue(&token(), ISSUE, None).await.unwrap();
     assert_eq!(read.cursor, Cursor("2026-11-20T09:00:00Z".into()));
+}
+
+#[tokio::test]
+async fn missing_summaries_read_as_zero_and_a_summary_without_its_total_is_refused() {
+    let responder = Responder::start().await;
+    let mut issue: serde_json::Value = serde_json::from_str(ISSUE_JSON).unwrap();
+    let fields = issue.as_object_mut().unwrap();
+    fields.remove("sub_issues_summary");
+    fields.insert("issue_dependencies_summary".into(), serde_json::Value::Null);
+    responder.reply(200, issue.to_string());
+    responder.reply(200, "[]");
+    let read = client(&responder)
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap();
+    assert_eq!(read.issue.sub_issues, 0);
+    assert_eq!(read.issue.blocked_by, 0);
+
+    issue["issue_dependencies_summary"] = serde_json::json!({ "blocked_by": 2 });
+    responder.reply(200, issue.to_string());
+    let refused = client(&responder).read_issue(&token(), ISSUE, None).await;
+    assert!(matches!(refused, Err(ReadError::Unexpected { .. })));
 }
 
 #[tokio::test]
