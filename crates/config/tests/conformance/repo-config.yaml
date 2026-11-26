@@ -226,7 +226,7 @@ gates:
     - name: schemas-drift
       command: "cargo xtask schemas --check"
     - name: proto-lint
-      command: "buf lint api/proto"
+      command: "bash .mintswarm/dogfood/web-install.sh && ./web/node_modules/.bin/buf lint api/proto"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
