@@ -1249,6 +1249,7 @@ dependencies = [
  "clap",
  "hmac",
  "mintswarm-core",
+ "mintswarm-domain",
  "mintswarm-github",
  "serde",
  "serde_json",
