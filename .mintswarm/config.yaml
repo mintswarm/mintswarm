@@ -203,6 +203,8 @@ gates:
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
       command: "cargo nextest run --workspace && cargo test --doc --workspace"
+    - name: rust-test-postgres
+      command: "cargo nextest run -p mintswarm-core --features pg-tests"
     - name: proto-lint
       command: "buf lint api/proto"
     - name: dependencies-selftest
