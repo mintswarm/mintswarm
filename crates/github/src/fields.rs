@@ -28,6 +28,7 @@ use mintswarm_domain::retry::RetryPolicy;
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
 use crate::rest::{ClientError, Reply, Rest, check_names, error_text, path_segment};
 use crate::secret::Token;
+use crate::token::Permissions;
 
 /// The per-issue resources a pass reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,6 +69,12 @@ impl FieldClient {
     pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
         self.rest = self.rest.with_policy(policy);
         self
+    }
+
+    /// The permissions a token for its passes asks for, from its
+    /// [`TokenClient`](crate::TokenClient): writing issues, and reading the repository's metadata.
+    pub fn permissions() -> Permissions {
+        Permissions::write(["issues"]).and(Permissions::read(["metadata"]))
     }
 
     /// A pass over issues with `token`, which must allow what the pass does: reading issues and
