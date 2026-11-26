@@ -16,7 +16,7 @@ tracker:
   state:
     source: field                    # field (organisation issue field, single select) | labels
     field: msw-state                 # field mode only
-    label: "msw-state:{value}"       # labels mode: exactly one per issue the session has touched
+    label: "msw-state:{option}"      # labels mode: exactly one per issue the session has touched
     status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
   ingest:
     trusted:

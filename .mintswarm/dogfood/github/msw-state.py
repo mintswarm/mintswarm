@@ -22,10 +22,10 @@ copy: `git show COMMIT:.mintswarm/config.yaml` piped to
       state:
         source: field                # field | labels
         field: msw-state             # field mode only
-        label: "msw-state:{value}"
+        label: "msw-state:{option}"
         status: issue_status         # issue_status | off
 
-A source other than field or labels, a label without {value} or a status
+A source other than field or labels, a label without {option} or a status
 other than issue_status or off exits 2; with source field, so does an empty
 field. Source labels needs no field. A leftover field_id is ignored: fields are
 named, and their ids are resolved (below).
@@ -168,7 +168,7 @@ BLOCKS = {
 VERDICT_KEYS = {"plan": "plan_verdict", "decomp": "decomp_verdict"}
 PR_VERDICT = {
     "source": "labels",
-    "label": "msw-verdict:{value}",
+    "label": "msw-verdict:{option}",
     "status": "off",
     "path": "msw-verdict",
     "name": "msw-verdict",
@@ -224,8 +224,8 @@ def settings(ref: str, key: str = "state", config=None) -> dict:
     if block["source"] == "field" and (not isinstance(field, str) or not field.strip()):
         raise UsageError(f"{path}.field at {ref} must be a field name")
     label = block.get("label")
-    if not isinstance(label, str) or label.count("{value}") != 1:
-        raise UsageError(f"{path}.label at {ref} must hold {{value}} once, not {label!r}")
+    if not isinstance(label, str) or label.count("{option}") != 1:
+        raise UsageError(f"{path}.label at {ref} must hold {{option}} once, not {label!r}")
     if key == "state":
         if block.get("status") not in STATUS_MODES:
             raise UsageError(f"{path}.status at {ref} must be issue_status or off, not {block.get('status')!r}")
@@ -464,7 +464,7 @@ def set_field(number: int, value: str, config: dict, dry_run: bool) -> None:
 
 
 def label_of(value: str, config: dict) -> str:
-    return config["label"].replace("{value}", value)
+    return config["label"].replace("{option}", value)
 
 
 def same_label(a: str, b: str) -> bool:
@@ -476,7 +476,7 @@ def label_value(name, config: dict):
     """The value NAME carries under the label template, in any case, or None when it does not match."""
     if not isinstance(name, str):
         return None
-    prefix, suffix = config["label"].split("{value}")
+    prefix, suffix = config["label"].split("{option}")
     if len(name) < len(prefix) + len(suffix):
         return None
     if not same_label(name[: len(prefix)], prefix) or not same_label(name[len(name) - len(suffix) :], suffix):

@@ -33,7 +33,9 @@
 
 use std::collections::BTreeMap;
 
-use mintswarm_domain::field::{FieldMap, FieldMapError, FieldMapSpec, OptionSpec, SourceSpec};
+use mintswarm_domain::field::{
+    FieldMap, FieldMapError, FieldMapSpec, LabelPattern, OptionSpec, SourceSpec,
+};
 use mintswarm_domain::role::{Role, RoleDescriptor, roles};
 use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
@@ -572,9 +574,12 @@ fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<
         }
     }
     match block.get("label") {
-        Some(Value::String(label)) if label.matches("{value}").count() == 1 => {}
+        Some(Value::String(label)) if LabelPattern::new(label).is_some() => {}
         _ => {
-            return Err(Error::schema(&path.key("label"), "must hold {value} once"));
+            return Err(Error::schema(
+                &path.key("label"),
+                format!("must hold {OPTION} exactly once"),
+            ));
         }
     }
     if with_status {
@@ -638,7 +643,7 @@ fn field_spec(value: &Value, path: &Path) -> Result<Option<FieldMapSpec>, Error>
     let label = match entry.get("label") {
         None => None,
         Some(label) => match string(label, &label_path)? {
-            label if label.matches(OPTION).count() == 1 => Some(label),
+            label if LabelPattern::new(label).is_some() => Some(label),
             _ => {
                 return Err(Error::schema(
                     &label_path,

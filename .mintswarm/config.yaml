@@ -19,18 +19,18 @@ tracker:
   state:
     source: field                    # field (organisation issue field, single select) | labels
     field: msw-state                 # field mode only
-    label: "msw-state:{value}"       # labels mode: exactly one per issue the session has touched
+    label: "msw-state:{option}"      # labels mode: exactly one per issue the session has touched
     status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
   # The approval stages' verdicts; the values are the five band identifiers:
   # blocked, uncertain, needs-review, likely-safe, safe.
   plan_verdict:                      # the plan assessment's band
     source: field                    # field | labels
     field: msw-plan                  # field mode only
-    label: "msw-plan:{value}"        # labels mode: exactly one per issue
+    label: "msw-plan:{option}"       # labels mode: exactly one per issue
   decomp_verdict:                    # the decomposition assessment's band
     source: field                    # field | labels
     field: msw-decomp                # field mode only
-    label: "msw-decomp:{value}"      # labels mode: exactly one per issue
+    label: "msw-decomp:{option}"     # labels mode: exactly one per issue
   # Field mappings per role (size here); each role fixes its read point in code (size: the job's pinned base).
   # A field is named, never given by id: its id is resolved from the name and cached, never written here.
   fields:
