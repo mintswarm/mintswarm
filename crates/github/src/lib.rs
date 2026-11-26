@@ -47,6 +47,6 @@ pub use rest::ClientError;
 pub use retry::SECONDARY_LIMIT_WAIT;
 pub use secret::{SecretBytes, Token};
 pub use token::{
-    CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,
+    Access, CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,
     TokenClient, TokenError,
 };

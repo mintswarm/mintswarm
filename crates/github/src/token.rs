@@ -1,7 +1,7 @@
-//! Installation tokens, each narrowed to one repository and the read permissions asked for,
-//! kept in memory and minted again five minutes before they expire.
+//! Installation tokens, each narrowed to one repository and the permissions asked for, each at
+//! read or write level, kept in memory and minted again five minutes before they expire.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,14 +62,48 @@ impl fmt::Debug for Clock {
     }
 }
 
-/// The permissions an installation token is narrowed to. Only read access can be asked for.
+/// The level of access a permission is asked for at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Access {
+    /// Read access.
+    Read,
+    /// Write access, which on GitHub includes read access.
+    Write,
+}
+
+impl Access {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// The permissions an installation token is narrowed to, each by name at read or write level.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Permissions(BTreeSet<String>);
+pub struct Permissions(BTreeMap<String, Access>);
 
 impl Permissions {
     /// Read access to each of `names`, for example `contents` or `issues`.
     pub fn read<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
-        Self(names.into_iter().map(str::to_owned).collect())
+        Self::at(names, Access::Read)
+    }
+
+    /// Write access to each of `names`, for example `issues`. It grants nothing else: a write
+    /// that also needs `metadata` asks for it with [`Permissions::and`].
+    pub fn write<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::at(names, Access::Write)
+    }
+
+    /// Both sets; a name in both is asked for at the higher level, write over read.
+    #[must_use]
+    pub fn and(mut self, other: Self) -> Self {
+        for (name, access) in other.0 {
+            let level = self.0.entry(name).or_insert(access);
+            *level = (*level).max(access);
+        }
+        self
     }
 
     /// Whether no permission is asked for.
@@ -77,10 +111,19 @@ impl Permissions {
         self.0.is_empty()
     }
 
+    fn at<'a>(names: impl IntoIterator<Item = &'a str>, access: Access) -> Self {
+        Self(
+            names
+                .into_iter()
+                .map(|name| (name.to_owned(), access))
+                .collect(),
+        )
+    }
+
     fn body(&self) -> serde_json::Map<String, serde_json::Value> {
         self.0
             .iter()
-            .map(|name| (name.clone(), serde_json::Value::from("read")))
+            .map(|(name, access)| (name.clone(), serde_json::Value::from(access.as_str())))
             .collect()
     }
 }
@@ -224,7 +267,7 @@ impl TokenClient {
         self
     }
 
-    /// An installation token for `owner/repo` with read access to `permissions` only: the
+    /// An installation token for `owner/repo` with `permissions` only, each at its level: the
     /// cached one while more than [`REFRESH_MARGIN_SECS`] remain, otherwise a new one.
     pub async fn token(
         &self,
@@ -235,7 +278,7 @@ impl TokenClient {
         if permissions.is_empty() {
             return Err(TokenError::NoPermissions);
         }
-        for name in &permissions.0 {
+        for name in permissions.0.keys() {
             if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
                 return Err(TokenError::InvalidName {
                     what: "permission",
@@ -436,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn permissions_are_sorted_and_read_only() {
+    fn permissions_are_sorted_with_their_levels_and_write_wins() {
         let permissions = Permissions::read(["issues", "contents", "issues"]);
         let body = serde_json::Value::Object(permissions.body());
         assert_eq!(
@@ -444,5 +487,26 @@ mod tests {
             serde_json::json!({"contents": "read", "issues": "read"})
         );
         assert!(Permissions::read([]).is_empty());
+        assert!(Permissions::write([]).is_empty());
+
+        let body = |permissions: Permissions| serde_json::Value::Object(permissions.body());
+        assert_eq!(
+            body(Permissions::write(["issues"]).and(Permissions::read(["metadata"]))),
+            serde_json::json!({"issues": "write", "metadata": "read"})
+        );
+        // A name asked for at both levels is asked for at write, in either order.
+        let expected = serde_json::json!({"contents": "read", "issues": "write"});
+        assert_eq!(
+            body(Permissions::read(["issues", "contents"]).and(Permissions::write(["issues"]))),
+            expected
+        );
+        assert_eq!(
+            body(Permissions::write(["issues"]).and(Permissions::read(["issues", "contents"]))),
+            expected
+        );
+        assert_ne!(
+            Permissions::read(["issues"]),
+            Permissions::write(["issues"])
+        );
     }
 }

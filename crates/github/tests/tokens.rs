@@ -132,6 +132,48 @@ async fn a_read_token_asks_for_exactly_the_permissions_given() {
 }
 
 #[tokio::test]
+async fn a_write_token_asks_for_issues_write_and_metadata_read_on_one_repository() {
+    let setup = setup().await;
+    script_mint(&setup.server, TOKEN);
+    script_mint(&setup.server, OTHER_TOKEN);
+    let write = Permissions::write(["issues"]).and(Permissions::read(["metadata"]));
+    let token = setup
+        .client
+        .token("mintswarm", "mintswarm", &write)
+        .await
+        .unwrap();
+    assert_eq!(token.expose(), TOKEN);
+
+    let requests = setup.server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path, "/app/installations/4242/access_tokens");
+    let body: serde_json::Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "repositories": ["mintswarm"],
+            "permissions": {"issues": "write", "metadata": "read"},
+        })
+    );
+
+    // The same names at read level are another set, with a token of their own.
+    let read = Permissions::read(["issues", "metadata"]);
+    let token = setup
+        .client
+        .token("mintswarm", "mintswarm", &read)
+        .await
+        .unwrap();
+    assert_eq!(token.expose(), OTHER_TOKEN);
+    let requests = setup.server.requests();
+    assert_eq!(requests.len(), 4);
+    let body: serde_json::Value = serde_json::from_str(&requests[3].body).unwrap();
+    assert_eq!(
+        body["permissions"],
+        serde_json::json!({"issues": "read", "metadata": "read"})
+    );
+}
+
+#[tokio::test]
 async fn the_requests_carry_a_jwt_that_verifies() {
     let setup = setup().await;
     script_mint(&setup.server, TOKEN);
