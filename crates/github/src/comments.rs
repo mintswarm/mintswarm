@@ -19,7 +19,7 @@ use mintswarm_domain::time::format_utc_seconds;
 use mintswarm_domain::tracker::{Comment, CommentMark, Login};
 
 use crate::limit::ContentLimiter;
-use crate::reads::{MAX_PAGES, NOTE_MARKER, PER_PAGE, comment_mark, map_comment};
+use crate::reads::{MAX_PAGES, NOTE_MARKER, PER_PAGE, STEER_MARKER, comment_mark, map_comment};
 use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
 use crate::retry::{Landing, Probe};
 use crate::secret::Token;
@@ -32,8 +32,9 @@ pub const PROBE_MARGIN: Duration = Duration::from_secs(10);
 /// Why a note could not be posted. No variant carries a token or a response body.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CommentError {
-    /// The body lacks the note marker line or the key line, or the key is empty, so a probe
-    /// could never find the note; nothing was sent.
+    /// The body lacks the note marker line or the key line, or the key is empty or a marker
+    /// every note of its kind carries, so a probe could not tell the note from others; nothing
+    /// was sent.
     #[error("the note's body does not carry its marker and key lines")]
     Unmarked,
     /// GitHub has no such issue, or does not show it to the token.
@@ -113,7 +114,8 @@ impl CommentClient {
     /// Posts `body` as a note on `issue` with `token`, once.
     ///
     /// `body` must hold a line equal to [`NOTE_MARKER`] and a line equal to `key`, lines split
-    /// at LF and trimmed, or the call is [`CommentError::Unmarked`] before any request. The call
+    /// at LF and trimmed, and `key` must be neither [`NOTE_MARKER`] nor [`STEER_MARKER`], or the
+    /// call is [`CommentError::Unmarked`] before any request. The call
     /// then waits until the limiter grants one request, and sends the create. After an attempt
     /// that may have landed, the probe's find is returned in place of a second post. A rate
     /// limit that ends the call with a named wait also pauses the limiter for that long.
@@ -125,7 +127,12 @@ impl CommentClient {
         body: &str,
     ) -> Result<Comment, CommentError> {
         let key = key.trim();
-        if key.is_empty() || !has_line(body, NOTE_MARKER) || !has_line(body, key) {
+        if key.is_empty()
+            || key == NOTE_MARKER
+            || key == STEER_MARKER
+            || !has_line(body, NOTE_MARKER)
+            || !has_line(body, key)
+        {
             return Err(CommentError::Unmarked);
         }
         while let Err(wait) = self.limiter.try_acquire() {

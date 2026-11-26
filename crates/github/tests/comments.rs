@@ -14,7 +14,7 @@ use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{Comment, Login};
 use mintswarm_github::{
     Clock, CommentClient, CommentError, ContentLimiter, Exhausted, Failure, NOTE_MARKER,
-    PROBE_MARGIN, Permissions, RetryPolicy, Token,
+    PROBE_MARGIN, Permissions, RetryPolicy, STEER_MARKER, Token,
 };
 use support::{Request, Responder};
 
@@ -234,6 +234,14 @@ async fn an_unmarked_body_is_refused_before_any_request() {
         (KEY, format!("{NOTE_MARKER}\nNo key.")),
         (KEY, format!("{NOTE_MARKER} {KEY}\nBoth on one line.")),
         ("", format!("{NOTE_MARKER}\n\nAn empty key.")),
+        (
+            NOTE_MARKER,
+            format!("{NOTE_MARKER}\nThe note marker as the key."),
+        ),
+        (
+            STEER_MARKER,
+            format!("{NOTE_MARKER}\n{STEER_MARKER}\nThe steer marker as the key."),
+        ),
     ] {
         assert_eq!(
             client.post_note(&token(), IssueNumber(7), key, &body).await,
