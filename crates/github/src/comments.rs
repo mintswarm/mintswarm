@@ -1,6 +1,6 @@
-//! Notes posted on issues as the runner App, design §9 "Reads and writes": each post is one
-//! content-creating request, budgeted by a [`ContentLimiter`], and sent as a create with a probe
-//! so an attempt that may have landed is never posted twice.
+//! Notes posted on issues as the runner App, design §9 "Reads and writes": each attempt of a post
+//! is one content-creating request, budgeted by a [`ContentLimiter`], and a post is sent as a
+//! create with a probe so an attempt that may have landed is never posted twice.
 //!
 //! A note's body carries [`NOTE_MARKER`] and a key line of its own. After an ambiguous attempt
 //! the probe lists the issue's comments since the call started, less [`PROBE_MARGIN`] for clock
@@ -21,7 +21,7 @@ use mintswarm_domain::tracker::{Comment, CommentMark, Login};
 use crate::limit::ContentLimiter;
 use crate::reads::{MAX_PAGES, NOTE_MARKER, PER_PAGE, STEER_MARKER, comment_mark, map_comment};
 use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
-use crate::retry::{Landing, Probe};
+use crate::retry::{Gate, Landing, Probe};
 use crate::secret::Token;
 use crate::token::{Clock, Permissions};
 
@@ -115,9 +115,8 @@ impl CommentClient {
     ///
     /// `body` must hold a line equal to [`NOTE_MARKER`] and a line equal to `key`, lines split
     /// at LF and trimmed, and `key` must be neither [`NOTE_MARKER`] nor [`STEER_MARKER`], or the
-    /// call is [`CommentError::Unmarked`] before any request. The call
-    /// then waits until the limiter grants one request, and sends the create. After an attempt
-    /// that may have landed, the probe's find is returned in place of a second post. A rate
+    /// call is [`CommentError::Unmarked`] before any request. Each attempt of the create waits
+    /// until the limiter grants it one request. After an attempt that may have landed, the probe's find is returned in place of a second post. A rate
     /// limit that ends the call with a named wait also pauses the limiter for that long.
     pub async fn post_note(
         &self,
@@ -135,16 +134,22 @@ impl CommentClient {
         {
             return Err(CommentError::Unmarked);
         }
-        while let Err(wait) = self.limiter.try_acquire() {
-            tokio::time::sleep(wait).await;
-        }
+        self.grant().await;
         let since = format_utc_seconds(self.clock.now().saturating_sub(PROBE_MARGIN.as_secs()));
         let path = format!("{}/comments", self.issue_path(issue.0));
         let since = since.as_str();
         let probe: Probe<'_> = Box::new(move || Box::pin(self.probe(token, issue.0, key, since)));
+        // Every attempt is a content-creating request, so each takes a grant of its own.
+        let gate: Gate<'_> = Box::new(move || Box::pin(self.grant()));
         let created = self
             .rest
-            .create(&path, token, &serde_json::json!({ "body": body }), probe)
+            .create(
+                &path,
+                token,
+                &serde_json::json!({ "body": body }),
+                probe,
+                gate,
+            )
             .await;
         let reply = match created {
             Ok(reply) => reply,
@@ -172,6 +177,13 @@ impl CommentClient {
         };
         let comment = serde_json::from_slice::<Value>(&reply.body).map_err(|_| unexpected())?;
         map_comment(&comment, &reply.endpoint).map_err(|_| unexpected())
+    }
+
+    /// Waits until the limiter grants one request.
+    async fn grant(&self) {
+        while let Err(wait) = self.limiter.try_acquire() {
+            tokio::time::sleep(wait).await;
+        }
     }
 
     /// Whether an earlier attempt to post the note keyed `key` on `issue` landed: the newest of

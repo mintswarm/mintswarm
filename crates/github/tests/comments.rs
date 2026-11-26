@@ -279,3 +279,39 @@ async fn a_refused_create_waits_for_the_limiter() {
     assert_eq!(posted, Ok(comment(9001, "2026-11-26T12:00:02Z")));
     assert_eq!(posts(&responder.requests()), 1);
 }
+
+#[tokio::test]
+async fn a_create_sent_again_waits_for_a_second_grant() {
+    let responder = Responder::start().await;
+    responder.drop_connection();
+    responder.reply(200, "[]");
+    responder.reply(201, CREATED);
+    let (clock, now) = clock();
+    let (client, limiter) = client_on(&responder, two_attempts(), clock);
+    while limiter.try_acquire().is_ok() {}
+    // A second's refill is one grant a minute's bucket holds, and less than two.
+    now.store(NOW + 1, Ordering::SeqCst);
+    let client = Arc::new(client);
+    let task = tokio::spawn({
+        let client = Arc::clone(&client);
+        async move {
+            client
+                .post_note(&token(), IssueNumber(7), KEY, &note())
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The first attempt and its probe went out; the second attempt waits for its grant.
+    let requests = responder.requests();
+    assert_eq!(posts(&requests), 1);
+    assert_eq!(requests.len(), 2);
+    assert!(!task.is_finished());
+
+    now.store(NOW + 2, Ordering::SeqCst);
+    let posted = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the second attempt never got the limiter's grant")
+        .unwrap();
+    assert_eq!(posted, Ok(comment(9001, "2026-11-26T12:00:02Z")));
+    assert_eq!(posts(&responder.requests()), 2);
+}
