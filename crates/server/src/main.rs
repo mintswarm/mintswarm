@@ -3,10 +3,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::builder::RangedU64ValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use mintswarm_core::migrations;
 use mintswarm_github::KeyStore;
 use mintswarm_server::webhooks::{
     self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_READ_TIMEOUT, DEFAULT_SECRET_ENV, DeliveryLog,
@@ -23,15 +24,36 @@ struct Cli {
     command: Command,
 }
 
-/// The subcommands. `serve` and `migrate` only parse for now.
+/// The subcommands. `serve` and bare `migrate` only parse for now.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the control-plane server
     Serve,
-    /// Apply the database migrations
-    Migrate,
+    /// Apply the database migrations, or create a new one
+    Migrate(MigrateArgs),
     /// Receive the GitHub App's webhooks and append each verified delivery to a log
     Webhooks(WebhooksArgs),
+}
+
+/// The `migrate` options.
+#[derive(Debug, Args)]
+struct MigrateArgs {
+    #[command(subcommand)]
+    action: Option<MigrateAction>,
+}
+
+/// The `migrate` subcommands.
+#[derive(Debug, Subcommand)]
+enum MigrateAction {
+    /// Create an empty migration named for the current UTC second, or the next free one, and
+    /// print its path
+    New {
+        /// The migration's name: letters, digits and underscores
+        name: String,
+        /// The migration tree to create it in
+        #[arg(long, default_value = "crates/core/migrations")]
+        tree: PathBuf,
+    },
 }
 
 /// The `webhooks` options.
@@ -132,8 +154,29 @@ enum MainError {
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Serve => ExitCode::SUCCESS,
-        Command::Migrate => ExitCode::SUCCESS,
+        Command::Migrate(args) => run_migrate(args),
         Command::Webhooks(args) => exit_code(run_webhooks(&args)),
+    }
+}
+
+/// Runs `migrate`: bare, it only parses for now; `new` mints a migration and prints its path.
+fn run_migrate(args: MigrateArgs) -> ExitCode {
+    let Some(MigrateAction::New { name, tree }) = args.action else {
+        return ExitCode::SUCCESS;
+    };
+    let minted = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(now) => migrations::mint(&tree, &name, now.as_secs()).map_err(|error| error.to_string()),
+        Err(_) => Err("the system clock is before 1970".to_owned()),
+    };
+    match minted {
+        Ok(path) => {
+            println!("{}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("mintswarm-server migrate new: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
