@@ -4,9 +4,10 @@
 //! validate are checked as they check them, one check for each of theirs:
 //! `plan-approval/floor.py` `validate_config`, `landing/floor.py` `validate_landing`,
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve`,
-//! `readiness/check.py` `review_config` and `github/msw-state.py` `settings`, which covers
-//! `tracker.state`, `tracker.plan_verdict` and `tracker.decomp_verdict`. A change to any of
-//! those, or to the config's keys, changes this module in the same change.
+//! `readiness/check.py` `review_config`, `readiness/check.py` `trusted_ingest` for
+//! `tracker.ingest.match`, and `github/msw-state.py` `settings`, which covers `tracker.state`,
+//! `tracker.plan_verdict` and `tracker.decomp_verdict`. A change to any of those, or to the
+//! config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
 //! some mismatched types; this module checks every key and rejects each mismatch instead. A
@@ -20,6 +21,9 @@
 //! - a `field_id` under `tracker.state`, `tracker.plan_verdict` or `tracker.decomp_verdict`,
 //!   which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
 //!
+//! It is looser in one place: a missing `tracker.ingest.match` reads as `any`, where
+//! `trusted_ingest` reports it as not any or all.
+//!
 //! The `gates.format` check is the loader's own: no dogfood tool checks it.
 //!
 //! The `tracker.fields` check is the loader's own too. Each `tracker.fields.<role>` entry is
@@ -31,9 +35,10 @@ use std::collections::BTreeMap;
 
 use mintswarm_domain::field::{FieldMap, FieldMapError, FieldMapSpec, OptionSpec, SourceSpec};
 use mintswarm_domain::role::{Role, RoleDescriptor, roles};
+use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
-use crate::{Error, Path, Stage, parse_yaml};
+use crate::{Error, Path, Stage, Trust, TrustMatch, parse_yaml};
 
 /// The plan-approval and landing modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +189,7 @@ pub struct RepoConfig {
     review_clear: ReviewClear,
     gates_summary: GatesSummary,
     formatters: Vec<Formatter>,
+    trust: Trust,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -246,9 +252,10 @@ impl RepoConfig {
                 "gates",
             ],
         )?;
-        if let Some(tracker) = top.get("tracker") {
-            check_tracker(tracker, &root.key("tracker"), roles)?;
-        }
+        let trust = match top.get("tracker") {
+            Some(tracker) => check_tracker(tracker, &root.key("tracker"), roles)?,
+            None => Trust::default(),
+        };
         if let Some(design) = top.get("design") {
             strings_only(design, &root.key("design"), &["store"], &[])?;
         }
@@ -291,6 +298,7 @@ impl RepoConfig {
             review_clear,
             gates_summary,
             formatters,
+            trust,
         })
     }
 
@@ -332,6 +340,11 @@ impl RepoConfig {
     /// `gates.format`, empty when absent, null or empty.
     pub fn formatters(&self) -> &[Formatter] {
         &self.formatters
+    }
+
+    /// `tracker.ingest`, trusting nothing when absent.
+    pub fn trust(&self) -> &Trust {
+        &self.trust
     }
 
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
@@ -433,7 +446,11 @@ fn bounded(value: &Value, path: &Path, low: u64, high: Option<u64>) -> Result<u6
         .ok_or_else(|| Error::schema(path, format!("{message}, not {value}")))
 }
 
-fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> Result<(), Error> {
+fn check_tracker(
+    value: &Value,
+    path: &Path,
+    roles: &[&dyn RoleDescriptor],
+) -> Result<Trust, Error> {
     let tracker = mapping(value, path)?;
     known(
         tracker,
@@ -487,23 +504,42 @@ fn check_tracker(value: &Value, path: &Path, roles: &[&dyn RoleDescriptor]) -> R
     if let Some(fields) = tracker.get("fields") {
         check_fields(fields, &path.key("fields"), roles)?;
     }
-    if let Some(ingest) = tracker.get("ingest") {
-        let ingest_path = path.key("ingest");
-        let map = mapping(ingest, &ingest_path)?;
-        known(map, &ingest_path, &["trusted", "match"])?;
-        if let Some(trusted) = map.get("trusted") {
-            strings_only(
-                trusted,
-                &ingest_path.key("trusted"),
-                &[],
-                &["labels", "authors"],
-            )?;
-        }
-        if let Some(any) = map.get("match") {
-            string(any, &ingest_path.key("match"))?;
-        }
+    match tracker.get("ingest") {
+        Some(ingest) => check_ingest(ingest, &path.key("ingest")),
+        None => Ok(Trust::default()),
     }
-    Ok(())
+}
+
+/// `tracker.ingest`, built into a [`Trust`]. A missing `match` reads as `any`.
+fn check_ingest(value: &Value, path: &Path) -> Result<Trust, Error> {
+    let map = mapping(value, path)?;
+    known(map, path, &["trusted", "match"])?;
+    let mut trust = Trust::default();
+    if let Some(trusted) = map.get("trusted") {
+        let trusted_path = path.key("trusted");
+        let trusted = mapping(trusted, &trusted_path)?;
+        known(trusted, &trusted_path, &["labels", "authors"])?;
+        trust.labels = optional_string_list(trusted.get("labels"), &trusted_path.key("labels"))?;
+        trust.authors = optional_string_list(trusted.get("authors"), &trusted_path.key("authors"))?
+            .into_iter()
+            .map(Login)
+            .collect();
+    }
+    if let Some(value) = map.get("match") {
+        let found = value
+            .as_str()
+            .and_then(|name| TrustMatch::NAMES.iter().find(|(known, _)| *known == name));
+        trust.r#match = match found {
+            Some((_, found)) => *found,
+            None => {
+                return Err(Error::schema(
+                    &path.key("match"),
+                    format!("must be any or all, not {value}"),
+                ));
+            }
+        };
+    }
+    Ok(trust)
 }
 
 /// `tracker.state` (`with_status`), `tracker.plan_verdict` or `tracker.decomp_verdict`, checked

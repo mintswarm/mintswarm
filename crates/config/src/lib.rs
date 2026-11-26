@@ -7,6 +7,7 @@
 mod probes;
 mod runner;
 mod schema;
+mod trust;
 mod yaml;
 
 use std::fmt;
@@ -20,6 +21,7 @@ pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
     RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
 };
+pub use trust::{Trust, TrustMatch};
 pub use yaml::parse_yaml;
 
 /// An error from loading a config, with the key path it concerns.
