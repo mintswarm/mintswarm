@@ -135,9 +135,11 @@ impl Pattern {
         if !anchored {
             tokens.push(Token::Directories);
         }
+        // `**` is special only as a whole segment; elsewhere its `*`s are plain.
         let mut rest = core;
+        let mut segment_start = true;
         while let Some(c) = rest.chars().next() {
-            if let Some(after) = rest.strip_prefix("**/") {
+            if let Some(after) = rest.strip_prefix("**/").filter(|_| segment_start) {
                 tokens.push(Token::Directories);
                 rest = after;
             } else if rest == "/**" {
@@ -150,11 +152,13 @@ impl Pattern {
                     other => Token::Literal(other),
                 });
                 rest = &rest[c.len_utf8()..];
+                segment_start = c == '/';
             }
         }
+        let trailing_double_star = core == "**" || core.ends_with("/**");
         if directory {
             tokens.extend([Token::Literal('/'), Token::Rest]);
-        } else if !(anchored && core.ends_with('*') && !core.ends_with("**")) {
+        } else if !(anchored && core.ends_with('*') && !trailing_double_star) {
             tokens.push(Token::Below);
         }
         Some(Self(tokens))

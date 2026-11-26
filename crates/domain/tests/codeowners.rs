@@ -155,6 +155,33 @@ fn a_bare_double_star_matches_everything() {
 }
 
 #[test]
+fn double_star_inside_a_segment_is_plain_stars() {
+    // gitignore: asterisks next to other characters in a segment are plain `*`s.
+    assert!(matches("/x**/y", "xfoo/y"));
+    assert!(matches("/x**/y", "x/y"));
+    assert!(!matches("/x**/y", "xfoo/bar/y"));
+    assert!(!matches("/a/x**/y", "a/xfoo/bar/y"));
+    assert!(matches("/a/**x/y", "a/foox/y"));
+    assert!(!matches("/a/**x/y", "a/foo/barx/y"));
+    assert!(matches("/a**b", "axxb"));
+    assert!(!matches("/a**b", "ax/xb"));
+}
+
+#[test]
+fn a_trailing_double_star_inside_a_segment_owns_only_its_segment() {
+    assert!(matches("/x**", "xfoo"));
+    assert!(!matches("/x**", "xfoo/bar"));
+    assert!(matches("/a/x**", "a/xfoo"));
+    assert!(!matches("/a/x**", "a/xfoo/bar"));
+}
+
+#[test]
+fn an_anchored_bare_double_star_matches_everything() {
+    assert!(matches("/**", "README.md"));
+    assert!(matches("/**", "a/b/c.txt"));
+}
+
+#[test]
 fn paths_are_case_sensitive() {
     assert!(!matches("/Docs/", "docs/a.md"));
     assert!(!matches("*.MD", "a.md"));
