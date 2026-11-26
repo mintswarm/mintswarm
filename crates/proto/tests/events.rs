@@ -16,8 +16,8 @@ use mintswarm_proto::runner::v1::{
 };
 use prost::Message;
 
-fn at(seconds: i64) -> Option<prost_types::Timestamp> {
-    Some(prost_types::Timestamp { seconds, nanos: 0 })
+fn at(seconds: i64) -> Option<mintswarm_proto::prost_types::Timestamp> {
+    Some(mintswarm_proto::prost_types::Timestamp { seconds, nanos: 0 })
 }
 
 fn record_put() -> RecordPut {

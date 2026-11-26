@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use prost_types::EnumDescriptorProto;
+use mintswarm_proto::prost_types::EnumDescriptorProto;
 
 /// The vocabulary file, relative to `api/proto`.
 const JOB_PROTO: &str = "mintswarm/job/v1/job.proto";

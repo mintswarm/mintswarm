@@ -20,8 +20,8 @@ use mintswarm_proto::runner::v1::{
 };
 use prost::Message;
 
-fn at(seconds: i64) -> Option<prost_types::Timestamp> {
-    Some(prost_types::Timestamp { seconds, nanos: 0 })
+fn at(seconds: i64) -> Option<mintswarm_proto::prost_types::Timestamp> {
+    Some(mintswarm_proto::prost_types::Timestamp { seconds, nanos: 0 })
 }
 
 fn harness() -> Harness {
@@ -208,10 +208,12 @@ fn response_bodies() -> Vec<connect_response::Body> {
             leases: vec![LeaseState {
                 attempt_id: "attempt-1".to_owned(),
                 lease_epoch: 3,
-                state: Some(lease_state::State::ExpiresAt(prost_types::Timestamp {
-                    seconds: 1_800_000_060,
-                    nanos: 0,
-                })),
+                state: Some(lease_state::State::ExpiresAt(
+                    mintswarm_proto::prost_types::Timestamp {
+                        seconds: 1_800_000_060,
+                        nanos: 0,
+                    },
+                )),
             }],
             plane_time: at(1_800_000_000),
             resend_capabilities: false,
@@ -534,10 +536,12 @@ fn heartbeat_ack_carries_the_design_fields() {
             LeaseState {
                 attempt_id: "attempt-1".to_owned(),
                 lease_epoch: 3,
-                state: Some(lease_state::State::ExpiresAt(prost_types::Timestamp {
-                    seconds: 1_800_000_060,
-                    nanos: 0,
-                })),
+                state: Some(lease_state::State::ExpiresAt(
+                    mintswarm_proto::prost_types::Timestamp {
+                        seconds: 1_800_000_060,
+                        nanos: 0,
+                    },
+                )),
             },
             LeaseState {
                 attempt_id: "attempt-2".to_owned(),
@@ -596,14 +600,14 @@ fn go_away_keeps_an_unset_reconnect_after_apart_from_zero() {
     };
     let zero = GoAway {
         reason: GoAwayReason::Shutdown.into(),
-        reconnect_after: Some(prost_types::Duration::default()),
+        reconnect_after: Some(mintswarm_proto::prost_types::Duration::default()),
     };
     let decoded_unset = GoAway::decode(unset.encode_to_vec().as_slice()).expect("decodes");
     let decoded_zero = GoAway::decode(zero.encode_to_vec().as_slice()).expect("decodes");
     assert_eq!(decoded_unset.reconnect_after, None);
     assert_eq!(
         decoded_zero.reconnect_after,
-        Some(prost_types::Duration::default())
+        Some(mintswarm_proto::prost_types::Duration::default())
     );
     assert_ne!(decoded_unset, decoded_zero);
 }

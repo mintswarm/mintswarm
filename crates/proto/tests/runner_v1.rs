@@ -48,7 +48,7 @@ fn authenticate_request() -> AuthenticateRequest {
 fn authenticate_response() -> AuthenticateResponse {
     AuthenticateResponse {
         access_token: secret(),
-        expires_at: Some(prost_types::Timestamp {
+        expires_at: Some(mintswarm_proto::prost_types::Timestamp {
             seconds: 1_800_000_000,
             nanos: 0,
         }),
