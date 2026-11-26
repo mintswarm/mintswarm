@@ -1,7 +1,7 @@
 //! `tracker.ingest`: which issues are trusted to start a job, design §5.3 (B4).
 //!
-//! [`Trust::trusts`] is the one trust predicate: the plane's evaluator and the tracker
-//! normaliser both decide trust through it.
+//! [`Trust::trusts`] is the one trust predicate: whatever decides whether an issue is
+//! trusted calls it.
 
 use mintswarm_domain::tracker::{Issue, Login};
 
