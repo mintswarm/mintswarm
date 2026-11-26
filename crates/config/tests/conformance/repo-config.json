@@ -20,7 +20,7 @@
     "state": {
       "source": "field",
       "field": "msw-state",
-      "label": "msw-state:{value}",
+      "label": "msw-state:{option}",
       "status": "issue_status"
     },
     "ingest": {

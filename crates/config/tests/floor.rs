@@ -6,7 +6,8 @@
 
 #![cfg(test)]
 
-use mintswarm_config::{GatesSummary, ReviewClear, load_repo_config};
+use mintswarm_config::{GatesSummary, ReviewClear, load_repo_config, parse_yaml};
+use mintswarm_domain::field::LabelPattern;
 use serde_json::{Value, json};
 
 const REPO_JSON: &str = include_str!("conformance/repo-config.json");
@@ -456,7 +457,7 @@ fn tracker_state_values() {
         json!({
             "source": "field",
             "field": "msw-state",
-            "label": "msw-state:{value}",
+            "label": "msw-state:{option}",
             "status": "issue_status",
         })
     };
@@ -472,7 +473,7 @@ fn tracker_state_values() {
         s.as_object_mut().expect("a mapping").remove("field");
     })
     .expect("labels mode needs no field");
-    let rejected: [(&str, &str, Option<Value>); 9] = [
+    let rejected: [(&str, &str, Option<Value>); 10] = [
         ("source", "source", Some(json!("project"))),
         ("source", "source", None),
         ("field", "field", Some(json!(""))),
@@ -480,7 +481,8 @@ fn tracker_state_values() {
         ("field", "field", None),
         ("field_id", "field_id", Some(json!(50325307))),
         ("label", "label", Some(json!("msw-state"))),
-        ("label", "label", Some(json!("{value}:{value}"))),
+        ("label", "label", Some(json!("{option}:{option}"))),
+        ("label", "label", Some(json!("msw-state:{value}"))),
         ("status", "status", Some(json!("on"))),
     ];
     for (key, path, value) in rejected {
@@ -514,7 +516,7 @@ fn tracker_verdict_values() {
             json!({
                 "source": "field",
                 "field": field,
-                "label": format!("{field}:{{value}}"),
+                "label": format!("{field}:{{option}}"),
             })
         };
         let block = |change: &dyn Fn(&mut Value)| {
@@ -529,14 +531,15 @@ fn tracker_verdict_values() {
             b.as_object_mut().expect("a mapping").remove("field");
         })
         .expect("labels mode needs no field");
-        let rejected: [(&str, Option<Value>); 10] = [
+        let rejected: [(&str, Option<Value>); 11] = [
             ("source", Some(json!("project"))),
             ("source", None),
             ("field", Some(json!(""))),
             ("field", Some(json!("  "))),
             ("field", None),
             ("label", Some(json!("msw-plan"))),
-            ("label", Some(json!("{value}:{value}"))),
+            ("label", Some(json!("{option}:{option}"))),
+            ("label", Some(json!(format!("{field}:{{value}}")))),
             ("label", None),
             ("status", Some(json!("off"))),
             ("field_id", Some(json!(50375240))),
@@ -670,6 +673,27 @@ fn live_repository_config_loads() {
     let text = std::fs::read_to_string(&path).expect("the repository config is readable");
     if let Err(error) = load_repo_config(&text) {
         panic!("{}: {error}", path.display());
+    }
+}
+
+/// Each tracker label in the live config is a `LabelPattern` as written, with no rewriting.
+#[test]
+fn live_tracker_labels_are_label_patterns() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.mintswarm/config.yaml");
+    let text = std::fs::read_to_string(&path).expect("the repository config is readable");
+    let config = parse_yaml(&text).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    for key in ["state", "plan_verdict", "decomp_verdict"] {
+        let label = config["tracker"][key]["label"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no tracker.{key}.label in the live config"));
+        let pattern = LabelPattern::new(label)
+            .unwrap_or_else(|| panic!("tracker.{key}.label {label:?} is not a label pattern"));
+        assert_eq!(
+            pattern.option_of(&pattern.label("queued")),
+            Some("queued"),
+            "tracker.{key}.label {label:?}"
+        );
     }
 }
 
