@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package mintswarm.watch.v1;
+
+// The body of a `github.webhook` event: one verified GitHub webhook
+// delivery.
+//
+// One normaliser maps a verified delivery to the envelope and this body. The
+// envelope's `subject` is the issue or pull request, with its title; `actor`
+// is the delivery's `sender`; `parties` are the item's author, assignees and
+// requested reviewers; and `attributes` holds `event` and `action`.
+message GitHubWebhook {
+  // The X-GitHub-Delivery GUID; unique in the store.
+  string delivery = 1;
+  // The X-GitHub-Event header.
+  string event = 2;
+  // The payload's `action`; empty when it has none.
+  string action = 3;
+  // The comment, review or issue body; at most 64 KiB, otherwise truncated.
+  UntrustedText body = 4;
+  // Further GitHub-written values, keyed by name: review state, merged,
+  // label, check conclusion and similar.
+  map<string, UntrustedText> detail = 5;
+  // The verified raw JSON payload; sent only when the request sets
+  // `include_payload`, for debugging.
+  bytes payload = 6;
+}
+
+// A string that a GitHub user wrote: a title, a body, a label name, a branch
+// name or review text. Every such string travels in this type, so a client
+// always knows to treat it as untrusted. Logins and repository names are
+// GitHub-constrained identifiers and travel as plain strings.
+message UntrustedText {
+  // The text, possibly cut short.
+  string text = 1;
+  // Whether `text` was cut short.
+  bool truncated = 2;
+  // The length of the text before it was cut, in bytes.
+  uint32 original_length = 3;
+}
