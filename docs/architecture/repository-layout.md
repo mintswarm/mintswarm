@@ -96,6 +96,7 @@ mintswarm/
 │
 ├── docs/
 │   ├── architecture/       # how the system is built
+│   │   ├── metrics.md            # factory metrics and facts
 │   │   ├── repository-layout.md  # where each thing goes
 │   │   └── runner-protocol.md    # runner ⇄ plane protocol
 │   ├── conventions/        # Rust, TypeScript and React conventions
@@ -119,6 +120,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
   - `domain` ← `github`
   - `domain` ← `rules`
   - `domain` ← `runner`
+  - `domain` ← `xtask`
   - `config` ← `proto`
   - `config` ← `rules`
   - `config` ← `runner`
