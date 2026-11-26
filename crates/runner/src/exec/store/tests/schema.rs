@@ -1,9 +1,10 @@
 //! Tests of the migrations: every table of design §12 with its columns, the
-//! `unrecognised_failures` table of migration 2 beyond §12, and re-running them.
+//! `unrecognised_failures` table of migration 2 and the `jobs.components` rename of migration 3
+//! beyond §12, re-running them, and migrating a database at version 2 that holds a job.
 
 use rusqlite::Connection;
 
-use super::super::schema::migrate;
+use super::super::schema::{MIGRATIONS, migrate};
 use super::super::{OutboxMode, SCHEMA_VERSION, StoreError};
 use super::{fresh_state, open};
 
@@ -51,7 +52,7 @@ const TABLES: &[(&str, &[&str])] = &[
             "job_id",
             "issue",
             "kind",
-            "component",
+            "components",
             "state",
             "paused",
             "base_commit",
@@ -208,6 +209,43 @@ fn re_running_the_migrations_changes_nothing() {
     drop(store);
     let store = open(&state, OutboxMode::Live).unwrap();
     assert_eq!(dump(&store.conn), before);
+}
+
+#[test]
+fn a_job_at_version_2_keeps_its_component_under_components() {
+    let (_tmp, state) = fresh_state();
+    drop(open(&state, OutboxMode::Live).unwrap());
+    let database = state.join("runner.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", database.display()));
+    }
+    let conn = Connection::open(&database).unwrap();
+    for script in &MIGRATIONS[..2] {
+        conn.execute_batch(script).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 2).unwrap();
+    conn.execute(
+        "INSERT INTO jobs (job_id, component) VALUES ('job-1', 'domain'), ('job-2', NULL)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = open(&state, OutboxMode::Live).unwrap();
+    let rows: Vec<(String, Option<String>)> = store
+        .conn
+        .prepare("SELECT job_id, components FROM jobs ORDER BY job_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("job-1".to_owned(), Some(r#"["domain"]"#.to_owned())),
+            ("job-2".to_owned(), None),
+        ]
+    );
 }
 
 #[test]

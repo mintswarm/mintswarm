@@ -85,7 +85,12 @@ fn runs() -> Vec<Run> {
                         .to_owned(),
                 ),
             },
-            component: entry["component"].as_str().expect("a component").to_owned(),
+            components: entry["components"]
+                .as_array()
+                .expect("a components list")
+                .iter()
+                .map(|name| name.as_str().expect("a component name").to_owned())
+                .collect(),
             plan: item(&entry["plan"]).expect("a plan"),
             issue_document: item(&entry["issue_document"]),
             analysis: item(&entry["analysis"]),
@@ -188,6 +193,134 @@ fn malformed_footprints_have_the_footprint_rule() {
         checked += 1;
     }
     assert!(checked >= 33, "{checked} malformed footprints checked");
+}
+
+/// The reasons `rule` gives on `bundle`, which must be usable.
+fn reasons(bundle: &Bundle, rule: &str) -> Vec<String> {
+    let floor = plan_floor::floor(bundle).expect("a usable bundle");
+    floor
+        .record()
+        .rules
+        .iter()
+        .find(|r| r.rule == rule)
+        .map(|r| r.reasons.clone())
+        .unwrap_or_default()
+}
+
+/// The captured runs whose `--components` were `names`.
+fn given<'r>(runs: &'r [Run], names: &[&str]) -> Vec<&'r Run> {
+    runs.iter()
+        .filter(|run| run.bundle.components == names)
+        .collect()
+}
+
+#[test]
+fn component_scope_names_the_components() {
+    let runs = runs();
+    let mut checked = 0;
+    for run in &runs {
+        if run.exit == 2 {
+            continue;
+        }
+        let names = &run.bundle.components;
+        let outside = match names.as_slice() {
+            [one] => format!(" is outside component {one} and shared"),
+            _ => format!(" is outside components {} and shared", names.join(", ")),
+        };
+        for reason in reasons(&run.bundle, "component-scope") {
+            assert!(reason.ends_with(&outside), "{}: {reason}", run.name);
+            checked += 1;
+        }
+    }
+    assert!(checked >= 3, "{checked} component-scope reasons checked");
+    let two = given(&runs, &["domain", "runner"]);
+    assert!(two.iter().any(|run| reasons(&run.bundle, "component-scope")
+        == ["web/index.html is outside components domain, runner and shared"]));
+}
+
+#[test]
+fn the_component_rules_follow_floor_py_wording() {
+    let runs = runs();
+    let wants: [(&[&str], &str, &[&str]); 6] = [
+        (
+            &["cli", "runner"],
+            "first-of-kind",
+            &[
+                "first of its kind: no commit reachable from the base commit has a subject scoped (cli)",
+                "first of its kind: no commit reachable from the base commit has a subject scoped (runner)",
+            ],
+        ),
+        (
+            &["core", "cli"],
+            "first-of-kind",
+            &[
+                "first of its kind: no commit reachable from the base commit has a subject scoped (cli)",
+            ],
+        ),
+        (
+            &["docs", "web"],
+            "first-of-kind",
+            &["the issue's components are 'docs', not --components docs,web"],
+        ),
+        (
+            &["docs", "agents"],
+            "require-human-components",
+            &["the issue's component agents is in require_human.components"],
+        ),
+        (
+            &["docs", "web"],
+            "limit-lines",
+            &["lines is 501, over the limit of 500 (limits_by_component.web)"],
+        ),
+        (
+            &["cli", "docs"],
+            "limit-lines",
+            &["lines is 401, over the limit of 400 (limits_by_component.cli)"],
+        ),
+    ];
+    for (names, rule, want) in wants {
+        let found = given(&runs, names)
+            .iter()
+            .filter(|run| run.exit != 2)
+            .any(|run| reasons(&run.bundle, rule) == want);
+        assert!(
+            found,
+            "no run with --components {names:?} gives {rule}: {want:?}"
+        );
+    }
+}
+
+#[test]
+fn bad_components_are_unusable_with_floor_py_wording() {
+    let runs = runs();
+    let wants: [(&[&str], &str); 4] = [
+        (&["docs", ""], "--components has an empty name"),
+        (&["", "docs"], "--components has an empty name"),
+        (&["docs", "docs"], "--components names 'docs' twice"),
+        (
+            &["docs", "nope"],
+            "--components 'nope' is not a component in the config",
+        ),
+    ];
+    for (names, want) in wants {
+        let found = given(&runs, names);
+        assert!(!found.is_empty(), "no run with --components {names:?}");
+        for run in found {
+            assert_eq!(run.exit, 2, "{}", run.name);
+            let error = plan_floor::floor(&run.bundle).expect_err(&run.name);
+            assert_eq!(error.message(), want, "{}", run.name);
+        }
+    }
+}
+
+#[test]
+fn no_components_read_as_an_empty_name() {
+    let runs = runs();
+    let run = runs.iter().find(|run| run.exit != 2).expect("a usable run");
+    let mut bundle = run.bundle.clone();
+    bundle.components.clear();
+    let error = plan_floor::floor(&bundle).expect_err(&run.name);
+    assert_eq!(error.message(), "--components has an empty name");
 }
 
 /// An optional item of a bundle.

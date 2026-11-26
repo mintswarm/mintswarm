@@ -11,7 +11,7 @@ You judge a change you did not make, against the plan that was approved for it. 
 
 ## Inputs
 
-- `.mintswarm/job/inputs/issue.md`: the implementation issue, with its component and acceptance criteria.
+- `.mintswarm/job/inputs/issue.md`: the implementation issue, with its components and acceptance criteria.
 - `.mintswarm/job/inputs/artefacts/plan.md`: the approved plan, with its `## Footprint`.
 - `.mintswarm/job/inputs/diff.patch`: the change against its base.
 - `.mintswarm/job/inputs/landing/facts.json`: the facts about the change's PR:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decide whether a finished change needs a human, from the landing floor and the landing stage.
 
-    decision.py --pr N --component NAME --plan PATH --base REF --head REF
+    decision.py --pr N --components NAMES --plan PATH --base REF --head REF
                 --facts PATH --landing PATH [--landing-model MODEL]
 
 Dogfooding stand-in for the control plane's landing decision, which combines
@@ -32,7 +32,7 @@ as they are:
 3. extract a base-ref copy of .mintswarm/dogfood/ to a temporary directory
    outside the worktree (`git archive` of the base commit), and run
    landing/floor.py from that copy, in the worktree, with the same --plan,
-   --component, --base, --head and --facts as below;
+   --components, --base, --head and --facts as below;
 4. delete any earlier landing.md, then run the landing stage
    (.mintswarm/stages/landing.md), which writes a fresh landing.md; except
    under `never`, whose judge is skipped;
@@ -57,10 +57,11 @@ Inputs
   absent) of .mintswarm/config.yaml at the commit it resolves to, read and
   validated as landing/floor.py reads them (its load_config, validate_config
   and validate_landing, loaded from the file next to this one with the plan
-  floor beside it), so the worktree's config is never opened. NAME given to
-  --component must be a defined component. The harness, model and effort of
-  implement, review and landing are `agents.stages.<stage>` over
-  `agents.default` there; a value that is absent or not a string is null.
+  floor beside it), so the worktree's config is never opened. NAMES given to
+  --components, the issue's components comma-separated in the issue's
+  order, must each be non-empty, given once and a defined component. The
+  harness, model and effort of implement, review and landing are
+  `agents.stages.<stage>` over `agents.default` there; a value that is absent or not a string is null.
 - MODEL given to --landing-model, the model the landing stage ran on. When
   it is given, the landing entry's `model` is MODEL; otherwise it is the
   configured model. Implement and review always record the configured one.
@@ -81,11 +82,11 @@ or Infinity) holding an object with `tool` `mintswarm-landing-facts`,
 
 The floor layer is usable only if the facts are, and the verdict is strict
 JSON and all of these hold: its keys are landing/floor.py's, in order;
-`tool` is `mintswarm-landing-floor` and `version` 2; `plan.sha256` is the
+`tool` is `mintswarm-landing-floor` and `version` 3; `plan.sha256` is the
 sha256 of the plan and `facts.sha256` that of the facts; `base.commit` and
 `head.commit` are the resolved commits and `merge_base` the merge base;
-`component` is NAME, `mode` the base config's mode and `config`
-`.mintswarm/config.yaml`; every rule is {`rule`, `result`, `reasons`} with
+`components` is NAMES as a list, in the same order, `mode` the base
+config's mode and `config` `.mintswarm/config.yaml`; every rule is {`rule`, `result`, `reasons`} with
 `result` `hit` or `clean` and string reasons exactly when it is a hit; the
 identifiers follow landing/floor.py's RULES across `rules` and
 `not_evaluated`, and `not_evaluated` is empty, or exactly the diff rules
@@ -133,12 +134,12 @@ record's, with its `judged_decision` and `decision` named `would_be` and
 `effective`, and `acts`, `inputs` and `agents` added:
 
   tool             `mintswarm-landing-decision`
-  version          3
+  version          4
   approval         `landing`
   subject          {`pr`, `issue` (from the facts, null when they are
-                   unusable), `component`, `plan` {`path`, `sha256`}, `base`
-                   {`ref`, `commit`}, `head` {`ref`, `commit`}, `config`
-                   {`path`, `commit`, the resolved base}}
+                   unusable), `components`, `plan` {`path`, `sha256`},
+                   `base` {`ref`, `commit`}, `head` {`ref`, `commit`},
+                   `config` {`path`, `commit`, the resolved base}}
   mode, min_confidence
   layers           `floor` {`status`, `problems`, `path`, `sha256`,
                    `verdict`, `rules`, `not_evaluated`, `evidence`} and
@@ -197,8 +198,8 @@ Exits 0 when `effective` is `auto` and 1 when it is `human`. Exits 2 on
 unusable input, with no record unless a stale one could not be deleted: bad
 arguments, an unreadable plan, an unresolvable base or head, a partial
 clone, a failed fetch into the object store, no config at the base, an
-invalid config, an unknown component, git or yq missing or failing, a
-missing landing/floor.py, plan-approval/floor.py, landing/judgement.py or
+invalid config, an empty, repeated or unknown component name, git or yq
+missing or failing, a missing landing/floor.py, plan-approval/floor.py, landing/judgement.py or
 plan-approval/decision.py, a record that cannot be deleted or written, or
 any unexpected error. A missing or mismatched verdict, facts file or
 landing.md is not unusable input: it gives a record with that layer
@@ -221,17 +222,17 @@ LANDING_FLOOR = HERE / "floor.py"
 JUDGEMENT = HERE / "judgement.py"
 RECORD = Path(".mintswarm/job/outputs/landing.json")
 TOOL = "mintswarm-landing-decision"
-VERSION = 3
+VERSION = 4
 STAGE = "landing"
 CONFIG = ".mintswarm/config.yaml"
 FLOOR_TOOL = "mintswarm-landing-floor"
-FLOOR_VERSION = 2
+FLOOR_VERSION = 3
 FLOOR_KEYS = [
     "tool",
     "version",
     "plan",
     "facts",
-    "component",
+    "components",
     "base",
     "head",
     "merge_base",
@@ -247,11 +248,11 @@ FACTS_VERSION = 3
 KICKOFF_KINDS = ("decision", "kickoff_floor", "assessment")
 AGENT_STAGES = ("implement", "review", "landing")
 AGENT_KEYS = ("harness", "model", "effort")
-ARGS = ("--pr", "--component", "--plan", "--base", "--head", "--facts", "--landing")
+ARGS = ("--pr", "--components", "--plan", "--base", "--head", "--facts", "--landing")
 OPTIONAL = ("--landing-model",)
 NAMES = ARGS + OPTIONAL
 USAGE = (
-    "usage: decision.py --pr N --component NAME --plan PATH --base REF --head REF "
+    "usage: decision.py --pr N --components NAMES --plan PATH --base REF --head REF "
     "--facts PATH --landing PATH [--landing-model MODEL]"
 )
 UNCHANGED = "This decision changes nothing: the maintainer approves this PR and the bot merges it as before."
@@ -334,7 +335,7 @@ def parse_args(argv: list) -> dict:
             raise InputError(f"{name} must not start with '-': {args[name]!r}")
     return {
         "pr": int(args["--pr"]),
-        "component": args["--component"],
+        "components": args["--components"].split(","),
         "plan": args["--plan"],
         "base": args["--base"],
         "head": args["--head"],
@@ -471,8 +472,8 @@ def verdict_problems(verdict, expected: dict) -> list:
         problems.append("the floor verdict's head.commit does not match the head")
     if expected["merge_base"] is None or verdict["merge_base"] != expected["merge_base"]:
         problems.append("the floor verdict's merge_base does not match the merge base")
-    if verdict["component"] != expected["component"]:
-        problems.append("the floor verdict's component does not match --component")
+    if verdict["components"] != expected["components"]:
+        problems.append("the floor verdict's components do not match --components")
     if verdict["mode"] != expected["mode"]:
         problems.append("the floor verdict's mode does not match the base config")
     if verdict["config"] != CONFIG:
@@ -724,7 +725,7 @@ def read_base(args: dict) -> tuple:
         with P.job_object_store({"base": args["base"], "head": args["head"]}) as (store, commits):
             base, head = commits["base"], commits["head"]
             config = P.load_config(base, git_dir=store)
-            cfg = P.validate_config(config, args["component"])
+            cfg = P.validate_config(config, args["components"])
             landing = floor.validate_landing(config, cfg["paths"])
             try:
                 merge = floor.merge_base(base, head, store)
@@ -756,7 +757,7 @@ def run(argv: list) -> int:
         "base": base,
         "head": head,
         "merge_base": merge,
-        "component": args["component"],
+        "components": args["components"],
         "mode": mode,
     }
     floor_ = floor_layer(expected, facts_problems)
@@ -770,7 +771,7 @@ def run(argv: list) -> int:
         "subject": {
             "pr": args["pr"],
             "issue": issue if type(issue) is int else None,
-            "component": args["component"],
+            "components": args["components"],
             "plan": {"path": args["plan"], "sha256": plan_sha},
             "base": {"ref": args["base"], "commit": base},
             "head": {"ref": args["head"], "commit": head},

@@ -14,7 +14,7 @@ use crate::py::repr_str;
 /// The limit names, in the floor's order.
 pub const LIMITS: [&str; 3] = ["files", "lines", "new_files"];
 
-/// The floor's view of the config at the base, for one component.
+/// The floor's view of the config at the base, for the issue's components.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View {
     /// `components.<name>.paths` of every component, empty when absent.
@@ -32,9 +32,11 @@ pub struct View {
     pub rh_components: Vec<String>,
     /// `require_human.paths`.
     pub rh_paths: Vec<String>,
-    /// `limits` with the component's `limits_by_component` applied, in [`LIMITS`] order.
+    /// `limits` with, per key, the largest `limits_by_component` override among the components
+    /// applied, in [`LIMITS`] order.
     pub limits: [u64; 3],
-    /// For each limit an override decides, `limits_by_component.<component>`.
+    /// For each limit an override decides, `limits_by_component.<component>` of the first
+    /// component, in the components' order, that gives the value.
     pub limit_sources: [Option<String>; 3],
     /// `non_production`, the floor's built-in globs when absent.
     pub non_production: Vec<String>,
@@ -104,10 +106,11 @@ fn load_message(error: &ConfigError) -> String {
     }
 }
 
-/// The floor's view of the config `bytes` at the base, for `component`; unusable when the bytes
-/// are not UTF-8, the config does not load, a gate command does not split or `component` is not
-/// a defined component.
-pub fn view(bytes: &[u8], component: &str) -> Result<View, Unusable> {
+/// The floor's view of the config `bytes` at the base, for the issue's `components`; unusable
+/// when the bytes are not UTF-8, the config does not load, a gate command does not split, there
+/// are no `components`, or a name in them is empty, given twice or not a defined component,
+/// checked in that order.
+pub fn view(bytes: &[u8], components: &[String]) -> Result<View, Unusable> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| Unusable::new("config: .mintswarm/config.yaml at the base is not UTF-8"))?;
     let config = load_repo_config(text).map_err(|error| Unusable::new(load_message(&error)))?;
@@ -140,21 +143,27 @@ pub fn view(bytes: &[u8], component: &str) -> Result<View, Unusable> {
             gate_words.extend(command_words(&words).into_iter().map(|w| (name.clone(), w)));
         }
     }
-    if !paths.contains_key(component) {
-        return Err(Unusable::new(format!(
-            "--component {} is not a component in the config",
-            repr_str(component)
-        )));
-    }
+    check_names(components, &paths)?;
     let approval = config.plan_approval();
-    let overrides = approval.limits_by_component.get(component);
     let flat = [
         approval.limits.files,
         approval.limits.lines,
         approval.limits.new_files,
     ];
-    let over = overrides.map_or([None; 3], |o| [o.files, o.lines, o.new_files]);
-    let source = format!("limits_by_component.{component}");
+    // Per key, the largest override among the components; the first component wins a tie.
+    let mut chosen: [Option<(u64, &str)>; 3] = [None; 3];
+    for name in components {
+        let Some(o) = approval.limits_by_component.get(name) else {
+            continue;
+        };
+        for (slot, value) in chosen.iter_mut().zip([o.files, o.lines, o.new_files]) {
+            if let Some(value) = value
+                && slot.is_none_or(|(best, _)| value > best)
+            {
+                *slot = Some((value, name.as_str()));
+            }
+        }
+    }
     Ok(View {
         paths,
         shared,
@@ -168,12 +177,39 @@ pub fn view(bytes: &[u8], component: &str) -> Result<View, Unusable> {
         expected_judge: expected_judge(value),
         rh_components: approval.require_human.components.clone(),
         rh_paths: approval.require_human.paths.clone(),
-        limits: [0, 1, 2].map(|i| over[i].unwrap_or(flat[i])),
-        limit_sources: [0, 1, 2].map(|i| over[i].map(|_| source.clone())),
+        limits: [0, 1, 2].map(|i| chosen[i].map_or(flat[i], |(value, _)| value)),
+        limit_sources: chosen.map(|c| c.map(|(_, name)| format!("limits_by_component.{name}"))),
         non_production: approval.non_production.clone(),
         tests,
         gate_words,
     })
+}
+
+/// The `--components` checks of `validate_config`: no empty name, no name twice, every name a
+/// defined component, in that order. No components at all reads as one empty name, as Python
+/// splits an empty `--components` into `['']`.
+fn check_names(
+    components: &[String],
+    paths: &BTreeMap<String, Vec<String>>,
+) -> Result<(), Unusable> {
+    if components.is_empty() || components.iter().any(String::is_empty) {
+        return Err(Unusable::new("--components has an empty name"));
+    }
+    for (index, name) in components.iter().enumerate() {
+        if components[..index].contains(name) {
+            return Err(Unusable::new(format!(
+                "--components names {} twice",
+                repr_str(name)
+            )));
+        }
+    }
+    if let Some(name) = components.iter().find(|name| !paths.contains_key(*name)) {
+        return Err(Unusable::new(format!(
+            "--components {} is not a component in the config",
+            repr_str(name)
+        )));
+    }
+    Ok(())
 }
 
 /// The words `validate_config` derives from one command's split `words`: each word without its
@@ -317,12 +353,16 @@ mod tests {
 
     #[test]
     fn a_yaml_failure_is_worded_by_its_class_and_path() {
-        let unbalanced = view(b"a: [1\n", "core").map(|_| ()).unwrap_err();
+        let unbalanced = view(b"a: [1\n", &["core".to_owned()])
+            .map(|_| ())
+            .unwrap_err();
         assert_eq!(
             unbalanced.message(),
             "config: .mintswarm/config.yaml at the base is not valid YAML"
         );
-        let duplicate = view(b"a: 1\na: 2\n", "core").map(|_| ()).unwrap_err();
+        let duplicate = view(b"a: 1\na: 2\n", &["core".to_owned()])
+            .map(|_| ())
+            .unwrap_err();
         assert_eq!(
             duplicate.message(),
             "config: .mintswarm/config.yaml at the base is not valid YAML at a"

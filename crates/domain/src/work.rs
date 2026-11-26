@@ -20,7 +20,8 @@ pub struct StageJob {
     pub job: JobId,
     pub attempt: AttemptId,
     pub issue: IssueNumber,
-    pub component: String,
+    /// The issue's components, in the issue's order.
+    pub components: Vec<String>,
     /// The stage's name, as in `.mintswarm/stages/<stage>.md`.
     pub stage: String,
     pub harness: String,

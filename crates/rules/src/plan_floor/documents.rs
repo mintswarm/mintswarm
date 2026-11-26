@@ -1,6 +1,8 @@
 //! The three document rules: `blocking-questions`, `acceptance-criteria` and `first-of-kind`,
 //! `evaluate_documents` and the functions it calls in `.mintswarm/dogfood/plan-approval/floor.py`.
 
+use std::collections::BTreeSet;
+
 use mintswarm_domain::records::{Json, RuleResult};
 
 use super::rule;
@@ -14,7 +16,7 @@ const ASSUMPTION: &str = "- **Assumption:**";
 const BLOCKING: &str = "- **Blocking:**";
 const NON_BLOCKING: &str = "- **Non-blocking (assumed):**";
 const KIND: &str = "- **Kind:**";
-const COMPONENT: &str = "- **Component:**";
+const COMPONENTS: &str = "- **Components:**";
 
 /// What a `## Questions` bullet counts as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -365,24 +367,25 @@ fn header_value<'a>(header: &[&'a str], marker: &str) -> Result<&'a str, String>
     }
 }
 
-/// Whether `subject` starts as `[A-Za-z]+\(<component>\)!?: ` matches.
-fn scoped(subject: &str, component: &str) -> bool {
+/// The scope of `subject` when it starts as `[A-Za-z]+\(([^()]*)\)!?: ` matches: the text
+/// between the parentheses.
+fn scope(subject: &str) -> Option<&str> {
     let rest = subject.trim_start_matches(|c: char| c.is_ascii_alphabetic());
     if rest.len() == subject.len() {
-        return false;
+        return None;
     }
-    let Some(rest) = rest
-        .strip_prefix('(')
-        .and_then(|rest| rest.strip_prefix(component))
-        .and_then(|rest| rest.strip_prefix(')'))
-    else {
-        return false;
-    };
-    rest.strip_prefix('!').unwrap_or(rest).starts_with(": ")
+    let rest = rest.strip_prefix('(')?;
+    let end = rest.find(['(', ')'])?;
+    let after = rest[end..].strip_prefix(')')?;
+    after
+        .strip_prefix('!')
+        .unwrap_or(after)
+        .starts_with(": ")
+        .then(|| &rest[..end])
 }
 
 /// The `first-of-kind` reasons, as `first_of_kind_reasons` gives them.
-fn first_of_kind_reasons(issue: &str, component: &str, subjects: &[&str]) -> Vec<String> {
+fn first_of_kind_reasons(issue: &str, components: &[String], subjects: &[&str]) -> Vec<String> {
     let lines = document_lines(issue);
     let body = issue_body(&lines);
     let first = headings(body)
@@ -399,19 +402,35 @@ fn first_of_kind_reasons(issue: &str, component: &str, subjects: &[&str]) -> Vec
         )),
         Ok(_) => {}
     }
-    match header_value(header, COMPONENT) {
+    match header_value(header, COMPONENTS) {
         Err(why) => reasons.push(why),
-        Ok(named) if named != component => reasons.push(format!(
-            "the issue's component is {}, not --component {component}",
-            repr_str(&flat(named))
-        )),
-        Ok(_) => {}
+        Ok(named) => {
+            let listed: BTreeSet<&str> = named.split(',').map(py_strip).collect();
+            let given: BTreeSet<&str> = components.iter().map(String::as_str).collect();
+            if listed != given {
+                reasons.push(format!(
+                    "the issue's components are {}, not --components {}",
+                    repr_str(&flat(named)),
+                    components.join(",")
+                ));
+            }
+        }
     }
-    if reasons.is_empty() && !subjects.iter().any(|subject| scoped(subject, component)) {
-        reasons.push(format!(
-            "first of its kind: no commit reachable from the base commit has a subject scoped \
-             ({component})"
-        ));
+    if !reasons.is_empty() {
+        return reasons;
+    }
+    let scopes: BTreeSet<&str> = subjects
+        .iter()
+        .filter_map(|subject| scope(subject))
+        .flat_map(|scope| scope.split(','))
+        .collect();
+    for component in components {
+        if !scopes.contains(component.as_str()) {
+            reasons.push(format!(
+                "first of its kind: no commit reachable from the base commit has a subject scoped \
+                 ({component})"
+            ));
+        }
     }
     reasons
 }
@@ -431,7 +450,11 @@ pub struct Documents<'a> {
 }
 
 /// The three document rules, in order, as `evaluate_documents` gives them.
-pub fn evaluate(documents: &Documents<'_>, component: &str, subjects: &[&str]) -> Vec<RuleResult> {
+pub fn evaluate(
+    documents: &Documents<'_>,
+    components: &[String],
+    subjects: &[&str],
+) -> Vec<RuleResult> {
     let mut reasons = match documents.analysis {
         None => vec!["no analysis given (--analysis)".to_owned()],
         Some(analysis) => question_reasons(analysis, "analysis", documents.analysis_record),
@@ -453,7 +476,7 @@ pub fn evaluate(documents: &Documents<'_>, component: &str, subjects: &[&str]) -
         rule(
             "first-of-kind",
             documents.issue.map_or_else(no_issue, |issue| {
-                first_of_kind_reasons(issue, component, subjects)
+                first_of_kind_reasons(issue, components, subjects)
             }),
         ),
     ]

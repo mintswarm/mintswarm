@@ -38,8 +38,9 @@ Checks:
   maintainer while the Hard triggers row is `none`;
 - threshold edges: with `min_confidence: 90`, 90 is `auto` and 89 `human`,
   under `judged`;
-- bindings: a verdict whose plan, facts, base, head or merge base, component
-  or mode is not the run's, whose keys are out of order, whose verdict
+- bindings: a verdict whose plan, facts, base, head or merge base,
+  components (another list, the same reordered, or a string) or mode is
+  not the run's, whose keys are out of order, whose verdict
   disagrees with its rules, whose not_evaluated does not follow its
   footprint, whose evidence is not a list, holds a non-string or is not
   empty after a footprint hit, of version 1, or that is not strict JSON;
@@ -60,7 +61,7 @@ Checks:
   implement, review and landing, from the real config and from the
   override (null for a non-string effort), each with its configured model
   and both flags false; the landing stage's model differs from
-  implement's and review's; version 3;
+  implement's and review's; version 4;
 - the landing model: with --landing-model set to a model other than the
   configured landing one, the landing entry holds that model, the
   configured one and both flags true, and implement and review are
@@ -80,7 +81,8 @@ Checks:
   limit unchanged, and cuts text over it to 600 characters marked
   `… (truncated)` inside one code span, hostile text on one line;
 - unusable input: bad arguments (among them a repeated, an empty and an
-  argument-name --landing-model), an unknown component, an unreadable plan,
+  argument-name --landing-model), an unknown component, an empty, a
+  repeated and an unknown second name in --components, an unreadable plan,
   an unresolvable head, a base without a config and an invalid config exit
   2 with no record, even a stale one; every normal run replaces a stale
   record;
@@ -123,7 +125,8 @@ CONFIG_PATH = ".mintswarm/config.yaml"
 RECORD = Path(".mintswarm/job/outputs/landing.json")
 VERDICT = Path(".mintswarm/job/outputs/landing-floor.json")
 STEER = "<!-- mintswarm: steer -->"
-COMPONENT = "agents"
+# The issue's components, in the issue's order; --components gets them comma-separated.
+COMPONENTS = ["agents", "docs"]
 PR = 7
 ISSUE = 50
 MODES = ("always", "shadow", "judged", "never")
@@ -142,7 +145,7 @@ RECORD_KEYS = [
     "inputs",
     "agents",
 ]
-SUBJECT_KEYS = ["pr", "issue", "component", "plan", "base", "head", "config"]
+SUBJECT_KEYS = ["pr", "issue", "components", "plan", "base", "head", "config"]
 FLOOR_LAYER_KEYS = ["status", "problems", "path", "sha256", "verdict", "rules", "not_evaluated", "evidence"]
 JUDGEMENT_LAYER_KEYS = [
     "status",
@@ -365,10 +368,10 @@ def verdict_for(ctx: dict, hits: dict = None, skip_diff: bool = False, **changes
     rules, skipped = rules_for(hits or {}, skip_diff)
     verdict = {
         "tool": "mintswarm-landing-floor",
-        "version": 2,
+        "version": 3,
         "plan": {"path": ctx["plan"], "sha256": ctx["plan_sha"]},
         "facts": {"path": ctx["facts"], "sha256": ctx["facts_sha"], "checks": []},
-        "component": COMPONENT,
+        "components": COMPONENTS,
         "base": {"ref": ctx["base"], "commit": ctx["base"]},
         "head": {"ref": ctx["head"], "commit": ctx["head"]},
         "merge_base": ctx["base"],
@@ -426,8 +429,8 @@ class Runner:
         args = argv or [
             "--pr",
             str(PR),
-            "--component",
-            COMPONENT,
+            "--components",
+            ",".join(COMPONENTS),
             "--plan",
             ctx["plan"],
             "--base",
@@ -662,9 +665,19 @@ def check_bindings(r: Runner) -> None:
         ),
         ("verdict mode", edit(setting("mode", "always")), "the floor verdict's mode does not match the base config"),
         (
-            "verdict component",
-            edit(setting("component", "docs")),
-            "the floor verdict's component does not match --component",
+            "verdict components",
+            edit(setting("components", ["agents"])),
+            "the floor verdict's components do not match --components",
+        ),
+        (
+            "verdict components reordered",
+            edit(setting("components", ["docs", "agents"])),
+            "the floor verdict's components do not match --components",
+        ),
+        (
+            "verdict components a string",
+            edit(setting("components", "agents,docs")),
+            "the floor verdict's components do not match --components",
         ),
         (
             "verdict key order",
@@ -873,7 +886,7 @@ def check_record(r: Runner, real: dict) -> None:
     T.check("record: subject keys in order", list(subject) == SUBJECT_KEYS, json.dumps(list(subject)))
     T.check(
         "record: tool, version and approval",
-        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 3, "landing"),
+        (record["tool"], record["version"], record["approval"]) == ("mintswarm-landing-decision", 4, "landing"),
     )
     T.check(
         "record: subject",
@@ -881,7 +894,7 @@ def check_record(r: Runner, real: dict) -> None:
         == {
             "pr": PR,
             "issue": ISSUE,
-            "component": COMPONENT,
+            "components": COMPONENTS,
             "plan": {"path": ctx["plan"], "sha256": ctx["plan_sha"]},
             "base": {"ref": ctx["base"], "commit": ctx["base"]},
             "head": {"ref": ctx["head"], "commit": ctx["head"]},
@@ -1117,7 +1130,7 @@ def check_unusable(r: Runner, bases: dict) -> None:
     landing = r.sb.write("landing.md", JUDGEMENTS["at"])
     full = {
         "--pr": str(PR),
-        "--component": COMPONENT,
+        "--components": ",".join(COMPONENTS),
         "--plan": ctx["plan"],
         "--base": ctx["base"],
         "--head": ctx["head"],
@@ -1146,7 +1159,10 @@ def check_unusable(r: Runner, bases: dict) -> None:
         ("--pr 0", argv(pr="0")),
         ("--pr not a number", argv(pr="seven")),
         ("--head starting with -", argv(head="-x")),
-        ("an unknown component", argv(component="nowhere")),
+        ("an unknown component", argv(components="nowhere")),
+        ("an empty component name", argv(components="agents,")),
+        ("a repeated component name", argv(components="agents,agents")),
+        ("an unknown second component", argv(components="agents,nowhere")),
         ("an unreadable plan", argv(plan="cases/no-such-plan.md")),
         ("a plan that is not UTF-8", argv(plan=r.sb.write("bad-plan.md", b"\xff\xfe"))),
         ("an unresolvable head", argv(head="no-such-ref")),

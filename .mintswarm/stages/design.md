@@ -26,7 +26,7 @@ You write the design document for one design issue, so that a human can approve 
 4. Questions the maintainer can answer when approving go under Open questions, numbered `Q1`, `Q2`, …, each with your recommendation. The design then proceeds on the recommendation, and the status stays `complete`.
 5. Return `needs_input` only when no sound design can be written without an answer.
 6. A revision answers the change request: it records what changed and which request each change answers, and continues the numbering of the open questions instead of restarting it. Answered questions move into Decisions.
-7. Work packages are proposals for the decompose stage, not child issues: name each, its component where one applies, and what it depends on.
+7. Work packages are proposals for the decompose stage, not child issues: name each, its components where they apply, and what it depends on.
 
 ## Output
 
@@ -60,7 +60,7 @@ Return `design.md` as `.mintswarm/stages.md` describes. Leave out sections that 
 
 ## <n>. Work packages and milestones
 
-| Key | Work package | Component | Depends on |
+| Key | Work package | Components | Depends on |
 | --- | --- | --- | --- |
 
 ## <n>. Risks

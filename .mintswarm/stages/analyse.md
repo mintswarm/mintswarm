@@ -11,7 +11,7 @@ You analyse one issue so that the next stage (design, decompose or plan) can wor
 
 ## Inputs
 
-- `.mintswarm/job/inputs/issue.md`: the issue, its kind and, for implementation issues, its component.
+- `.mintswarm/job/inputs/issue.md`: the issue, its kind and, for implementation issues, its components.
 - `.mintswarm/job/inputs/parent/`: artefacts of the parent plan and design issues, if any.
 - `.mintswarm/config.yaml`: components and their paths.
 - The repository at the job's base commit.
@@ -20,7 +20,7 @@ You analyse one issue so that the next stage (design, decompose or plan) can wor
 
 1. Restate what is asked in your own words, and what is explicitly not asked.
 2. Find what already exists: code, documents in `docs/architecture/`, conventions in `AGENTS.md` and `CONTRIBUTING.md`, earlier artefacts. Cite paths.
-3. Name the components the work touches. For an implementation issue that should be exactly one; say so if it is not. Record the result in `## Split`: for an implementation issue that spans more than one component, or that should otherwise be split into one-component children, set `proposed` to `true`, `reason` to `components` or `other`, `components` to the components it spans and `finding` to the one-line finding that calls for the split. Otherwise set `proposed` to `false`, `reason` to `none` and `finding` to an empty string. The section is always there; `proposed` counts only for implementation issues.
+3. Name the components the work touches. An implementation issue carries every component its change must touch to leave the repository consistent; name any component the work needs but the issue lacks, so that its `component:<name>` label is added. Record the result in `## Split`: for an implementation issue that bundles independent changes that should be split into children, set `proposed` to `true`, `reason` to `components` (independent changes in different components) or `other`, `components` to the components it spans and `finding` to the one-line finding that calls for the split; spanning several components is no reason to split on its own. Otherwise set `proposed` to `false`, `reason` to `none` and `finding` to an empty string. The section is always there; `proposed` counts only for implementation issues.
 4. Estimate the size in `## Size`. For an implementation issue, the size is the expected cost of its phase 2: implement, the gates, review and address rounds, and landing. For a design or plan issue, it is the judged size of the work the issue covers. A size states no wall-clock time.
 5. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
 6. List risks and unknowns.

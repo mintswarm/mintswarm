@@ -6,7 +6,9 @@
 Dogfooding stand-in for the control plane's decomposition floor. It checks
 structure only: the `## Children` yaml block parses and has the decompose
 stage's shape, each child has a known kind and, for an implementation child,
-exactly one component that the base config knows, `depends_on` names only
+a `components` list of one or more components, each named once, that the
+base config knows (a child's `components` names are checked against the base
+config whatever its kind), `depends_on` names only
 siblings, the dependencies have no cycle, and each numbered item under the
 parent issue's `## Acceptance criteria` has a row in `## Coverage`. Paths are
 relative to the working directory, the worktree root. All three arguments
@@ -181,23 +183,33 @@ def component_reasons(children: list) -> list:
     for c in children:
         if c.get("kind") != "implementation":
             continue
-        component = c.get("component")
-        if isinstance(component, list):
+        key = c["key"]
+        if "component" in c:
             reasons.append(
-                f"child {c['key']!r}: component is a list of {len(component)}; "
-                "an implementation child names exactly one component as a string"
+                f"child {key!r}: has a 'component' key; an implementation child names its components "
+                "in a 'components' list"
             )
-        elif not isinstance(component, str) or not component:
-            reasons.append(f"child {c['key']!r}: an implementation child needs one component")
+            continue
+        names = c.get("components")
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
+            reasons.append(f"child {key!r}: an implementation child needs a non-empty 'components' list of names")
+            continue
+        for index, name in enumerate(names):
+            if name in names[index + 1 :] and name not in names[:index]:
+                reasons.append(f"child {key!r}: components names {name!r} twice")
     return reasons
 
 
 def known_reasons(children: list, components: list) -> list:
-    return [
-        f"child {c['key']!r}: component {c['component']!r} is not in the base config"
-        for c in children
-        if isinstance(c.get("component"), str) and c["component"] not in components
-    ]
+    reasons = []
+    for c in children:
+        names = c.get("components")
+        if not isinstance(names, list):
+            continue
+        for name in dict.fromkeys(n for n in names if isinstance(n, str)):
+            if name not in components:
+                reasons.append(f"child {c['key']!r}: component {name!r} is not in the base config")
+    return reasons
 
 
 def sibling_reasons(children: list) -> list:

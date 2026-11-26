@@ -113,8 +113,8 @@ Globs match as in the plan floor; tracked paths are every ls-tree entry.
   gate-reports        report-formats *      report-gates.py's resolve rejects
                                             gates.report
   plan-approval       plan-approval-config * the plan floor's validate_config
-                                            rejects the config, given its
-                                            first component by name
+                                            rejects the config, given all
+                                            its components
   plan-approval       docs-component *      components.docs has no paths
   plan-approval       tests-exist           no tracked test file
   plan-approval       tests-declared *      gates.tests is `none` while test
@@ -981,14 +981,14 @@ def tracker_kinds(ref: Ref) -> tuple:
     components = tracker.get("components")
     source = components.get("source") if isinstance(components, dict) else None
     if not isinstance(components, dict):
-        reasons.append("tracker.components is not a mapping, so an issue's component cannot be read")
+        reasons.append("tracker.components is not a mapping, so an issue's components cannot be read")
     elif source == "labels":
         label = components.get("label")
         if not isinstance(label, str) or "{name}" not in label:
             reasons.append("tracker.components.label has no {name}, so component labels cannot be matched")
     elif source != "field":
         reasons.append(
-            f"tracker.components.source is {brief(source)}, not labels or field, so an issue's component cannot be read"
+            f"tracker.components.source is {brief(source)}, not labels or field, so an issue's components cannot be read"
         )
     return outcome(reasons)
 
@@ -1322,7 +1322,7 @@ def plan_approval_config(ref: Ref) -> tuple:
     if not isinstance(components, dict) or not components:
         return outcome([f"components is {brief(components)}, not a mapping of components, so plan approval cannot run"])
     try:
-        P.validate_config(ref.config, min(components))
+        P.validate_config(ref.config, list(components))
     except P.InputError as exc:
         return outcome([f"{exc}, so the plan floor cannot run"])
     return outcome([])

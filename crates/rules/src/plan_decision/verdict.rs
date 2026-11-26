@@ -20,7 +20,7 @@ const FLOOR_KEYS: [&str; 13] = [
     "issue_document",
     "analysis",
     "screen",
-    "component",
+    "components",
     "base",
     "config",
     "mode",
@@ -29,17 +29,17 @@ const FLOOR_KEYS: [&str; 13] = [
     "not_evaluated",
 ];
 const FLOOR_TOOL: &str = "mintswarm-plan-floor";
-const FLOOR_VERSION: i64 = 3;
+const FLOOR_VERSION: i64 = 4;
 
 /// What the verdict is held to: the digests of the plan and the documents the decision was given,
-/// the base commit, the component and the mode at the base.
+/// the base commit, the components and the mode at the base.
 pub(crate) struct Binding<'a> {
     pub plan: &'a str,
     pub issue_document: &'a str,
     pub analysis: &'a str,
     pub screen: Option<&'a str>,
     pub commit: &'a str,
-    pub component: &'a str,
+    pub components: &'a [String],
     pub mode: &'a str,
 }
 
@@ -116,8 +116,18 @@ fn verdict_problems(verdict: &Json, binding: &Binding<'_>) -> Vec<String> {
     if !is(get(field(7), "commit"), binding.commit) {
         problems.push("the floor verdict's base.commit does not match the base");
     }
-    if !is(Some(field(6)), binding.component) {
-        problems.push("the floor verdict's component does not match --component");
+    let components = match field(6) {
+        Json::Array(names) => {
+            names.len() == binding.components.len()
+                && names
+                    .iter()
+                    .zip(binding.components)
+                    .all(|(name, given)| is(Some(name), given))
+        }
+        _ => false,
+    };
+    if !components {
+        problems.push("the floor verdict's components do not match --components");
     }
     if !is(Some(field(9)), binding.mode) {
         problems.push("the floor verdict's mode does not match the base config");

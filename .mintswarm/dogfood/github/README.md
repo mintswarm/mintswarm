@@ -176,8 +176,10 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
 
    ```
    bot-gh.sh api repos/{owner}/{repo}/pulls -f head=mintswarm/<id>-<slug> -f base=master \
-     -f title='feat(<component>): …' -F body=@<file> --jq .number
+     -f title='feat(<components>): …' -F body=@<file> --jq .number
    ```
+
+   `<components>` is the issue's components, comma-separated in the issue's order with no spaces, for example `feat(domain,agents): …`.
 
    Add `-F draft=true` for a draft.
 3. **Request review:** `request-review.py <number> --branch mintswarm/<id>-<slug> --base <base commit>`. The reviewers are the code owners it chooses: one user code owner for each approval group of the paths the PR changes, as few as cover them all, from CODEOWNERS at the base. GitHub requests team code owners itself.
@@ -204,7 +206,7 @@ Every push, PR, issue and artifact the session makes as the runner goes through 
        - `approve`: release the issue with `assign-approvers.py release <issue> plan` and file the children, as in the next item.
        - `changes`: release the issue, apply the comment as a steer under "Decisions and notes" in a new decompose job's `issue.md` (with the line `<!-- mintswarm: steer -->`, as in `.mintswarm/dogfood/plan-approval/README.md`), put the previous decomposition at `.mintswarm/job/inputs/artefacts/decomposition.md`, and run decompose again. The revision gets a new package, from item 4.
        - `reject`: release the issue; nothing more runs for it until the maintainer says otherwise.
-    6. Before filing each child, run `reclassify.py check-parent <issue> --base <base commit>`. On a non-zero exit, file nothing more and stop the job for a human as in step 7: post the refusal and run `assign-approvers.py assign <issue> needs_input`, which assigns the issue's owner.
+    6. Before filing each child, run `reclassify.py check-parent <issue> --base <base commit>`. On a non-zero exit, file nothing more and stop the job for a human as in step 7: post the refusal and run `assign-approvers.py assign <issue> needs_input`, which assigns the issue's owner. Each implementation child is filed with one `component:<name>` label per name in its `components` list.
 
 12. **`msw-state`:** whenever the session writes a new Status line to an issue's Pipeline state artifact or updates its `<!-- mintswarm: state -->` comment, it runs `msw-state.py set <issue> <value> --base <base commit>`, with the value the tables in [msw-state](#msw-state) map the state to. It does the same when a job stops for `needs_input` (step 7) or waits on external steps (step 8), both `escalated`, and runs `msw-state.py set <issue> none --base <base commit>` when a job is dropped. Once a plan is approved, in the session or from the tracker (step 14), it posts the approval record of step 14 and sets `plan approved` before `implementing`; without that record on the issue, `watch-plan-approvals.py` reports the value as set by hand. It sets `queued` when it picks up an issue whose job it has not yet started, and `blocked` when that job waits on dependencies that are still open. It also runs `set` again with the current value after every `assign-approvers.py assign` on the issue (steps 7, 8 and 9) and after opening the PR (step 2): GitHub sets Todo when an issue is assigned and In review when a PR is linked, and the re-run puts the mapped status back. `msw-state.py get <issue> --base <base commit>` shows the current value and status. An exit 1 that names `fields resolve` is handled as in [Field ids](#field-ids): reported to the operator, and the job goes on. A job whose base commit predates `tracker.state` in `.mintswarm/config.yaml` has no settings there, so `set` would exit 2: for such a job, run `git fetch origin master` and pass `--base origin/master` instead.
 13. **Approval in the session:** when the maintainer approves a PR in the session ("I approve PR #N"), land it with the steward. Approvals given on GitHub keep working as before, and this step is not needed for them.

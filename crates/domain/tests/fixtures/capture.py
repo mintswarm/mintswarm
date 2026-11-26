@@ -45,11 +45,11 @@ SELFTESTS = (
 )
 TOOLS = ("floor.py", "decision.py", "keep-round.py", "collect-facts.py")
 RECORDS = {
-    ("mintswarm-plan-floor", 3),
-    ("mintswarm-approval-decision", 2),
+    ("mintswarm-plan-floor", 4),
+    ("mintswarm-approval-decision", 3),
     ("mintswarm-keep-round", 2),
     ("mintswarm-landing-facts", 3),
-    ("mintswarm-landing-floor", 2),
+    ("mintswarm-landing-floor", 3),
 }
 SCRATCH = ROOT / "build" / "fixture-capture" / "tmp"
 CAPTURED_AT = "2000-01-01T00:00:00Z"

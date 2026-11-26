@@ -10,13 +10,17 @@
 //! Migration 2 adds `unrecognised_failures`, beyond design §12: the failures of an outside
 //! command, such as `git fetch`, that the runner's classifier did not recognise, counted per
 //! adapter and signature for a later step to learn from.
+//!
+//! Migration 3 renames `jobs.component` to `components`, beyond design §12: an issue carries one
+//! or more components, held as a JSON array of names in `TEXT`; a name already there becomes a
+//! one-name array.
 
 use rusqlite::{Connection, TransactionBehavior};
 
 use super::{StoreError, sql};
 
 /// The migrations, in order; migration `n` is `MIGRATIONS[n - 1]`. Only ever append to it.
-pub(super) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2];
+pub(super) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3];
 
 /// The schema version a fully migrated database has.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -196,6 +200,12 @@ CREATE TABLE unrecognised_failures (
     last_seen_at INTEGER NOT NULL,
     PRIMARY KEY (adapter, signature)
 ) STRICT;
+"#;
+
+/// `jobs.component` becomes `components`, a JSON array of names.
+const MIGRATION_3: &str = r#"
+ALTER TABLE jobs RENAME COLUMN component TO components;
+UPDATE jobs SET components = json_array(components) WHERE components IS NOT NULL;
 "#;
 
 /// Apply the migrations `conn` has not had, in one transaction, and set its `user_version`.

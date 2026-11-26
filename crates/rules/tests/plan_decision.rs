@@ -90,6 +90,16 @@ fn with_documents(bundle: &Bundle, documents: &Value) -> Bundle {
     }
 }
 
+/// A captured components list.
+fn names(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .expect("a components list")
+        .iter()
+        .map(|name| name.as_str().expect("a component name").to_owned())
+        .collect()
+}
+
 fn fixture() -> Fixture {
     let text = fs::read_to_string(fixtures().join("plan_decision.jsonl")).expect("the fixture");
     let mut blobs: HashMap<(String, String), Vec<u8>> = HashMap::new();
@@ -127,7 +137,7 @@ fn fixture() -> Fixture {
                         .to_owned(),
                 ),
             },
-            component: entry["component"].as_str().expect("a component").to_owned(),
+            components: names(&entry["components"]),
             plan: Item::new("", Vec::new()),
             issue_document: None,
             analysis: None,
@@ -137,8 +147,10 @@ fn fixture() -> Fixture {
         };
         let bundle = with_documents(&base, &entry);
         let verdict = &entry["verdict"];
-        let verdict_bundle =
-            (verdict["real"] == true).then(|| with_documents(&base, &verdict["documents"]));
+        let verdict_bundle = (verdict["real"] == true).then(|| Bundle {
+            components: names(&verdict["components"]),
+            ..with_documents(&base, &verdict["documents"])
+        });
         let text = |key: &str| entry[key].as_str().expect("a string").to_owned();
         runs.push(Run {
             name: text("case"),
@@ -399,4 +411,36 @@ fn split_inert(fixture: &[u8]) -> (Vec<&[u8]>, &[u8]) {
         }
     }
     (rest, inert.expect("the inert line"))
+}
+
+#[test]
+fn a_verdict_for_other_components_names_them() {
+    let runs = fixture().runs;
+    for name in ["judged components reordered", "judged components different"] {
+        let run = runs
+            .iter()
+            .find(|run| run.name == name)
+            .unwrap_or_else(|| panic!("no run {name:?}"));
+        let bundle = run.verdict_bundle.as_ref().expect("a real verdict");
+        assert_ne!(bundle.components, run.bundle.components, "{name}");
+        let verdict = plan_floor::floor(bundle)
+            .expect("the real verdict's floor")
+            .text();
+        let inputs = Inputs {
+            bundle: &run.bundle,
+            issue: run.issue,
+            verdict: Input::Bytes(verdict.as_bytes()),
+            assessment_path: &run.assessment_path,
+            assessment: Input::Missing,
+            artifact: &run.artifact,
+            harness: &run.harness,
+            model: &run.model,
+        };
+        let decided = plan_decision::decide(&inputs).expect("usable input");
+        assert_eq!(
+            decided.record().layers.floor.problems,
+            ["the floor verdict's components do not match --components"],
+            "{name}"
+        );
+    }
 }

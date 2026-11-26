@@ -269,11 +269,14 @@ fn plan_floor_from_the_bundle_equals_floor_py() {
         let root = documents_root(replayed.dir.path(), name, case);
         let expected = number(get(case, "exit"));
         exits.push(expected);
-        let component = string(get(case, "component"));
+        let Json::Array(names) = get(case, "components") else {
+            panic!("{name}: components is not a list");
+        };
+        let components: Vec<String> = names.iter().map(|n| string(n).to_owned()).collect();
         let bundle = plan_floor_bundle(
             &replayed.store,
             base(case),
-            component,
+            &components,
             &root,
             &documents(case),
         );
@@ -313,8 +316,9 @@ fn extraction_failures_are_unusable() {
         reference: "master".to_owned(),
         commit: commit.clone(),
     };
+    let widgets = ["widgets".to_owned()];
     let extract = |base: BaseRef, documents: &Documents| {
-        plan_floor_bundle(&replayed.store, base, "widgets", &root, documents)
+        plan_floor_bundle(&replayed.store, base, &widgets, &root, documents)
     };
 
     let bundle = extract(at(&head), &full).unwrap();

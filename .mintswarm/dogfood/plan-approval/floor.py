@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Check a plan and its documents against the deterministic floor of plan approval.
 
-    floor.py --plan PATH --component NAME --base REF
+    floor.py --plan PATH --components NAMES --base REF
              [--issue-document PATH] [--analysis PATH] [--screen PATH]
 
 Dogfooding stand-in for the control plane's plan-approval floor, the
 deterministic rules that run on a plan before the approval decision. Every
 hit sends the plan to a human; a clean verdict only means that no rule
 written here objects. Paths are relative to the working directory, which is
-the worktree root. --plan, --component and --base are required, and
+the worktree root. --plan, --components and --base are required, and
 --issue-document, --analysis and --screen optional; each is given at most
 once, as `--name value`. Anything else, an empty value, a value that is an
 argument name or a REF starting with `-` is unusable input. A document that
@@ -25,7 +25,7 @@ Inputs:
   order, or the same with "production_lines" right after "estimated_lines".
   A footprint without it reads as one whose production_lines is
   estimated_lines.
-- NAME, the issue's component.
+- NAMES, the issue's components, comma-separated in the issue's order.
 - REF, the base ref. The configuration is .mintswarm/config.yaml at the
   commit REF resolves to, read with `git show` and converted with
   `yq -p=yaml -o=json`. The worktree's config is never opened, so a change
@@ -109,8 +109,9 @@ and optionally `limits_by_component`, mapping defined components to mappings
 with some of the keys of `limits`, each a non-negative integer (not a
 boolean), which replace the flat `limits` value key by key for that
 component; `gates.tests` is absent or a string; `gates.run` is absent or a
-list of mappings with a `command` string that shlex can split. NAME must be
-a defined component.
+list of mappings with a `command` string that shlex can split. Each of
+NAMES must be non-empty, given once and a defined component, checked in
+that order.
 
 A glob matches the whole path: `**` matches anything including `/`, `**/`
 zero or more directories, `*` anything within one segment, `?` one
@@ -133,11 +134,11 @@ new dependency's `manifest`.
                              `*`, `?`, `[` or `]`, or is under .mintswarm/job/
   require-human-paths        a declared path matches require_human.paths,
                              compared case-insensitively
-  require-human-components   NAME is in require_human.components, or a
-                             declared path is in the paths of one of them,
+  require-human-components   one of NAMES is in require_human.components, or
+                             a declared path is in the paths of one of them,
                              compared case-insensitively
-  component-scope            a declared path is in neither NAME's paths nor
-                             `shared`
+  component-scope            a declared path is in neither the paths of any
+                             of NAMES nor `shared`
   no-component               a declared path is in no component's paths and
                              not in `shared`
   limit-files                len(files) is over limits.files
@@ -194,11 +195,12 @@ new dependency's `manifest`.
   first-of-kind              the issue document's header (its lines before
                              the first `## ` heading) has not exactly one
                              `- **Kind:** implementation` line and one
-                             `- **Component:**` line equal to NAME, or no
-                             subject in the history matches
-                             `<type>(NAME)`, with an optional `!`, then
-                             `: `, the scope compared exactly; no
-                             --issue-document
+                             `- **Components:**` line whose names, split on
+                             `,` and stripped, are NAMES as a set, or a name
+                             of NAMES is in the scope of no subject in the
+                             history: `<type>(SCOPE)`, with an optional
+                             `!`, then `: `, SCOPE split on `,` and each
+                             name compared exactly; no --issue-document
 
 The markers of `## Questions` entries are `- **Must decide:**`,
 `- **Recommended:**` and `- **Assumption:**`, and for the transition the old
@@ -218,9 +220,10 @@ of objects, each with a string `question` and a `kind` of `must_decide`,
 one, the section-level rules still run, but the bullets are neither hits
 nor counted.
 
-The limits of the limit-* rules are NAME's: limits with NAME's
-limits_by_component applied, a reason naming the override when it decides
-the limit.
+The limits of the limit-* rules are NAMES': per key, the largest
+limits_by_component override among NAMES, and the flat limit where none
+overrides; a reason names the override when it decides the limit, that of
+the first of NAMES giving the value.
 
 A usable screen record is strict JSON, an object whose `tool` is
 `dependency-screen`, `version` the integer 1, `mode` `plan` and `packages` a
@@ -245,9 +248,9 @@ three document rules always are.
 
 The verdict is .mintswarm/job/outputs/floor.json, written to a temporary
 file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-plan-floor`), `version` (3), `plan` ({`path`, `sha256` of its
+(`mintswarm-plan-floor`), `version` (4), `plan` ({`path`, `sha256` of its
 bytes}), `issue_document`, `analysis` and `screen` (each {`path`, `sha256`
-of its bytes}, or null when not given), `component`, `base` ({`ref` as
+of its bytes}, or null when not given), `components` (NAMES as a list), `base` ({`ref` as
 given, `commit`, the full hash}), `config` (`.mintswarm/config.yaml`),
 `mode` (as read), `verdict` (`hit` or `clean`), `rules` (one {`rule`,
 `result`, `reasons`} per evaluated rule, in the order above, `reasons` empty
@@ -284,7 +287,7 @@ from pathlib import Path
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 CONFIG = ".mintswarm/config.yaml"
 TOOL = "mintswarm-plan-floor"
-VERSION = 3
+VERSION = 4
 DOCS = "docs"
 MODES = ("always", "shadow", "judged", "never")
 LIMITS = ("files", "lines", "new_files")
@@ -337,11 +340,11 @@ RULES = (
     "first-of-kind",
 )
 FOOTPRINT_RULES = RULES[1:13]  # the rules that read the footprint, skipped after a `footprint` hit
-REQUIRED = ("--plan", "--component", "--base")
+REQUIRED = ("--plan", "--components", "--base")
 OPTIONAL = ("--issue-document", "--analysis", "--screen")
 ARGS = REQUIRED + OPTIONAL
 USAGE = (
-    "usage: floor.py --plan PATH --component NAME --base REF "
+    "usage: floor.py --plan PATH --components NAMES --base REF "
     "[--issue-document PATH] [--analysis PATH] [--screen PATH]"
 )
 FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})json", re.IGNORECASE)
@@ -362,7 +365,8 @@ MARKERS = (
 BLOCKING_MARKERS = (MUST_DECIDE, RECOMMENDED, BLOCKING)
 QUESTION_KINDS = ("must_decide", "recommended", "assumption")
 KIND = "- **Kind:**"
-COMPONENT = "- **Component:**"
+COMPONENTS = "- **Components:**"
+SCOPE = re.compile(r"[A-Za-z]+\(([^()]*)\)!?: ")
 ITEM = re.compile(r"(?:[0-9]+[.)]|[-*+])(?:[ \t]+|$)(.*)", re.DOTALL)
 CHECKBOX = re.compile(r"\[[ x]\](?:[ \t]+|$)(.*)", re.DOTALL)
 SEPARATOR_CELL = re.compile(r"[ \t]*:?-{3,}:?[ \t]*")
@@ -508,7 +512,7 @@ def parse_args(argv: list) -> dict:
         raise InputError(f"--base must not start with '-': {args['--base']!r}")
     return {
         "plan": args["--plan"],
-        "component": args["--component"],
+        "components": args["--components"].split(","),
         "base": args["--base"],
         "issue_document": args.get("--issue-document"),
         "analysis": args.get("--analysis"),
@@ -713,7 +717,7 @@ def string_list(value, where: str, optional: bool = True) -> list:
     return value
 
 
-def validate_config(config: dict, component: str) -> dict:
+def validate_config(config: dict, names: list) -> dict:
     components = config.get("components")
     if not isinstance(components, dict):
         raise InputError("config: components must be a mapping")
@@ -823,9 +827,22 @@ def validate_config(config: dict, component: str) -> dict:
             if index > 0 and words[index - 1] == "cd":
                 directory += [segment for segment in word.split("/") if segment not in ("", ".")]
 
-    if component not in components:
-        raise InputError(f"--component {component!r} is not a component in the config")
-    overrides = by_component.get(component, {})
+    if "" in names:
+        raise InputError("--components has an empty name")
+    for index, name in enumerate(names):
+        if name in names[:index]:
+            raise InputError(f"--components names {name!r} twice")
+    for name in names:
+        if name not in components:
+            raise InputError(f"--components {name!r} is not a component in the config")
+    chosen = {}
+    sources = {}
+    for key in LIMITS:
+        for name in names:
+            value = by_component.get(name, {}).get(key)
+            if value is not None and (key not in chosen or value > chosen[key]):
+                chosen[key] = value
+                sources[key] = f"limits_by_component.{name}"
     return {
         "paths": paths,
         "shared": shared,
@@ -833,18 +850,18 @@ def validate_config(config: dict, component: str) -> dict:
         "min_confidence": min_confidence,
         "rh_components": rh_components,
         "rh_paths": rh_paths,
-        "limits": {key: overrides.get(key, limits[key]) for key in LIMITS},
-        "limit_sources": {key: f"limits_by_component.{component}" for key in LIMITS if key in overrides},
+        "limits": {key: chosen.get(key, limits[key]) for key in LIMITS},
+        "limit_sources": sources,
         "non_production": list(non_production),
         "tests": tests,
         "gate_words": gate_words,
     }
 
 
-def prepare(commit: str, component: str, plan: bytes, git_dir=None) -> tuple:
-    """(config, cfg): the config at commit, validated for component. The plan is not read here."""
+def prepare(commit: str, components: list, plan: bytes, git_dir=None) -> tuple:
+    """(config, cfg): the config at commit, validated for components. The plan is not read here."""
     config = load_config(commit, git_dir=git_dir)
-    return config, validate_config(config, component)
+    return config, validate_config(config, components)
 
 
 # --- footprint -----------------------------------------------------------
@@ -1064,7 +1081,7 @@ def screen_reasons(footprint: dict, text) -> list:
     return reasons
 
 
-def evaluate(footprint: dict, component: str, cfg: dict, screen=None) -> list:
+def evaluate(footprint: dict, components: list, cfg: dict, screen=None) -> list:
     declared = list(footprint["files"])
     for dep in footprint["new_dependencies"]:
         if dep["manifest"] not in declared:
@@ -1083,18 +1100,23 @@ def evaluate(footprint: dict, component: str, cfg: dict, screen=None) -> list:
     rule("require-human-paths", reasons)
 
     reasons = []
-    if component in cfg["rh_components"]:
-        reasons.append(f"the issue's component {component} is in require_human.components")
+    for component in components:
+        if component in cfg["rh_components"]:
+            reasons.append(f"the issue's component {component} is in require_human.components")
     for path in declared:
         for name in cfg["rh_components"]:
             for glob in matching(paths[name], path, ci=True):
                 reasons.append(f"{path} is in component {name} ({glob}), which requires a human")
     rule("require-human-components", reasons)
 
+    if len(components) == 1:
+        outside = f"component {components[0]}"
+    else:
+        outside = f"components {', '.join(components)}"
     reasons = []
     for path in declared:
-        if not matching(paths[component], path) and not matching(shared, path):
-            reasons.append(f"{path} is outside component {component} and shared")
+        if not any(matching(paths[c], path) for c in components) and not matching(shared, path):
+            reasons.append(f"{path} is outside {outside} and shared")
     rule("component-scope", reasons)
 
     reasons = []
@@ -1398,7 +1420,7 @@ def header_value(header: list, marker: str) -> tuple:
     return found[0][len(marker) :].strip(), None
 
 
-def first_of_kind_reasons(issue: str, component: str, subjects: list) -> list:
+def first_of_kind_reasons(issue: str, components: list, subjects: list) -> list:
     lines = issue_body(issue)
     first = next((i for i, level in headings(lines) if level == 2), len(lines))
     header = lines[:first]
@@ -1408,18 +1430,23 @@ def first_of_kind_reasons(issue: str, component: str, subjects: list) -> list:
         reasons.append(why)
     elif kind != "implementation":
         reasons.append(f"the issue's kind is {flat(kind)!r}, not implementation")
-    named, why = header_value(header, COMPONENT)
+    named, why = header_value(header, COMPONENTS)
     if why:
         reasons.append(why)
-    elif named != component:
-        reasons.append(f"the issue's component is {flat(named)!r}, not --component {component}")
+    elif {name.strip() for name in named.split(",")} != set(components):
+        reasons.append(f"the issue's components are {flat(named)!r}, not --components {','.join(components)}")
     if reasons:
         return reasons
-    scoped = re.compile(rf"[A-Za-z]+\({re.escape(component)}\)!?: ")
-    if not any(scoped.match(subject) for subject in subjects):
-        reasons.append(
-            f"first of its kind: no commit reachable from the base commit has a subject " f"scoped ({component})"
-        )
+    scopes = set()
+    for subject in subjects:
+        match = SCOPE.match(subject)
+        if match:
+            scopes.update(match.group(1).split(","))
+    for component in components:
+        if component not in scopes:
+            reasons.append(
+                f"first of its kind: no commit reachable from the base commit has a subject scoped ({component})"
+            )
     return reasons
 
 
@@ -1437,7 +1464,7 @@ def history(commit: str, git_dir=None) -> list:
 
 
 def evaluate_documents(
-    issue, analysis, plan_text: str, component: str, subjects: list, analysis_record=None, plan_record=None
+    issue, analysis, plan_text: str, components: list, subjects: list, analysis_record=None, plan_record=None
 ) -> list:
     """The three document rules; issue and analysis are text, or None when not given, and the records the text of
     the analysis's and the plan's result records, or None when there is none."""
@@ -1454,7 +1481,7 @@ def evaluate_documents(
 
     no_issue = ["no issue document given (--issue-document)"]
     rule("acceptance-criteria", no_issue if issue is None else criteria_reasons(issue, plan_text))
-    rule("first-of-kind", no_issue if issue is None else first_of_kind_reasons(issue, component, subjects))
+    rule("first-of-kind", no_issue if issue is None else first_of_kind_reasons(issue, components, subjects))
     return results
 
 
@@ -1462,7 +1489,7 @@ def conclude(
     plan_text: str,
     issue,
     analysis,
-    component: str,
+    components: list,
     cfg: dict,
     subjects: list,
     screen=None,
@@ -1479,8 +1506,8 @@ def conclude(
         rules = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
     else:
         rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
-        rules += evaluate(footprint, component, cfg, screen)
-    rules += evaluate_documents(issue, analysis, plan_text, component, subjects, analysis_record, plan_record)
+        rules += evaluate(footprint, components, cfg, screen)
+    rules += evaluate_documents(issue, analysis, plan_text, components, subjects, analysis_record, plan_record)
     evaluated = [r["rule"] for r in rules]
     return rules, [name for name in RULES if name not in evaluated], footprint
 
@@ -1524,7 +1551,7 @@ def floor(argv: list) -> int:
     with job_object_store({"base": args["base"]}) as (store, commits):
         commit = commits["base"]
         data = read_plan(args["plan"])
-        _, cfg = prepare(commit, args["component"], data, git_dir=store)
+        _, cfg = prepare(commit, args["components"], data, git_dir=store)
         documents = {}
         for key, what in (("issue_document", "issue document"), ("analysis", "analysis"), ("screen", "screen record")):
             path = args[key]
@@ -1538,7 +1565,7 @@ def floor(argv: list) -> int:
         data.decode("utf-8"),
         texts["issue_document"],
         texts["analysis"],
-        args["component"],
+        args["components"],
         cfg,
         subjects,
         texts["screen"],
@@ -1556,7 +1583,7 @@ def floor(argv: list) -> int:
         "issue_document": bound["issue_document"],
         "analysis": bound["analysis"],
         "screen": bound["screen"],
-        "component": args["component"],
+        "components": args["components"],
         "base": {"ref": args["base"], "commit": commit},
         "config": CONFIG,
         "mode": cfg["mode"],

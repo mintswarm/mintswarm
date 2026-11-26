@@ -11,14 +11,14 @@ makes is recorded, as one JSON object per line of OUT:
 - `{"kind": "config", "sha256", "bytes"}`: the bytes of a `.mintswarm/config.yaml` at a base commit;
 - `{"kind": "history", "sha256", "bytes"}`: the raw `git log -z --format=%s` output from a base
   commit;
-- `{"kind": "run", "case", "base", "component", "config", "history", "plan", "issue_document",
+- `{"kind": "run", "case", "base", "components", "config", "history", "plan", "issue_document",
   "analysis", "screen", "analysis_record", "plan_record", "verdict", "assessment", "issue",
   "artifact", "harness", "model", "exit", "record", "stdout"}`: one run, named by the self-test's
-  case name. Its config and history are named by sha256, and each document is `{"path", "bytes"}` or
-  null, as `decision.py` read it. `verdict` is null when `floor.json` is missing, else `{"real",
-  "bytes", "documents"}`: whether it is the verdict floor.py wrote when the case's plan was
-  prepared, its bytes, and for the real one the documents floor.py read then, in the same form as
-  the run's. `assessment` is `{"path", "bytes"}`, its bytes null when the file is missing. `exit` is
+  case name. `components` is the list `decision.py` was given. Its config and history are named
+  by sha256, and each document is `{"path", "bytes"}` or null, as `decision.py` read it. `verdict` is null when `floor.json` is missing, else `{"real",
+  "bytes", "documents", "components"}`: whether it is the verdict floor.py wrote when the case's
+  plan was prepared, its bytes, and for the real one the documents floor.py read then, in the same
+  form as the run's, and the components it was given (null for any other verdict). `assessment` is `{"path", "bytes"}`, its bytes null when the file is missing. `exit` is
   the exit code, `record` the bytes of the `decision.json` it wrote or null, and `stdout` what it
   printed.
 - `{"kind": "triggers", "hard", "authority"}`: `decision.py`'s HARD_TRIGGERS and
@@ -109,6 +109,7 @@ class Capture:
         self.runs = []
         self.current = None
         self.prepared = {}
+        self.components = {}
 
     def git(self, sb, *args: str):
         return subprocess.run(["git", *args], cwd=sb.repo, env=sb.env, capture_output=True)
@@ -139,6 +140,7 @@ class Capture:
         """The documents floor.py read when ctx was prepared: taken once, right after."""
         if key not in self.prepared:
             self.prepared[key] = self.documents(sb, ctx["plan"], ctx["issue"], ctx["analysis"], ctx["screen"])
+            self.components[key] = ctx["components"].split(",")
 
     def before(self, sb, argv: list) -> dict:
         args = self.decision.parse_args(argv)
@@ -150,7 +152,7 @@ class Capture:
             "kind": "run",
             "case": self.current["name"],
             "base": {"ref": args["base"], "commit": commit},
-            "component": args["component"],
+            "components": args["components"],
             "config": self.keep("config", config),
             "history": self.keep("history", history),
         }
@@ -162,6 +164,7 @@ class Capture:
                 "real": real,
                 "bytes": blob(verdict.read_bytes()),
                 "documents": self.prepared[self.current["key"]] if real else None,
+                "components": self.components[self.current["key"]] if real else None,
             }
         else:
             run["verdict"] = None

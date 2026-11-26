@@ -27,8 +27,10 @@ Checks:
   `~~~` and bare `yaml` openers, unclosed fence, yaml that does not parse,
   multi-document yaml, `children` empty or not a list, a duplicate or
   missing `key`, a missing `depends_on`), child-kind (`design`, missing),
-  child-component (missing, empty, a list), known-components (`web` known
-  at `base`, `extra` a hit), depends-on-siblings, no-cycles (two children,
+  child-component (`components` missing, empty, a string, holding an
+  empty name or a name twice, and a `component` key, with their exact
+  reasons; a list of two is clean), known-components (`web` known at
+  `base`, `extra` a hit, also as one unknown name in a list of two), depends-on-siblings, no-cycles (two children,
   a self-dependency) and coverage (a missing row, an empty `Covered by`
   cell, bullet-only criteria, no criteria section, no Coverage table; a
   reworded row, `N)` criteria and a decoy section under `## Comments` are
@@ -92,7 +94,7 @@ CHILDREN = """children:
   - key: floor
     kind: implementation
     title: "Decomposition floor"
-    component: agents
+    components: [agents]
     depends_on: []
     problem: |
       A floor is needed.
@@ -101,7 +103,7 @@ CHILDREN = """children:
   - key: decision
     kind: implementation
     title: "Decision"
-    component: web
+    components: [web, docs]
     depends_on: [floor]
     problem: |
       A decision is needed.
@@ -130,8 +132,10 @@ def child_yaml(children: list) -> str:
     return "\n".join(out) + "\n"
 
 
-def child(key: str, kind="implementation", component="agents", depends_on=None, **extra) -> dict:
-    c = {"key": key, "kind": kind, "component": component, "depends_on": depends_on or []}
+def child(key: str, kind="implementation", components=("agents",), depends_on=None, **extra) -> dict:
+    c = {"key": key, "kind": kind, "components": components, "depends_on": depends_on or []}
+    if isinstance(components, tuple):
+        c["components"] = list(components)
     for name, value in list(c.items()):
         if value is DROP:
             del c[name]
@@ -319,8 +323,10 @@ def check_shape(sb: Sandbox, name: str, proc, verdict, dec: str, issue: str, ref
     return T.check(f"{name}: verdict shape", not problems, "; ".join(problems))
 
 
-def case(sb: Sandbox, name: str, dec_text: str, hits=(), skipped=False, issue_text: str = None, contains=None):
-    """Run the floor and check that exactly the rules in hits are hits."""
+def case(
+    sb: Sandbox, name: str, dec_text: str, hits=(), skipped=False, issue_text: str = None, contains=None, exact=None
+):
+    """Run the floor and check that exactly the rules in hits are hits; exact maps rules to their exact reasons."""
     dec = sb.write(name, dec_text)
     issue = sb.write(f"{name} issue", issue_document() if issue_text is None else issue_text)
     proc, verdict = sb.floor(["--decomposition", dec, "--issue-document", issue, "--base", "base"])
@@ -333,6 +339,9 @@ def case(sb: Sandbox, name: str, dec_text: str, hits=(), skipped=False, issue_te
     if contains:
         reasons = [reason for r in verdict["rules"] for reason in r["reasons"]]
         T.check(f"{name}: reason names {contains!r}", any(contains in r for r in reasons), f"reasons {reasons}")
+    for rule, wanted_reasons in (exact or {}).items():
+        got = [r["reasons"] for r in verdict["rules"] if r["rule"] == rule]
+        T.check(f"{name}: {rule} reasons", got == [wanted_reasons], f"reasons {got}, wanted {wanted_reasons}")
 
 
 def check_clean(sb: Sandbox) -> None:
@@ -365,38 +374,76 @@ def check_children_block(sb: Sandbox) -> None:
 
 
 def check_child_rules(sb: Sandbox) -> None:
-    case(sb, "plan child", decomposition(child_yaml([child("a"), child("b", kind="plan", component=DROP)])))
+    needs = "child 'a': an implementation child needs a non-empty 'components' list of names"
+    case(sb, "plan child", decomposition(child_yaml([child("a"), child("b", kind="plan", components=DROP)])))
     case(sb, "kind design", decomposition(child_yaml([child("a", kind="design")])), ["child-kind"], contains="design")
     case(sb, "kind missing", decomposition(child_yaml([child("a", kind=DROP)])), ["child-kind"])
-    case(sb, "component missing", decomposition(child_yaml([child("a", component=DROP)])), ["child-component"])
     case(
         sb,
-        "component empty",
-        decomposition(child_yaml([child("a", component="")])),
-        ["child-component", "known-components"],
-    )
-    case(
-        sb, "component list", decomposition(child_yaml([child("a", component=["agents", "docs"])])), ["child-component"]
-    )
-    case(
-        sb,
-        "component list of one",
-        decomposition(child_yaml([child("a", component=["agents"])])),
+        "components missing",
+        decomposition(child_yaml([child("a", components=DROP)])),
         ["child-component"],
-        contains="component is a list of 1",
+        exact={"child-component": [needs]},
     )
-    case(sb, "component web known at base", decomposition(child_yaml([child("a", component="web")])))
+    case(
+        sb,
+        "components empty",
+        decomposition(child_yaml([child("a", components=[])])),
+        ["child-component"],
+        exact={"child-component": [needs]},
+    )
+    case(
+        sb,
+        "components a string",
+        decomposition(child_yaml([child("a", components="agents")])),
+        ["child-component"],
+        exact={"child-component": [needs]},
+    )
+    case(
+        sb,
+        "components holding an empty name",
+        decomposition(child_yaml([child("a", components=["agents", ""])])),
+        ["child-component", "known-components"],
+        exact={"child-component": [needs], "known-components": ["child 'a': component '' is not in the base config"]},
+    )
+    case(
+        sb,
+        "a component key",
+        decomposition(child_yaml([child("a", components=DROP, component="agents")])),
+        ["child-component"],
+        exact={
+            "child-component": [
+                "child 'a': has a 'component' key; an implementation child names its components in a 'components' list"
+            ]
+        },
+    )
+    case(
+        sb,
+        "a name twice",
+        decomposition(child_yaml([child("a", components=["agents", "docs", "agents"])])),
+        ["child-component"],
+        exact={"child-component": ["child 'a': components names 'agents' twice"]},
+    )
+    case(sb, "components list of two", decomposition(child_yaml([child("a", components=["agents", "docs"])])))
+    case(sb, "component web known at base", decomposition(child_yaml([child("a", components=["web"])])))
     case(
         sb,
         "component extra unknown at base",
-        decomposition(child_yaml([child("a", component="extra")])),
+        decomposition(child_yaml([child("a", components=["extra"])])),
         ["known-components"],
         contains="extra",
     )
     case(
         sb,
+        "one unknown name in a list of two",
+        decomposition(child_yaml([child("a", components=["agents", "extra"])])),
+        ["known-components"],
+        exact={"known-components": ["child 'a': component 'extra' is not in the base config"]},
+    )
+    case(
+        sb,
         "plan child with unknown component",
-        decomposition(child_yaml([child("a", kind="plan", component="nope")])),
+        decomposition(child_yaml([child("a", kind="plan", components=["nope"])])),
         ["known-components"],
     )
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decide whether a plan needs a human, from the floor verdict and the assessment.
 
-    decision.py --issue N --component NAME --plan PATH --issue-document PATH
+    decision.py --issue N --components NAMES --plan PATH --issue-document PATH
                 --analysis PATH --assessment PATH --assessment-artifact REF
                 --base REF --harness NAME --model NAME [--screen PATH]
 
@@ -23,8 +23,9 @@ Inputs:
   (an integer from 90 to 100, 90 when absent) of .mintswarm/config.yaml at
   the commit it resolves to, read and validated by floor.py's own code
   (loaded from the file next to this one, its `prepare`), so the
-  worktree's config is never opened. NAME given to --component must be a
-  defined component.
+  worktree's config is never opened. NAMES given to --components, the
+  issue's components comma-separated in the issue's order, must each be
+  non-empty, given once and a defined component.
 - PATH given to --plan, the plan, and the PATHs given to --issue-document
   and --analysis, the issue document and the analysis the floor read, all
   read as UTF-8; an unreadable one is unusable input.
@@ -57,14 +58,14 @@ history makes every run exit 2.
 
 The floor layer is usable only if the verdict is strict JSON (no duplicate
 keys, NaN or Infinity) and all of these hold: its keys are floor.py's, in
-order; `tool` is `mintswarm-plan-floor` and `version` is 3; `plan.sha256` is
+order; `tool` is `mintswarm-plan-floor` and `version` is 4; `plan.sha256` is
 the sha256 of the plan's bytes; `issue_document.sha256` and
 `analysis.sha256` are those of the documents given here, so a verdict made
 without them or with other ones does not count; `screen` is null when
 --screen is not given and otherwise has the sha256 of the record given, so a
 verdict made with another record, or with or without one when this run
-differs, does not count; `base.commit` is the resolved base; `component` is
-NAME; `mode` is the base config's mode; every rule is {`rule`, `result`,
+differs, does not count; `base.commit` is the resolved base; `components`
+is NAMES as a list, in the same order; `mode` is the base config's mode; every rule is {`rule`, `result`,
 `reasons`} with `result` `hit` or `clean` and string reasons exactly when it
 is a hit; `rules` holds floor.py's rule identifiers in order, and
 `not_evaluated` is empty, or exactly the rules that read the footprint
@@ -118,8 +119,8 @@ read and recorded, whatever the mode.
 
 The record is .mintswarm/job/outputs/decision.json, written to a temporary
 file and renamed onto it, with these keys in this order: `tool`
-(`mintswarm-approval-decision`), `version` (2), `approval` (`plan`),
-`subject` ({`issue`, `component`, `plan` {`path`, `sha256`}, `base`
+(`mintswarm-approval-decision`), `version` (3), `approval` (`plan`),
+`subject` ({`issue`, `components`, `plan` {`path`, `sha256`}, `base`
 {`ref`, `commit`}}), `mode`, `min_confidence`, `layers`, `judged_decision`,
 `decision` and `reasons` (the mode's rule, each layer's outcome, the
 judgement's confidence and band, then `judgement: hard trigger …` for the
@@ -176,9 +177,10 @@ Exits 0 for `auto` and 1 for `human`. Exits 2 on unusable input, with no
 record unless a stale one could not be deleted: bad arguments, an
 unresolvable base ref, a partial clone, a failed fetch into the object store
 (a forged or missing object, a shallow history), no config at it, an invalid
-config, an unknown component, an unreadable plan, issue document, analysis
-or screen record, git or yq missing or failing (reading the history too), a
-record that cannot be deleted or written, or any unexpected error. A missing
+config, an empty, repeated or unknown component name, an unreadable plan,
+issue document, analysis or screen record, git or yq missing or failing
+(reading the history too), a record that cannot be deleted or written, or
+any unexpected error. A missing
 or unusable verdict or assessment is not unusable input: it gives a record
 with that layer unusable. The interpreter itself exits 1 when it crashes
 outside main(), so exit 0 counts only together with a record whose
@@ -201,9 +203,9 @@ RECORD = Path(".mintswarm/job/outputs/decision.json")
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 FLOOR = Path(__file__).resolve().parent / "floor.py"
 TOOL = "mintswarm-approval-decision"
-VERSION = 2
+VERSION = 3
 FLOOR_TOOL = "mintswarm-plan-floor"
-FLOOR_VERSION = 3
+FLOOR_VERSION = 4
 FLOOR_KEYS = [
     "tool",
     "version",
@@ -211,7 +213,7 @@ FLOOR_KEYS = [
     "issue_document",
     "analysis",
     "screen",
-    "component",
+    "components",
     "base",
     "config",
     "mode",
@@ -246,7 +248,7 @@ SPAN_LIMIT = 600
 SPAN_MARK = " … (truncated)"
 REQUIRED = (
     "--issue",
-    "--component",
+    "--components",
     "--plan",
     "--issue-document",
     "--analysis",
@@ -259,7 +261,7 @@ REQUIRED = (
 OPTIONAL = ("--screen",)
 ARGS = REQUIRED + OPTIONAL
 USAGE = (
-    "usage: decision.py --issue N --component NAME --plan PATH --issue-document PATH "
+    "usage: decision.py --issue N --components NAMES --plan PATH --issue-document PATH "
     "--analysis PATH --assessment PATH --assessment-artifact REF --base REF "
     "--harness NAME --model NAME [--screen PATH]"
 )
@@ -320,7 +322,7 @@ def parse_args(argv: list) -> dict:
         raise InputError(f"--base must not start with '-': {args['--base']!r}")
     return {
         "issue": int(args["--issue"]),
-        "component": args["--component"],
+        "components": args["--components"].split(","),
         "plan": args["--plan"],
         "issue_document": args["--issue-document"],
         "analysis": args["--analysis"],
@@ -368,7 +370,7 @@ def bound(value, sha: str) -> bool:
     return isinstance(value, dict) and value.get("sha256") == sha
 
 
-def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: str, documents: dict) -> list:
+def verdict_problems(verdict, plan_sha: str, commit: str, components: list, mode: str, documents: dict) -> list:
     if not isinstance(verdict, dict):
         return ["the floor verdict is not a JSON object"]
     if list(verdict) != FLOOR_KEYS:
@@ -389,8 +391,8 @@ def verdict_problems(verdict, plan_sha: str, commit: str, component: str, mode: 
     base = verdict["base"]
     if not isinstance(base, dict) or base.get("commit") != commit:
         problems.append("the floor verdict's base.commit does not match the base")
-    if verdict["component"] != component:
-        problems.append("the floor verdict's component does not match --component")
+    if verdict["components"] != components:
+        problems.append("the floor verdict's components do not match --components")
     if verdict["mode"] != mode:
         problems.append("the floor verdict's mode does not match the base config")
     rules = verdict["rules"]
@@ -420,7 +422,7 @@ def floor_rules(
     plan: bytes,
     issue: bytes,
     analysis: bytes,
-    component: str,
+    components: list,
     cfg: dict,
     commit: str,
     git_dir=None,
@@ -439,7 +441,7 @@ def floor_rules(
         plan.decode("utf-8"),
         issue.decode("utf-8"),
         analysis.decode("utf-8"),
-        component,
+        components,
         cfg,
         subjects,
         None if screen is None else screen.decode("utf-8"),
@@ -447,7 +449,7 @@ def floor_rules(
     )
 
 
-def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents: dict, expected: tuple) -> dict:
+def floor_layer(plan_sha: str, commit: str, components: list, mode: str, documents: dict, expected: tuple) -> dict:
     layer = {
         "status": "unusable",
         "problems": [],
@@ -471,7 +473,7 @@ def floor_layer(plan_sha: str, commit: str, component: str, mode: str, documents
     except (UnicodeDecodeError, ValueError, RecursionError):
         layer["problems"] = ["the floor verdict is not strict JSON"]
         return layer
-    problems = verdict_problems(verdict, plan_sha, commit, component, mode, documents)
+    problems = verdict_problems(verdict, plan_sha, commit, components, mode, documents)
     if not problems and (verdict["rules"], verdict["not_evaluated"]) != expected:
         problems = ["the floor verdict's rules differ from what floor.py gives for this plan and base"]
     if problems:
@@ -927,14 +929,14 @@ def run(argv: list) -> int:
         with floor.job_object_store({"base": args["base"]}) as (store, commits):
             commit = commits["base"]
             plan = floor.read_plan(args["plan"])
-            config, cfg = floor.prepare(commit, args["component"], plan, git_dir=store)
+            config, cfg = floor.prepare(commit, args["components"], plan, git_dir=store)
             issue = floor.read_document(args["issue_document"], "issue document")
             analysis = floor.read_document(args["analysis"], "analysis")
             screen = None if args["screen"] is None else floor.read_document(args["screen"], "screen record")
             analysis_record = floor.read_record(args["analysis"])
             plan_record = floor.read_record(args["plan"])
             rules, skipped, footprint = floor_rules(
-                plan, issue, analysis, args["component"], cfg, commit, store, screen, analysis_record, plan_record
+                plan, issue, analysis, args["components"], cfg, commit, store, screen, analysis_record, plan_record
             )
     except floor.InputError as exc:
         raise InputError(str(exc)) from exc
@@ -946,7 +948,7 @@ def run(argv: list) -> int:
         "screen": None if screen is None else sha256(screen),
     }
 
-    floor_ = floor_layer(plan_sha, commit, args["component"], mode, documents, (rules, skipped))
+    floor_ = floor_layer(plan_sha, commit, args["components"], mode, documents, (rules, skipped))
     judgement = judgement_layer(args, expected_judge(config))
     judged, decision, reasons = decide(mode, cfg["min_confidence"], floor_, judgement)
     record = {
@@ -955,7 +957,7 @@ def run(argv: list) -> int:
         "approval": "plan",
         "subject": {
             "issue": args["issue"],
-            "component": args["component"],
+            "components": args["components"],
             "plan": {"path": args["plan"], "sha256": plan_sha},
             "base": {"ref": args["base"], "commit": commit},
         },

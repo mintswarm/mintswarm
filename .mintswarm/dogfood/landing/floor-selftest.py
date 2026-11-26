@@ -27,7 +27,7 @@ Checks:
 - verdict shape, on every case that exits 0 or 1: the verdict's keys in
   order, the 12 rule identifiers in order across `rules` and
   `not_evaluated`, results and reasons, `verdict` against the rules and the
-  exit code, version 2, `evidence` a list of strings, empty when
+  exit code, version 3, `components` against --components, `evidence` a list of strings, empty when
   `not_evaluated` is not, and its printed `evidence:` lines, the plan's
   sha256, `facts` (path, the sha256 of the facts file and the checks it
   lists), the full `base`, `head` and `merge_base`
@@ -39,7 +39,8 @@ Checks:
   and every require_human and protected hit ends with the not-approved
   reason;
 - single-rule hits: each diff rule, a binary file a `size` hit, and
-  the require_human rules with case variants; every case also asserts its
+  the require_human rules with case variants, the issue's own component
+  among one or two components; every case also asserts its
   exact `evidence`, empty unless stated;
 - line limits as evidence: a diff at its limit is clean with no evidence,
   one over floor(estimated_lines × lines_factor), an eight-key footprint
@@ -50,8 +51,11 @@ Checks:
 - coverage, with a plan approved by a human login and a matching `human`
   decision record: declared CLAUDE.md and .claude/agents/x.md, the config
   and a gate word each with its `<path>:` gate_changes entry, CODEOWNERS
-  and .github/workflows/ci.yml, and web/index.html in the issue's own
-  require-human component are clean; an undeclared CLAUDE.md, a declared
+  and .github/workflows/ci.yml, web/index.html in the issue's own
+  require-human component, and docs/guide.md with web/index.html under
+  the components `docs,web`, web in require_human, are clean; with
+  web/index.html undeclared under `docs,web`, web's own-component reason
+  and the path's reason hit; an undeclared CLAUDE.md, a declared
   config or gate word with no entry, an entry naming another file or
   holding the path but not as its prefix, and `claude.md` declared while
   CLAUDE.md changed still hit; a bot approver, an approver that is no
@@ -99,7 +103,8 @@ Checks:
   require_human;
 - base ref: with a head commit and a worktree config that raise
   lines_factor, the base's limit still gives the overrun under `evidence`;
-- unusable input: bad arguments (a missing or repeated --facts included),
+- unusable input: bad arguments (a missing or repeated --facts, and an
+  empty, a repeated and an undefined name in --components, included),
   refs, history, configs and plans, a facts file that is missing, a
   directory, a symlink, not UTF-8, not JSON, has a duplicate key or NaN, is
   not an object, has the wrong tool or version (1 included), a short head,
@@ -200,7 +205,7 @@ VERDICT_KEYS = [
     "version",
     "plan",
     "facts",
-    "component",
+    "components",
     "base",
     "head",
     "merge_base",
@@ -584,9 +589,9 @@ def human_approval(plan_bytes: bytes = None, decision: str = None, plan_sha: str
         sha = plan_sha or hashlib.sha256(plan_bytes).hexdigest()
         record = {
             "tool": "mintswarm-approval-decision",
-            "version": 2,
+            "version": 3,
             "approval": "plan",
-            "subject": {"issue": 1, "component": "docs", "plan": {"path": "plan.md", "sha256": sha}},
+            "subject": {"issue": 1, "components": ["docs"], "plan": {"path": "plan.md", "sha256": sha}},
             "decision": decision,
         }
         approval["decision"] = {"path": "decision.json", "sha256": "0" * 64, "record": record}
@@ -661,7 +666,7 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
         problems.append(f"verdict {verdict.get('verdict')!r} against the rules")
     if proc.returncode != (1 if hit else 0):
         problems.append(f"exit {proc.returncode} with verdict {verdict.get('verdict')!r}")
-    if verdict.get("tool") != "mintswarm-landing-floor" or verdict.get("version") != 2:
+    if verdict.get("tool") != "mintswarm-landing-floor" or verdict.get("version") != 3:
         problems.append("tool or version")
     evidence = verdict.get("evidence")
     if not isinstance(evidence, list) or not all(isinstance(x, str) for x in evidence):
@@ -684,8 +689,8 @@ def check_shape(name: str, proc, verdict, sb: Sandbox, args: dict, mode: str) ->
         expected_facts = f"a facts file the floor should have refused: {exc}"
     if verdict.get("facts") != expected_facts:
         problems.append(f"facts {verdict.get('facts')}, expected {expected_facts}")
-    if verdict.get("component") != args["component"]:
-        problems.append("component")
+    if verdict.get("components") != args["components"].split(","):
+        problems.append("components")
     base = sb.git("rev-parse", f"{args['base']}^{{commit}}")
     head = sb.git("rev-parse", f"{args['head']}^{{commit}}")
     merge = sb.git("merge-base", base, head)
@@ -742,7 +747,7 @@ class Runner:
         name: str,
         content,
         changes: dict = None,
-        component: str = "docs",
+        components: str = "docs",
         config: str = "real",
         base: str = None,
         head: str = None,
@@ -754,9 +759,9 @@ class Runner:
         base = base or self.commits[config]
         head = head or self.sb.child(self.sb.git("rev-parse", f"{base}^{{commit}}"), changes or {})
         facts_path = self.sb.write_facts(name, facts_for(self.sb.commit_of(base), self.sb.commit_of(head), facts))
-        args = {"plan": plan, "component": component, "base": base, "head": head, "facts": facts_path}
+        args = {"plan": plan, "components": components, "base": base, "head": head, "facts": facts_path}
         proc, verdict = self.sb.floor(
-            ["--plan", plan, "--component", component, "--base", base, "--head", head, "--facts", facts_path], env=env
+            ["--plan", plan, "--components", components, "--base", base, "--head", head, "--facts", facts_path], env=env
         )
         check_shape(name, proc, verdict, self.sb, args, mode or self.modes[config])
         return proc, verdict
@@ -798,7 +803,7 @@ def check_config(sb: Sandbox, commits: dict) -> None:
     target = sb.repo / PLAN_VERDICT
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
-    proc = sb.exec(["--plan", plan, "--component", "docs", "--base", commits["real"]], script=PLAN_FLOOR)
+    proc = sb.exec(["--plan", plan, "--components", "docs", "--base", commits["real"]], script=PLAN_FLOOR)
     T.check(
         "config: plan-approval/floor.py accepts the real config",
         proc.returncode in (0, 1) and target.is_file(),
@@ -973,7 +978,15 @@ def check_single_rules(r: Runner) -> None:
         footprint(["docs/guide.md"], estimated_lines=4),
         appended("docs/guide.md", 1),
         {"require-human-components": "the issue's component web is in require_human.components"},
-        component="web",
+        components="web",
+        config="rh-web",
+    )
+    r.expect(
+        "one of two components in require_human",
+        footprint(["docs/guide.md"], estimated_lines=4),
+        appended("docs/guide.md", 1),
+        {"require-human-components": "the issue's component web is in require_human.components"},
+        components="docs,web",
         config="rh-web",
     )
 
@@ -1309,7 +1322,7 @@ def check_object_store(r: Runner, sb: Sandbox) -> None:
     original = path.read_bytes()
     plan = sb.write_plan("forged object", plan_text(footprint(["docs/forged.md"], ["docs/forged.md"], 10)))
     facts = sb.write_facts("forged object", facts_for(base, head))
-    argv = ["--plan", plan, "--component", "docs", "--base", base, "--head", head, "--facts", facts]
+    argv = ["--plan", plan, "--components", "docs", "--base", base, "--head", head, "--facts", facts]
     path.chmod(0o644)
     path.write_bytes(zlib.compress(b"blob %d\0" % len(other) + other))
     try:
@@ -1334,7 +1347,7 @@ def check_object_store(r: Runner, sb: Sandbox) -> None:
     far_head = sb.child(middle, {"docs/added.md": text(2, "added")}, "shallow head")
     plan = sb.write_plan("forged shallow", plan_text(fp))
     facts = sb.write_facts("forged shallow", facts_for(base, far_head))
-    argv = ["--plan", plan, "--component", "docs", "--base", base, "--head", far_head, "--facts", facts]
+    argv = ["--plan", plan, "--components", "docs", "--base", base, "--head", far_head, "--facts", facts]
     shallow = sb.repo / ".git" / "shallow"
     shallow.write_text(f"{middle}\n", encoding="ascii")
     try:
@@ -1510,7 +1523,13 @@ def check_coverage(r: Runner, commits: dict) -> None:
             "web/index.html in the issue's own require-human component",
             footprint(["web/index.html"], ["web/index.html"], estimated_lines=2),
             {"web/index.html": text(1)},
-            {"component": "web", "config": "rh-web"},
+            {"components": "web", "config": "rh-web"},
+        ),
+        (
+            "docs/guide.md and web/index.html, two components with web in require_human",
+            footprint(["docs/guide.md", "web/index.html"], ["web/index.html"], estimated_lines=6),
+            {**appended("docs/guide.md", 1), "web/index.html": text(1)},
+            {"components": "docs,web", "config": "rh-web"},
         ),
     ]
     for label, fp, changes, kwargs in covered:
@@ -1526,6 +1545,29 @@ def check_coverage(r: Runner, commits: dict) -> None:
 
     claude = footprint(["CLAUDE.md"], ["CLAUDE.md"], estimated_lines=2)
     claude_plan = plan_text(claude).encode("utf-8")
+    guide_only = footprint(["docs/guide.md"], estimated_lines=4)
+    _, verdict = r.expect(
+        "coverage: two components, an undeclared path in the one in require_human",
+        guide_only,
+        {**appended("docs/guide.md", 1), "web/index.html": text(1)},
+        {
+            "undeclared-files": "web/index.html is changed but is neither in files nor a new dependency's manifest",
+            "undeclared-new-files": "web/index.html is added but is not in new_files",
+            "require-human-components": "the issue's component web is in require_human.components",
+        },
+        components="docs,web",
+        config="rh-web",
+        facts={"approval": human_approval(plan_text(guide_only).encode("utf-8"), "human")},
+    )
+    T.check(
+        "coverage: two components, the own-component reason once, then the path's",
+        reasons_of(verdict, "require-human-components")[:2]
+        == [
+            "the issue's component web is in require_human.components",
+            "web/index.html is in component web (web/**), which requires a human",
+        ],
+        str(reasons_of(verdict, "require-human-components")),
+    )
     guide = footprint(["docs/guide.md"], estimated_lines=4)
     _, verdict = r.expect(
         "coverage: an undeclared CLAUDE.md next to a declared file",
@@ -1701,9 +1743,9 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             matching[(b, h)] = sb.write_facts("matching", clean_facts(b, h))
         return matching[(b, h)]
 
-    def args(plan=good, component="docs", base=real, head_=head, facts=None) -> list:
+    def args(plan=good, components="docs", base=real, head_=head, facts=None) -> list:
         facts = facts if facts is not None else facts_matching(base, head_)
-        return ["--plan", plan, "--component", component, "--base", base, "--head", head_, "--facts", facts]
+        return ["--plan", plan, "--components", components, "--base", base, "--head", head_, "--facts", facts]
 
     def without(argv: list, name: str) -> list:
         i = argv.index(name)
@@ -1741,7 +1783,10 @@ def check_unusable(sb: Sandbox, commits: dict) -> None:
             args(base=commits["noconfig"], head_=sb.child(commits["noconfig"], {"x.md": text(1)})),
             f"no {CONFIG_PATH}",
         ),
-        ("unknown component", args(component="nope"), "nope"),
+        ("unknown component", args(components="nope"), "nope"),
+        ("empty component name", args(components="docs,"), "--components has an empty name"),
+        ("repeated component name", args(components="docs,docs"), "--components names 'docs' twice"),
+        ("unknown second component", args(components="docs,nope"), "--components 'nope' is not a component"),
         ("facts missing", args(facts="cases/missing.facts.json"), "cases/missing.facts.json is missing"),
         ("facts a directory", args(facts="cases"), "the facts file cases is not a regular file"),
         ("facts a symlink", args(facts=str(link.relative_to(sb.repo))), "is a symbolic link"),
@@ -2380,7 +2425,7 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
         [
             "--plan",
             "cases/missing.md",
-            "--component",
+            "--components",
             "docs",
             "--base",
             r.commits["real"],
@@ -2403,7 +2448,7 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
     plan = sb.write_plan("copied scripts", plan_text(fp))
     head = sb.child(r.commits["real"], {**appended("docs/guide.md", 1), "CLAUDE.md": text(1)})
     facts = sb.write_facts("copied scripts", clean_facts(r.commits["real"], head))
-    argv = ["--plan", plan, "--component", "docs", "--base", r.commits["real"], "--head", head, "--facts", facts]
+    argv = ["--plan", plan, "--components", "docs", "--base", r.commits["real"], "--head", head, "--facts", facts]
     proc, verdict = sb.floor(argv)
     copied, copied_verdict = sb.floor(argv, script=copy_root / "landing" / "floor.py")
     T.check(
@@ -2473,7 +2518,7 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
             replayed == [l for l in expected_numstat if l],
             f"{replayed} against {expected_numstat}",
         )
-        proc, verdict = r.run(name, (FIXTURES / fixture).read_bytes(), component=component, base=base, head=head)
+        proc, verdict = r.run(name, (FIXTURES / fixture).read_bytes(), components=component, base=base, head=head)
         expected = [
             {"rule": rule, "result": "hit" if rule in hits else "clean", "reasons": hits.get(rule, [])}
             for rule in RULES
@@ -2491,7 +2536,7 @@ def check_historic(r: Runner, sb: Sandbox) -> None:
         proc, verdict = r.run(
             f"{name} under a human approval",
             plan,
-            component=component,
+            components=component,
             base=base,
             head=head,
             facts={"approval": human_approval(plan, "human")},
