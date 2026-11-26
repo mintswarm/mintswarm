@@ -158,7 +158,7 @@ fn list_tree_lists_every_entry() {
 }
 
 #[test]
-fn log_lists_commits_newest_first() {
+fn log_lists_commits_in_topological_order() {
     let fx = Fixture::new();
     let store = fx.fetched_store("log");
     let range = RevRange {
@@ -166,21 +166,36 @@ fn log_lists_commits_newest_first() {
         to: fx.merged.clone(),
     };
     let commits = store.log(&range, &[]).unwrap();
-    assert_eq!(ids(&commits), [&fx.merged, &fx.side, &fx.main]);
+    let topo: Vec<RevId> = super::text(&super::fixture_git(
+        store.path(),
+        &[
+            "rev-list",
+            "--topo-order",
+            &fx.merged.0,
+            &format!("^{}", fx.base.0),
+        ],
+    ))
+    .lines()
+    .map(|line| RevId(line.to_owned()))
+    .collect();
+    assert_eq!(ids(&commits), topo.iter().collect::<Vec<_>>());
+    assert_eq!(ids(&commits), [&fx.merged, &fx.main, &fx.side]);
+    // Children come before their parents.
+    for (at, commit) in commits.iter().enumerate() {
+        for parent in &commit.parents {
+            assert!(!ids(&commits[..at]).contains(&parent), "{}", parent.0);
+        }
+    }
     let merge = &commits[0];
     assert_eq!(merge.parents, [fx.side.clone(), fx.main.clone()]);
-    assert_eq!(merge.subject, "merge main");
+    assert_eq!(merge.message, "merge main\n");
     assert_eq!(merge.author.name, "Ada Lovelace");
     assert_eq!(merge.author.email, "ada@example.com");
-    // git writes UTC as `Z` or `+00:00`, depending on its version.
-    let at = &merge.committed_at;
-    assert!(
-        at == "2023-11-14T22:18:20Z" || at == "2023-11-14T22:18:20+00:00",
-        "{at}"
-    );
-    assert_eq!(commits[1].subject, "side work");
-    assert_eq!(commits[1].body, "body line\n");
-    assert_eq!(commits[1].parents, std::slice::from_ref(&fx.base));
+    assert_eq!(merge.authored_at, "2023-11-14T22:18:20Z");
+    let side = &commits[2];
+    assert_eq!(side.message, "side work\n\nbody line\n");
+    assert_eq!(side.authored_at, "2023-11-14T22:16:40Z");
+    assert_eq!(side.parents, std::slice::from_ref(&fx.base));
 
     let all = RevRange {
         from: None,
@@ -240,11 +255,14 @@ fn log_ignores_the_store_log_config() {
         )
     };
     let baseline = observe();
-    assert_eq!(baseline.0[0].subject, "unrelated café");
+    assert_eq!(baseline.0[0].message, "unrelated café\n");
     for (key, value) in [
         ("log.showSignature", "true"),
         ("i18n.logOutputEncoding", "ISO-8859-1"),
         ("log.follow", "true"),
+        ("diff.orderFile", "/nonexistent"),
+        ("diff.renames", "copies"),
+        ("diff.relative", "true"),
     ] {
         super::fixture_git(store.path(), &["config", key, value]);
     }
@@ -252,25 +270,27 @@ fn log_ignores_the_store_log_config() {
 }
 
 #[test]
-fn merge_base_finds_the_common_ancestor() {
+fn merge_bases_finds_the_common_ancestors() {
     let fx = Fixture::new();
     let store = fx.fetched_store("base");
     assert_eq!(
-        store.merge_base(&fx.main, &fx.side).unwrap(),
-        Some(fx.base.clone())
+        store.merge_bases(&fx.main, &fx.side).unwrap(),
+        std::slice::from_ref(&fx.base)
     );
     assert_eq!(
-        store.merge_base(&fx.merged, &fx.main).unwrap(),
-        Some(fx.main.clone())
+        store.merge_bases(&fx.merged, &fx.main).unwrap(),
+        std::slice::from_ref(&fx.main)
     );
-    assert_eq!(store.merge_base(&fx.side, &fx.orphan).unwrap(), None);
+    assert!(store.merge_bases(&fx.side, &fx.orphan).unwrap().is_empty());
 }
 
 #[test]
 fn diff_reports_kinds_modes_and_lines() {
     let fx = Fixture::new();
     let store = fx.fetched_store("diff");
-    let plain = store.diff(&fx.base, &fx.side, DiffOpts::default()).unwrap();
+    let plain = store
+        .diff(&fx.base, &fx.side, DiffOpts::default(), &[])
+        .unwrap();
     let kinds: BTreeMap<RepoPath, ChangeKind> = plain
         .files
         .iter()
@@ -293,12 +313,11 @@ fn diff_reports_kinds_modes_and_lines() {
     .collect();
     assert_eq!(kinds, expected);
     assert!(plain.patch.is_none());
-    assert!(
-        plain
-            .files
-            .iter()
-            .all(|file| file.old_mode.is_none() && file.new_mode.is_none() && file.lines.is_none())
-    );
+    assert!(plain.files.iter().all(|file| file.old_mode.is_none()
+        && file.new_mode.is_none()
+        && file.old_blob.is_none()
+        && file.new_blob.is_none()
+        && file.lines.is_none()));
 
     let full = store
         .diff(
@@ -310,6 +329,7 @@ fn diff_reports_kinds_modes_and_lines() {
                 raw: true,
                 patch: true,
             },
+            &[],
         )
         .unwrap();
     let file = |name: &[u8]| {
@@ -330,6 +350,41 @@ fn diff_reports_kinds_modes_and_lines() {
         (file(b"sub").old_mode, file(b"sub").new_mode),
         (None, Some(0o160000))
     );
+    // The blob ids are fixture git's, and `None` on a missing side.
+    let blob = |commit: &RevId, name: &str| {
+        Some(RevId(super::text(&super::fixture_git(
+            &fx.source,
+            &["rev-parse", &format!("{}:{name}", commit.0)],
+        ))))
+    };
+    for name in ["keep.txt", "script.sh", "bin.dat", "link"] {
+        assert_eq!(
+            (
+                file(name.as_bytes()).old_blob.clone(),
+                file(name.as_bytes()).new_blob.clone()
+            ),
+            (blob(&fx.base, name), blob(&fx.side, name)),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        (
+            file(b"gone.txt").old_blob.clone(),
+            file(b"gone.txt").new_blob.clone()
+        ),
+        (blob(&fx.base, "gone.txt"), None)
+    );
+    assert_eq!(
+        (
+            file(b"new file.txt").old_blob.clone(),
+            file(b"new file.txt").new_blob.clone()
+        ),
+        (None, blob(&fx.side, "new file.txt"))
+    );
+    assert_eq!(
+        (file(b"sub").old_blob.clone(), file(b"sub").new_blob.clone()),
+        (None, Some(RevId(GITLINK.to_owned())))
+    );
     assert_eq!(file(b"keep.txt").lines, Some((2, 1)));
     assert_eq!(file(b"gone.txt").lines, Some((0, 1)));
     assert_eq!(file(b"bin.dat").lines, None);
@@ -337,14 +392,14 @@ fn diff_reports_kinds_modes_and_lines() {
 
     assert!(
         store
-            .diff(&fx.side, &fx.side, DiffOpts::default())
+            .diff(&fx.side, &fx.side, DiffOpts::default(), &[])
             .unwrap()
             .files
             .is_empty()
     );
     let bad = RevId(format!("{}^", fx.side.0));
     assert!(matches!(
-        store.diff(&bad, &fx.side, DiffOpts::default()),
+        store.diff(&bad, &fx.side, DiffOpts::default(), &[]),
         Err(GitError::RevisionSyntax(_))
     ));
 }
@@ -443,10 +498,13 @@ fn diff_equals_landing_floor_diff() {
     ] {
         let (modes, lines, added) = floor_diff(&store, base, head);
         assert!(!modes.is_empty());
-        let fork = store.merge_base(base, head).unwrap().unwrap();
+        let bases = store.merge_bases(base, head).unwrap();
+        let [fork] = bases.as_slice() else {
+            panic!("one merge base expected, not {}", bases.len());
+        };
         let ours = store
             .diff(
-                &fork,
+                fork,
                 head,
                 DiffOpts {
                     numstat: true,
@@ -454,6 +512,7 @@ fn diff_equals_landing_floor_diff() {
                     raw: true,
                     patch: false,
                 },
+                &[],
             )
             .unwrap();
         let letter = |kind: ChangeKind| match kind {

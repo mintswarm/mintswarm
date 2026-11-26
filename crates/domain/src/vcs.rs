@@ -51,16 +51,20 @@ pub struct Identity {
     pub email: String,
 }
 
-/// A commit as `log` reads it.
+/// A commit as `log` and `read_commit` read it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitInfo {
     pub id: RevId,
     pub parents: Vec<RevId>,
     pub author: Identity,
-    /// RFC 3339.
-    pub committed_at: String,
-    pub subject: String,
-    pub body: String,
+    /// The author date in UTC, `YYYY-MM-DDTHH:MM:SSZ`, as [`crate::time::format_utc_seconds`]
+    /// writes it.
+    pub authored_at: String,
+    /// The whole message as stored, from after the header's blank line to the end.
+    pub message: String,
+    /// The changes against the first parent, or against the empty tree for a root commit, with
+    /// their modes and blob ids and without line counts.
+    pub changes: Vec<FileChange>,
 }
 
 /// What a diff reports, besides the changed paths.
@@ -92,6 +96,10 @@ pub struct FileChange {
     pub kind: ChangeKind,
     pub old_mode: Option<u32>,
     pub new_mode: Option<u32>,
+    /// The blob or gitlink id before the change; `None` when the path did not exist.
+    pub old_blob: Option<RevId>,
+    /// The blob or gitlink id after the change; `None` when the path no longer exists.
+    pub new_blob: Option<RevId>,
     /// Added and deleted lines; `None` for a binary file or without `numstat`.
     pub lines: Option<(u64, u64)>,
 }
@@ -193,14 +201,32 @@ pub trait Vcs: Send + Sync {
     /// Every entry of a commit's tree.
     fn list_tree(&self, rev: &RevId) -> Result<Vec<TreeEntry>, Self::Error>;
 
-    /// The commits of a range that touch the paths, newest first.
+    /// The commits of a range in topological order, children before their parents. With paths,
+    /// only the commits whose changes touch one of them, each with those changes alone: a change
+    /// touches a path when its path is the path or lies under it as a directory. A path ending in
+    /// `/` is refused, as `diff` refuses it.
     fn log(&self, revs: &RevRange, paths: &[RepoPath]) -> Result<Vec<CommitInfo>, Self::Error>;
 
-    /// The best common ancestor of two commits.
-    fn merge_base(&self, a: &RevId, b: &RevId) -> Result<Option<RevId>, Self::Error>;
+    /// One commit, as `log` lists it without paths.
+    fn read_commit(&self, rev: &RevId) -> Result<CommitInfo, Self::Error>;
 
-    /// The changes from one commit to another.
-    fn diff(&self, base: &RevId, head: &RevId, opts: DiffOpts) -> Result<ChangeSet, Self::Error>;
+    /// Every best common ancestor of two commits, as `git merge-base --all` finds them; empty
+    /// when they share no history.
+    fn merge_bases(&self, a: &RevId, b: &RevId) -> Result<Vec<RevId>, Self::Error>;
+
+    /// Whether `a` is reachable from `b`; true when `a == b`.
+    fn is_ancestor(&self, a: &RevId, b: &RevId) -> Result<bool, Self::Error>;
+
+    /// The changes from one commit to another, limited to the paths and the trees under them;
+    /// an empty `paths` means the whole tree. A path ending in `/` is refused, as `log` refuses
+    /// it.
+    fn diff(
+        &self,
+        base: &RevId,
+        head: &RevId,
+        opts: DiffOpts,
+        paths: &[RepoPath],
+    ) -> Result<ChangeSet, Self::Error>;
 
     /// Make a tree of a commit at `dest`.
     fn materialise(

@@ -1,11 +1,12 @@
 //! `diff` between two commits' trees, with the landing floor's options.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::vcs::{ChangeKind, ChangeSet, DiffOpts, FileChange, RepoPath};
 
-use super::read::resolve;
+use super::read::{id_text, path_args, resolve};
 use super::{GitError, GitStore};
 
 /// The landing floor's diff options (`landing/floor.py` `DIFF_OPTIONS`), exactly.
@@ -34,29 +35,36 @@ pub const PATCH_OPTIONS: [&str; 7] = [
     "--submodule=short",
 ];
 
-/// The changes from `base`'s tree to `head`'s.
+/// The changes from `base`'s tree to `head`'s, limited to `paths` unless it is empty.
 pub(super) fn diff(
     store: &GitStore,
     base: &RevId,
     head: &RevId,
     opts: &DiffOpts,
+    paths: &[RepoPath],
 ) -> Result<ChangeSet, GitError> {
     let base = resolve(store, store.checked_id(base)?)?.0;
     let head = resolve(store, store.checked_id(head)?)?.0;
+    let paths = path_args(paths, "diff")?;
     let run = |form: &[&str], options: &[&str]| {
         let args = std::iter::once("diff")
             .chain(form.iter().copied())
             .chain(options.iter().copied())
             .chain(PINNED_OPTIONS)
-            .chain([base.as_str(), head.as_str()]);
+            .chain([base.as_str(), head.as_str(), "--"])
+            .map(OsStr::new)
+            .chain(paths.iter().copied());
         store.git(args)
     };
 
-    let mut files = raw_changes(&run(&["--raw", "--no-abbrev"], &DIFF_OPTIONS)?)?;
+    let raw = run(&["--raw", "--no-abbrev"], &DIFF_OPTIONS)?;
+    let mut files = raw_changes(store, "diff", &z_records(&raw).collect::<Vec<_>>())?;
     if !opts.raw {
         for file in &mut files {
             file.old_mode = None;
             file.new_mode = None;
+            file.old_blob = None;
+            file.new_blob = None;
         }
     }
     if opts.numstat {
@@ -98,40 +106,48 @@ pub(super) fn diff(
 }
 
 fn parse(detail: &str) -> GitError {
+    parse_in("diff", detail)
+}
+
+fn parse_in(command: &str, detail: &str) -> GitError {
     GitError::Parse {
-        command: "diff".to_owned(),
+        command: command.to_owned(),
         detail: detail.to_owned(),
     }
 }
 
 /// The NUL-terminated records of `-z` output.
-fn z_records(out: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(super) fn z_records(out: &[u8]) -> impl Iterator<Item = &[u8]> {
     let out = out.strip_suffix(b"\0").unwrap_or(out);
     out.split(|&byte| byte == 0).filter(|_| !out.is_empty())
 }
 
-/// The changes `--raw -z` lists: a header record then a path record for each.
-fn raw_changes(out: &[u8]) -> Result<Vec<FileChange>, GitError> {
-    let records: Vec<&[u8]> = z_records(out).collect();
+/// The changes the `--raw -z` records of `command` list: a header record then a path record for
+/// each, with the modes and blob ids always set where a side exists.
+pub(super) fn raw_changes(
+    store: &GitStore,
+    command: &str,
+    records: &[&[u8]],
+) -> Result<Vec<FileChange>, GitError> {
     if records.len() % 2 != 0 {
-        return Err(parse("a --raw header without a path"));
+        return Err(parse_in(command, "a --raw header without a path"));
     }
     records
         .chunks(2)
         .map(|pair| {
             let (header, path) = (pair[0], pair[1]);
             let bad = || {
-                parse(&format!(
-                    "--raw header {:?}",
-                    String::from_utf8_lossy(header)
-                ))
+                parse_in(
+                    command,
+                    &format!("--raw header {:?}", String::from_utf8_lossy(header)),
+                )
             };
             let fields: Vec<&[u8]> = header
                 .strip_prefix(b":")
                 .ok_or_else(bad)?
                 .split(|&byte| byte == b' ')
                 .collect();
-            let [old_mode, new_mode, _, _, status] = fields.as_slice() else {
+            let [old_mode, new_mode, old_blob, new_blob, status] = fields.as_slice() else {
                 return Err(bad());
             };
             let mode = |field: &[u8]| {
@@ -152,12 +168,21 @@ fn raw_changes(out: &[u8]) -> Result<Vec<FileChange>, GitError> {
                 return Err(bad());
             }
             let present = |mode: u32| (mode != 0).then_some(mode);
+            let blob = |field: &[u8]| {
+                if field.len() == store.id_len && field.iter().all(|&byte| byte == b'0') {
+                    Ok(None)
+                } else {
+                    id_text(store, field, command).map(|id| Some(RevId(id)))
+                }
+            };
             Ok(FileChange {
                 path: RepoPath(path.to_vec()),
                 old_path: None,
                 kind,
                 old_mode: present(mode(old_mode)?),
                 new_mode: present(mode(new_mode)?),
+                old_blob: blob(old_blob)?,
+                new_blob: blob(new_blob)?,
                 lines: None,
             })
         })

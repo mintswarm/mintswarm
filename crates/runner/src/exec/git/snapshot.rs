@@ -77,15 +77,15 @@ fn file_mode(mode: u32) -> u32 {
     }
 }
 
-/// One `git cat-file --batch`, asked for one blob at a time.
-struct Batch {
+/// One `git cat-file --batch`, asked for one object at a time.
+pub(super) struct Batch {
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
 
 impl Batch {
-    fn start(store: &GitStore) -> Result<Batch, GitError> {
+    pub(super) fn start(store: &GitStore) -> Result<Batch, GitError> {
         let mut command = store.command(["cat-file", "--batch"]);
         command.stdin(Stdio::piped());
         let mut child = command
@@ -108,6 +108,11 @@ impl Batch {
 
     /// The bytes of the blob `id`.
     fn blob(&mut self, id: &str) -> Result<Vec<u8>, GitError> {
+        self.object(id, "blob")
+    }
+
+    /// The bytes of the object `id`, which must be of type `kind`, such as `blob` or `commit`.
+    pub(super) fn object(&mut self, id: &str, kind: &str) -> Result<Vec<u8>, GitError> {
         let parse = |detail: String| GitError::Parse {
             command: "cat-file".to_owned(),
             detail,
@@ -127,7 +132,7 @@ impl Batch {
         let header = String::from_utf8_lossy(&header).into_owned();
         let mut fields = header.trim_end().split(' ');
         let size = match (fields.next(), fields.next(), fields.next(), fields.next()) {
-            (Some(got), Some("blob"), Some(size), None) if got == id => size
+            (Some(got), Some(got_kind), Some(size), None) if got == id && got_kind == kind => size
                 .parse::<usize>()
                 .map_err(|_| parse(format!("header {header:?}")))?,
             _ => return Err(parse(format!("header {header:?} for {id}"))),
@@ -137,13 +142,13 @@ impl Batch {
             .read_exact(&mut data)
             .map_err(io("cannot read from git cat-file".to_owned()))?;
         if data.pop() != Some(b'\n') {
-            return Err(parse(format!("blob {id} without its final newline")));
+            return Err(parse(format!("{kind} {id} without its final newline")));
         }
         Ok(data)
     }
 
     /// Close the requests and wait for the process, which must succeed.
-    fn finish(mut self) -> Result<(), GitError> {
+    pub(super) fn finish(mut self) -> Result<(), GitError> {
         drop(self.stdin.take());
         let mut rest = Vec::new();
         self.stdout
@@ -169,7 +174,7 @@ impl Batch {
         if !rest.is_empty() {
             return Err(GitError::Parse {
                 command: "cat-file".to_owned(),
-                detail: "output after the last blob".to_owned(),
+                detail: "output after the last object".to_owned(),
             });
         }
         Ok(())

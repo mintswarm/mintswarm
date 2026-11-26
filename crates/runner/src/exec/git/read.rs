@@ -1,25 +1,14 @@
-//! The read operations: `resolve`, ranges, blobs, trees, logs and merge bases. Revisions are
-//! full ids only; no revision syntax reaches git.
+//! The read operations: `resolve`, ranges, blobs, trees, logs, merge bases and ancestry.
+//! Revisions are full ids only; no revision syntax reaches git.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 
 use mintswarm_domain::ids::RevId;
-use mintswarm_domain::vcs::{CommitInfo, Identity, RepoPath, RevRange, TreeEntry};
+use mintswarm_domain::vcs::{CommitInfo, RepoPath, RevRange, TreeEntry};
 
 use super::env::{failure, success};
-use super::{GitError, GitStore};
-
-/// The fields of one `log` record, as `LOG_FORMAT` writes them.
-const LOG_FIELDS: usize = 7;
-const LOG_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%ae%x00%cI%x00%s%x00%b";
-/// Settings `log` gets over the store's own config: no signatures in the stream, UTF-8 text,
-/// and the same commits for one path as for several.
-const LOG_CONFIG: &[&str] = &[
-    "log.showSignature=false",
-    "i18n.logOutputEncoding=UTF-8",
-    "log.follow=false",
-];
+use super::{GitError, GitStore, commits};
 
 impl GitStore {
     /// Whether `text` is a full id in the store's object format, other than the zero id.
@@ -90,7 +79,25 @@ pub(super) fn commit<'a>(store: &GitStore, rev: &'a RevId) -> Result<&'a str, Gi
 
 /// A path as one command-line argument, unless it cannot be one.
 fn path_arg(path: &RepoPath) -> Option<&OsStr> {
-    (!path.0.is_empty() && !path.0.contains(&0)).then(|| OsStr::from_bytes(&path.0))
+    (!path.0.is_empty() && !path.0.contains(&0) && !path.0.ends_with(b"/"))
+        .then(|| OsStr::from_bytes(&path.0))
+}
+
+/// The paths `command` limits itself to, as command-line arguments; an empty path, one with a
+/// NUL byte or one ending in `/` is refused.
+pub(super) fn path_args<'a>(
+    paths: &'a [RepoPath],
+    command: &str,
+) -> Result<Vec<&'a OsStr>, GitError> {
+    paths
+        .iter()
+        .map(|path| {
+            path_arg(path).ok_or_else(|| GitError::Parse {
+                command: command.to_owned(),
+                detail: "an empty path, one with a NUL byte or one ending in `/`".to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// One `ls-tree -z` record: mode, type, id and path.
@@ -202,71 +209,62 @@ pub(super) fn id_text(store: &GitStore, bytes: &[u8], command: &str) -> Result<S
     }
 }
 
-/// The commits reachable from `revs.to` and not from `revs.from` that touch `paths`, newest
-/// first; merges included.
+/// The commits reachable from `revs.to` and not from `revs.from`, children before their
+/// parents. With `paths`, only the commits with first-parent changes under them, each keeping
+/// those changes alone; merges are judged by their first-parent changes like any commit.
 pub(super) fn log(
     store: &GitStore,
     revs: &RevRange,
     paths: &[RepoPath],
 ) -> Result<Vec<CommitInfo>, GitError> {
-    let mut args: Vec<OsString> = ["log", "-z", "--no-color", LOG_FORMAT]
-        .map(OsString::from)
-        .into();
-    args.push(commit(store, &revs.to)?.into());
+    path_args(paths, "log")?;
+    let mut args = vec![
+        "rev-list".to_owned(),
+        "--topo-order".to_owned(),
+        commit(store, &revs.to)?.to_owned(),
+    ];
     if let Some(from) = &revs.from {
-        args.push(format!("^{}", commit(store, from)?).into());
+        args.push(format!("^{}", commit(store, from)?));
     }
-    args.push("--".into());
-    for path in paths {
-        let arg = path_arg(path).ok_or_else(|| GitError::Parse {
-            command: "log".to_owned(),
-            detail: "an empty path or one with a NUL byte".to_owned(),
-        })?;
-        args.push(arg.to_owned());
-    }
-    let out = success(
-        "log",
-        store.output(store.command_with(LOG_CONFIG, &args), "log")?,
-    )?;
-    let Some(out) = out.strip_suffix(b"\0") else {
-        return if out.is_empty() {
-            Ok(Vec::new())
-        } else {
-            Err(GitError::Parse {
-                command: "log".to_owned(),
-                detail: "output without its final NUL".to_owned(),
-            })
-        };
-    };
-    let fields: Vec<&[u8]> = out.split(|&byte| byte == 0).collect();
-    if fields.len() % LOG_FIELDS != 0 {
-        return Err(GitError::Parse {
-            command: "log".to_owned(),
-            detail: format!("{} fields, not records of {LOG_FIELDS}", fields.len()),
+    args.push("--".to_owned());
+    let ids = store
+        .git(&args)?
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| id_text(store, line, "rev-list").map(RevId))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut commits = commits::read(store, &ids)?;
+    if !paths.is_empty() {
+        commits.retain_mut(|commit| {
+            commit.changes.retain(|change| under(&change.path, paths));
+            !commit.changes.is_empty()
         });
     }
-    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
-    fields
-        .chunks(LOG_FIELDS)
-        .map(|record| {
-            let parents = record[1]
-                .split(|&byte| byte == b' ')
-                .filter(|parent| !parent.is_empty())
-                .map(|parent| id_text(store, parent, "log").map(RevId))
-                .collect::<Result<_, _>>()?;
-            Ok(CommitInfo {
-                id: RevId(id_text(store, record[0], "log")?),
-                parents,
-                author: Identity {
-                    name: text(record[2]),
-                    email: text(record[3]),
-                },
-                committed_at: text(record[4]),
-                subject: text(record[5]),
-                body: text(record[6]),
-            })
-        })
-        .collect()
+    Ok(commits)
+}
+
+/// Whether `path` is one of `paths` or lies under one of them as a directory.
+fn under(path: &RepoPath, paths: &[RepoPath]) -> bool {
+    paths.iter().any(|limit| {
+        path.0 == limit.0
+            || path
+                .0
+                .strip_prefix(limit.0.as_slice())
+                .is_some_and(|rest| rest.starts_with(b"/"))
+    })
+}
+
+/// One commit, with its first-parent changes.
+pub(super) fn read_commit(store: &GitStore, rev: &RevId) -> Result<CommitInfo, GitError> {
+    let id = RevId(commit(store, rev)?.to_owned());
+    let mut commits = commits::read(store, std::slice::from_ref(&id))?;
+    match (commits.pop(), commits.is_empty()) {
+        (Some(info), true) => Ok(info),
+        _ => Err(GitError::Parse {
+            command: "cat-file".to_owned(),
+            detail: format!("not one record for {}", id.0),
+        }),
+    }
 }
 
 /// The raw subjects of every commit reachable from `rev`, as
@@ -286,18 +284,32 @@ pub(crate) fn subjects(store: &GitStore, rev: &RevId) -> Result<Vec<u8>, GitErro
     )
 }
 
-/// The best common ancestor of two commits, or `None` when they share no history.
-pub(super) fn merge_base(
-    store: &GitStore,
-    a: &RevId,
-    b: &RevId,
-) -> Result<Option<RevId>, GitError> {
+/// Every best common ancestor of two commits; empty when they share no history.
+pub(super) fn merge_bases(store: &GitStore, a: &RevId, b: &RevId) -> Result<Vec<RevId>, GitError> {
     let a = commit(store, a)?;
     let b = commit(store, b)?;
-    let output = store.output(store.command(["merge-base", a, b]), "merge-base")?;
+    let output = store.output(store.command(["merge-base", "--all", a, b]), "merge-base")?;
     if output.status.code() == Some(1) && output.stdout.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let out = success("merge-base", output)?;
-    id_text(store, out.trim_ascii_end(), "merge-base").map(|id| Some(RevId(id)))
+    out.split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| id_text(store, line, "merge-base").map(RevId))
+        .collect()
+}
+
+/// Whether `a` is reachable from `b`, `a == b` included.
+pub(super) fn is_ancestor(store: &GitStore, a: &RevId, b: &RevId) -> Result<bool, GitError> {
+    let a = commit(store, a)?;
+    let b = commit(store, b)?;
+    let output = store.output(
+        store.command(["merge-base", "--is-ancestor", a, b]),
+        "merge-base",
+    )?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(failure("merge-base", &output)),
+    }
 }
