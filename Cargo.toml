@@ -9,6 +9,7 @@ members = [
     "crates/server",
     "crates/steward",
     "crates/runner",
+    "xtask",
 ]
 resolver = "3"
 

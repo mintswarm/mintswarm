@@ -1,3 +1,7 @@
 # All build output goes under the git-ignored root build/; Cargo writes to build/target.
 [build]
 target-dir = "build/target"
+
+# `cargo xtask <task>` runs the repository tasks in xtask/.
+[alias]
+xtask = "run --locked --package mintswarm-xtask --"
