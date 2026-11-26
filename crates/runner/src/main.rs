@@ -2,11 +2,12 @@
 
 use std::ffi::OsString;
 use std::io;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mintswarm_rules::exit;
-use mintswarm_runner::tool::save_output;
+use mintswarm_runner::tool::{msw_vcs, save_output};
 
 /// The mintswarm runner
 #[derive(Debug, Parser)]
@@ -35,6 +36,17 @@ enum Tool {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         operands: Vec<OsString>,
     },
+    /// Read the history of the working directory's job: msw-vcs log, diff and show
+    #[command(
+        name = "msw-vcs",
+        disable_help_flag = true,
+        override_usage = "mintswarm-runner tool msw-vcs (log | diff | show) ..."
+    )]
+    MswVcs {
+        /// The arguments of `msw-vcs`, checked by the tool itself
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        operands: Vec<OsString>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -48,6 +60,19 @@ fn main() -> ExitCode {
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
             )
+        }
+        Command::Tool(Tool::MswVcs { .. }) => {
+            // as for save-output: the arguments after `tool msw-vcs`, exactly as given
+            let argv: Vec<OsString> = std::env::args_os().skip(3).collect();
+            // an unreadable working directory is then not in a repository, as for the shim
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let code = msw_vcs::run(
+                &argv,
+                &cwd,
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            );
+            return ExitCode::from(code);
         }
     };
     ExitCode::from(exit::code(&outcome))

@@ -130,14 +130,46 @@ message Harness {
 
 // One probe result (design §6.1); the schema is contract C7.
 message ProbeResult {
+  // The probe failed, timed out or found nothing it could report.
+  message Unknown {}
+
+  // The probe found the capability; its version and facts, when it reports
+  // them.
+  message Known {
+    // The version the probe found, if it reports one.
+    optional string version = 1;
+    // The facts the probe found, by name.
+    map<string, Fact> facts = 2;
+  }
+
+  // One fact a probe found.
+  message Fact {
+    // The fact's value.
+    oneof value {
+      // A boolean, such as `logged_in: true`.
+      bool flag = 1;
+      // An integer.
+      int64 integer = 2;
+      // A string, such as `credential_mode: subscription`.
+      string text = 3;
+    }
+  }
+
   // The probe's namespaced id.
   string id = 1;
-  // The probed value.
-  string value = 2;
   // Where the value came from.
   string source = 3;
   // When the probe observed the value.
   google.protobuf.Timestamp observed_at = 4;
+
+  // What the probe found; field 2 is unused, and not reserved.
+  oneof result {
+    // The probe found nothing it could report.
+    Unknown unknown = 5;
+    // The probe found the capability; its version and facts, when it
+    // reports them.
+    Known known = 6;
+  }
 }
 
 // The repository a runner serves, as `Hello` reports it (design §6.1).

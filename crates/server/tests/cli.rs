@@ -10,7 +10,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_mintswarm-server");
 /// clap's exit code for a usage error, which it gives before `webhooks` runs.
 const USAGE: i32 = 2;
 
-/// The exit code of a `webhooks` run that fails, `ExitCode::FAILURE`.
+/// The exit code of a `webhooks` or `migrate new` run that fails, `ExitCode::FAILURE`.
 const FAILURE: i32 = 1;
 
 fn code(status: ExitStatus) -> Option<i32> {
@@ -262,4 +262,94 @@ fn webhooks_a_second_signal_ends_a_stop_held_by_a_stalled_connection() {
         .expect("the second signal ends the stop before the deadline");
     assert_eq!(code(status), Some(0), "a forced stop still exits 0");
     drop(stalled);
+}
+
+/// The seconds since the Unix epoch now.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_secs()
+}
+
+/// Runs `migrate new <name> --tree <tree>`.
+fn migrate_new(name: &str, tree: &std::path::Path) -> std::process::Output {
+    Command::new(BIN)
+        .args(["migrate", "new", name, "--tree"])
+        .arg(tree)
+        .output()
+        .expect("mintswarm-server runs")
+}
+
+/// The path `migrate new` printed, after checking it exited 0.
+fn created_path(output: &std::process::Output) -> std::path::PathBuf {
+    assert!(output.status.success(), "migrate new exits 0: {output:?}");
+    let stdout = String::from_utf8(output.stdout.clone()).expect("the path is UTF-8");
+    std::path::PathBuf::from(stdout.trim_end())
+}
+
+#[test]
+fn migrate_help_lists_new() {
+    let stdout = stdout_of(&["migrate", "--help"]);
+    assert!(stdout.contains("new"), "migrate help lists new: {stdout}");
+}
+
+#[test]
+fn migrate_new_names_the_file_for_the_utc_second() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let before = mintswarm_core::migrations::version_of(unix_now());
+    let created = created_path(&migrate_new("add_jobs", dir.path()));
+    let after = mintswarm_core::migrations::version_of(unix_now());
+    assert!(created.is_file(), "{} is created", created.display());
+    assert_eq!(
+        created.parent(),
+        Some(dir.path().join("mintswarm/migrations").as_path())
+    );
+    let file_name = created
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("the file name is UTF-8");
+    let version = file_name
+        .strip_suffix("_add_jobs.up.sql")
+        .expect("the file is <version>_add_jobs.up.sql");
+    assert!(
+        before.as_str() <= version && version <= after.as_str(),
+        "{before} <= {version} <= {after}"
+    );
+}
+
+#[test]
+fn migrate_new_twice_gives_two_files_and_keeps_the_first() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let first = created_path(&migrate_new("same", dir.path()));
+    std::fs::write(&first, "CREATE TABLE a ();\n").expect("the first file is written");
+    let second = created_path(&migrate_new("same", dir.path()));
+    assert_ne!(first, second, "the second run uses another second");
+    assert!(second.is_file(), "{} is created", second.display());
+    assert_eq!(
+        std::fs::read(&first).expect("the first file reads"),
+        b"CREATE TABLE a ();\n"
+    );
+}
+
+#[test]
+fn migrate_new_refuses_an_invalid_name() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let output = migrate_new("bad-name", dir.path());
+    assert_eq!(code(output.status), Some(FAILURE), "an invalid name fails");
+    assert!(!dir.path().join("mintswarm").exists(), "nothing is created");
+}
+
+#[test]
+fn migrate_new_refuses_a_tree_whose_parent_is_missing() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let parent = dir.path().join("missing");
+    let output = migrate_new("add_jobs", &parent.join("migrations"));
+    assert_eq!(code(output.status), Some(FAILURE), "a missing parent fails");
+    let stderr = String::from_utf8(output.stderr).expect("the error is UTF-8");
+    assert!(
+        stderr.contains(&parent.display().to_string()),
+        "the error names the missing folder: {stderr}"
+    );
+    assert!(!parent.exists(), "nothing is created");
 }

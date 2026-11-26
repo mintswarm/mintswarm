@@ -8,8 +8,8 @@
 
 use reqwest::StatusCode;
 use reqwest::header::{
-    ACCEPT, AUTHORIZATION, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, HeaderValue, IF_NONE_MATCH,
-    LINK, RETRY_AFTER, USER_AGENT,
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, DATE, ETAG, HeaderMap, HeaderName, HeaderValue,
+    IF_NONE_MATCH, LINK, RETRY_AFTER, USER_AGENT,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -91,6 +91,8 @@ pub(crate) struct Reply {
     pub reset_wait: Option<Duration>,
     /// Whether the `Link` header names a `rel="next"` page; `None` when there is no `Link`.
     pub next_page: Option<bool>,
+    /// The raw `Date` header: GitHub's clock at the reply, in IMF-fixdate form.
+    pub date: Option<String>,
     pub body: Vec<u8>,
     /// Whether an earlier attempt of the same call may have been carried out, so a DELETE's 404
     /// may be that attempt's doing. Set by the retry layer.
@@ -208,6 +210,7 @@ impl Transport for Http {
                 Duration::from_secs(reset.saturating_sub(now))
             });
         let next_page = header(LINK).map(|link| links_next(&link));
+        let date = header(DATE);
         let has_retry_after = header(RETRY_AFTER).is_some();
         let body = response.bytes().await.map_err(|_| Failure::Body)?.to_vec();
         let rate_limited = status == StatusCode::TOO_MANY_REQUESTS
@@ -221,6 +224,7 @@ impl Transport for Http {
             retry_after,
             reset_wait,
             next_page,
+            date,
             body,
             after_ambiguous: false,
         })

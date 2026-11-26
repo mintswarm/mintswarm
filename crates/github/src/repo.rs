@@ -206,7 +206,8 @@ fn read_error(error: ReadError) -> RepoReadError {
         } => RepoReadError::Inaccessible,
         ReadError::Status { .. }
         | ReadError::Unexpected { .. }
-        | ReadError::TooManyPages { .. } => RepoReadError::Unexpected,
+        | ReadError::TooManyPages { .. }
+        | ReadError::CommaInLabel { .. } => RepoReadError::Unexpected,
     }
 }
 

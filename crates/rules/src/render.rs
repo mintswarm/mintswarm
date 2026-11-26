@@ -5,7 +5,9 @@
 //! - [`comment`]: the auto-approval comment and the shadow record `decision.py` prints, with their
 //!   Confidence, Hard triggers, Doubt and Package rows;
 //! - [`approval`]: the TL;DR check and comment of step 1 of `plan-approval/README.md`, and the
-//!   approval package the session posts.
+//!   approval package the session posts;
+//! - [`commands`]: the Commands section of a plan, design or decomposition approval, the only copy
+//!   of it, listing every [`Command`].
 //!
 //! Deliberate divergence: [`inert`] removes the characters of the Unicode categories Cc, Cf, Zl and
 //! Zp from a table written for Unicode 14.0, the version of the Python that captured the parity
@@ -16,6 +18,7 @@ pub mod comment;
 
 use mintswarm_domain::records::Json;
 
+use crate::command::{Command, PackageKind};
 use crate::markdown::is_py_space;
 use crate::py::repr;
 
@@ -117,6 +120,38 @@ pub(crate) fn bounded(text: &str) -> String {
         Some((cut, _)) => format!("{}{SPAN_MARK}", flat[..cut].trim_end_matches(is_py_space)),
         None => flat,
     }
+}
+
+/// What a command does, as its row in the Commands section of a `kind` approval says.
+fn command_text(command: Command, kind: PackageKind) -> String {
+    let noun = kind.noun();
+    match command {
+        Command::Approve => format!(
+            "approve the {noun} in the latest approval package; the comment's other lines are a note"
+        ),
+        Command::Reject => format!(
+            "reject the {noun} in the latest approval package; the comment's other lines are a note"
+        ),
+        Command::Help => "reply with the commands valid on this issue now".to_owned(),
+    }
+}
+
+/// The Commands section of a `kind` approval, each line ending in LF: a `<details>` block with
+/// one row per [`Command::ALL`], in order, and the rule on where a command counts.
+pub fn commands(kind: PackageKind) -> String {
+    let mut out = String::from("<details><summary>Commands</summary>\n\n");
+    for command in Command::ALL {
+        out.push_str(&format!(
+            "- `{}`: {}.\n",
+            command.word(),
+            command_text(command, kind)
+        ));
+    }
+    out.push_str(
+        "\nA command counts only when it stands alone on its own line, outside quotes and code; \
+         only the first one in a comment counts.\n\n</details>\n",
+    );
+    out
 }
 
 /// `str(value)` in Python for a value `json.loads` returns: a string as it is, anything else as

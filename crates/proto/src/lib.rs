@@ -1,4 +1,5 @@
-//! Rust code generated from the runner protocol under `api/proto/`.
+//! Rust code generated from the protos under `api/proto/`: the runner protocol
+//! and the job vocabulary.
 //!
 //! `build.rs` compiles every `.proto` there into `OUT_DIR`; nothing generated
 //! is committed.
@@ -28,6 +29,17 @@ pub mod runner {
                 f.write_str("Secret(<redacted>)")
             }
         }
+    }
+}
+
+/// The `mintswarm.job.v1` package.
+pub mod job {
+    /// Version 1 of the job vocabulary: `JobKind`, `JobState`, `Event`,
+    /// `EscalationCause` and `AssignReason` (`job.proto`).
+    ///
+    /// `Event` is a generic name; use it qualified, as `job::v1::Event`.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.job.v1");
     }
 }
 

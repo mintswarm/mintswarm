@@ -17,8 +17,10 @@ use mintswarm_proto::runner::v1::{
     NeedBlobs, NoWork, PlaneAttemptState, PlaneHeldAttempt, ProbeResult, Reauthenticate,
     Reauthenticated, Resend, RunnerMode, RunnerState, Secret, SessionLimits, SessionTimings,
     StepKind, claim_result, connect_request, connect_response, directive, hello_ack, lease_state,
+    probe_result,
 };
 use prost::Message;
+use std::collections::BTreeMap;
 
 fn at(seconds: i64) -> Option<prost_types::Timestamp> {
     Some(prost_types::Timestamp { seconds, nanos: 0 })
@@ -34,12 +36,34 @@ fn harness() -> Harness {
     }
 }
 
+/// One fact of each case.
+fn facts() -> BTreeMap<String, probe_result::Fact> {
+    let fact = |value| probe_result::Fact { value: Some(value) };
+    BTreeMap::from([
+        (
+            "logged_in".to_owned(),
+            fact(probe_result::fact::Value::Flag(true)),
+        ),
+        (
+            "jobs".to_owned(),
+            fact(probe_result::fact::Value::Integer(8)),
+        ),
+        (
+            "channel".to_owned(),
+            fact(probe_result::fact::Value::Text("stable".to_owned())),
+        ),
+    ])
+}
+
 fn probe() -> ProbeResult {
     ProbeResult {
         id: "tool.cargo.version".to_owned(),
-        value: "1.87.0".to_owned(),
         source: "cargo --version".to_owned(),
         observed_at: at(1_800_000_000),
+        result: Some(probe_result::Result::Known(probe_result::Known {
+            version: Some("1.87.0".to_owned()),
+            facts: facts(),
+        })),
     }
 }
 
@@ -353,18 +377,24 @@ fn hello_carries_the_design_fields() {
     let [
         ProbeResult {
             id,
-            value,
             source,
             observed_at,
+            result,
         },
     ] = capabilities.as_slice()
     else {
         panic!("one probe result, got {capabilities:?}");
     };
-    assert_eq!(
-        (id.as_str(), value.as_str()),
-        ("tool.cargo.version", "1.87.0")
-    );
+    assert_eq!(id, "tool.cargo.version");
+    let Some(probe_result::Result::Known(probe_result::Known {
+        version,
+        facts: found,
+    })) = result
+    else {
+        panic!("a known result, got {result:?}");
+    };
+    assert_eq!(version.as_deref(), Some("1.87.0"));
+    assert_eq!(*found, facts());
     assert!(!source.is_empty());
     assert!(observed_at.is_some());
     assert_eq!(tags, ["gpu"]);
@@ -459,6 +489,57 @@ fn hello_ack_is_a_rejection_or_an_acceptance() {
     for ack in [rejected, accepted] {
         let decoded = HelloAck::decode(ack.encode_to_vec().as_slice()).expect("decodes");
         assert_eq!(decoded, ack);
+    }
+}
+
+/// The oneof name of a `ProbeResult` result; wildcard-free.
+fn probe_result_name(result: &probe_result::Result) -> &'static str {
+    match result {
+        probe_result::Result::Unknown(_) => "unknown",
+        probe_result::Result::Known(_) => "known",
+    }
+}
+
+/// The oneof name of a probe fact's value; wildcard-free.
+fn fact_name(value: &probe_result::fact::Value) -> &'static str {
+    match value {
+        probe_result::fact::Value::Flag(_) => "flag",
+        probe_result::fact::Value::Integer(_) => "integer",
+        probe_result::fact::Value::Text(_) => "text",
+    }
+}
+
+#[test]
+fn probe_result_is_unknown_or_known() {
+    let unknown = ProbeResult {
+        id: "harness.codex.version".to_owned(),
+        source: "codex --version".to_owned(),
+        observed_at: at(1_800_000_000),
+        result: Some(probe_result::Result::Unknown(probe_result::Unknown {})),
+    };
+    let known = probe();
+    let names: Vec<&str> = [&unknown, &known]
+        .iter()
+        .filter_map(|probe| probe.result.as_ref().map(probe_result_name))
+        .collect();
+    assert_eq!(names, ["unknown", "known"]);
+
+    let Some(probe_result::Result::Known(probe_result::Known { facts, .. })) = &known.result else {
+        panic!("a known result, got {:?}", known.result);
+    };
+    // An explicit type: a map that is not generated as a `BTreeMap` fails
+    // compilation here.
+    let facts: &BTreeMap<String, probe_result::Fact> = facts;
+    let fact_names: Vec<&str> = facts
+        .values()
+        .filter_map(|fact| fact.value.as_ref().map(fact_name))
+        .collect();
+    // In key order: `channel`, `jobs`, `logged_in`.
+    assert_eq!(fact_names, ["text", "integer", "flag"]);
+
+    for probe in [unknown, known] {
+        let decoded = ProbeResult::decode(probe.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(decoded, probe);
     }
 }
 
