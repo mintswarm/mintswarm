@@ -188,6 +188,11 @@ REQUIRED = ("none", "queued", "blocked", "done")
 BANDS = ("blocked", "uncertain", "needs-review", "likely-safe", "safe")
 SOURCES = ("field", "labels")
 STATUS_MODES = ("issue_status", "off")
+# The characters Rust's str::trim removes (Unicode White_Space), so a name blank here is blank
+# to the Rust loader too; str.strip() with no argument also removes U+001C to U+001F.
+WHITESPACE = (
+    "\t\n\x0b\x0c\r \x85\xa0\u1680" + "".join(map(chr, range(0x2000, 0x200B))) + "\u2028\u2029\u202f\u205f\u3000"
+)
 LABEL_COLOUR = "ededed"
 # tracker.<key>: the name the output uses and the description of the labels it creates.
 BLOCKS = {
@@ -262,7 +267,7 @@ def settings(ref: str, key: str = "state", config=None) -> dict:
     if block.get("source") not in SOURCES:
         raise UsageError(f"{path}.source at {ref} must be field or labels, not {block.get('source')!r}")
     field = block.get("field")
-    if block["source"] == "field" and (not isinstance(field, str) or not field.strip()):
+    if block["source"] == "field" and (not isinstance(field, str) or not field.strip(WHITESPACE)):
         raise UsageError(f"{path}.field at {ref} must be a field name")
     label = block.get("label")
     if not isinstance(label, str) or label.count("{option}") != 1:
@@ -305,13 +310,13 @@ def state_options(entries, path: str, ref: str) -> tuple:
         if unknown:
             raise UsageError(f"{at}.{unknown[0]} at {ref} is an unknown key")
         name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
+        if not isinstance(name, str) or not name.strip(WHITESPACE):
             raise UsageError(f"{at}.name at {ref} must be a non-empty string")
         if name.encode().lower() in folded:
             raise UsageError(f"{at}.name at {ref} repeats an earlier name in any case: {name!r}")
         if "status" in entry:
             value = entry["status"]
-            if not isinstance(value, str) or not value.strip():
+            if not isinstance(value, str) or not value.strip(WHITESPACE):
                 raise UsageError(f"{at}.status at {ref} must be a non-empty string when present")
             statuses[name] = value
         names.append(name)
