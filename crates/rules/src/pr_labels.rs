@@ -51,8 +51,9 @@ pub enum Error {
     /// The config at the base does not load, or its `tracker.components.source` is neither
     /// `labels` nor `field`.
     Config(Unusable),
-    /// The component label pattern does not hold `{name}` exactly once with text around it, or
-    /// labels mode names no pattern.
+    /// The component label pattern does not hold `{name}` exactly once with text around it, it
+    /// builds band labels or other `msw-<family>:<value>` labels, or labels mode names no
+    /// pattern.
     Pattern {
         /// The pattern as configured, empty when absent.
         pattern: String,
@@ -76,7 +77,8 @@ impl fmt::Display for Error {
             Error::Pattern { pattern } => write!(
                 f,
                 "config: tracker.components.label {pattern:?} must hold {COMPONENT_PLACEHOLDER} \
-                 exactly once, with text around it"
+                 exactly once, with text around it, and must not build \
+                 {FAMILY_PREFIX}<family>:<value> labels"
             ),
             Error::NameTooLong { name } => {
                 write!(f, "label {name:?} is longer than {MAX_NAME} characters")
@@ -142,13 +144,29 @@ pub fn view(bytes: &[u8]) -> Result<View, Error> {
 }
 
 /// `label` split at its one `{name}`; an error unless it holds `{name}` exactly once with some
-/// text around it, since a bare `{name}` would match every label.
+/// text around it, since a bare `{name}` would match every label, and unless the labels it
+/// builds are neither band labels nor other `msw-<family>:<value>` labels, which the rule never
+/// reads as component labels.
 fn component_pattern(label: &str) -> Result<LabelPattern<'_>, Error> {
+    let verdict = verdict_pattern()?;
     LabelPattern::with_placeholder(label, COMPONENT_PLACEHOLDER)
         .filter(|pattern| !(pattern.prefix().is_empty() && pattern.suffix().is_empty()))
+        .filter(|pattern| {
+            let built = pattern.label("x");
+            verdict.option_of(&built).is_none() && !is_family(&built)
+        })
         .ok_or_else(|| Error::Pattern {
             pattern: label.to_owned(),
         })
+}
+
+/// [`VERDICT_LABEL`] split at its one [`VERDICT_PLACEHOLDER`].
+fn verdict_pattern() -> Result<LabelPattern<'static>, Error> {
+    LabelPattern::with_placeholder(VERDICT_LABEL, VERDICT_PLACEHOLDER).ok_or_else(|| {
+        Error::Pattern {
+            pattern: VERDICT_LABEL.to_owned(),
+        }
+    })
 }
 
 /// A label to create on the repository.
@@ -253,12 +271,7 @@ where
     R: AsRef<str>,
 {
     let component = component_pattern(&view.label)?;
-    let verdict =
-        LabelPattern::with_placeholder(VERDICT_LABEL, VERDICT_PLACEHOLDER).ok_or_else(|| {
-            Error::Pattern {
-                pattern: VERDICT_LABEL.to_owned(),
-            }
-        })?;
+    let verdict = verdict_pattern()?;
 
     let mut touched = BTreeSet::new();
     for path in paths.iter().map(AsRef::as_ref) {

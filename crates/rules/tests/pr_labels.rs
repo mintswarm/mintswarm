@@ -171,6 +171,34 @@ fn a_pattern_overlapping_mintswarm_labels_leaves_them_alone() {
 }
 
 #[test]
+fn a_pattern_that_builds_mintswarm_labels_is_refused() {
+    for label in [
+        "msw-component:{name}",
+        "msw-verdict:{name}",
+        "MSW-Plan:{name}",
+    ] {
+        let yaml = config(&format!("    source: labels\n    label: \"{label}\"\n"));
+        assert!(
+            matches!(view(&yaml), Err(Error::Pattern { .. })),
+            "{label:?}"
+        );
+        let by_hand = View {
+            label: label.to_owned(),
+            ..repository()
+        };
+        assert!(
+            matches!(
+                changes(&by_hand, &["x"], None, &["bug"], &NONE),
+                Err(Error::Pattern { .. })
+            ),
+            "{label:?}"
+        );
+    }
+    let yaml = config("    source: labels\n    label: \"msw-{name}\"\n");
+    assert!(view(&yaml).is_ok());
+}
+
+#[test]
 fn a_pattern_that_would_match_every_label_is_refused() {
     for label in ["{name}", "{name}{name}", "component", ""] {
         let yaml = config(&format!("    source: labels\n    label: \"{label}\"\n"));
