@@ -107,8 +107,9 @@ fn load_message(error: &ConfigError) -> String {
 }
 
 /// The floor's view of the config `bytes` at the base, for the issue's `components`; unusable
-/// when the bytes are not UTF-8, the config does not load, a gate command does not split, or a
-/// name in `components` is empty, given twice or not a defined component, checked in that order.
+/// when the bytes are not UTF-8, the config does not load, a gate command does not split, there
+/// are no `components`, or a name in them is empty, given twice or not a defined component,
+/// checked in that order.
 pub fn view(bytes: &[u8], components: &[String]) -> Result<View, Unusable> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| Unusable::new("config: .mintswarm/config.yaml at the base is not UTF-8"))?;
@@ -185,12 +186,13 @@ pub fn view(bytes: &[u8], components: &[String]) -> Result<View, Unusable> {
 }
 
 /// The `--components` checks of `validate_config`: no empty name, no name twice, every name a
-/// defined component, in that order.
+/// defined component, in that order. No components at all reads as one empty name, as Python
+/// splits an empty `--components` into `['']`.
 fn check_names(
     components: &[String],
     paths: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), Unusable> {
-    if components.iter().any(String::is_empty) {
+    if components.is_empty() || components.iter().any(String::is_empty) {
         return Err(Unusable::new("--components has an empty name"));
     }
     for (index, name) in components.iter().enumerate() {

@@ -313,6 +313,16 @@ fn bad_components_are_unusable_with_floor_py_wording() {
     }
 }
 
+#[test]
+fn no_components_read_as_an_empty_name() {
+    let runs = runs();
+    let run = runs.iter().find(|run| run.exit != 2).expect("a usable run");
+    let mut bundle = run.bundle.clone();
+    bundle.components.clear();
+    let error = plan_floor::floor(&bundle).expect_err(&run.name);
+    assert_eq!(error.message(), "--components has an empty name");
+}
+
 /// An optional item of a bundle.
 type OptionalItem = fn(&mut Bundle) -> Option<&mut Item>;
 
