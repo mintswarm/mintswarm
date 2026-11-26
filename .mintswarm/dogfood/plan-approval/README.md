@@ -63,7 +63,13 @@ After the plan stage returns a plan, in this order:
 
 The analyse and plan stages state a size in a `## Size` section (`.mintswarm/stages/analyse.md` and rule 12 of `.mintswarm/stages/plan.md`). `size.py` reads it:
 
-- After every analyse job, of any kind, whose base includes `size.py`, the session runs `python3 -I .mintswarm/dogfood/plan-approval/size.py analysis <analysis>` on the saved analysis before publishing it. Exit 0 prints `size: <value>`. Exit 1 means the section is missing or malformed: the analysis is unusable, and the analyse stage reruns. Exit 2 stops the job until the cause is fixed.
+- After every analyse job, of any kind, the session saves the analysis in one sequence:
+  1. when the base includes `size.py`, `python3 -I .mintswarm/dogfood/plan-approval/size.py analysis <analysis>`. Exit 0 prints `size: <value>`. Exit 1 means the section is missing or malformed: the analysis is unusable, and the analyse stage reruns. Exit 2 stops the job until the cause is fixed;
+  2. when the base's `.mintswarm/stages/analyse.md` asks for `## Short title`, `python3 -I .mintswarm/dogfood/github/msw-state.py short-title read <analysis>`, which prints `short title: <name>`. Exit 1 makes the analysis unusable, and the analyse stage reruns; exit 2 stops the job;
+  3. publish the analysis;
+  4. straight after publishing, under the same condition as step 2 and before `reclassify.py`, `python3 -I .mintswarm/dogfood/github/msw-state.py short-title set <issue> --analysis <analysis> --base <base commit>`, which writes the name to the issue's `msw-short-title` field only when it is empty. A base that predates `tracker.short_title` in `.mintswarm/config.yaml` exits 2: run `git fetch origin master` and pass `--base origin/master` instead. An exit 1 that names `fields resolve` is reported to the operator, and the job goes on.
+
+  See [Short titles](../github/README.md#short-titles) for the field and the display rule.
 - For every plan that goes to the maintainer, the session runs `python3 -I .mintswarm/dogfood/plan-approval/size.py plan .mintswarm/job/inputs/artefacts/plan.md` in the assess job's worktree. It prints the size, raised to the lines floor of the footprint's `production_lines` when the judged size is below it, with the line `size raised from <judged> to <floor> by planned lines`, or the lines floor and a line saying the plan states no usable size. A missing or malformed section in a plan is also an assessment finding.
 
 ## The plan's dependency screen
