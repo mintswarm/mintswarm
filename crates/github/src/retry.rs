@@ -20,9 +20,9 @@
 //!
 //! The policy's total bounds the call: an attempt still running when it ends is cut off as a
 //! [`Failure::Timeout`], and a wait that would end past it is not started. When the attempts or
-//! the total run out, the call gives up with [`Exhausted`]. A create's probe and its gate are
-//! the caller's own calls, not bounded by the create's total, though a gate that ends past it
-//! ends the call.
+//! the total run out, the call gives up with [`Exhausted`]. A create's probe is the caller's own
+//! call, not bounded by the create's total; its gate is, and a gate still waiting when the total
+//! ends is cut off and ends the call.
 
 use std::fmt;
 use std::future::Future;
@@ -243,7 +243,8 @@ impl<T: Transport> Retrying<T> {
     /// When the attempts or the time run out after such an attempt, the call ends in
     /// [`Exhausted`] without asking, so the create may still have landed. `gate` is awaited
     /// before every attempt after the first, whatever ended the one before; the caller makes
-    /// the first attempt's wait itself. A gate that ends past the total ends the call.
+    /// the first attempt's wait itself. A gate still waiting when the total ends is cut off and
+    /// ends the call, so it must take nothing until it completes.
     pub async fn create<'a>(
         &self,
         path: &str,
@@ -382,9 +383,15 @@ impl<T: Transport> Retrying<T> {
                 }
             }
             if let Class::Create(_, gate) = &class {
-                gate().await;
-                if past_end(Instant::now()) {
-                    return Err(give_up(attempts, failure));
+                // A gate refused at the end of the total takes nothing, so cutting it off there
+                // spends no grant on an attempt that is never sent.
+                match end {
+                    Some(end) => {
+                        if tokio::time::timeout_at(end, gate()).await.is_err() {
+                            return Err(give_up(attempts, failure));
+                        }
+                    }
+                    None => gate().await,
                 }
             }
         }
@@ -951,6 +958,7 @@ mod tests {
             },
             Duration::ZERO,
         );
+        let start = Instant::now();
         let error = layer
             .create(
                 "/x",
@@ -961,6 +969,7 @@ mod tests {
             )
             .await
             .unwrap_err();
+        assert_eq!(start.elapsed(), Duration::from_secs(60));
         assert_eq!(error.attempts, 1);
         assert_eq!(error.last, Failure::Connect);
         assert_eq!(offsets(&layer).len(), 1);
