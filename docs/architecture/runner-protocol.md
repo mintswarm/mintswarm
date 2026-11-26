@@ -153,7 +153,8 @@ The plane drops a fenced event whose fence is stale. A stale fence does not fail
 - Inside `v1`, a runner reports its `protocol_minor` in `RegisterRequest` and `Hello`, and the plane its own in `HelloAccepted`. A plane that refuses a runner's minor version says so with `HelloRejected` or the `UpgradeRequired` directive, both carrying `min_protocol_minor`, and `Register` refuses a runner that is too old with `FAILED_PRECONDITION` and reason `upgrade_required`.
 - `features` are strings. The runner lists those it supports in `Hello`, and `HelloAccepted` returns the negotiated set: those both sides support.
 - `StepKind` is an open enum. The plane never dispatches a kind outside `Hello.step_kinds`, and a runner that receives a kind it does not know answers with `AttemptStartFailed` and reason `unsupported`.
-- The `proto-lint` gate runs `buf lint`, and the `proto-breaking` gate runs `buf breaking` against `origin/master`.
+- The `proto-lint` gate runs `buf lint`. `buf breaking` is not a gate until the runner–plane exchange is live (#483); its category in `api/proto/buf.yaml` is `WIRE_JSON`.
+- Until the exchange is live, a field or message that goes is deleted outright, without `reserved`: no deployed peer has seen it. Once it is live, a deletion reserves the number and the name.
 - The feature list and the support window for minor versions are in design §10.
 
 ## Not yet defined
