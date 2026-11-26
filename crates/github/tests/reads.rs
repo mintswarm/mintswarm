@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    ArtifactSummary, CheckState, Comment, CommentMark, Cursor, IssueType, Link, LinkKind, Login,
+    ArtifactSummary, CheckState, Comment, CommentMark, Cursor, Dependency, Direction, IssueType,
+    Link, LinkKind, Login,
 };
 use mintswarm_domain::vcs::BranchName;
 use mintswarm_github::{
-    Exhausted, Failure, GitHubReads, Kinds, NOTE_MARKER, ReadError, RetryPolicy, STEER_MARKER,
-    Token, comment_mark,
+    Exhausted, Failure, GitHubReads, IssueQuery, IssueState, Kinds, NOTE_MARKER, ReadError,
+    RetryPolicy, STEER_MARKER, Token, comment_mark,
 };
 use support::{Request, Responder};
 
@@ -23,6 +24,9 @@ const ISSUE_JSON: &str = include_str!("fixtures/reads/issue.json");
 const ARTIFACTS: &str = include_str!("fixtures/reads/artifacts.json");
 const ARTIFACT: &str = include_str!("fixtures/reads/artifact.json");
 const PULL: &str = include_str!("fixtures/reads/pull.json");
+const BLOCKED_BY: &str = include_str!("fixtures/reads/blocked-by.json");
+const BLOCKING: &str = include_str!("fixtures/reads/blocking.json");
+const ISSUES_LIST: &str = include_str!("fixtures/reads/issues-list.json");
 const ISSUE: IssueNumber = IssueNumber(180);
 const ISSUE_PATH: &str = "/repos/acme/widgets/issues/180";
 const BOT: &str = "mintswarm-dev[bot]";
@@ -785,4 +789,292 @@ fn the_reads_ask_for_read_permissions_only() {
             "statuses"
         ])
     );
+}
+
+/// The `Link` header of page `page` of the list at `url`, which already carries a query.
+fn page_link(url: &str, page: u64, next: bool) -> String {
+    let mut link = format!("<{url}&page=1>; rel=\"first\"");
+    if next {
+        link.push_str(&format!(", <{url}&page={}>; rel=\"next\"", page + 1));
+    }
+    link
+}
+
+/// An issue of `owner/repo` as a dependency list carries it.
+fn dependency_json(owner: &str, repo: &str, number: u64, state: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": 5_000_000 + number,
+        "number": number,
+        "title": "A dependency",
+        "state": state,
+        "url": format!("https://api.github.com/repos/{owner}/{repo}/issues/{number}"),
+        "repository_url": format!("https://api.github.com/repos/{owner}/{repo}"),
+        "html_url": format!("https://github.com/{owner}/{repo}/issues/{number}"),
+        "user": { "login": "someone", "id": 2, "type": "User" },
+        "labels": [],
+        "created_at": "2026-11-10T09:00:00Z",
+        "updated_at": "2026-11-21T10:00:00Z",
+    })
+}
+
+fn dependency(repository: &str, number: u64, open: bool) -> Dependency {
+    Dependency {
+        repository: repository.to_owned(),
+        number: IssueNumber(number),
+        open,
+    }
+}
+
+#[tokio::test]
+async fn both_directions_follow_pages_and_a_repeat_is_served_from_the_cache_on_304() {
+    let cases = [
+        (
+            Direction::BlockedBy,
+            "blocked_by",
+            BLOCKED_BY,
+            vec![
+                dependency("acme/widgets", 175, false),
+                dependency("acme-tools/gadgets", 42, true),
+            ],
+        ),
+        (
+            Direction::Blocking,
+            "blocking",
+            BLOCKING,
+            vec![dependency("acme/widgets", 190, true)],
+        ),
+    ];
+    for (direction, segment, page_one, mut expected) in cases {
+        let responder = Responder::start().await;
+        let url = format!(
+            "https://api.github.com/repositories/1/issues/180/dependencies/{segment}?per_page=100"
+        );
+        let first = page_link(&url, 1, true);
+        let second = page_link(&url, 2, false);
+        let page_two = serde_json::json!([dependency_json("acme", "widgets", 160, "open")]);
+        let (etag_one, etag_two) = (format!("\"{segment}-1\""), format!("\"{segment}-2\""));
+        responder.reply_with(
+            200,
+            &[("etag", etag_one.as_str()), ("link", first.as_str())],
+            page_one,
+        );
+        responder.reply_with(
+            200,
+            &[("etag", etag_two.as_str()), ("link", second.as_str())],
+            page_two.to_string(),
+        );
+        responder.reply_with(304, &[("link", first.as_str())], "");
+        responder.reply_with(304, &[("link", second.as_str())], "");
+        let client = client(&responder);
+        let read = client
+            .read_dependencies(&token(), ISSUE, direction)
+            .await
+            .unwrap();
+        expected.push(dependency("acme/widgets", 160, true));
+        assert_eq!(read, expected, "{segment}");
+        let again = client
+            .read_dependencies(&token(), ISSUE, direction)
+            .await
+            .unwrap();
+        assert_eq!(again, read, "{segment}");
+
+        let requests = responder.requests();
+        let page = |n: u64| format!("{ISSUE_PATH}/dependencies/{segment}?per_page=100&page={n}");
+        assert_eq!(
+            paths(&requests),
+            vec![page(1), page(2), page(1), page(2)],
+            "{segment}"
+        );
+        assert_eq!(requests[0].header("if-none-match"), None, "{segment}");
+        assert_eq!(requests[1].header("if-none-match"), None, "{segment}");
+        assert_eq!(
+            requests[2].header("if-none-match"),
+            Some(etag_one.as_str()),
+            "{segment}"
+        );
+        assert_eq!(
+            requests[3].header("if-none-match"),
+            Some(etag_two.as_str()),
+            "{segment}"
+        );
+        assert_token_only_in_authorization(&requests);
+    }
+}
+
+#[tokio::test]
+async fn a_dependency_without_a_repository_it_names_is_refused() {
+    for url in [
+        serde_json::Value::from("https://api.github.com/repositories/77"),
+        serde_json::Value::from("https://api.github.com/repos/acme"),
+        serde_json::Value::from("https://api.github.com/repos/acme/wid gets"),
+        serde_json::Value::from("https://api.github.com/repos/acme/widgets/extra"),
+        serde_json::Value::Null,
+    ] {
+        let responder = Responder::start().await;
+        let mut item = dependency_json("acme", "widgets", 160, "open");
+        item["repository_url"] = url.clone();
+        responder.reply(200, serde_json::json!([item]).to_string());
+        let error = client(&responder)
+            .read_dependencies(&token(), ISSUE, Direction::BlockedBy)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ReadError::Unexpected { .. }),
+            "{url}: {error:?}"
+        );
+    }
+}
+
+const LIST_PATH: &str = "/repos/acme/widgets/issues";
+const FIRST_DATE: &str = "Thu, 26 Nov 2026 10:00:00 GMT";
+const SECOND_DATE: &str = "Thu, 26 Nov 2026 10:00:02 GMT";
+
+/// One more issue, as the listing's second page.
+fn listed_issue(number: u64) -> serde_json::Value {
+    serde_json::json!({
+        "id": 3_000_000 + number,
+        "number": number,
+        "title": "Another issue",
+        "body": "",
+        "state": "open",
+        "html_url": format!("https://github.com/acme/widgets/issues/{number}"),
+        "user": { "login": "maintainer", "id": 1, "type": "User" },
+        "labels": [{ "id": 11, "name": "mintswarm" }],
+        "created_at": "2026-11-25T09:00:00Z",
+        "updated_at": "2026-11-26T09:50:00Z",
+    })
+}
+
+fn full_query() -> IssueQuery {
+    IssueQuery {
+        state: IssueState::All,
+        since: Some("2026-11-26T09:00:00Z".to_owned()),
+        labels: vec!["mintswarm".to_owned(), "component:domain".to_owned()],
+        creator: Some(Login("mintswarm-dev[bot]".into())),
+    }
+}
+
+#[tokio::test]
+async fn the_listing_sends_its_query_follows_pages_and_drops_pull_requests() {
+    let responder = Responder::start().await;
+    let url = "https://api.github.com/repositories/1/issues?state=all&per_page=100";
+    let first = page_link(url, 1, true);
+    let second = page_link(url, 2, false);
+    responder.reply_with(
+        200,
+        &[("link", first.as_str()), ("date", FIRST_DATE)],
+        ISSUES_LIST,
+    );
+    responder.reply_with(
+        200,
+        &[("link", second.as_str()), ("date", SECOND_DATE)],
+        serde_json::json!([listed_issue(191)]).to_string(),
+    );
+    let list = client(&responder)
+        .list_issues(&token(), &full_query())
+        .await
+        .unwrap();
+    let numbers: Vec<u64> = list.issues.iter().map(|issue| issue.number.0).collect();
+    assert_eq!(numbers, vec![180, 170, 191]);
+    assert_eq!(list.issues[0].issue_type, Some(IssueType::Implementation));
+    assert_eq!(list.issues[0].blocked_by, 1);
+    assert_eq!(list.issues[1].state, "closed");
+    assert_eq!(list.issues[1].issue_type, Some(IssueType::Design));
+    // The first reply's clock, not the second's.
+    assert_eq!(list.date, "2026-11-26T10:00:00Z");
+
+    let requests = responder.requests();
+    let query = "state=all&since=2026-11-26T09%3A00%3A00Z&labels=mintswarm,component%3Adomain\
+                 &creator=mintswarm-dev%5Bbot%5D";
+    assert_eq!(
+        paths(&requests),
+        vec![
+            format!("{LIST_PATH}?{query}&per_page=100&page=1"),
+            format!("{LIST_PATH}?{query}&per_page=100&page=2"),
+        ]
+    );
+    assert_token_only_in_authorization(&requests);
+}
+
+#[tokio::test]
+async fn a_listing_with_only_a_state_sends_only_the_state() {
+    let responder = Responder::start().await;
+    responder.reply_with(200, &[("date", FIRST_DATE)], "[]");
+    let query = IssueQuery {
+        state: IssueState::Open,
+        since: None,
+        labels: Vec::new(),
+        creator: None,
+    };
+    let list = client(&responder)
+        .list_issues(&token(), &query)
+        .await
+        .unwrap();
+    assert!(list.issues.is_empty());
+    assert_eq!(list.date, "2026-11-26T10:00:00Z");
+    assert_eq!(
+        paths(&responder.requests()),
+        vec![format!("{LIST_PATH}?state=open&per_page=100&page=1")]
+    );
+}
+
+#[tokio::test]
+async fn a_listing_answered_304_takes_the_date_of_that_reply_not_the_cache() {
+    let responder = Responder::start().await;
+    responder.reply_with(
+        200,
+        &[("etag", "\"list-v1\""), ("date", FIRST_DATE)],
+        ISSUES_LIST,
+    );
+    responder.reply_with(
+        304,
+        &[
+            ("etag", "\"list-v1\""),
+            ("date", "Fri, 27 Nov 2026 08:15:00 GMT"),
+        ],
+        "",
+    );
+    let client = client(&responder);
+    let first = client.list_issues(&token(), &full_query()).await.unwrap();
+    let second = client.list_issues(&token(), &full_query()).await.unwrap();
+    assert_eq!(first.date, "2026-11-26T10:00:00Z");
+    assert_eq!(second.date, "2026-11-27T08:15:00Z");
+    assert_eq!(second.issues, first.issues);
+    let requests = responder.requests();
+    assert_eq!(requests[1].header("if-none-match"), Some("\"list-v1\""));
+}
+
+#[tokio::test]
+async fn a_listing_without_a_date_it_can_read_is_refused() {
+    for headers in [
+        Vec::new(),
+        vec![("date", "Thursday, 26-Nov-26 10:00:00 GMT")],
+    ] {
+        let responder = Responder::start().await;
+        responder.reply_with(200, &headers, "[]");
+        let error = client(&responder)
+            .list_issues(&token(), &full_query())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ReadError::Unexpected { .. }),
+            "{headers:?}: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_listing_for_a_label_holding_a_comma_is_refused_before_anything_is_sent() {
+    let responder = Responder::start().await;
+    let mut query = full_query();
+    query.labels.push("needs input, urgent".to_owned());
+    let error = client(&responder)
+        .list_issues(&token(), &query)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, ReadError::CommaInLabel { label } if label == "needs input, urgent"),
+        "{error:?}"
+    );
+    assert!(responder.requests().is_empty());
 }
