@@ -9,7 +9,7 @@ mintswarm measures itself from facts: small records of what happened to an item,
 - **The serde form** (`domain::facts::Fact`) is what a writer hands to the journal. It is tagged by `kind`, and its envelope holds:
   - `item`: the item's tracker host, repository, number, kind and components;
   - `time` for a log, or `start` and `end` for a span, in Unix nanoseconds;
-  - `concerns`: for a log, the span it attaches to (absent for the root); for a span, its own `local` parts and its parent (absent for the root);
+  - `concerns`: for a log, the span it attaches to (absent for the root); for a span, its own `local` parts and its parent (absent for the root). A log's `concerns` must match what its kind attaches to: absent for a kind that attaches to the root only, present for one that never attaches to the root, and naming a span of an allowed kind. Deserialising a `Fact` and the schema both check this;
   - `links`, on spans only: span links, such as a stage run's trigger or a child item's parent;
   - `attributes`: the kind's attributes, as one flat object of OTLP attribute keys.
 - **Attributes** are grouped. A group such as provenance, the run or the token counts is one Rust type that several kinds hold as a field, so every key is declared by exactly one type. Each kind and group rejects keys it does not declare, and every closed value set is a Rust enum.
@@ -39,5 +39,9 @@ Ids are derived, never stored or allocated, so every writer in every language co
   - a tool call: the run's span id in hex and the tool-use id;
   - a phase: the run's span id in hex, the phase name and its ordinal;
   - a wait: the wait kind and the id of what opened it.
-- **A fact id** is the first 16 bytes of `H("mintswarm.fact.v1", key, event name, natural key…)`, written in hex as `mintswarm.fact.id` wherever a link names a record. Each log kind declares the ordered parts of its natural key, in `FactKind` and in the schema's `x-otlp`. A part is an attribute key (its string as it is, a number or boolean as JSON text, an absent value as the empty string), `concerns` (the concerned span's id in hex, the root's when absent) or `time` (decimal Unix nanoseconds). Decisions and interventions taken from GitHub key on the object's URL, so the live writer and the backfill derive the same id.
+- **A fact id** is the first 16 bytes of `H("mintswarm.fact.v1", key, event name, natural key…)`, written in hex as `mintswarm.fact.id` wherever a link names a record. Each log kind declares the ordered parts of its natural key, in `FactKind` and in the schema's `x-otlp`. A part is an attribute key (its string as it is, a number or boolean as JSON text, an absent value as the empty string), `concerns` (the concerned span's id in hex, the root's when absent) or `time` (decimal Unix nanoseconds). A part written `a|b` is the first of its alternatives that is present, the empty string when none is. The keys make each event's id its own:
+  - decisions and interventions taken from GitHub key on the object's URL, so the live writer and the backfill derive the same id;
+  - a decision given in the session keys on the run it concerns and the decision kind, as the round is the run's; a run is asked for a decision of one kind at most once;
+  - an intervention given in the session has no URL and keys on its `time` instead, so two interventions of one kind on the same run or root stay apart;
+  - `picked_up` is written once per item, at its first dispatch, so it keys on the item and the event name only.
 - **The shared fixture** [`crates/domain/tests/fixtures/fact-ids.json`](../../crates/domain/tests/fixtures/fact-ids.json) lists item keys with their trace, root and per-kind span ids, and one example fact per kind with its span and fact ids. Its expected ids were computed independently of the Rust code; the domain tests derive every id and match it exactly, and other implementations check themselves against the same file.
