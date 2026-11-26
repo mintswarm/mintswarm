@@ -74,6 +74,8 @@ mintswarm/
 │   │   ├── Dockerfile      # control-plane image build
 │   │   ├── nginx/          # nginx front-end config
 │   │   └── s6/             # s6-overlay service definitions
+│   ├── webhooks/
+│   │   └── Dockerfile      # webhook receiver image
 │   └── compose.yaml        # self-hosting compose example
 │
 ├── packaging/              # native runner distribution

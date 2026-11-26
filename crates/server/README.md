@@ -40,6 +40,36 @@ The secret is never logged. Either form works; the key store is safer, since an 
 
 One trailing newline is removed from the value; an empty value is refused. Generate a secret with, for example, `openssl rand -hex 32`.
 
+### Running it with compose
+
+The root `compose.yaml` runs the receiver as the service `webhooks` and an ngrok agent forwarding the reserved domain to it as the service `ngrok`. Both restart unless stopped, so they come back after a crash, a Docker restart or the machine waking. The receiver publishes no port; only ngrok reaches it. Docker with Compose v2 and BuildKit is needed.
+
+It reads three files on the host at run time; none is copied into the repository or an image:
+
+- `~/.config/mintswarm/webhook-secret`, read as an env file: its line `mintswarm-dev-secret=<value>` sets the variable the receiver reads with `--secret-env mintswarm-dev-secret`. As with any environment variable, anyone who can run `docker inspect` on the machine can see it.
+- `~/.config/mintswarm/ngrok-domain`: the reserved domain, mounted into the ngrok container.
+- ngrok's own `ngrok.yml`, which holds the auth token, mounted read-only into the ngrok container. Its default path is the macOS one, `~/Library/Application Support/ngrok/ngrok.yml`; elsewhere set `NGROK_CONFIG` to its path, such as `~/.config/ngrok/ngrok.yml` on Linux.
+
+Both the receiver and the ngrok agent run as uid 1000. Docker Desktop on macOS maps ownership; on a Linux host, `build/webhooks` must be writable and `ngrok.yml` readable by that uid.
+
+Only one agent can hold the reserved domain, so first stop any receiver or ngrok agent already running for it. Then, from the repository root:
+
+```sh
+mkdir -p build/webhooks
+docker compose up -d --build webhooks ngrok
+```
+
+The delivery log is `build/webhooks/webhooks.jsonl` on the host, mounted into the receiver. Tail it, or the services' own output, with:
+
+```sh
+tail -n 0 -F build/webhooks/webhooks.jsonl
+docker compose logs -f webhooks ngrok
+```
+
+`docker compose logs ngrok` shows the tunnel online with the domain's forwarding address.
+
+Stop them with `docker compose stop webhooks ngrok`. It sends SIGTERM, so the receiver stops as described above and drains its queue; `compose.yaml` gives it 30 seconds before a SIGKILL, more than twice `--read-timeout`. To start a new log, move the file and run `docker compose restart webhooks`.
+
 ## Forwarding to a local receiver
 
 GitHub must reach the receiver over HTTPS. Use one of these forwarders.
@@ -58,7 +88,7 @@ GitHub must reach the receiver over HTTPS. Use one of these forwarders.
   ngrok http 127.0.0.1:8787
   ```
 
-  The webhook URL is the `https://…` forwarding address it prints, followed by `/github/webhook`. Without a reserved domain the address changes on every start, and the App's webhook URL must be updated.
+  The webhook URL is the `https://…` forwarding address it prints, followed by `/github/webhook`. Without a reserved domain the address changes on every start, and the App's webhook URL must be updated. With a reserved domain, compose runs the agent and the receiver together; see [Running it with compose](#running-it-with-compose).
 
 ## Setting up the GitHub App
 
