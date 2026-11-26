@@ -26,7 +26,7 @@ pub use state::{
     AWAITING_APPROVAL, AWAITING_MERGE, BLOCKED, DONE, NONE, PLAN_APPROVED, PLANNING, QUEUED,
     REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
 };
-pub use trust::{Trust, TrustMatch};
+pub use trust::{Action, ActionTable, ActionTrust, People, Trust, TrustMatch};
 pub use yaml::parse_yaml;
 
 /// An error from loading a config, with the key path it concerns.
