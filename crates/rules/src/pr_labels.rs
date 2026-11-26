@@ -38,6 +38,8 @@ pub const VERDICT_PLACEHOLDER: &str = "{value}";
 pub const VERDICT_COLOUR: &str = "ededed";
 /// The description of a band label the rule creates, as `msw-state.py` creates it.
 pub const VERDICT_DESCRIPTION: &str = "mintswarm verdict";
+/// The prefix of mintswarm's own `msw-<family>:<value>` labels, which are never component labels.
+pub const FAMILY_PREFIX: &str = "msw-";
 /// The longest label name, in characters.
 pub const MAX_NAME: usize = 50;
 /// The longest label description, in characters.
@@ -209,6 +211,14 @@ fn band_id(band: Band) -> &'static str {
         .map_or("", |entry| entry.0)
 }
 
+/// Whether `label` is one of mintswarm's own `msw-<family>:<value>` labels, ignoring ASCII case.
+fn is_family(label: &str) -> bool {
+    label
+        .get(..FAMILY_PREFIX.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(FAMILY_PREFIX))
+        && label[FAMILY_PREFIX.len()..].contains(':')
+}
+
 /// What one wanted label is: its name as built and how to create it.
 struct Wanted {
     name: String,
@@ -224,7 +234,8 @@ struct Wanted {
 /// - A PR label the component pattern matches is kept when it names a touched component,
 ///   ignoring ASCII case, and removed otherwise.
 /// - With a band, band labels naming another band are removed; without one, band labels are left
-///   alone.
+///   alone. Band labels and other `msw-<family>:<value>` labels are never read as component
+///   labels, whatever the pattern.
 /// - Of kept labels that differ only in case, one stays: the name as built when present, else the
 ///   first in byte order.
 /// - A touched component's label and the band label are added unless a kept label names them.
@@ -292,13 +303,17 @@ where
     // The kept labels, grouped by their ASCII-lowercase names, each group in byte order.
     let mut kept: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for &label in &present {
-        let keep = if let Some(name) = component.option_of(label) {
-            touched.iter().any(|t| t.eq_ignore_ascii_case(name))
-        } else if let Some(value) = verdict.option_of(label) {
+        // The band template goes first and mintswarm's own families are never component
+        // labels, so a pattern such as `msw-{name}` cannot reach them.
+        let keep = if let Some(value) = verdict.option_of(label) {
             match band {
                 Some(band) => band.eq_ignore_ascii_case(value),
                 None => continue,
             }
+        } else if is_family(label) {
+            continue;
+        } else if let Some(name) = component.option_of(label) {
+            touched.iter().any(|t| t.eq_ignore_ascii_case(name))
         } else {
             continue;
         };

@@ -150,6 +150,27 @@ fn only_family_labels_are_removed() {
 }
 
 #[test]
+fn a_pattern_overlapping_mintswarm_labels_leaves_them_alone() {
+    let view = small("    source: labels\n    label: \"msw-{name}\"\n");
+    let others = ["msw-plan:safe", "MSW-State:done"];
+    for band in [None, Some(Band::Safe)] {
+        let mut pr = others.to_vec();
+        pr.extend(["msw-verdict:blocked", "msw-gone", "msw-web"]);
+        let out = run(&view, &["web/app.tsx"], band, &pr);
+        for other in others {
+            assert!(!out.remove.iter().any(|r| r == other), "{other} removed");
+        }
+        assert_eq!(
+            out.remove.iter().any(|r| r == "msw-verdict:blocked"),
+            band.is_some()
+        );
+        assert!(out.remove.iter().any(|r| r == "msw-gone"));
+        assert!(!out.remove.iter().any(|r| r == "msw-web"));
+        assert!(out.add.iter().all(|a| a != "msw-web"));
+    }
+}
+
+#[test]
 fn a_pattern_that_would_match_every_label_is_refused() {
     for label in ["{name}", "{name}{name}", "component", ""] {
         let yaml = config(&format!("    source: labels\n    label: \"{label}\"\n"));
