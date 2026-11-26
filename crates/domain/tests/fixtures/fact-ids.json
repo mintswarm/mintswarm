@@ -1,0 +1,760 @@
+{
+  "items": [
+    {
+      "key": "github.com/mintswarm/mintswarm#412",
+      "rendered": "github.com/mintswarm/mintswarm#412",
+      "trace_id": "fb343d9dee5c0c0dde897ba9e839efff",
+      "root_span_id": "37918123b9c931f3",
+      "spans": [
+        {
+          "kind": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ],
+          "span_id": "a2d27391a4fc291f"
+        },
+        {
+          "kind": "turn",
+          "local": [
+            "a2d27391a4fc291f",
+            "msg_01ABC"
+          ],
+          "span_id": "ce805f1e404a2981"
+        },
+        {
+          "kind": "tool_call",
+          "local": [
+            "a2d27391a4fc291f",
+            "toolu_01XYZ"
+          ],
+          "span_id": "874bdaa6a599489f"
+        },
+        {
+          "kind": "phase",
+          "local": [
+            "a2d27391a4fc291f",
+            "build",
+            "1"
+          ],
+          "span_id": "bb5ec8c9aa6ad931"
+        },
+        {
+          "kind": "wait",
+          "local": [
+            "human",
+            "0123456789abcdef0123456789abcdef"
+          ],
+          "span_id": "5e670e07f05f00e2"
+        }
+      ]
+    },
+    {
+      "key": "GitHub.com/MintSwarm/Mint-Swarm#7",
+      "rendered": "github.com/mintswarm/mint-swarm#7",
+      "trace_id": "5565e6ed3d2d677d49325c64e62a1fa4",
+      "root_span_id": "7416e4be2caa0894",
+      "spans": [
+        {
+          "kind": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ],
+          "span_id": "7fad7f599552e7e9"
+        },
+        {
+          "kind": "turn",
+          "local": [
+            "7fad7f599552e7e9",
+            "msg_01ABC"
+          ],
+          "span_id": "6047055cf91590d7"
+        },
+        {
+          "kind": "tool_call",
+          "local": [
+            "7fad7f599552e7e9",
+            "toolu_01XYZ"
+          ],
+          "span_id": "b1940b54ce02200d"
+        },
+        {
+          "kind": "phase",
+          "local": [
+            "7fad7f599552e7e9",
+            "build",
+            "1"
+          ],
+          "span_id": "ac0a0a5aaced72c3"
+        },
+        {
+          "kind": "wait",
+          "local": [
+            "human",
+            "0123456789abcdef0123456789abcdef"
+          ],
+          "span_id": "6ece21004f42f780"
+        }
+      ]
+    },
+    {
+      "key": "gitlab.example.org/team/tools#100000",
+      "rendered": "gitlab.example.org/team/tools#100000",
+      "trace_id": "6f497d9748fba55db4d1c6dab2cba277",
+      "root_span_id": "d49bae08bfff4fb5",
+      "spans": [
+        {
+          "kind": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ],
+          "span_id": "4e4998b3666131f3"
+        },
+        {
+          "kind": "turn",
+          "local": [
+            "4e4998b3666131f3",
+            "msg_01ABC"
+          ],
+          "span_id": "65416a47927ca4a4"
+        },
+        {
+          "kind": "tool_call",
+          "local": [
+            "4e4998b3666131f3",
+            "toolu_01XYZ"
+          ],
+          "span_id": "180b12aaf8474b9b"
+        },
+        {
+          "kind": "phase",
+          "local": [
+            "4e4998b3666131f3",
+            "build",
+            "1"
+          ],
+          "span_id": "fe4fa96ac3a9f9a3"
+        },
+        {
+          "kind": "wait",
+          "local": [
+            "human",
+            "0123456789abcdef0123456789abcdef"
+          ],
+          "span_id": "b99234cd31176a3c"
+        }
+      ]
+    }
+  ],
+  "facts": [
+    {
+      "fact": {
+        "kind": "item_root",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764064800000000000,
+        "end": 1764237600000000000,
+        "links": [
+          {
+            "mintswarm.link.kind": "parent",
+            "target": {
+              "item": "github.com/mintswarm/mintswarm#411"
+            }
+          }
+        ],
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.item.outcome": "merged",
+          "mintswarm.item.landed_by": 531
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "stage_run_started",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "concerns": {
+          "span": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.stage": "implement",
+          "mintswarm.harness": "claude",
+          "mintswarm.effort": "high",
+          "mintswarm.round": 1,
+          "mintswarm.run.id": "agent-a1b2",
+          "mintswarm.trigger": "pipeline"
+        }
+      },
+      "span_id": "a2d27391a4fc291f",
+      "fact_id": "d52a1d1d10d1406768f4619e7ac93397"
+    },
+    {
+      "fact": {
+        "kind": "stage_run",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764151200000000000,
+        "end": 1764151205000000000,
+        "concerns": {
+          "local": [
+            "agent-a1b2"
+          ]
+        },
+        "links": [
+          {
+            "mintswarm.link.kind": "trigger",
+            "target": {
+              "item": "github.com/mintswarm/mintswarm#412",
+              "concerns": {
+                "span": "stage_run",
+                "local": [
+                  "agent-plan"
+                ]
+              }
+            },
+            "mintswarm.fact.id": "00112233445566778899aabbccddeeff"
+          }
+        ],
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.stage": "implement",
+          "mintswarm.harness": "claude",
+          "mintswarm.effort": "high",
+          "mintswarm.round": 1,
+          "mintswarm.run.id": "agent-a1b2",
+          "mintswarm.trigger": "pipeline",
+          "gen_ai.provider.name": "anthropic",
+          "gen_ai.request.model": "claude-opus-4",
+          "mintswarm.result.findings.blocker": 0,
+          "mintswarm.result.gate_verdict": "passed",
+          "mintswarm.result.lines_added": 120,
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.name": "msw-implement",
+          "mintswarm.run.queued_at": 1764151199000000000,
+          "mintswarm.outcome.status": "complete"
+        }
+      },
+      "span_id": "a2d27391a4fc291f",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "turn",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764151200000000000,
+        "end": 1764151205000000000,
+        "concerns": {
+          "local": [
+            "a2d27391a4fc291f",
+            "msg_01ABC"
+          ],
+          "parent": {
+            "span": "stage_run",
+            "local": [
+              "agent-a1b2"
+            ]
+          }
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "gen_ai.provider.name": "anthropic",
+          "gen_ai.request.model": "claude-opus-4",
+          "gen_ai.usage.input_tokens": 1000,
+          "gen_ai.usage.output_tokens": 200,
+          "gen_ai.usage.cache_read.input_tokens": 600,
+          "gen_ai.usage.cache_creation.input_tokens": 100,
+          "gen_ai.operation.name": "chat",
+          "gen_ai.response.model": "claude-opus-4-20260101",
+          "gen_ai.response.id": "msg_01ABC"
+        }
+      },
+      "span_id": "ce805f1e404a2981",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "tool_call",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764151200000000000,
+        "end": 1764151205000000000,
+        "concerns": {
+          "local": [
+            "a2d27391a4fc291f",
+            "toolu_01XYZ"
+          ],
+          "parent": {
+            "span": "phase",
+            "local": [
+              "a2d27391a4fc291f",
+              "build",
+              "1"
+            ]
+          }
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "gen_ai.operation.name": "execute_tool",
+          "gen_ai.tool.name": "Bash",
+          "gen_ai.tool.call.id": "toolu_01XYZ",
+          "mintswarm.activity": "build",
+          "mintswarm.activity.source": "default",
+          "mintswarm.tool.program": "cargo"
+        }
+      },
+      "span_id": "874bdaa6a599489f",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "phase",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764151200000000000,
+        "end": 1764151205000000000,
+        "concerns": {
+          "local": [
+            "a2d27391a4fc291f",
+            "build",
+            "1"
+          ],
+          "parent": {
+            "span": "stage_run",
+            "local": [
+              "agent-a1b2"
+            ]
+          }
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.phase": "build"
+        }
+      },
+      "span_id": "bb5ec8c9aa6ad931",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "wait_started",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "concerns": {
+          "span": "wait",
+          "local": [
+            "human",
+            "plan-approval-412"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.wait.kind": "human"
+        }
+      },
+      "span_id": "c6e55e40d54a26fc",
+      "fact_id": "2e54bccd154b862eb0b18950231557f5"
+    },
+    {
+      "fact": {
+        "kind": "wait",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "start": 1764151200000000000,
+        "end": 1764151205000000000,
+        "concerns": {
+          "local": [
+            "human",
+            "plan-approval-412"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.wait.kind": "human"
+        }
+      },
+      "span_id": "c6e55e40d54a26fc",
+      "fact_id": null
+    },
+    {
+      "fact": {
+        "kind": "confidence_scored",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "concerns": {
+          "span": "stage_run",
+          "local": [
+            "agent-judge"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.judge": "plan",
+          "mintswarm.confidence.value": 0.82,
+          "mintswarm.confidence.band": "likely-safe",
+          "mintswarm.confidence.threshold": 0.75,
+          "mintswarm.confidence.hard_triggers": [
+            "config_edit"
+          ]
+        }
+      },
+      "span_id": "6f42521a06800cb8",
+      "fact_id": "7613d5621883e6d3407a1ea4dd8783c9"
+    },
+    {
+      "fact": {
+        "kind": "decision_requested",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "concerns": {
+          "span": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.decision.kind": "plan_approval",
+          "mintswarm.decision.required": true,
+          "mintswarm.decision.where": "github",
+          "mintswarm.decision.url": "https://github.com/mintswarm/mintswarm/issues/412#issuecomment-1"
+        }
+      },
+      "span_id": "a2d27391a4fc291f",
+      "fact_id": "9433efa73e4c3d912b9209671ab7bad3"
+    },
+    {
+      "fact": {
+        "kind": "decision_taken",
+        "item": {
+          "mintswarm.item.tracker": "GitHub.com",
+          "mintswarm.item.repository": "MintSwarm/MintSwarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "concerns": {
+          "span": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "reconstructed",
+          "mintswarm.provenance.source": "transcript",
+          "mintswarm.provenance.gaps": [
+            "start_unrecorded"
+          ],
+          "mintswarm.actor.kind": "human",
+          "mintswarm.actor.id": "zmij",
+          "mintswarm.decision.kind": "question_round",
+          "mintswarm.decision.required": false,
+          "mintswarm.decision.where": "session",
+          "mintswarm.decision.verdict": "answered",
+          "mintswarm.decision.answers.recommended": 2,
+          "mintswarm.decision.assumptions.silent": 3,
+          "mintswarm.decision.confidence_fact": "ffeeddccbbaa99887766554433221100"
+        }
+      },
+      "span_id": "a2d27391a4fc291f",
+      "fact_id": "100a02f3998a890f889affe90f4ab0f2"
+    },
+    {
+      "fact": {
+        "kind": "intervention",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.actor.kind": "human",
+          "mintswarm.intervention.kind": "steer",
+          "mintswarm.steer.kind": "pr-comment",
+          "mintswarm.steer.via": "marker",
+          "mintswarm.intervention.url": "https://github.com/mintswarm/mintswarm/pull/531#issuecomment-2"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "dcd943b204f5c9fe9e80b32d085b69db"
+    },
+    {
+      "fact": {
+        "kind": "picked_up",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "5d52949ea49983ad9d394248fd11186e"
+    },
+    {
+      "fact": {
+        "kind": "state_changed",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000007,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.state.from": "awaiting approval",
+          "mintswarm.state.to": "implementing"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "bde4ecf3aad05c666351158c8edabf61"
+    },
+    {
+      "fact": {
+        "kind": "link_changed",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.link.kind": "blocked_by",
+          "mintswarm.link.target": "github.com/mintswarm/mintswarm#530",
+          "mintswarm.link.op": "added"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "a2694216136fd136838c8b612e171308"
+    },
+    {
+      "fact": {
+        "kind": "pr_opened",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.pr.number": 531,
+          "mintswarm.pr.authored_by": "factory"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "81c0a715a6aef76e01172b0154fce780"
+    },
+    {
+      "fact": {
+        "kind": "pr_merged",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.pr.number": 531,
+          "mintswarm.pr.authored_by": "factory"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "db63123d3cce46e88f34b2ad5b9da373"
+    },
+    {
+      "fact": {
+        "kind": "pr_reverted",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.pr.number": 531,
+          "mintswarm.pr.authored_by": "factory",
+          "mintswarm.revert.pr": 540
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "796859801c6d2a92321f437c48fd2cda"
+    },
+    {
+      "fact": {
+        "kind": "regression_linked",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151200000000000,
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.regression.of": "github.com/mintswarm/mintswarm#300"
+        }
+      },
+      "span_id": "37918123b9c931f3",
+      "fact_id": "268d6ba74b68df8b8f522dc797992a98"
+    }
+  ]
+}
