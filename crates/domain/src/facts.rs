@@ -167,7 +167,7 @@ pub const CATALOGUE_VERSION: u32 = 1;
 /// The OTLP instrumentation scope name of every fact.
 pub const SCOPE_NAME: &str = "mintswarm.facts";
 
-/// The scope's `schema_url`: the pinned semantic-conventions version, 1.40.0.
+/// The scope's `schema_url`: the pinned semantic-conventions version, the one place it is named.
 pub const SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.40.0";
 
 /// A struct whose fields are flat attributes, some of them held in nested groups.
@@ -1101,7 +1101,7 @@ mod tests {
                 "system.memory.utilization",
             ]
         );
-        assert!(SCHEMA_URL.ends_with("/1.40.0"));
+        assert!(SCHEMA_URL.starts_with("https://opentelemetry.io/schemas/"));
     }
 
     fn spellings<T: Serialize>(values: &[T]) -> Vec<String> {
