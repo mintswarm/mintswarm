@@ -39,8 +39,12 @@
 # across pushes. Every background process runs in its own process group, every
 # wait is bounded, and any group still there is killed on exit. Waits on a
 # condition give up after 60 seconds, enough for a fully loaded machine, and the
-# only elapsed-time bounds are the trickle case (8 seconds from listening) and
-# the locked keyring (21 seconds).
+# only elapsed-time bounds are the trickle case and the locked keyring (21
+# seconds). The trickle client must connect within create's 5-second timeout and
+# be dropped within 9 seconds of connecting, below the listener's 10-second
+# per-request bound; it is started before create and connects as soon as the
+# listening line appears, and a run in which the listener was gone first is
+# repeated, at most 3 attempts.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
@@ -889,8 +893,11 @@ cat > "$sandbox/probe.py" <<'EOF'
 # probe.py get PORT TARGET HOST   GET TARGET from 127.0.0.1:PORT with that Host header, waiting
 #                                 at most 60 seconds; the status, headers and body as JSON
 # probe.py connect HOST PORT [SECS]  exit 0 if a TCP connection opens within SECS seconds, 1 by default
-# probe.py trickle PORT SECS      connect to 127.0.0.1:PORT, print "connected", then send
-#                                 a request one byte every 0.2 seconds for SECS seconds
+# probe.py trickle ERR SECS       wait at most 60 seconds for ERR to hold the listener's listening
+#                                 line, connect to its port at once, print "connected", then send a
+#                                 request one byte every 0.2 seconds for SECS seconds; prints
+#                                 "dropped after N seconds" (from connecting) when the listener drops
+#                                 it, "refused" when it was already gone, and exits 1 unless dropped
 import html, http.client, json, re, socket, sys, time
 
 cmd = sys.argv[1]
@@ -919,9 +926,27 @@ elif cmd == "connect":
         sys.exit(1)
     s.close()
 elif cmd == "trickle":
-    s = socket.create_connection(("127.0.0.1", int(sys.argv[2])), timeout=1)
+    line = re.compile(r"^manifest-listener\.py: listening on 127\.0\.0\.1:(\d+);", re.M)
+    give_up = time.monotonic() + 60
+    while True:
+        try:
+            found = line.search(open(sys.argv[2]).read())
+        except OSError:
+            found = None
+        if found:
+            break
+        if time.monotonic() >= give_up:
+            print("no listening line within 60 seconds", flush=True)
+            sys.exit(1)
+        time.sleep(0.02)
+    try:
+        s = socket.create_connection(("127.0.0.1", int(found.group(1))), timeout=1)
+    except ConnectionRefusedError:
+        print("refused", flush=True)
+        sys.exit(1)
+    connected = time.monotonic()
     print("connected", flush=True)
-    end = time.monotonic() + float(sys.argv[3])
+    end = connected + float(sys.argv[3])
     data = b"GET /?code=" + b"a" * 10000
     i = 0
     try:
@@ -930,7 +955,10 @@ elif cmd == "trickle":
             i += 1
             time.sleep(0.2)
     except OSError:
-        print("dropped", flush=True)
+        print("dropped after %.1f seconds" % (time.monotonic() - connected), flush=True)
+        sys.exit(0)
+    print("not dropped within %s seconds" % sys.argv[3], flush=True)
+    sys.exit(1)
 else:
     sys.exit(2)
 EOF
@@ -1270,33 +1298,45 @@ check "and calls no curl" eq "$(curl_calls)" "$calls"
 check "and writes no config" test ! -e "$sandbox/to/steward-app.json"
 check "and removes the page" test ! -e "$page"
 m_tr="$(manifest_copy mintswarm-dev-steward)"
-trickle_bounded() {  # a client sending a byte every 0.2 seconds; create with a 2-second timeout ends within 8
-                     # seconds of listening: the timeout plus a 6-second margin, below the listener's 10-second
-                     # per-request bound
-  local start end deadline tpid rc=0
+trickle_bounded() {  # a client sending a byte every 0.2 seconds is dropped within 9 seconds of connecting
+                     # when create's timeout is 5: the timeout plus a 4-second margin, below the listener's
+                     # 10-second per-request bound, so a listener that honoured only that bound fails. The client
+                     # is started before create and connects as soon as the listening line appears, so no
+                     # process start falls inside the 5 seconds; if the listener was still gone first, the
+                     # case is run again, at most 3 attempts in all.
+  local attempt=1 deadline tpid rc took
   lport="$(port_of "$m_tr")"
-  start_create c-tr env MSW_MANIFEST_TIMEOUT=2 MSW_STEWARD_CONFIG="$sandbox/tr/steward-app.json" "$S" create "$m_tr" || return 1
-  start="$(date +%s)"
-  python3 "$sandbox/setsid.py" python3 "$sandbox/probe.py" trickle "$lport" 15 > "$sandbox/trickle.out" 2>&1 &
-  tpid=$!
-  bg_groups="$bg_groups $tpid"
-  deadline=$((SECONDS + wait_ceiling))
-  until grep -q connected "$sandbox/trickle.out" 2>/dev/null; do
-    if ! kill -0 "$tpid" 2>/dev/null; then
-      grep -q connected "$sandbox/trickle.out" && break
-      echo "the trickle client exited before connecting"; cat "$sandbox/trickle.out"; return 1
-    fi
-    [ "$SECONDS" -lt "$deadline" ] || { cat "$sandbox/trickle.out"; return 1; }
-    sleep 0.1
+  while :; do
+    rc=0
+    python3 "$sandbox/setsid.py" python3 "$sandbox/probe.py" trickle "$sandbox/c-tr.$attempt.err" 30 \
+      > "$sandbox/trickle.out" 2>&1 &
+    tpid=$!
+    bg_groups="$bg_groups $tpid"
+    start_create "c-tr.$attempt" env MSW_MANIFEST_TIMEOUT=5 MSW_STEWARD_CONFIG="$sandbox/tr/steward-app.json" \
+      "$S" create "$m_tr" || { kill -TERM -- "-$tpid" 2>/dev/null; return 1; }
+    deadline=$((SECONDS + wait_ceiling))
+    until grep -qE '^(connected|refused)' "$sandbox/trickle.out" 2>/dev/null || ! kill -0 "$tpid" 2>/dev/null; do
+      [ "$SECONDS" -lt "$deadline" ] || { echo "the trickle client did not connect"; cat "$sandbox/trickle.out"; return 1; }
+      sleep 0.1
+    done
+    finish_create || rc=$?
+    deadline=$((SECONDS + wait_ceiling))
+    while kill -0 "$tpid" 2>/dev/null; do
+      [ "$SECONDS" -lt "$deadline" ] || { kill -TERM -- "-$tpid" 2>/dev/null || true; break; }
+      sleep 0.1
+    done
+    wait "$tpid" 2>/dev/null || true
+    cat "$create_out.out" "$create_out.err" "$sandbox/trickle.out"
+    grep -qx connected "$sandbox/trickle.out" && break
+    { grep -qx refused "$sandbox/trickle.out" && [ "$attempt" -lt 3 ]; } || return 1
+    echo "the listener was gone before the client connected; retrying"
+    attempt=$((attempt + 1))
   done
-  finish_create || rc=$?
-  end="$(date +%s)"
-  kill -TERM -- "-$tpid" 2>/dev/null || true
-  wait "$tpid" 2>/dev/null || true
-  cat "$create_out.out" "$create_out.err"
   { [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; } || { echo "create's status: $rc"; return 1; }
-  grep -qF "no matching redirect within 2 seconds" "$create_out.err" || return 1
-  [ $((end - start)) -le 8 ] || { echo "took $((end - start)) seconds"; return 1; }
+  grep -qF "no matching redirect within 5 seconds" "$create_out.err" || return 1
+  took="$(sed -n 's/^dropped after \([0-9]*\)\.[0-9] seconds$/\1/p' "$sandbox/trickle.out")"
+  [ -n "$took" ] || { echo "the client was not dropped"; return 1; }
+  [ "$took" -lt 9 ] || { echo "dropped only after $took seconds"; return 1; }
 }
 check "a client sending one byte at a time cannot keep the listener past its timeout" trickle_bounded
 check "and nothing was converted or written" test ! -e "$sandbox/tr/steward-app.json"
