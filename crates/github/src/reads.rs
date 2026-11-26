@@ -1,7 +1,8 @@
 //! GET-only reads of one repository's issues, comments, links, dependencies and artifacts as the
 //! runner App, design §9 "Reads and writes": an issue with its comments, the issues that block it
 //! or that it blocks, and a listing of issues by state, update time, labels and creator, which
-//! drops pull requests and gives GitHub's clock at its first reply.
+//! drops pull requests and gives GitHub's clock at its first reply. It also reads an issue's
+//! parent and a login's role on the repository.
 //!
 //! Every GET goes through one ETag cache, so a repeated read is revalidated with
 //! `If-None-Match` and a 304 is served from the cache. Lists are read with `per_page=100`, page
@@ -22,7 +23,7 @@ use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 use mintswarm_domain::tracker::{
     Artifact, ArtifactSummary, Comment, CommentMark, Cursor, Dependency, Direction, Issue,
-    IssueRead, IssueType, Link, LinkKind, Login,
+    IssueRead, IssueType, Link, LinkKind, Login, RepoRole,
 };
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
@@ -400,14 +401,11 @@ impl GitHubReads {
     ) -> Result<Vec<Link>, ReadError> {
         let path = self.issue_path(issue.0);
         let mut links = Vec::new();
-        let parent_path = format!("{path}/parent");
-        match self.get(token, &parent_path).await {
-            Ok(parent) => links.push(Link {
+        if let Some(parent) = self.read_parent(token, issue).await? {
+            links.push(Link {
                 kind: LinkKind::Parent,
-                number: u64_at(&parent, "number", &format!("GET {parent_path}"))?,
-            }),
-            Err(ReadError::NotFound { .. }) => {}
-            Err(error) => return Err(error),
+                number: parent.0,
+            });
         }
         let subs_path = format!("{path}/sub_issues");
         for sub in self.get_paged(token, &subs_path, None).await? {
@@ -417,6 +415,65 @@ impl GitHubReads {
             });
         }
         Ok(links)
+    }
+
+    /// `issue`'s parent issue, or `None` for a top-level issue, which GitHub answers with a 404.
+    pub async fn read_parent(
+        &self,
+        token: &Token,
+        issue: IssueNumber,
+    ) -> Result<Option<IssueNumber>, ReadError> {
+        let path = format!("{}/parent", self.issue_path(issue.0));
+        match self.get(token, &path).await {
+            Ok(parent) => Ok(Some(IssueNumber(u64_at(
+                &parent,
+                "number",
+                &format!("GET {path}"),
+            )?))),
+            Err(ReadError::NotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `login`'s role on the repository, from `collaborators/{login}/permission`.
+    ///
+    /// The reply's `role_name` is read first, when it names one of the five built-in roles;
+    /// otherwise, for a custom role or none, its `permission` (`admin`, `write`, `read` or
+    /// `none`). A 404, for a login that is no user, is [`RepoRole::NoAccess`], and a `permission`
+    /// outside those four is [`ReadError::Unexpected`].
+    pub async fn read_permission(
+        &self,
+        token: &Token,
+        login: &Login,
+    ) -> Result<RepoRole, ReadError> {
+        let path = format!(
+            "{}/collaborators/{}/permission",
+            self.repo_path(),
+            path_segment(&login.0)
+        );
+        let body = match self.get(token, &path).await {
+            Ok(body) => body,
+            Err(ReadError::NotFound { .. }) => return Ok(RepoRole::NoAccess),
+            Err(error) => return Err(error),
+        };
+        let role = match body.get("role_name").and_then(Value::as_str) {
+            Some("admin") => Some(RepoRole::Admin),
+            Some("maintain") => Some(RepoRole::Maintain),
+            Some("write") => Some(RepoRole::Write),
+            Some("triage") => Some(RepoRole::Triage),
+            Some("read") => Some(RepoRole::Read),
+            _ => None,
+        };
+        if let Some(role) = role {
+            return Ok(role);
+        }
+        match body.get("permission").and_then(Value::as_str) {
+            Some("admin") => Ok(RepoRole::Admin),
+            Some("write") => Ok(RepoRole::Write),
+            Some("read") => Ok(RepoRole::Read),
+            Some("none") => Ok(RepoRole::NoAccess),
+            _ => Err(unexpected(&format!("GET {path}"))),
+        }
     }
 
     /// The artifacts published on `issue`, without their bodies.
