@@ -62,3 +62,11 @@ id!(
     /// A directive, so the runner can acknowledge it with a receipt.
     DirectiveId(String)
 );
+id!(
+    /// A person's account in mintswarm, the identity work items are owned by.
+    UserId(String)
+);
+id!(
+    /// A work item: an issue, a plan, a decomposition or a pull request mintswarm tracks.
+    WorkItemId(String)
+);

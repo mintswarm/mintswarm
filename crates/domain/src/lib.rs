@@ -1,11 +1,14 @@
 //! Domain types for mintswarm: the vocabulary shared by the control plane, the runners and the
 //! tools.
 
+pub mod approval;
+pub mod codeowners;
 pub mod cost;
 pub mod field;
 pub mod hosting;
 pub mod ids;
 pub mod job;
+pub mod ownership;
 pub mod plane;
 pub mod priority;
 pub mod probe;
