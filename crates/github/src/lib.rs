@@ -6,8 +6,10 @@
 //! issue field or labels with a token their caller passes in.
 //!
 //! [`GitHubReads`] is the runner's GET-only view of one repository, design §9 "Reads and
-//! writes": issues with their comments since a cursor, parent and sub-issue links, the issues
-//! that block an issue or that it blocks, a listing of issues since a time with GitHub's clock at
+//! writes": issues with their comments since a cursor, an issue's parent and its sub-issue
+//! links, a login's role on the repository as a
+//! [`RepoRole`](mintswarm_domain::tracker::RepoRole), the issues that block an issue or that it
+//! blocks, a listing of issues since a time with GitHub's clock at
 //! its first reply, issue artifacts and pull requests with their reviews and checks, paged,
 //! revalidated with ETags and paused by `retry-after`. [`comment_mark`] tells steers and notes from other comments.
 //! [`GitHubRepoReads`] reads the default branch's head and a file's bytes at a commit through
@@ -17,7 +19,9 @@
 //! the repository's statuses once per [`StatusPass`]; a GraphQL reply with `errors` is a failure,
 //! and one with a `RATE_LIMITED` error a rate limit. [`CommentClient`] posts notes once each: a
 //! create whose attempt may have landed is answered by a probe for the note's key, and
-//! [`ContentLimiter`] budgets every [`CommentClient::post_note`].
+//! [`ContentLimiter`] budgets every [`CommentClient::post_note`]. [`IssueWrites`] reacts `+1` to
+//! a comment, edits a comment and updates an artifact, each attempt budgeted by the same limiter,
+//! and a 403 that is not a rate limit is [`WriteError::Refused`].
 //!
 //! Every request goes through one retry layer: a transient failure is retried within a
 //! [`RetryPolicy`], with bounded, jittered backoff and the waits a rate limit names, and a call
@@ -39,6 +43,7 @@ mod retry;
 mod secret;
 mod status;
 mod token;
+mod writes;
 
 pub use catalogue::GitHubFieldCatalogue;
 pub use comments::{CommentClient, CommentError, PROBE_MARGIN};
@@ -61,3 +66,4 @@ pub use token::{
     Access, CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,
     TokenClient, TokenError,
 };
+pub use writes::{IssueWrites, WriteError};
