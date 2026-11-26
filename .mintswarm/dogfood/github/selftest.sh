@@ -3286,9 +3286,9 @@ check "--dry-run prints the line and writes nothing" eq "$out $(( $(field_posts)
 check "set exits 2 on a malformed section" exits_2 ms short-title set 94 --analysis "$sandbox/st-four.md" --base "$real_base"
 check "set exits 2 on a base without tracker.short_title" exits_2 ms short-title set 94 --analysis "$st_good" --base "$labels_only_base"
 check "set exits 2 on a short_title block with a status key" exits_2 ms short-title set 94 --analysis "$st_good" \
-  --base "$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{value}", status: off}}')"
+  --base "$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{option}", status: off}}')"
 
-st_labels_base="$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{value}"}}')"
+st_labels_base="$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{option}"}}')"
 seed 95 '{"labels": ["bug"]}'
 out="$(ms short-title set 95 --analysis "$st_good" --base "$st_labels_base" 2>&1)" || out="(failed) $out"
 check "labels mode: no label adds one" eq "$out $(labels_of 95)" \
