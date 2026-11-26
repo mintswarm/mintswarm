@@ -339,3 +339,17 @@ fn migrate_new_refuses_an_invalid_name() {
     assert_eq!(code(output.status), Some(FAILURE), "an invalid name fails");
     assert!(!dir.path().join("mintswarm").exists(), "nothing is created");
 }
+
+#[test]
+fn migrate_new_refuses_a_tree_whose_parent_is_missing() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let parent = dir.path().join("missing");
+    let output = migrate_new("add_jobs", &parent.join("migrations"));
+    assert_eq!(code(output.status), Some(FAILURE), "a missing parent fails");
+    let stderr = String::from_utf8(output.stderr).expect("the error is UTF-8");
+    assert!(
+        stderr.contains(&parent.display().to_string()),
+        "the error names the missing folder: {stderr}"
+    );
+    assert!(!parent.exists(), "nothing is created");
+}

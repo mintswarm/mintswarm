@@ -51,6 +51,12 @@ pub enum MintError {
         /// The name given.
         name: String,
     },
+    /// The folder that should hold the tree root is not there, so the tree root is likely
+    /// wrong.
+    NoParent {
+        /// The missing folder.
+        path: PathBuf,
+    },
     /// The schema's migrations folder cannot be read.
     Unreadable {
         /// The folder.
@@ -70,6 +76,11 @@ impl fmt::Display for MintError {
                 f,
                 "the name {name:?} is not one or more letters, digits and underscores"
             ),
+            Self::NoParent { path } => write!(
+                f,
+                "{}: does not exist, so the tree root below it is likely wrong",
+                path.display()
+            ),
             Self::Unreadable { path } => write!(f, "{}: cannot be read", path.display()),
             Self::Uncreatable { path } => write!(f, "{}: cannot be created", path.display()),
         }
@@ -82,13 +93,26 @@ impl std::error::Error for MintError {}
 /// path.
 ///
 /// The version is `now`, a Unix second, or the next second free in the schema when it is taken.
-/// An existing file is never overwritten, and an invalid name is refused before anything on
-/// disk is touched.
+/// An existing file is never overwritten. An invalid name, or a tree root whose parent folder
+/// does not exist, is refused before anything on disk is touched: only the tree root and the
+/// folders below it are created.
 pub fn mint(tree_root: &Path, name: &str, now: u64) -> Result<PathBuf, MintError> {
     if !is_valid_name(name) {
         return Err(MintError::InvalidName {
             name: name.to_owned(),
         });
+    }
+    if let Some(parent) = tree_root.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if !parent.is_dir() {
+            return Err(MintError::NoParent {
+                path: parent.to_path_buf(),
+            });
+        }
     }
     let dir = tree_root.join(SCHEMA).join("migrations");
     fs::create_dir_all(&dir).map_err(|_| MintError::Uncreatable { path: dir.clone() })?;

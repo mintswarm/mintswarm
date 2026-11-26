@@ -470,3 +470,27 @@ fn mint_refuses_an_invalid_name_and_creates_nothing() {
     }
     assert!(!root.join("mintswarm").exists(), "nothing is created");
 }
+
+#[test]
+fn mint_refuses_a_tree_root_whose_parent_is_missing_and_creates_nothing() {
+    let root = scratch("mint_refuses_a_tree_root_whose_parent_is_missing_and_creates_nothing");
+    let parent = root.join("missing");
+    assert_eq!(
+        mint(&parent.join("migrations"), "a", NOW),
+        Err(MintError::NoParent {
+            path: parent.clone()
+        })
+    );
+    assert!(!parent.exists(), "nothing is created");
+}
+
+#[test]
+fn mint_creates_the_tree_root_below_an_existing_parent() {
+    let root = scratch("mint_creates_the_tree_root_below_an_existing_parent");
+    let tree = root.join("migrations");
+    let created = mint(&tree, "a", NOW).expect("the file is minted");
+    assert_eq!(
+        created.parent(),
+        Some(tree.join("mintswarm/migrations").as_path())
+    );
+}
