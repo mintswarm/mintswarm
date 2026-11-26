@@ -104,14 +104,14 @@ fn other_bodies() -> Vec<(String, Marker, String)> {
             "<!-- mintswarm: set-back 46 -->\n".to_owned(),
         ),
         (
-            merge_ready(&RevId(HEAD40.to_owned()), &[review("zmij")], &[]),
+            merge_ready(&RevId(HEAD40.to_owned()), &[review("zmij")], &[]).expect("a head"),
             Marker::MergeReady,
             "<!-- mintswarm: merge ready -->\n".to_owned(),
         ),
     ];
     for head in [HEAD40.to_owned(), h64] {
         bodies.push((
-            merge_refused(&RevId(head.clone()), &["dirty"]),
+            merge_refused(&RevId(head.clone()), &["dirty"]).expect("a head"),
             Marker::MergeRefused(RevId(head.clone())),
             format!("<!-- mintswarm: merge refused {head} -->\n"),
         ));
@@ -272,7 +272,7 @@ fn hostile_notes_stay_inert() {
         (refusal(1, hostile), 1),
         (set_back(2, hostile), 1),
         (
-            merge_refused(&RevId(HEAD40.to_owned()), &[hostile, hostile]),
+            merge_refused(&RevId(HEAD40.to_owned()), &[hostile, hostile]).expect("a head"),
             1,
         ),
         (
@@ -280,19 +280,11 @@ fn hostile_notes_stay_inert() {
                 &RevId(HEAD40.to_owned()),
                 &[review(hostile)],
                 &[check(hostile, Some(hostile)), check("ci", None)],
-            ),
+            )
+            .expect("a head"),
             1,
         ),
     ];
-    // The refusal marker carries the head as given; past it, the head is in a span.
-    let hostile_head = RevId(hostile.to_owned());
-    for body in [
-        merge_refused(&hostile_head, &[hostile]),
-        merge_ready(&hostile_head, &[], &[]),
-    ] {
-        let (_, rest) = body.split_once(" -->\n\n").expect("a marker line");
-        assert_inert(rest, 0);
-    }
     let hostile_hint = Hint::NotACommand(hostile.to_owned());
     reasons.push((hint(4, &hostile_hint, Some(PackageKind::Plan)), 1));
     reasons.push((hint(4, &hostile_hint, None), 1));
@@ -342,8 +334,9 @@ fn pr_bodies_carry_no_steer_line() {
             &head,
             &[review("zmij")],
             &[check("gates-matrix", Some("success"))],
-        ),
-        merge_refused(&head, &["dirty", "checks pending"]),
+        )
+        .expect("a head"),
+        merge_refused(&head, &["dirty", "checks pending"]).expect("a head"),
         pr_hint(5),
     ] {
         assert!(!body.split('\n').any(|line| line == STEER), "{body}");
@@ -359,19 +352,44 @@ fn merge_records_list_reviews_checks_and_reasons() {
             &[review("zmij")],
             &[check("gates-matrix", Some("success")), check("ci", None)]
         ),
-        format!(
+        Some(format!(
             "<!-- mintswarm: merge ready -->\n\nHead: `{HEAD40}`\n\n\
              - Approved by `zmij` ([review](https://github.com/o/r/pull/9#pullrequestreview-1))\n\
              - Check `gates-matrix`: `success`\n- Check `ci`: `pending`\n"
-        )
+        ))
     );
     assert_eq!(
         merge_refused(&head, &["dirty", "a review thread is unresolved"]),
-        format!(
+        Some(format!(
             "<!-- mintswarm: merge refused {HEAD40} -->\n\nNot merged at head `{HEAD40}`:\n\n\
              - `dirty`\n- `a review thread is unresolved`\n"
-        )
+        ))
     );
+}
+
+#[test]
+fn merge_records_refuse_a_head_read_would_not_take_back() {
+    let bad = [
+        String::new(),
+        HEAD40[..39].to_owned(),
+        format!("{HEAD40}0"),
+        head64()[..63].to_owned(),
+        format!("{}0", head64()),
+        HEAD40.to_uppercase(),
+        format!("{}g", &HEAD40[..39]),
+        format!("{} -->", &HEAD40[..36]),
+        "@zmij `x` <!-- mintswarm: steer -->\n<!-- mintswarm: answer 2 -->".to_owned(),
+    ];
+    for head in bad {
+        let head = RevId(head);
+        assert_eq!(merge_ready(&head, &[review("zmij")], &[]), None, "{head:?}");
+        assert_eq!(merge_refused(&head, &["dirty"]), None, "{head:?}");
+    }
+    for head in [HEAD40.to_owned(), head64()] {
+        let head = RevId(head);
+        assert!(merge_ready(&head, &[], &[]).is_some(), "{head:?}");
+        assert!(merge_refused(&head, &[]).is_some(), "{head:?}");
+    }
 }
 
 #[test]

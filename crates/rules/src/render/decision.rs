@@ -6,7 +6,8 @@
 //! - [`record`]: the approval and rejection record of a plan, design or decomposition;
 //! - [`refusal`], [`help`], [`hint`] and [`pr_hint`]: the answers to a comment;
 //! - [`set_back`]: the reply when a hand-set approval is set back to `awaiting approval`;
-//! - [`merge_ready`] and [`merge_refused`]: the merge records on a pull request;
+//! - [`merge_ready`] and [`merge_refused`]: the merge records on a pull request, for a head of
+//!   40 or 64 lowercase hexadecimal characters only;
 //! - [`shadow_line`] and [`decide_shadow`]: the maintainer's decision in a shadow record, in
 //!   place of [`PENDING_DECISION`].
 //!
@@ -359,8 +360,17 @@ pub fn set_back(package_comment_id: u64, reason: &str) -> String {
     )
 }
 
-/// The merge-ready record at `head`: the head, one line per approving review and one per check.
-pub fn merge_ready(head: &RevId, reviews: &[Review], checks: &[CheckState]) -> String {
+/// Whether `head` is 40 or 64 lowercase hexadecimal characters, the heads [`read`] takes back.
+fn is_head(head: &RevId) -> bool {
+    head_of(&head.0).is_some()
+}
+
+/// The merge-ready record at `head`: the head, one line per approving review and one per check;
+/// nothing when `head` is not 40 or 64 lowercase hexadecimal characters.
+pub fn merge_ready(head: &RevId, reviews: &[Review], checks: &[CheckState]) -> Option<String> {
+    if !is_head(head) {
+        return None;
+    }
     let mut out = Marker::MergeReady.lines();
     out.push_str(&format!("\nHead: {}\n", span(&head.0)));
     let mut rows: Vec<String> = reviews
@@ -387,17 +397,21 @@ pub fn merge_ready(head: &RevId, reviews: &[Review], checks: &[CheckState]) -> S
             out.push('\n');
         }
     }
-    out
+    Some(out)
 }
 
-/// The merge refusal at `head`: one line per reason.
-pub fn merge_refused(head: &RevId, reasons: &[&str]) -> String {
+/// The merge refusal at `head`: one line per reason; nothing when `head` is not 40 or 64
+/// lowercase hexadecimal characters, so the marker line carries no text but the head.
+pub fn merge_refused(head: &RevId, reasons: &[&str]) -> Option<String> {
+    if !is_head(head) {
+        return None;
+    }
     let mut out = Marker::MergeRefused(head.clone()).lines();
     out.push_str(&format!("\nNot merged at head {}:\n\n", span(&head.0)));
     for reason in reasons {
         out.push_str(&format!("- {}\n", span(reason)));
     }
-    out
+    Some(out)
 }
 
 /// Whether the maintainer's ruling agrees with the judged decision: an approval with `auto`, a
