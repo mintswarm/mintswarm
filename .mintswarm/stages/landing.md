@@ -207,7 +207,7 @@ msw-result:
   status: complete          # or failed (an input is missing or empty); never needs_input
   artefact: landing
   outputs: [.mintswarm/job/outputs/landing.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````

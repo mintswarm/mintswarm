@@ -42,7 +42,7 @@ Checks:
   quotes, an escape that is not JSON, `reason: null`), each with its
   line; the comment and null forms that are allowed; `commit` and
   `pr_title`; the record's name without a .md suffix; and the Questions
-  example in .mintswarm/stages.md;
+  example in .mintswarm/stages.md, one question carrying every field;
 - every case under crates/domain/tests/fixtures/result-blocks/: its
   block.yaml, wrapped in a reply, gives exactly its result.json, byte for
   byte.
@@ -756,9 +756,35 @@ class Questions(Harness):
         text = STAGES_MD.read_text(encoding="utf-8").split("\n### Questions\n", 1)[1]
         examples = [body for tag, _, body in fenced_blocks(text.split("\n")) if tag == "yaml"]
         self.assertEqual(len(examples), 1, "the Questions subsection has one yaml example")
-        proc = self.run_script("--text", str(self.reply_file(result_reply(*examples[0]))), str(self.out))
+        example = examples[0]
+        proc = self.run_script("--text", str(self.reply_file(result_reply(*example))), str(self.out))
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue(examples[0][-2].startswith("    ]"), "the example's closing ] is indented by four spaces")
+        self.assertTrue(example[-2].startswith("    ]"), "the example's closing ] is indented by four spaces")
+        first = next(i for i, line in enumerate(example) if line.startswith("  questions: ["))
+        last = next(i for i, line in enumerate(example) if i > first and line.startswith("    ]"))
+        array = "\n".join(example[first : last + 1]).removeprefix("  questions:")
+        questions = json.loads(array)
+        self.assertIsInstance(questions, list)
+        self.assertEqual(len(questions), 1, "the example holds exactly one question")
+        question = questions[0]
+        self.assertEqual(
+            set(question), {"id", "kind", "question", "why", "shape", "options", "recommendation"}, "question keys"
+        )
+        self.assertGreaterEqual(len(question["options"]), 2, "the example has at least two options")
+        for option in question["options"]:
+            self.assertEqual(set(option), {"id", "label", "consequence", "trade_off"}, "option keys")
+            for value in option.values():
+                self.assertIsInstance(value, str)
+                self.assertTrue(value, "an option field is empty")
+        recommendation = question["recommendation"]
+        self.assertEqual(set(recommendation), {"choice", "reason"}, "recommendation keys")
+        self.assertIsInstance(recommendation["choice"], list)
+        self.assertTrue(recommendation["choice"], "the recommendation's choice is empty")
+        self.assertIsInstance(recommendation["reason"], str)
+        self.assertTrue(recommendation["reason"], "the recommendation's reason is empty")
+        record = json.loads(self.out.with_name("review.result.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "needs_input")
+        self.assertEqual(len(record["questions"]), 1)
 
 
 class Fixtures(unittest.TestCase):
