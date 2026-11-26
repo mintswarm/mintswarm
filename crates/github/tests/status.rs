@@ -199,6 +199,33 @@ async fn a_write_makes_the_next_read_fetch_the_issue_again() {
 }
 
 #[tokio::test]
+async fn a_failed_write_makes_the_next_read_fetch_the_issue_again() {
+    // A dropped connection may have carried the mutation out; so may a partly applied one that
+    // answers with errors.
+    for failed in [None, Some(NOT_FOUND)] {
+        let responder = Responder::start().await;
+        responder.reply_with(200, &[("etag", "\"i7\"")], ISSUE);
+        responder.reply(200, STATUSES);
+        match failed {
+            None => responder.drop_connection(),
+            Some(reply) => responder.reply(200, reply),
+        }
+        responder.reply(200, issue(7, NODE_7, serde_json::json!({"name": "Done"})));
+        let client = client(&responder, single_attempt());
+        let pass = client.pass(&token());
+        assert!(pass.set_status(IssueNumber(7), "Done").await.is_err());
+        assert_eq!(
+            pass.read_status(IssueNumber(7)).await,
+            Ok(Some("Done".to_owned()))
+        );
+        let requests = responder.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[3].method, "GET");
+        assert_eq!(requests[3].header("if-none-match"), None);
+    }
+}
+
+#[tokio::test]
 async fn a_new_pass_reads_planning_statuses_again() {
     let responder = Responder::start().await;
     responder.reply(200, ISSUE);

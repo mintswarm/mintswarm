@@ -161,7 +161,8 @@ impl StatusPass<'_> {
     /// Sets `issue`'s status to the repository's status named `name`, matched exactly.
     ///
     /// A name the repository has no status of is [`StatusError::UnknownStatus`], before the
-    /// mutation is sent. A later read in the pass reads the issue again.
+    /// mutation is sent. Once the mutation was sent, whether or not it succeeded, a later read in
+    /// the pass reads the issue again.
     pub async fn set_status(&self, issue: IssueNumber, name: &str) -> Result<(), StatusError> {
         let node_id = self.issue(issue.0).await?.node_id;
         let statuses = self.statuses(&node_id).await?;
@@ -176,13 +177,14 @@ impl StatusPass<'_> {
         });
         // Setting an issue's status to a status leaves it at that status however often it is
         // repeated.
-        let reply = self
+        let sent = self
             .client
             .rest
             .post_idempotent(GRAPHQL_PATH, &self.token, &body)
-            .await?;
-        graphql_data(&reply)?;
+            .await;
+        // Whatever the outcome, the mutation may have changed the issue.
         self.forget(issue.0).await;
+        graphql_data(&sent?)?;
         Ok(())
     }
 
@@ -246,7 +248,8 @@ impl StatusPass<'_> {
         Ok(known)
     }
 
-    /// Drops what this pass and the client hold for `issue`, after a write changed it.
+    /// Drops what this pass and the client hold for `issue`, after a write that may have changed
+    /// it.
     async fn forget(&self, issue: u64) {
         self.issues.lock().await.remove(&issue);
         self.client.etags.lock().await.remove(&issue);
