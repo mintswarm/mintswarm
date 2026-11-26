@@ -1,0 +1,16 @@
+{
+  "data": {
+    "node": {
+      "repository": {
+        "planningStatuses": {
+          "nodes": [
+            { "id": "PS_kwDOAcmeQueued", "name": "Queued" },
+            { "id": "PS_kwDOAcmeInProgress", "name": "In progress" },
+            { "id": "PS_kwDOAcmeBlocked", "name": "Blocked" },
+            { "id": "PS_kwDOAcmeDone", "name": "Done" }
+          ]
+        }
+      }
+    }
+  }
+}
