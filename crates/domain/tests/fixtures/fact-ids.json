@@ -591,6 +591,36 @@
     },
     {
       "fact": {
+        "kind": "intervention",
+        "item": {
+          "mintswarm.item.tracker": "github.com",
+          "mintswarm.item.repository": "mintswarm/mintswarm",
+          "mintswarm.item.number": 412,
+          "mintswarm.item.kind": "implementation",
+          "mintswarm.item.components": [
+            "domain",
+            "api"
+          ]
+        },
+        "time": 1764151260000000000,
+        "concerns": {
+          "span": "stage_run",
+          "local": [
+            "agent-a1b2"
+          ]
+        },
+        "attributes": {
+          "mintswarm.provenance": "live",
+          "mintswarm.provenance.source": "session",
+          "mintswarm.actor.kind": "human",
+          "mintswarm.intervention.kind": "assumption_overruled"
+        }
+      },
+      "span_id": "a2d27391a4fc291f",
+      "fact_id": "9596f694f2ef617a583ea75247310ca3"
+    },
+    {
+      "fact": {
         "kind": "picked_up",
         "item": {
           "mintswarm.item.tracker": "github.com",

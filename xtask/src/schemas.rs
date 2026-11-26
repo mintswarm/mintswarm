@@ -273,7 +273,8 @@ mod tests {
         let text = fact_schema();
         assert!(!text.contains("\"null\""));
         let schema = schema();
-        let log = &schema["oneOf"][1];
+        let log = &schema["oneOf"][11];
+        assert_eq!(log["properties"]["kind"]["const"], "intervention");
         let required = log["required"].as_array().unwrap();
         assert!(!required.contains(&json!("concerns")));
         assert_eq!(log["properties"]["concerns"]["type"], "object");

@@ -460,6 +460,7 @@ pub struct Otlp {
     pub attaches_to: &'static [Attachment],
     /// For a log, the ordered parts of the natural key its fact id derives from: attribute
     /// keys, `concerns` (the concerned span id in hex) or `time` (decimal Unix nanoseconds).
+    /// A part `a|b` is the first of its alternatives that is present.
     pub natural_key: &'static [&'static str],
 }
 
@@ -468,6 +469,11 @@ trait Envelope {
     fn item(&self) -> &Item;
     fn span_id(&self, kind: FactKind) -> SpanId;
     fn fact_id(&self, kind: FactKind) -> Option<FactId>;
+
+    /// Checks the envelope against the kind's encoding.
+    fn check(&self, _kind: FactKind) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl<A> Envelope for RootFact<A> {
@@ -518,21 +524,39 @@ impl<A: Serialize> Envelope for LogFact<A> {
     fn fact_id(&self, kind: FactKind) -> Option<FactId> {
         let attributes = serde_json::to_value(&self.attributes)
             .expect("catalogue attributes hold only strings, numbers, booleans and arrays");
+        let render = |part: &str| match part {
+            "concerns" => Some(self.span_id(kind).to_string()),
+            "time" => Some(self.time.to_string()),
+            key => match attributes.get(key) {
+                None => None,
+                Some(Value::String(text)) => Some(text.clone()),
+                Some(other) => Some(other.to_string()),
+            },
+        };
         let parts: Vec<String> = kind
             .otlp()
             .natural_key
             .iter()
-            .map(|part| match *part {
-                "concerns" => self.span_id(kind).to_string(),
-                "time" => self.time.to_string(),
-                key => match attributes.get(key) {
-                    None => String::new(),
-                    Some(Value::String(text)) => text.clone(),
-                    Some(other) => other.to_string(),
-                },
-            })
+            .map(|part| part.split('|').find_map(render).unwrap_or_default())
             .collect();
         Some(ids::fact_id(self.item.key(), kind.otlp().name, &parts))
+    }
+
+    fn check(&self, kind: FactKind) -> Result<(), String> {
+        let allowed = kind.otlp().attaches_to;
+        match &self.concerns {
+            None if allowed.contains(&Attachment::Root) => Ok(()),
+            None => Err(format!(
+                "a `{}` fact names the span it concerns in `concerns`",
+                kind.tag()
+            )),
+            Some(span) if allowed.contains(&Attachment::Span(span.span)) => Ok(()),
+            Some(span) => Err(format!(
+                "a `{}` fact cannot concern a `{}` span",
+                kind.tag(),
+                span.span.as_str()
+            )),
+        }
     }
 }
 
@@ -549,14 +573,39 @@ macro_rules! fact_kinds {
         )+
     ) => {
         /// A fact, as a writer hands it to the journal, tagged by `kind`.
+        ///
+        /// Deserialising checks a log's `concerns` against the kind's
+        /// [`attaches_to`](Otlp::attaches_to).
         #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind")]
+        #[serde(tag = "kind", try_from = "Unchecked")]
         pub enum Fact {
             $(
                 $(#[$doc])*
                 #[serde(rename = $tag)]
                 $variant($envelope<kinds::$variant>),
             )+
+        }
+
+        /// A fact as read, before its envelope is checked against its kind.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind")]
+        enum Unchecked {
+            $(
+                #[serde(rename = $tag)]
+                $variant($envelope<kinds::$variant>),
+            )+
+        }
+
+        impl TryFrom<Unchecked> for Fact {
+            type Error = String;
+
+            fn try_from(fact: Unchecked) -> Result<Self, Self::Error> {
+                let fact = match fact {
+                    $( Unchecked::$variant(fact) => Fact::$variant(fact), )+
+                };
+                fact.envelope().check(fact.kind())?;
+                Ok(fact)
+            }
         }
 
         /// The kind of a fact.
@@ -624,7 +673,7 @@ macro_rules! fact_kinds {
 
             fn json_schema(generator: &mut SchemaGenerator) -> Schema {
                 let branches = vec![
-                    $( branch::<$envelope<kinds::$variant>>(generator, $tag), )+
+                    $( branch::<$envelope<kinds::$variant>>(generator, FactKind::$variant), )+
                 ];
                 json_schema!({ "oneOf": branches })
             }
@@ -632,10 +681,19 @@ macro_rules! fact_kinds {
     };
 }
 
-/// One `oneOf` branch of [`Fact`]'s schema: the envelope's, with the `kind` tag added first.
-fn branch<T: JsonSchema>(generator: &mut SchemaGenerator, tag: &str) -> Value {
+/// One `oneOf` branch of [`Fact`]'s schema: the envelope's, with the `kind` tag added first
+/// and, for a log, `concerns` narrowed to what the kind attaches to.
+fn branch<T: JsonSchema>(generator: &mut SchemaGenerator, kind: FactKind) -> Value {
+    let tag = kind.tag();
+    let concerns = match kind.otlp().signal {
+        Signal::Log => Some(log_concerns(generator, kind)),
+        Signal::Span => None,
+    };
     let mut schema = T::json_schema(generator);
     let object = schema.ensure_object();
+    if let Some(concerns) = concerns {
+        apply_concerns(object, concerns);
+    }
     if let Some(properties) = object
         .entry("properties")
         .or_insert_with(|| Value::Object(Map::new()))
@@ -654,6 +712,48 @@ fn branch<T: JsonSchema>(generator: &mut SchemaGenerator, tag: &str) -> Value {
         required.insert(0, Value::from("kind"));
     }
     schema.to_value()
+}
+
+/// A log's `concerns` schema for `kind`: `None` when it attaches to the root only, else the
+/// [`SpanRef`] schema with `span` limited to the kinds it attaches to, and whether it is required.
+fn log_concerns(generator: &mut SchemaGenerator, kind: FactKind) -> Option<(Value, bool)> {
+    let allowed = kind.otlp().attaches_to;
+    let spans: Vec<Value> = allowed
+        .iter()
+        .filter_map(|attachment| match attachment {
+            Attachment::Span(span) => Some(Value::from(span.as_str())),
+            Attachment::Root => None,
+        })
+        .collect();
+    if spans.is_empty() {
+        return None;
+    }
+    let mut schema = SpanRef::json_schema(generator).to_value();
+    schema["properties"]["span"] = serde_json::json!({ "type": "string", "enum": spans });
+    Some((schema, !allowed.contains(&Attachment::Root)))
+}
+
+/// Replaces a log branch's `concerns` property with `concerns`, or removes it.
+fn apply_concerns(object: &mut Map<String, Value>, concerns: Option<(Value, bool)>) {
+    let Some(Value::Object(properties)) = object.get_mut("properties") else {
+        return;
+    };
+    match concerns {
+        None => {
+            properties.remove("concerns");
+        }
+        Some((schema, required)) => {
+            properties.insert("concerns".into(), schema);
+            if required
+                && let Some(list) = object
+                    .entry("required")
+                    .or_insert_with(|| Value::Array(Vec::new()))
+                    .as_array_mut()
+            {
+                list.push(Value::from("concerns"));
+            }
+        }
+    }
 }
 
 use Attachment::{Root, Span};
@@ -719,7 +819,7 @@ fact_kinds! {
     Intervention: LogFact = "intervention",
         Log "mintswarm.intervention",
         attaches [Span(StageRun), Root],
-        key ["concerns", "mintswarm.intervention.kind", "mintswarm.intervention.url"];
+        key ["concerns", "mintswarm.intervention.kind", "mintswarm.intervention.url|time"];
     /// The item was picked up.
     PickedUp: LogFact = "picked_up",
         Log "mintswarm.item.picked_up",
@@ -1390,6 +1490,144 @@ mod tests {
         assert_eq!(root_fact().span_id(), ids::root_span_id(&key));
     }
 
+    fn picked_up(concerns: Option<SpanRef>) -> Value {
+        serde_json::to_value(Fact::PickedUp(LogFact {
+            item: item(),
+            time: 1,
+            concerns,
+            attributes: kinds::PickedUp { provenance: live() },
+        }))
+        .unwrap()
+    }
+
+    fn intervention(time: u64, url: Option<&str>) -> Fact {
+        Fact::Intervention(LogFact {
+            item: item(),
+            time,
+            concerns: None,
+            attributes: kinds::Intervention {
+                provenance: live(),
+                actor: Actor {
+                    kind: ActorKind::Human,
+                    id: None,
+                },
+                kind: InterventionKind::AssumptionOverruled,
+                steer_kind: None,
+                steer_via: None,
+                url: url.map(str::to_owned),
+            },
+        })
+    }
+
+    #[test]
+    fn concerns_follow_attaches_to() {
+        let parses = |value: Value| serde_json::from_value::<Fact>(value).is_ok();
+        let turn = SpanRef {
+            span: SpanKind::Turn,
+            local: vec!["0123456789abcdef".into(), "msg-1".into()],
+        };
+        assert!(parses(picked_up(None)));
+        assert!(!parses(picked_up(Some(stage_run_span()))));
+
+        let started = serde_json::to_value(log_fact()).unwrap();
+        assert!(parses(started.clone()));
+        let mut without = started.clone();
+        without.as_object_mut().unwrap().remove("concerns");
+        assert!(!parses(without));
+        let mut on_turn = started;
+        on_turn["concerns"] = serde_json::to_value(&turn).unwrap();
+        assert!(!parses(on_turn));
+
+        let root = serde_json::to_value(intervention(1, None)).unwrap();
+        assert!(parses(root.clone()));
+        let mut on_run = root.clone();
+        on_run["concerns"] = serde_json::to_value(stage_run_span()).unwrap();
+        assert!(parses(on_run));
+        let mut on_turn = root;
+        on_turn["concerns"] = serde_json::to_value(&turn).unwrap();
+        assert!(!parses(on_turn));
+    }
+
+    #[test]
+    fn schema_concerns_follow_attaches_to() {
+        let schema = Fact::json_schema(&mut generator()).to_value();
+        let branch = |tag: &str| {
+            schema["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["properties"]["kind"]["const"] == tag)
+                .unwrap()
+                .clone()
+        };
+        let required = |branch: &Value| branch["required"].as_array().unwrap().clone();
+        for kind in FactKind::ALL {
+            let otlp = kind.otlp();
+            let branch = branch(kind.tag());
+            let concerns = &branch["properties"]["concerns"];
+            match otlp.signal {
+                Signal::Span => continue,
+                Signal::Log if otlp.attaches_to == [Root] => {
+                    assert!(concerns.is_null(), "{kind:?}");
+                }
+                Signal::Log => {
+                    let spans: Vec<&str> = otlp
+                        .attaches_to
+                        .iter()
+                        .filter(|a| **a != Root)
+                        .map(|a| a.as_str())
+                        .collect();
+                    assert_eq!(concerns["properties"]["span"]["enum"], json!(spans));
+                    assert_eq!(
+                        required(&branch).contains(&json!("concerns")),
+                        !otlp.attaches_to.contains(&Root),
+                        "{kind:?}"
+                    );
+                }
+            }
+        }
+        assert!(branch("picked_up")["properties"]["concerns"].is_null());
+        assert!(required(&branch("confidence_scored")).contains(&json!("concerns")));
+        assert!(!required(&branch("intervention")).contains(&json!("concerns")));
+    }
+
+    #[test]
+    fn url_or_time_tells_interventions_apart() {
+        assert_ne!(
+            intervention(1, None).fact_id(),
+            intervention(2, None).fact_id()
+        );
+        let url = "https://github.com/mintswarm/mintswarm/pull/531#issuecomment-2";
+        assert_eq!(
+            intervention(1, Some(url)).fact_id(),
+            intervention(2, Some(url)).fact_id()
+        );
+        assert_eq!(
+            intervention(1, Some(url)).fact_id(),
+            Some(ids::fact_id(
+                item().key(),
+                "mintswarm.intervention",
+                &[
+                    ids::root_span_id(item().key()).to_string().as_str(),
+                    "assumption_overruled",
+                    url,
+                ]
+            ))
+        );
+        assert_eq!(
+            intervention(7, None).fact_id(),
+            Some(ids::fact_id(
+                item().key(),
+                "mintswarm.intervention",
+                &[
+                    ids::root_span_id(item().key()).to_string().as_str(),
+                    "assumption_overruled",
+                    "7",
+                ]
+            ))
+        );
+    }
+
     #[test]
     fn natural_keys_name_declared_parts() {
         let declared: BTreeSet<String> = declared_keys().into_iter().collect();
@@ -1398,9 +1636,9 @@ mod tests {
             match otlp.signal {
                 Signal::Span => assert!(otlp.natural_key.is_empty(), "{kind:?}"),
                 Signal::Log => {
-                    for part in otlp.natural_key {
+                    for part in otlp.natural_key.iter().flat_map(|p| p.split('|')) {
                         assert!(
-                            matches!(*part, "concerns" | "time") || declared.contains(*part),
+                            matches!(part, "concerns" | "time") || declared.contains(part),
                             "{kind:?}: {part}"
                         );
                     }

@@ -281,11 +281,7 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
+                "stage_run"
               ],
               "type": "string"
             }
@@ -348,7 +344,8 @@
         "kind",
         "item",
         "time",
-        "attributes"
+        "attributes",
+        "concerns"
       ],
       "type": "object",
       "x-otlp": {
@@ -1478,10 +1475,6 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
                 "wait"
               ],
               "type": "string"
@@ -1545,7 +1538,8 @@
         "kind",
         "item",
         "time",
-        "attributes"
+        "attributes",
+        "concerns"
       ],
       "type": "object",
       "x-otlp": {
@@ -1865,11 +1859,7 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
+                "stage_run"
               ],
               "type": "string"
             }
@@ -1932,7 +1922,8 @@
         "kind",
         "item",
         "time",
-        "attributes"
+        "attributes",
+        "concerns"
       ],
       "type": "object",
       "x-otlp": {
@@ -2023,11 +2014,7 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
+                "stage_run"
               ],
               "type": "string"
             }
@@ -2090,7 +2077,8 @@
         "kind",
         "item",
         "time",
-        "attributes"
+        "attributes",
+        "concerns"
       ],
       "type": "object",
       "x-otlp": {
@@ -2240,11 +2228,7 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
+                "stage_run"
               ],
               "type": "string"
             }
@@ -2307,7 +2291,8 @@
         "kind",
         "item",
         "time",
-        "attributes"
+        "attributes",
+        "concerns"
       ],
       "type": "object",
       "x-otlp": {
@@ -2414,11 +2399,7 @@
             },
             "span": {
               "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
+                "stage_run"
               ],
               "type": "string"
             }
@@ -2493,7 +2474,7 @@
         "natural_key": [
           "concerns",
           "mintswarm.intervention.kind",
-          "mintswarm.intervention.url"
+          "mintswarm.intervention.url|time"
         ],
         "signal": "log"
       }
@@ -2533,32 +2514,6 @@
           "required": [
             "mintswarm.provenance",
             "mintswarm.provenance.source"
-          ],
-          "type": "object"
-        },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
           ],
           "type": "object"
         },
@@ -2669,32 +2624,6 @@
             "mintswarm.provenance.source",
             "mintswarm.state.from",
             "mintswarm.state.to"
-          ],
-          "type": "object"
-        },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
           ],
           "type": "object"
         },
@@ -2827,32 +2756,6 @@
           ],
           "type": "object"
         },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
-          ],
-          "type": "object"
-        },
         "item": {
           "additionalProperties": false,
           "properties": {
@@ -2973,32 +2876,6 @@
           ],
           "type": "object"
         },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
-          ],
-          "type": "object"
-        },
         "item": {
           "additionalProperties": false,
           "properties": {
@@ -3113,32 +2990,6 @@
             "mintswarm.provenance.source",
             "mintswarm.pr.number",
             "mintswarm.pr.authored_by"
-          ],
-          "type": "object"
-        },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
           ],
           "type": "object"
         },
@@ -3264,32 +3115,6 @@
           ],
           "type": "object"
         },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
-          ],
-          "type": "object"
-        },
         "item": {
           "additionalProperties": false,
           "properties": {
@@ -3396,32 +3221,6 @@
             "mintswarm.provenance",
             "mintswarm.provenance.source",
             "mintswarm.regression.of"
-          ],
-          "type": "object"
-        },
-        "concerns": {
-          "additionalProperties": false,
-          "properties": {
-            "local": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "span": {
-              "enum": [
-                "stage_run",
-                "turn",
-                "tool_call",
-                "phase",
-                "wait"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "span",
-            "local"
           ],
           "type": "object"
         },
