@@ -6,8 +6,8 @@
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve`,
 //! `readiness/check.py` `review_config`, `readiness/check.py` `trusted_ingest` for
 //! `tracker.ingest.match`, and `github/msw-state.py` `settings`, which covers `tracker.state`,
-//! `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title`. A change to any of those, or to the
-//! config's keys, changes this module in the same change.
+//! `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title`. A change to any of
+//! those, or to the config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
 //! some mismatched types; this module checks every key and rejects each mismatch instead. A
@@ -19,7 +19,8 @@
 //! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
 //! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores;
 //! - a `field_id` under `tracker.state`, `tracker.plan_verdict`, `tracker.decomp_verdict` or
-//!   `tracker.short_title`, which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
+//!   `tracker.short_title`, which `msw-state.py` ignores: field ids are resolved per account and
+//!   are not configuration.
 //!
 //! It is looser in one place: a missing `tracker.ingest.match` reads as `any`, where
 //! `trusted_ingest` reports it as not any or all.
