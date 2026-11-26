@@ -83,10 +83,6 @@ pub(crate) trait Transport: sealed::Sealed + Send + Sync {
 }
 
 /// What a create's probe found out about an earlier attempt.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the M2 writes build their probes on it")
-)]
 pub(crate) enum Landing {
     /// It landed; this is what GitHub holds for it.
     Landed(Reply),
@@ -240,10 +236,6 @@ impl<T: Transport> Retrying<T> {
     /// attempt's reply is returned as the call's, and a probe that cannot tell ends the call.
     /// When the attempts or the time run out after such an attempt, the call ends in
     /// [`Exhausted`] without asking, so the create may still have landed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the M2 writes call it with their probes")
-    )]
     pub async fn create(
         &self,
         path: &str,

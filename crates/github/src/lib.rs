@@ -11,14 +11,20 @@
 //! its first reply, issue artifacts and pull requests with their reviews and checks, paged,
 //! revalidated with ETags and paused by `retry-after`. [`comment_mark`] tells steers and notes from other comments.
 //! [`GitHubRepoReads`] reads the default branch's head and a file's bytes at a commit through
-//! the same GET path, so the plane needs no clone. [`ContentLimiter`] budgets content-creating
-//! requests for the writes to come.
+//! the same GET path, so the plane needs no clone.
+//!
+//! [`StatusClient`] reads an issue's status name and sets it by name through GraphQL, querying
+//! the repository's statuses once per [`StatusPass`]; a GraphQL reply with `errors` is a failure,
+//! and one with a `RATE_LIMITED` error a rate limit. [`CommentClient`] posts notes once each: a
+//! create whose attempt may have landed is answered by a probe for the note's key, and
+//! [`ContentLimiter`] budgets every [`CommentClient::post_note`].
 //!
 //! Every request goes through one retry layer: a transient failure is retried within a
 //! [`RetryPolicy`], with bounded, jittered backoff and the waits a rate limit names, and a call
 //! whose retries run out ends in [`Exhausted`].
 
 mod catalogue;
+mod comments;
 mod config;
 mod etag;
 mod fields;
@@ -31,9 +37,11 @@ mod repo;
 mod rest;
 mod retry;
 mod secret;
+mod status;
 mod token;
 
 pub use catalogue::GitHubFieldCatalogue;
+pub use comments::{CommentClient, CommentError, PROBE_MARGIN};
 pub use config::{AppConfig, ConfigError, KeyStore};
 pub use fields::{FieldClient, FieldPass};
 pub use jwt::{JWT_BACKDATE_SECS, JWT_LIFETIME_SECS, JwtError, app_jwt};
@@ -48,6 +56,7 @@ pub use repo::GitHubRepoReads;
 pub use rest::ClientError;
 pub use retry::SECONDARY_LIMIT_WAIT;
 pub use secret::{SecretBytes, Token};
+pub use status::{StatusClient, StatusError, StatusPass};
 pub use token::{
     Access, CONNECT_TIMEOUT, Clock, GITHUB_API, Permissions, REFRESH_MARGIN_SECS, REQUEST_TIMEOUT,
     TokenClient, TokenError,
