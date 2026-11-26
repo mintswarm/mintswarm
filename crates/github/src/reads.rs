@@ -365,6 +365,13 @@ impl GitHubReads {
             issue_type,
             author: login_at(body, "user", endpoint)?,
             url: str_at(body, "html_url", endpoint)?,
+            sub_issues: summary_total_at(body, "sub_issues_summary", "total", endpoint)?,
+            blocked_by: summary_total_at(
+                body,
+                "issue_dependencies_summary",
+                "total_blocked_by",
+                endpoint,
+            )?,
         };
         Ok((issue, str_at(body, "created_at", endpoint)?))
     }
@@ -521,6 +528,24 @@ pub(crate) fn u64_at(body: &Value, key: &str, endpoint: &str) -> Result<u64, Rea
     body.get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| unexpected(endpoint))
+}
+
+/// The count at `total` in the summary object at `summary`, as GitHub's issue body carries
+/// `sub_issues_summary.total` and `issue_dependencies_summary.total_blocked_by`.
+///
+/// A missing or `null` summary reads as 0, as [`text_at`] reads a missing body as empty:
+/// older API responses omit the summaries. A summary that is present but has no count is
+/// refused.
+fn summary_total_at(
+    body: &Value,
+    summary: &str,
+    total: &str,
+    endpoint: &str,
+) -> Result<u64, ReadError> {
+    match body.get(summary) {
+        None | Some(Value::Null) => Ok(0),
+        Some(object) => u64_at(object, total, endpoint),
+    }
 }
 
 /// The `login` of the user object at `key`.

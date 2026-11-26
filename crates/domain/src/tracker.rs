@@ -35,6 +35,10 @@ pub struct Issue {
     pub issue_type: Option<IssueType>,
     pub author: Login,
     pub url: String,
+    /// The total from the issue's sub-issue summary.
+    pub sub_issues: u64,
+    /// The total from the issue's dependency summary: the issues that block it.
+    pub blocked_by: u64,
 }
 
 /// A comment on an issue or PR.
@@ -122,8 +126,6 @@ pub struct SubItem {
 pub enum LinkKind {
     Parent,
     SubItem,
-    BlockedBy,
-    Blocks,
     PullRequest,
 }
 
@@ -134,24 +136,44 @@ pub struct Link {
     pub number: u64,
 }
 
-/// The issue tracker.
-pub trait Tracker: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
+/// Which way a dependency points from an issue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// The issues that block this one.
+    BlockedBy,
+    /// The issues this one blocks.
+    Blocking,
+}
 
+/// An issue on the other end of a dependency.
+///
+/// A dependency is read only through [`Links::read_dependencies`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dependency {
+    /// The issue's repository, in `owner/name` form.
+    pub repository: String,
+    pub number: IssueNumber,
+    /// Whether the issue is still open.
+    pub open: bool,
+}
+
+/// The error every tracker capability but [`Fields`] shares, so a [`Tracker`] has one error.
+pub trait TrackerBase: Send + Sync {
+    type Error: std::error::Error + Send + Sync + 'static;
+}
+
+/// Reading, filing and typing issues.
+pub trait Issues: TrackerBase {
     /// Issues ready to be picked up.
     fn fetch_ready(&self) -> impl Future<Output = Result<Vec<Issue>, Self::Error>> + Send;
 
-    fn post_comment(
+    /// An issue and its comments since a cursor.
+    fn read_issue(
         &self,
         issue: IssueNumber,
-        body: String,
-    ) -> impl Future<Output = Result<Comment, Self::Error>> + Send;
-
-    fn set_status(
-        &self,
-        issue: IssueNumber,
-        status: String,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+        since: Option<Cursor>,
+    ) -> impl Future<Output = Result<IssueRead, Self::Error>> + Send;
 
     fn create_sub_item(
         &self,
@@ -159,12 +181,15 @@ pub trait Tracker: Send + Sync {
         item: SubItem,
     ) -> impl Future<Output = Result<Issue, Self::Error>> + Send;
 
-    fn link_pr(
+    fn set_issue_type(
         &self,
         issue: IssueNumber,
-        pr: PrNumber,
+        kind: IssueType,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
 
+/// An issue's links to other issues and its dependencies.
+pub trait Links: TrackerBase {
     fn read_links(
         &self,
         issue: IssueNumber,
@@ -177,26 +202,59 @@ pub trait Tracker: Send + Sync {
         blocker: IssueNumber,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// An issue and its comments since a cursor.
-    fn read_issue(
+    /// The issues that block `issue`, or that it blocks.
+    fn read_dependencies(
         &self,
         issue: IssueNumber,
-        since: Option<Cursor>,
-    ) -> impl Future<Output = Result<IssueRead, Self::Error>> + Send;
+        direction: Direction,
+    ) -> impl Future<Output = Result<Vec<Dependency>, Self::Error>> + Send;
+}
 
+/// Linking pull requests to issues.
+pub trait PullLinks: TrackerBase {
+    fn link_pr(
+        &self,
+        issue: IssueNumber,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// An issue's status.
+pub trait Statuses: TrackerBase {
+    /// The issue's status; `None` when it has none.
+    fn read_status(
+        &self,
+        issue: IssueNumber,
+    ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send;
+
+    fn set_status(
+        &self,
+        issue: IssueNumber,
+        status: String,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// Commenting on issues.
+pub trait Comments: TrackerBase {
+    fn post_comment(
+        &self,
+        issue: IssueNumber,
+        body: String,
+    ) -> impl Future<Output = Result<Comment, Self::Error>> + Send;
+}
+
+/// Publishing documents on issues.
+pub trait Artifacts: TrackerBase {
     /// Publish a document on an issue; returns its URL.
     fn publish_artifact(
         &self,
         issue: IssueNumber,
         artifact: Artifact,
     ) -> impl Future<Output = Result<String, Self::Error>> + Send;
+}
 
-    fn set_issue_type(
-        &self,
-        issue: IssueNumber,
-        kind: IssueType,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
+/// Assigning people to items.
+pub trait Assignments: TrackerBase {
     /// Assign people to an item while it waits on them.
     fn assign(
         &self,
@@ -207,7 +265,10 @@ pub trait Tracker: Send + Sync {
 
     /// Release the bot's own assignments of an item.
     fn release(&self, issue: IssueNumber) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
 
+/// A role's field on an issue, design §4.6.
+pub trait Fields: Send + Sync {
     /// The value of a role's field on an issue, design §4.6.
     fn read_field(
         &self,
@@ -224,6 +285,17 @@ pub trait Tracker: Send + Sync {
         field: &FieldRef,
         option: Option<&str>,
     ) -> impl Future<Output = Result<(), FieldError>> + Send;
+}
+
+/// The issue tracker: every capability at once. Any type implementing them all is one.
+pub trait Tracker:
+    Issues + Links + PullLinks + Statuses + Comments + Artifacts + Assignments + Fields
+{
+}
+
+impl<T> Tracker for T where
+    T: Issues + Links + PullLinks + Statuses + Comments + Artifacts + Assignments + Fields
+{
 }
 
 /// A pull request to open.
