@@ -23,7 +23,10 @@ services:
       - --secret-env
       - mintswarm-dev-secret
     # Its line mintswarm-dev-secret=<value> sets the variable --secret-env names.
-    env_file: ${HOME}/.config/mintswarm/webhook-secret
+    # Optional, so the project loads for those who only run postgres.
+    env_file:
+      - path: ${HOME}/.config/mintswarm/webhook-secret
+        required: false
     volumes:
       - ./build/webhooks:/var/log/mintswarm
 
