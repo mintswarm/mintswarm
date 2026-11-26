@@ -5,6 +5,9 @@
 //! `src/lib.rs` implements one that prints `Secret(<redacted>)`, so no secret
 //! is ever logged (design §9.5).
 //!
+//! `ProbeResult.Known.facts` is generated as a `BTreeMap`, the map type of
+//! `domain::probe`.
+//!
 //! The transport helpers are not generated: tonic's `connect(dst)` constructor
 //! on `RunnerServiceClient<Channel>` would clash with the client method of the
 //! `Connect` RPC, which is also named `connect`. Clients are built with
@@ -37,6 +40,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         // RPC's `connect` method; see the module doc.
         .build_transport(false)
         .skip_debug([".mintswarm.runner.v1.Secret"])
+        // A `BTreeMap`, as in `domain::probe`, so the facts need no conversion.
+        .btree_map(".mintswarm.runner.v1.ProbeResult.Known.facts")
         // `Hello` is far larger than the other cases; it is sent once per
         // stream, so it stays unboxed.
         .enum_attribute(
