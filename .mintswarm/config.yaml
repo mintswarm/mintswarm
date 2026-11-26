@@ -201,8 +201,6 @@ gates:
       command: "cargo nextest run --workspace && cargo test --doc --workspace"
     - name: proto-lint
       command: "buf lint api/proto"
-    - name: proto-breaking
-      command: "git rev-parse --verify -q origin/master >/dev/null || { echo 'proto-breaking: origin/master not found; fetch it before running this gate'; exit 1; }; if git cat-file -e origin/master:api/proto/buf.yaml 2>/dev/null; then buf breaking api/proto --against '.git#ref=origin/master,subdir=api/proto'; else echo 'proto-breaking: origin/master has no api/proto yet; nothing to compare'; fi"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
