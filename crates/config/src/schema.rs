@@ -520,11 +520,10 @@ fn check_ingest(value: &Value, path: &Path) -> Result<Trust, Error> {
         let trusted = mapping(trusted, &trusted_path)?;
         known(trusted, &trusted_path, &["labels", "authors"])?;
         trust.labels = optional_string_list(trusted.get("labels"), &trusted_path.key("labels"))?;
-        trust.authors =
-            optional_string_list(trusted.get("authors"), &trusted_path.key("authors"))?
-                .into_iter()
-                .map(Login)
-                .collect();
+        trust.authors = optional_string_list(trusted.get("authors"), &trusted_path.key("authors"))?
+            .into_iter()
+            .map(Login)
+            .collect();
     }
     if let Some(value) = map.get("match") {
         let found = value
