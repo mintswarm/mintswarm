@@ -1,10 +1,11 @@
 # Development compose file, run from the repository root.
 # webhooks: the GitHub App webhook receiver, `mintswarm-server webhooks`.
 # ngrok: an ngrok agent forwarding the reserved domain to the receiver.
-# Start, stop and tail them as crates/server/README.md says. #487 adds the
-# development Postgres to this file.
+# Start, stop and tail them as crates/server/README.md says.
+# postgres: the development database; start it with `docker compose up -d postgres`.
 #
 # No secret is in this file or an image: each is read from the host at run time.
+# The postgres credentials below are not secrets: they are for local use only.
 
 services:
   webhooks:
@@ -34,6 +35,23 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - exec ngrok http --config /run/secrets/ngrok.yml --url "$$(cat /run/secrets/ngrok-domain)" webhooks:8787
+
+  postgres:
+    # The version the test harness defaults to, crates/core/src/testing/pg/discovery.rs.
+    image: postgres:17
+    # Development credentials, for local use only. Connect with
+    # postgres://mintswarm:mintswarm@127.0.0.1:5432/mintswarm
+    environment:
+      POSTGRES_USER: mintswarm
+      POSTGRES_PASSWORD: mintswarm
+      POSTGRES_DB: mintswarm
+    ports:
+      - 127.0.0.1:5432:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:
 
 secrets:
   # ngrok's own config, which holds the auth token.
