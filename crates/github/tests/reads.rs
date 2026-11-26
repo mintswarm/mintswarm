@@ -826,69 +826,79 @@ fn dependency(repository: &str, number: u64, open: bool) -> Dependency {
 }
 
 #[tokio::test]
-async fn blocked_by_follows_pages_and_a_repeat_is_served_from_the_cache_on_304() {
-    let responder = Responder::start().await;
-    let url =
-        "https://api.github.com/repositories/1/issues/180/dependencies/blocked_by?per_page=100";
-    let first = page_link(url, 1, true);
-    let second = page_link(url, 2, false);
-    let page_two = serde_json::json!([dependency_json("acme", "widgets", 160, "open")]);
-    responder.reply_with(
-        200,
-        &[("etag", "\"blocked-1\""), ("link", first.as_str())],
-        BLOCKED_BY,
-    );
-    responder.reply_with(
-        200,
-        &[("etag", "\"blocked-2\""), ("link", second.as_str())],
-        page_two.to_string(),
-    );
-    responder.reply_with(304, &[("link", first.as_str())], "");
-    responder.reply_with(304, &[("link", second.as_str())], "");
-    let client = client(&responder);
-    let read = client
-        .read_dependencies(&token(), ISSUE, Direction::BlockedBy)
-        .await
-        .unwrap();
-    assert_eq!(
-        read,
-        vec![
-            dependency("acme/widgets", 175, false),
-            dependency("acme-tools/gadgets", 42, true),
-            dependency("acme/widgets", 160, true),
-        ]
-    );
-    let again = client
-        .read_dependencies(&token(), ISSUE, Direction::BlockedBy)
-        .await
-        .unwrap();
-    assert_eq!(again, read);
+async fn both_directions_follow_pages_and_a_repeat_is_served_from_the_cache_on_304() {
+    let cases = [
+        (
+            Direction::BlockedBy,
+            "blocked_by",
+            BLOCKED_BY,
+            vec![
+                dependency("acme/widgets", 175, false),
+                dependency("acme-tools/gadgets", 42, true),
+            ],
+        ),
+        (
+            Direction::Blocking,
+            "blocking",
+            BLOCKING,
+            vec![dependency("acme/widgets", 190, true)],
+        ),
+    ];
+    for (direction, segment, page_one, mut expected) in cases {
+        let responder = Responder::start().await;
+        let url = format!(
+            "https://api.github.com/repositories/1/issues/180/dependencies/{segment}?per_page=100"
+        );
+        let first = page_link(&url, 1, true);
+        let second = page_link(&url, 2, false);
+        let page_two = serde_json::json!([dependency_json("acme", "widgets", 160, "open")]);
+        let (etag_one, etag_two) = (format!("\"{segment}-1\""), format!("\"{segment}-2\""));
+        responder.reply_with(
+            200,
+            &[("etag", etag_one.as_str()), ("link", first.as_str())],
+            page_one,
+        );
+        responder.reply_with(
+            200,
+            &[("etag", etag_two.as_str()), ("link", second.as_str())],
+            page_two.to_string(),
+        );
+        responder.reply_with(304, &[("link", first.as_str())], "");
+        responder.reply_with(304, &[("link", second.as_str())], "");
+        let client = client(&responder);
+        let read = client
+            .read_dependencies(&token(), ISSUE, direction)
+            .await
+            .unwrap();
+        expected.push(dependency("acme/widgets", 160, true));
+        assert_eq!(read, expected, "{segment}");
+        let again = client
+            .read_dependencies(&token(), ISSUE, direction)
+            .await
+            .unwrap();
+        assert_eq!(again, read, "{segment}");
 
-    let requests = responder.requests();
-    let page = |n: u64| format!("{ISSUE_PATH}/dependencies/blocked_by?per_page=100&page={n}");
-    assert_eq!(paths(&requests), vec![page(1), page(2), page(1), page(2)]);
-    assert_eq!(requests[0].header("if-none-match"), None);
-    assert_eq!(requests[1].header("if-none-match"), None);
-    assert_eq!(requests[2].header("if-none-match"), Some("\"blocked-1\""));
-    assert_eq!(requests[3].header("if-none-match"), Some("\"blocked-2\""));
-    assert_token_only_in_authorization(&requests);
-}
-
-#[tokio::test]
-async fn blocking_is_read_from_its_own_path() {
-    let responder = Responder::start().await;
-    responder.reply(200, BLOCKING);
-    let read = client(&responder)
-        .read_dependencies(&token(), ISSUE, Direction::Blocking)
-        .await
-        .unwrap();
-    assert_eq!(read, vec![dependency("acme/widgets", 190, true)]);
-    assert_eq!(
-        paths(&responder.requests()),
-        vec![format!(
-            "{ISSUE_PATH}/dependencies/blocking?per_page=100&page=1"
-        )]
-    );
+        let requests = responder.requests();
+        let page = |n: u64| format!("{ISSUE_PATH}/dependencies/{segment}?per_page=100&page={n}");
+        assert_eq!(
+            paths(&requests),
+            vec![page(1), page(2), page(1), page(2)],
+            "{segment}"
+        );
+        assert_eq!(requests[0].header("if-none-match"), None, "{segment}");
+        assert_eq!(requests[1].header("if-none-match"), None, "{segment}");
+        assert_eq!(
+            requests[2].header("if-none-match"),
+            Some(etag_one.as_str()),
+            "{segment}"
+        );
+        assert_eq!(
+            requests[3].header("if-none-match"),
+            Some(etag_two.as_str()),
+            "{segment}"
+        );
+        assert_token_only_in_authorization(&requests);
+    }
 }
 
 #[tokio::test]
@@ -1051,4 +1061,20 @@ async fn a_listing_without_a_date_it_can_read_is_refused() {
             "{headers:?}: {error:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_listing_for_a_label_holding_a_comma_is_refused_before_anything_is_sent() {
+    let responder = Responder::start().await;
+    let mut query = full_query();
+    query.labels.push("needs input, urgent".to_owned());
+    let error = client(&responder)
+        .list_issues(&token(), &query)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, ReadError::CommaInLabel { label } if label == "needs input, urgent"),
+        "{error:?}"
+    );
+    assert!(responder.requests().is_empty());
 }

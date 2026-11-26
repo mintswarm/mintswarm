@@ -77,6 +77,13 @@ pub enum ReadError {
         /// The method and path.
         endpoint: String,
     },
+    /// A listing asked for a label holding a comma, which GitHub would split into two labels;
+    /// nothing is sent.
+    #[error("label {label:?} holds a comma and cannot be listed by")]
+    CommaInLabel {
+        /// The label asked for.
+        label: String,
+    },
 }
 
 impl From<FieldError> for ReadError {
@@ -195,8 +202,8 @@ pub struct IssueQuery {
     pub state: IssueState,
     /// Only issues updated at or after this time, as `YYYY-MM-DDTHH:MM:SSZ`.
     pub since: Option<String>,
-    /// Only issues carrying every one of these labels. A label holding a comma cannot be asked
-    /// for, as GitHub splits the list at commas.
+    /// Only issues carrying every one of these labels. GitHub splits the list at commas, so a
+    /// label holding one is refused with [`ReadError::CommaInLabel`] before anything is sent.
     pub labels: Vec<String>,
     /// Only issues opened by this login.
     pub creator: Option<Login>,
@@ -343,12 +350,18 @@ impl GitHubReads {
     /// at the first reply.
     ///
     /// The date is the first reply's `Date` even when that reply is a 304 served from the ETag
-    /// cache; a reply without a `Date` in IMF-fixdate form is [`ReadError::Unexpected`].
+    /// cache; a reply without a `Date` in IMF-fixdate form is [`ReadError::Unexpected`]. A label
+    /// holding a comma is [`ReadError::CommaInLabel`], and nothing is sent.
     pub async fn list_issues(
         &self,
         token: &Token,
         query: &IssueQuery,
     ) -> Result<IssueList, ReadError> {
+        if let Some(label) = query.labels.iter().find(|label| label.contains(',')) {
+            return Err(ReadError::CommaInLabel {
+                label: label.clone(),
+            });
+        }
         let mut path = format!("{}/issues?state={}", self.repo_path(), query.state.as_str());
         if let Some(since) = &query.since {
             path.push_str(&format!("&since={}", path_segment(since)));
