@@ -4,6 +4,7 @@
 
 use std::future::Future;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::field::{FieldError, FieldRead, FieldRef};
@@ -16,7 +17,7 @@ use crate::vcs::BranchName;
 pub struct Login(pub String);
 
 /// The kind of an issue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueType {
     Design,

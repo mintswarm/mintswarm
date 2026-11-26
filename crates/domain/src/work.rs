@@ -1,7 +1,9 @@
 //! What a runner executes: stage jobs and step jobs, and what a stage returns.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::facts::catalogue::Tokens;
 use crate::ids::{AttemptId, IssueNumber, JobId, RevId};
 use crate::question::{Question, QuestionViolation, repeated};
 
@@ -82,7 +84,7 @@ pub struct StepJob {
 }
 
 /// The status a stage reports in its result block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
     Complete,
@@ -143,15 +145,6 @@ impl StageOutcome {
         }
         if out.is_empty() { Ok(()) } else { Err(out) }
     }
-}
-
-/// Token counts of an attempt.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Tokens {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
 }
 
 /// What an attempt cost, and how the figure was obtained.
