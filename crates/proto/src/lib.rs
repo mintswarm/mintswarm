@@ -1,5 +1,5 @@
-//! Rust code generated from the protos under `api/proto/`: the runner protocol
-//! and the job vocabulary.
+//! Rust code generated from the protos under `api/proto/`: the runner protocol,
+//! the job vocabulary and the watch protocol.
 //!
 //! `build.rs` compiles every `.proto` there into `OUT_DIR`; nothing generated
 //! is committed. The messages carry prost's binary encoding; their proto3 JSON
@@ -47,6 +47,20 @@ pub mod job {
     /// `Event` is a generic name; use it qualified, as `job::v1::Event`.
     pub mod v1 {
         tonic::include_proto!("mintswarm.job.v1");
+    }
+}
+
+/// The `mintswarm.watch.v1` package.
+pub mod watch {
+    /// Version 1 of the watch protocol: `WatchService`, with the generated
+    /// tonic client and server, the `WatchEvent` envelope, the `WatchFilter`
+    /// and the stream's marks (`watch.proto`); and the `github.webhook` body,
+    /// `GitHubWebhook`, with `UntrustedText` (`github.proto`).
+    ///
+    /// Like every client in this crate, the client has no `connect(dst)`
+    /// constructor: build one with `WatchServiceClient::new(channel)`.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.watch.v1");
     }
 }
 

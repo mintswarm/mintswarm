@@ -353,8 +353,9 @@ impl FieldRead {
 /// The placeholder a labels-mode pattern holds once, for the option's name.
 pub const OPTION: &str = "{option}";
 
-/// A labels-mode pattern split at its one `{option}` placeholder: the one matcher for R3, used
-/// by the domain's [`read_labels`] and by the tracker edge alike.
+/// A label pattern split at its one placeholder: the one matcher for R3, used by the domain's
+/// [`read_labels`] and by the tracker edge alike, and for any other label family whose pattern
+/// holds one placeholder, such as `component:{name}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelPattern<'a> {
     prefix: &'a str,
@@ -362,10 +363,29 @@ pub struct LabelPattern<'a> {
 }
 
 impl<'a> LabelPattern<'a> {
-    /// The pattern's parts, or `None` unless `pattern` holds `{option}` exactly once.
+    /// The pattern's parts, or `None` unless `pattern` holds [`OPTION`] exactly once.
     pub fn new(pattern: &'a str) -> Option<Self> {
-        let (prefix, suffix) = pattern.split_once(OPTION)?;
-        (!suffix.contains(OPTION)).then_some(Self { prefix, suffix })
+        Self::with_placeholder(pattern, OPTION)
+    }
+
+    /// The pattern's parts around `placeholder`, or `None` unless `pattern` holds it exactly
+    /// once.
+    pub fn with_placeholder(pattern: &'a str, placeholder: &str) -> Option<Self> {
+        if placeholder.is_empty() {
+            return None;
+        }
+        let (prefix, suffix) = pattern.split_once(placeholder)?;
+        (!suffix.contains(placeholder)).then_some(Self { prefix, suffix })
+    }
+
+    /// The text before the placeholder.
+    pub fn prefix(&self) -> &'a str {
+        self.prefix
+    }
+
+    /// The text after the placeholder.
+    pub fn suffix(&self) -> &'a str {
+        self.suffix
     }
 
     /// The label that names `option` under this pattern.

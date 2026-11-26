@@ -17,7 +17,6 @@ pub mod scale;
 pub mod time;
 pub mod tracker;
 pub mod vcs;
-pub mod watch;
 pub mod work;
 
 pub use question::{

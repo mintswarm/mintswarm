@@ -37,6 +37,7 @@ mintswarm/
 │   │   ├── buf.gen.yaml    # buf generator plugins
 │   │   └── mintswarm/
 │   │       ├── job/v1/     # job vocabulary enums
+│   │       ├── watch/v1/   # watch events gRPC stream
 │   │       └── runner/v1/  # runner ⇄ plane gRPC stream
 │   ├── openapi/            # OpenAPI generated from proto
 │   └── schemas/            # JSON Schemas from Rust types
@@ -45,7 +46,7 @@ mintswarm/
 │   ├── domain/             # shared types and traits
 │   ├── config/             # repository and runner config
 │   ├── github/             # GitHub App client
-│   ├── rules/              # shared pure rules
+│   ├── rules/              # shared pure rules, PR labels
 │   ├── proto/              # Rust generated from protos
 │   ├── core/               # control plane library
 │   │   └── migrations/     # append-only SQL migrations

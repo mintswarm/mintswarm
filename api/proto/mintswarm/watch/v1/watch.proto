@@ -1,0 +1,400 @@
+syntax = "proto3";
+
+package mintswarm.watch.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "mintswarm/watch/v1/github.proto";
+
+// The watch: a push protocol over the server's event log.
+//
+// Every RPC is unary or server-streaming; there are no client-streaming or
+// bidirectional RPCs. Adding kinds, fields, enum values, attributes, party
+// roles or mark kinds is a minor change, counted in
+// `GetServerInfoResponse.protocol_minor`. A breaking change gets a `v2/`
+// package beside this one.
+//
+// `UNAUTHENTICATED` and `PERMISSION_DENIED` are reserved for the later
+// authentication design and are never returned for now; clients treat them
+// as unrecoverable. Every RPC returns `UNAVAILABLE` when the server is
+// shutting down or its database is unreachable; the client reconnects.
+service WatchService {
+  // Returns the store epoch, the kinds the server produces, its retention
+  // bounds with the oldest cursor, the protocol minor and the server version.
+  //
+  // Errors: `UNAVAILABLE` as for every RPC.
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+
+  // Sends the filter and the start point once, then streams the stored
+  // events after the start point, then live events, interleaved with marks
+  // (see `Mark`). The server keeps no subscription state: to change the
+  // filter, a client closes the stream and reopens it with `after` set to
+  // the last cursor it handled.
+  //
+  // Errors: `INVALID_ARGUMENT` for an empty `filter.kinds`, a malformed
+  // filter or an `after` cursor that does not parse; `RESOURCE_EXHAUSTED`
+  // when the server already has 64 open streams; `UNAVAILABLE` as for every
+  // RPC, and when the client has not read from the stream for 10 minutes, in
+  // which case the client resumes from its cursor. A cursor that parses but
+  // points before pruned events is not an error: it gets a `GAP` mark.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+
+  // Returns one page of stored events after a cursor; the pull path.
+  //
+  // Errors: `INVALID_ARGUMENT` for an empty `filter.kinds`, a malformed
+  // filter or an `after` cursor that does not parse; `UNAVAILABLE` as for
+  // every RPC. A cursor that parses but points before
+  // pruned events is not an error: the response carries a `GAP` mark.
+  rpc ListWatchEvents(ListWatchEventsRequest) returns (ListWatchEventsResponse);
+}
+
+// One event of the log: a generic envelope that every kind fills, and a
+// kind-specific body.
+//
+// The generic fields are enough to render, filter and coalesce any kind,
+// including kinds a client does not know.
+message WatchEvent {
+  // The event's position in the log, `<store_epoch>.<id>`, opaque to clients.
+  // The server builds it when it reads the row and never stores it. A client
+  // resumes from the last cursor it handled.
+  string cursor = 1;
+  // The row's UUIDv7, unique in the store; clients de-duplicate on it, for
+  // the overlap a reconnect can cause. Ids sort in commit order within one
+  // store epoch, so a reader never skips a row that commits late.
+  string id = 2;
+  // When the server recorded the event; retention age counts from it.
+  google.protobuf.Timestamp at = 3;
+  // The event's kind, `<domain>.<name>` in lower snake case, for example
+  // `github.webhook`. A kind name never changes meaning. `kind` and the
+  // `body` case correspond one to one, so the server can filter on kinds
+  // whose bodies a client cannot decode.
+  string kind = 4;
+  // What the event is about.
+  Subject subject = 5;
+  // Who caused the event.
+  Actor actor = 6;
+  // Who the event concerns, by role.
+  repeated Party parties = 7;
+  // Kind-specific filter keys, for example `event` and `action`. Unknown keys
+  // are plain strings and pass through.
+  map<string, string> attributes = 8;
+  // One line, built by the server only from structured fields: `kind`,
+  // `attributes`, `subject.repository`, `subject.number` and `actor`. It never
+  // contains user-written text, so it is the one free-text field that is not
+  // untrusted.
+  string summary = 9;
+  // The forwarding verdict; unset in phase 1.
+  Forwarding forwarding = 10;
+  // The kind-specific body. A client sees `body` unset for a kind it does not
+  // know, and renders such an event from the envelope. Each new kind adds a
+  // field here and a kind name, in the same change.
+  oneof body {
+    // Kind `github.webhook`.
+    GitHubWebhook github_webhook = 20;
+  }
+}
+
+// What an event is about.
+message Subject {
+  // The repository, `owner/name`; empty when there is none.
+  string repository = 1;
+  // The kind of item `number` names.
+  ItemKind item_kind = 2;
+  // The issue or pull request number; zero when there is none.
+  uint64 number = 3;
+  // The item's web address; empty when there is none.
+  string url = 4;
+  // The job, for plane kinds; empty for GitHub events.
+  string job_id = 5;
+  // The item's title.
+  UntrustedText title = 6;
+}
+
+// The kind of item a `Subject` names.
+enum ItemKind {
+  // Not set; never sent.
+  ITEM_KIND_UNSPECIFIED = 0;
+  // The subject names no item.
+  ITEM_KIND_NONE = 1;
+  // An issue.
+  ITEM_KIND_ISSUE = 2;
+  // A pull request.
+  ITEM_KIND_PULL_REQUEST = 3;
+}
+
+// Who caused an event.
+message Actor {
+  // The actor's login.
+  string login = 1;
+  // The actor's stable id at its source.
+  string id = 2;
+  // What kind of account the actor is.
+  ActorType type = 3;
+  // How the server classes the actor for forwarding.
+  ActorClass class = 4;
+}
+
+// What kind of account an actor is.
+enum ActorType {
+  // Not set; never sent.
+  ACTOR_TYPE_UNSPECIFIED = 0;
+  // A person's account.
+  ACTOR_TYPE_USER = 1;
+  // A bot or app account.
+  ACTOR_TYPE_BOT = 2;
+  // The control plane itself.
+  ACTOR_TYPE_PLANE = 3;
+}
+
+// How the server classes an actor for forwarding.
+enum ActorClass {
+  // Not set; never sent.
+  ACTOR_CLASS_UNSPECIFIED = 0;
+  // The project's maintainer.
+  ACTOR_CLASS_MAINTAINER = 1;
+  // Any other person.
+  ACTOR_CLASS_PERSON = 2;
+  // An app or bot other than the server's own.
+  ACTOR_CLASS_APP = 3;
+  // The server's own GitHub identity.
+  ACTOR_CLASS_SELF = 4;
+  // The control plane.
+  ACTOR_CLASS_PLANE = 5;
+}
+
+// Someone an event concerns.
+message Party {
+  // The party's login.
+  string login = 1;
+  // The party's role, for example `author`, `assignee` or
+  // `requested_reviewer`. Unknown roles are plain strings and pass through.
+  string role = 2;
+}
+
+// The forwarding verdict on an event; unset in phase 1.
+message Forwarding {
+  // The verdict.
+  Verdict verdict = 1;
+  // The name of the rule that gave the verdict.
+  string rule = 2;
+  // With `VERDICT_OPT_IN`, the opt-in that sends the event, for example
+  // `bots`.
+  string opt_in = 3;
+}
+
+// A forwarding verdict.
+enum Verdict {
+  // Not set; never sent.
+  VERDICT_UNSPECIFIED = 0;
+  // The event is sent to every matching stream.
+  VERDICT_PASS = 1;
+  // The event is sent only to streams that set `include_dropped`.
+  VERDICT_DROP = 2;
+  // The event is sent only to streams whose `include_opt_in` names its
+  // `opt_in`.
+  VERDICT_OPT_IN = 3;
+}
+
+// Which events a stream or a page carries. The server applies the whole
+// filter. Values within a field are ORed and fields are ANDed; an empty field
+// matches everything, except `kinds`, which must not be empty, so nothing is
+// sent by default.
+//
+// Phase 2 verdicts: an event with verdict `VERDICT_OPT_IN` is sent only when
+// its `opt_in` is in `include_opt_in`, and an event with verdict
+// `VERDICT_DROP` only with `include_dropped`.
+message WatchFilter {
+  // Required: exact kind names, or prefixes such as `github.*`. A client
+  // receives a kind it did not name exactly only through a prefix.
+  repeated string kinds = 1;
+  // Repositories, `owner/name`.
+  repeated string repositories = 2;
+  // Items, by repository and number.
+  repeated ItemRef items = 3;
+  // Actor logins.
+  repeated string actors = 4;
+  // Actor classes.
+  repeated ActorClass actor_classes = 5;
+  // Parties, by login and roles.
+  repeated PartyMatch parties = 6;
+  // Attributes, by key and values.
+  repeated AttributeMatch attributes = 7;
+  // Phase 2: the opt-ins to send, for example `bots`.
+  repeated string include_opt_in = 8;
+  // Phase 2: whether to send dropped events, for debugging.
+  bool include_dropped = 9;
+}
+
+// An issue or pull request, by repository and number.
+message ItemRef {
+  // The repository, `owner/name`.
+  string repository = 1;
+  // The issue or pull request number.
+  uint64 number = 2;
+}
+
+// Matches an event that has a party with this login in one of these roles.
+message PartyMatch {
+  // The party's login.
+  string login = 1;
+  // The roles; empty matches any role.
+  repeated string roles = 2;
+}
+
+// Matches an event whose attribute `key` has one of these values.
+message AttributeMatch {
+  // The attribute key, for example `event`.
+  string key = 1;
+  // The values, for example `issue_comment`.
+  repeated string values = 2;
+}
+
+// Where a stream without an `after` cursor starts.
+enum StartAt {
+  // Not set; read as `START_AT_NOW`.
+  START_AT_UNSPECIFIED = 0;
+  // With the next live event.
+  START_AT_NOW = 1;
+  // With the oldest stored event.
+  START_AT_OLDEST = 2;
+}
+
+// The `Subscribe` request, sent once.
+message SubscribeRequest {
+  // Which events the stream carries.
+  WatchFilter filter = 1;
+  // Where the stream starts; unset reads as `START_AT_NOW`.
+  oneof start {
+    // Resume after this cursor.
+    string after = 2;
+    // Start now or at the oldest stored event.
+    StartAt start_at = 3;
+  }
+  // How often an idle stream sends a `HEARTBEAT` mark, in seconds: zero
+  // means the default of 30; at least 5. Out-of-range values are clamped,
+  // not refused: a value from 1 to 4 is raised to 5.
+  uint32 heartbeat_seconds = 4;
+  // Whether each `GitHubWebhook` carries its raw `payload`.
+  bool include_payload = 5;
+}
+
+// One message of the `Subscribe` stream.
+message SubscribeResponse {
+  // An event or a mark.
+  oneof message {
+    // An event that matches the filter.
+    WatchEvent event = 1;
+    // A mark on the stream.
+    Mark mark = 2;
+  }
+}
+
+// A mark on a stream: where it stands, rather than an event.
+//
+// Resuming: a stream with `after` first sends every matching stored event
+// after the cursor, then `MARK_KIND_CAUGHT_UP` with the head cursor, then
+// live events. A cursor whose id is at or above `pruned_through` resumes with
+// no gap, even when its own event was pruned. Otherwise the stream sends a
+// `MARK_KIND_GAP` mark first and then starts at the oldest stored event.
+// Because pruning always runs, every named cursor expires eventually.
+message Mark {
+  // What the mark says.
+  MarkKind kind = 1;
+  // The head cursor with `MARK_KIND_CAUGHT_UP` and `MARK_KIND_HEARTBEAT`;
+  // empty with `MARK_KIND_GAP`.
+  string cursor = 2;
+  // Why events were lost; set only with `MARK_KIND_GAP`.
+  GapReason gap_reason = 3;
+  // With `GAP_REASON_CURSOR_EXPIRED`: the `at` of the oldest stored event, so
+  // the client can say how far back the loss reaches.
+  google.protobuf.Timestamp pruned_before = 4;
+}
+
+// What a mark says.
+enum MarkKind {
+  // Not set; never sent.
+  MARK_KIND_UNSPECIFIED = 0;
+  // Every stored event after the start point has been sent; live events
+  // follow. Carries the head cursor.
+  MARK_KIND_CAUGHT_UP = 1;
+  // Sent every `heartbeat_seconds` while the stream is idle, with the head
+  // cursor. It proves the stream is alive and moves a filtered-out client's
+  // cursor forward, so its next resume neither rescans nor expires
+  // needlessly.
+  MARK_KIND_HEARTBEAT = 2;
+  // Events between the cursor and the oldest stored event were lost; see
+  // `gap_reason`.
+  MARK_KIND_GAP = 3;
+}
+
+// Why a stream or a page lost events.
+enum GapReason {
+  // Not set; never sent.
+  GAP_REASON_UNSPECIFIED = 0;
+  // A cursor whose id is strictly below `pruned_through`, the highest id any
+  // prune has deleted: events after the cursor were deleted by retention,
+  // whichever bound removed them. `pruned_before` is set.
+  GAP_REASON_CURSOR_EXPIRED = 1;
+  // A cursor from another store epoch: the store was recreated, for example
+  // when a development database is dropped.
+  GAP_REASON_STORE_CHANGED = 2;
+  // Any other loss.
+  GAP_REASON_UNKNOWN = 3;
+}
+
+// The `ListWatchEvents` request.
+message ListWatchEventsRequest {
+  // Which events the page carries.
+  WatchFilter filter = 1;
+  // List the events after this cursor; empty lists from the oldest stored
+  // event.
+  string after = 2;
+  // The most events to return, at most 500. Out-of-range values are
+  // clamped, not refused: zero means the default of 100, and a value above
+  // 500 is capped at 500.
+  uint32 limit = 3;
+  // Whether each `GitHubWebhook` carries its raw `payload`.
+  bool include_payload = 4;
+}
+
+// The `ListWatchEvents` response.
+message ListWatchEventsResponse {
+  // The matching events after the cursor, oldest first.
+  repeated WatchEvent events = 1;
+  // The cursor to pass as `after` for the next page.
+  string next_cursor = 2;
+  // The cursor of the newest stored event.
+  string head_cursor = 3;
+  // A `MARK_KIND_GAP` mark, set when `after` is from another store epoch or
+  // points before pruned events; the page then starts at the oldest stored
+  // event.
+  Mark gap = 4;
+}
+
+// The `GetServerInfo` request.
+message GetServerInfoRequest {}
+
+// The `GetServerInfo` response.
+message GetServerInfoResponse {
+  // The store epoch, the first part of every cursor this store issues.
+  string store_epoch = 1;
+  // The kinds the server produces.
+  repeated string kinds = 2;
+  // The retention bounds; always set.
+  Retention retention = 3;
+  // The protocol's minor version within `v1`.
+  uint32 protocol_minor = 4;
+  // The server's version.
+  string server_version = 5;
+}
+
+// How long the server keeps events. An event is pruned when either bound
+// removes it.
+message Retention {
+  // The oldest age an event is kept to, counted from its `at`.
+  google.protobuf.Duration max_age = 1;
+  // The most events kept.
+  uint64 max_events = 2;
+  // The cursor of the oldest stored event; empty when the log is empty.
+  string oldest_cursor = 3;
+}

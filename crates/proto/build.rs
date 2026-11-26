@@ -16,8 +16,9 @@
 //!
 //! The transport helpers are not generated: tonic's `connect(dst)` constructor
 //! on `RunnerServiceClient<Channel>` would clash with the client method of the
-//! `Connect` RPC, which is also named `connect`. Clients are built with
-//! `RunnerServiceClient::new(channel)` from a `tonic::transport::Channel`.
+//! `Connect` RPC, which is also named `connect`. `build_transport(false)`
+//! applies to every client, so every client, `WatchServiceClient` included,
+//! is built with `new(channel)` from a `tonic::transport::Channel`.
 
 use std::error::Error;
 use std::fs;
@@ -66,6 +67,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         // stream, so it stays unboxed.
         .enum_attribute(
             ".mintswarm.runner.v1.ConnectRequest.body",
+            "#[allow(clippy::large_enum_variant)]",
+        )
+        // One message per send, so `WatchEvent` stays unboxed.
+        .enum_attribute(
+            ".mintswarm.watch.v1.SubscribeResponse.message",
             "#[allow(clippy::large_enum_variant)]",
         )
         .compile_fds_with_config(fds, config)?;

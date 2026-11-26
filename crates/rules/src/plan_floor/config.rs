@@ -1,10 +1,13 @@
 //! The floor's view of the repository config: what `validate_config` in
 //! `.mintswarm/dogfood/plan-approval/floor.py` returns, built on `mintswarm_config`'s loader,
 //! which validates what `validate_config` validates.
+//!
+//! [`load`] and [`layout`] are shared with [`crate::pr_labels`], which reads the components and
+//! `shared` the same way.
 
 use std::collections::BTreeMap;
 
-use mintswarm_config::{Error as ConfigError, Mode as ConfigMode, load_repo_config};
+use mintswarm_config::{Error as ConfigError, Mode as ConfigMode, RepoConfig, load_repo_config};
 use mintswarm_domain::records::{ExpectedJudge, Mode};
 use serde_json::Value;
 
@@ -106,22 +109,34 @@ fn load_message(error: &ConfigError) -> String {
     }
 }
 
-/// The floor's view of the config `bytes` at the base, for the issue's `components`; unusable
-/// when the bytes are not UTF-8, the config does not load, a gate command does not split, there
-/// are no `components`, or a name in them is empty, given twice or not a defined component,
-/// checked in that order.
-pub fn view(bytes: &[u8], components: &[String]) -> Result<View, Unusable> {
+/// The config `bytes` at the base, loaded with `mintswarm_config`'s loader; unusable when the
+/// bytes are not UTF-8 or the config does not load.
+pub fn load(bytes: &[u8]) -> Result<RepoConfig, Unusable> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| Unusable::new("config: .mintswarm/config.yaml at the base is not UTF-8"))?;
-    let config = load_repo_config(text).map_err(|error| Unusable::new(load_message(&error)))?;
-    let value = config.value();
+    load_repo_config(text).map_err(|error| Unusable::new(load_message(&error)))
+}
+
+/// The repository layout a loaded config `value` gives: `components.<name>.paths` of every
+/// component, empty when absent, and `shared`, empty when absent.
+pub fn layout(value: &Value) -> (BTreeMap<String, Vec<String>>, Vec<String>) {
     let mut paths = BTreeMap::new();
     if let Some(Value::Object(components)) = value.get("components") {
         for (name, spec) in components {
             paths.insert(name.clone(), strings(spec.get("paths")));
         }
     }
-    let shared = strings(value.get("shared"));
+    (paths, strings(value.get("shared")))
+}
+
+/// The floor's view of the config `bytes` at the base, for the issue's `components`; unusable
+/// when the bytes are not UTF-8, the config does not load, a gate command does not split, there
+/// are no `components`, or a name in them is empty, given twice or not a defined component,
+/// checked in that order.
+pub fn view(bytes: &[u8], components: &[String]) -> Result<View, Unusable> {
+    let config = load(bytes)?;
+    let value = config.value();
+    let (paths, shared) = layout(value);
     let gates = value.get("gates");
     let tests = gates
         .and_then(|gates| gates.get("tests"))
