@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Set an issue's msw-state value and the GitHub issue status it maps to, and the verdicts.
+"""Set an issue's msw-state value and the GitHub issue status it maps to, the verdicts and the short title.
 
     msw-state.py set ISSUE VALUE [--base origin/master] [--dry-run]
     msw-state.py get ISSUE [--base origin/master]
     msw-state.py verdict set NUMBER plan|decomp|pr BAND [--base origin/master] [--dry-run]
     msw-state.py verdict get NUMBER plan|decomp|pr [--base origin/master]
     msw-state.py fields resolve [ISSUE ...] [--base origin/master]
+    msw-state.py short-title read ANALYSIS
+    msw-state.py short-title set ISSUE --analysis PATH [--base origin/master] [--dry-run]
+    msw-state.py short-title get ISSUE [--base origin/master]
+    msw-state.py short-title name --title TITLE [--value VALUE]
 
 Dogfooding stand-in for the runner's tracker effects that show where an issue
 is in the pipeline and what the approval stages judged. Every GitHub call goes
@@ -68,7 +72,8 @@ POSTed id under another name, the field was renamed: the entry is dropped and
 set exits 1. Notes about learnt and dropped ids go to stderr.
 
 `fields resolve [ISSUE ...]` learns the ids of every field-mode block at the
-base (tracker.state, tracker.plan_verdict, tracker.decomp_verdict) from the
+base (tracker.state, tracker.plan_verdict, tracker.decomp_verdict,
+tracker.short_title) from the
 given issues' field values, and from the organisation's fields when they are
 readable, writes those it found to the cache and prints one
 `NAME: ID (from #N)`, `NAME: ID (from the organisation)` or `NAME: unresolved`
@@ -109,12 +114,53 @@ no config (PRs have no issue fields; labels are created with the description
 set names msw-state, it never touches the issue status, and `verdict get`
 prints `NAME: BAND`.
 
+`short-title` keeps the item's short name, for displays with little room, in
+tracker.short_title, a block like the verdicts' (source, field and label; a
+status key exits 2) whose field is a free-text organisation issue field.
+
+`short-title read ANALYSIS` reads the name the analyse stage proposed: the
+analysis must hold exactly one `## Short title` heading outside fences (found
+with reclassify.py's scan, loaded without writing bytecode), the heading before
+it must be `## Size`, and its body, ignoring blank lines and trailing spaces and
+tabs, must be exactly the one line `short title: NAME`, NAME two or three words
+of ASCII letters and digits in any case, single-spaced, at most WIDTH (24)
+characters. It prints `short title: NAME` and exits 0; a missing or malformed
+section exits 1 with one reason line, an unreadable file exits 2.
+
+`short-title set ISSUE --analysis PATH` reads the name the same way (a missing
+or malformed section exits 2) and writes it only when the issue holds none, so
+a name a person set is never overwritten. In field mode the field's raw text is
+read: absent or blank is empty, any other text (the literal none included) is
+set. When set it prints `#N msw-short-title is already set to SANITISED; left
+unchanged` and writes nothing; otherwise it resolves the id and POSTs as set
+does, with the same retry, rename and answer checks, and prints `set #N
+msw-short-title to NAME (was none)`. A value set by a person between the read
+and the POST is overwritten; the window is one request. In labels mode any
+label matching the template counts as set; otherwise the one label is added as
+set adds it. --dry-run reads, prints and writes nothing.
+
+`short-title get ISSUE` GETs the issue for its title, reads the field or label
+and prints `msw-short-title: NAME`, the display name; `short-title name --title
+TITLE [--value VALUE]` prints the display name alone and reads nothing. This
+script is the only home of that rule, which keeps the case of the words it is
+given; every display calls get or name rather than reimplementing it:
+
+- sanitising: each character other than ASCII letters, digits, space and
+  `- . / &` becomes a space, runs of spaces collapse, and the result is
+  stripped, cut to WIDTH and stripped again;
+- the display name is the sanitised value, or, when that is empty, the title's
+  fallback: a `type(scope)!:` prefix is dropped, the rest is split on anything
+  but ASCII letters and digits, FILLER words are dropped, the first three are
+  kept, words are dropped from the end while the name is longer than WIDTH, a
+  single word longer than WIDTH is cut, and no word at all gives `Untitled`.
+
 Exits 0 on success or a no-op; 1 when git, yq or a request fails, an id cannot
 be resolved or GitHub does not do what was asked; 2 on bad arguments or
 configuration. Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -164,6 +210,7 @@ BLOCKS = {
     "state": ("msw-state", "mintswarm state"),
     "plan_verdict": ("msw-plan", "mintswarm verdict"),
     "decomp_verdict": ("msw-decomp", "mintswarm verdict"),
+    "short_title": ("msw-short-title", "mintswarm short title"),
 }
 VERDICT_KEYS = {"plan": "plan_verdict", "decomp": "decomp_verdict"}
 PR_VERDICT = {
@@ -174,6 +221,16 @@ PR_VERDICT = {
     "name": "msw-verdict",
     "description": "mintswarm verdict",
 }
+# The short title: its width, the words the fallback drops and the characters a display shows.
+WIDTH = 24
+FILLER = frozenset(
+    "a an the and or nor but so of in on at to for from by with without into onto via as per vs is are be"
+    " it its this that these those".split()
+)
+DISALLOWED = re.compile(r"[^A-Za-z0-9 ./&-]")
+SHORT_NAME = re.compile(r"[A-Za-z0-9]+(?: [A-Za-z0-9]+){1,2}")
+PREFIX = re.compile(r"^\s*[A-Za-z]+(?:\([^)]*\))?!?:\s*")
+SHORT_HEADING = "## Short title"
 FIELD_CACHE = Path.home() / ".config" / "mintswarm" / "issue-fields.json"
 STATUSES_QUERY = (
     "query($id: ID!) { node(id: $id) { ... on Issue { repository {"
@@ -422,41 +479,44 @@ def post_field(number: int, value: str, config: dict, field_id: int) -> object:
     return field_request(["--method", "POST", path], number, config, body)
 
 
-def set_field(number: int, value: str, config: dict, dry_run: bool) -> None:
+def write_field(number: int, value: str, config: dict, entry_id) -> None:
+    """POST VALUE to the field, resolving its id (ENTRY_ID is the issue's own, or None), and check the answer."""
     name = config["field"]
-    old, entry_id = field_entry(read_entries(number, config), name, number)
+    fields = Fields()
+    field_id, how = resolve(name, entry_id, number, fields, config)
+    try:
+        got = post_field(number, value, config, field_id)
+    except RuntimeError as exc:
+        if how != "cache" or not refuses_id(exc):
+            raise
+        fields.forget(name)
+        again = fields.organisation().get(name)
+        if again is None or again == field_id:
+            raise RuntimeError(f"{exc}; the cached id {field_id} was dropped; {unresolved(config, number)}") from exc
+        fields.remember(name, again, "from the organisation")
+        field_id = again
+        got = post_field(number, value, config, field_id)
+    if not isinstance(got, list):
+        raise RuntimeError(f"GitHub returned no issue field values for #{number}")
+    posted = [e for e in got if isinstance(e, dict) and e.get("issue_field_id") == field_id]
+    if posted and posted[0].get("issue_field_name") != name:
+        fields.forget(name)
+        raise RuntimeError(
+            f"GitHub names the field with id {field_id} {posted[0].get('issue_field_name')!r}, not {name}: the"
+            f" field was renamed; rename it back or change {config['path']}.field"
+        )
+    got = field_value(posted, config, number)
+    if got != value:
+        raise RuntimeError(f"GitHub did not set #{number}'s {name} to {value} (it reports {got})")
+
+
+def set_field(number: int, value: str, config: dict, dry_run: bool) -> None:
+    old, entry_id = field_entry(read_entries(number, config), config["field"], number)
     if old == value:
         print(f"#{number} {config['name']} is already {value}")
         return
     if not dry_run:
-        fields = Fields()
-        field_id, how = resolve(name, entry_id, number, fields, config)
-        try:
-            got = post_field(number, value, config, field_id)
-        except RuntimeError as exc:
-            if how != "cache" or not refuses_id(exc):
-                raise
-            fields.forget(name)
-            again = fields.organisation().get(name)
-            if again is None or again == field_id:
-                raise RuntimeError(
-                    f"{exc}; the cached id {field_id} was dropped; {unresolved(config, number)}"
-                ) from exc
-            fields.remember(name, again, "from the organisation")
-            field_id = again
-            got = post_field(number, value, config, field_id)
-        if not isinstance(got, list):
-            raise RuntimeError(f"GitHub returned no issue field values for #{number}")
-        posted = [e for e in got if isinstance(e, dict) and e.get("issue_field_id") == field_id]
-        if posted and posted[0].get("issue_field_name") != name:
-            fields.forget(name)
-            raise RuntimeError(
-                f"GitHub names the field with id {field_id} {posted[0].get('issue_field_name')!r}, not {name}: the"
-                f" field was renamed; rename it back or change {config['path']}.field"
-            )
-        got = field_value(posted, config, number)
-        if got != value:
-            raise RuntimeError(f"GitHub did not set #{number}'s {name} to {value} (it reports {got})")
+        write_field(number, value, config, entry_id)
     print(f"set #{number} {config['name']} to {value} (was {old})")
 
 
@@ -673,8 +733,139 @@ def resolve_fields(numbers: list, base: str) -> int:
     return 0 if all(name in found for name in blocks) else 1
 
 
+# --- short title -------------------------------------------------------------
+
+
+class SectionError(Exception):
+    """A missing or malformed `## Short title` section."""
+
+
+def sanitise(value: str) -> str:
+    """VALUE with only the characters a display shows, single-spaced and cut to WIDTH, in its own case."""
+    return " ".join(DISALLOWED.sub(" ", value).split())[:WIDTH].strip()
+
+
+def fallback_name(title: str) -> str:
+    """The short name made from TITLE, in the case of its words."""
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", PREFIX.sub("", title, count=1)) if w]
+    words = [w for w in words if w.casefold() not in FILLER][:3]
+    while len(words) > 1 and len(" ".join(words)) > WIDTH:
+        words.pop()
+    return " ".join(words)[:WIDTH] if words else "Untitled"
+
+
+def display_name(value, title: str) -> str:
+    """The name a display shows: VALUE sanitised, or TITLE's fallback when that leaves nothing."""
+    return (sanitise(value) if value else "") or fallback_name(title)
+
+
+def heading_scan():
+    """reclassify.py's scan, loaded without writing bytecode."""
+    spec = importlib.util.spec_from_file_location("msw_reclassify", HERE / "reclassify.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
+    spec.loader.exec_module(module)
+    return module.scan
+
+
+def read_short_title(path: str) -> str:
+    """The name in the analysis's `## Short title` section; UsageError when unreadable, SectionError when bad."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise UsageError(f"cannot read the analysis: {exc}") from exc
+    lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+    marks, _ = heading_scan()(lines)
+    starts = [i for i in marks if lines[i].rstrip(" \t") == SHORT_HEADING]
+    if len(starts) != 1:
+        raise SectionError(f"the analysis must have exactly one '{SHORT_HEADING}' section, not {len(starts)}")
+    start = starts[0]
+    before = [i for i in marks if i < start]
+    if not before or lines[before[-1]].rstrip(" \t") != "## Size":
+        raise SectionError(f"'{SHORT_HEADING}' must come right after '## Size'")
+    end = next((i for i in marks if i > start), len(lines))
+    body = [line.rstrip(" \t") for line in lines[start + 1 : end] if line.strip(" \t")]
+    if len(body) != 1 or not body[0].startswith("short title: "):
+        raise SectionError(f"'{SHORT_HEADING}' must hold exactly one line 'short title: NAME'")
+    name = body[0][len("short title: ") :]
+    if not SHORT_NAME.fullmatch(name) or len(name) > WIDTH:
+        raise SectionError(
+            f"the short title {name!r} must be two or three words of ASCII letters and digits, single-spaced,"
+            f" at most {WIDTH} characters"
+        )
+    return name
+
+
+def raw_field(number: int, config: dict) -> tuple:
+    """The field's text (None when absent or blank) and its id on the issue (None when unset)."""
+    entries = read_entries(number, config)
+    if not isinstance(entries, list):
+        raise RuntimeError(f"GitHub returned no issue field values for #{number}")
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("issue_field_name") == config["field"]:
+            option = entry.get("single_select_option")
+            label = option.get("name") if isinstance(option, dict) else None
+            value = label if isinstance(label, str) else entry.get("value")
+            field_id = entry.get("issue_field_id")
+            text = value if isinstance(value, str) and value.strip() else None
+            return text, (field_id if is_id(field_id) else None)
+    return None, None
+
+
+def raw_label(number: int, config: dict):
+    """The value of the first label matching the template, None when there is none."""
+    names, _ = read_labels(number, config)
+    found = matching(names, config)
+    return label_value(found[0], config) if found else None
+
+
+def short_title_read(path: str) -> int:
+    try:
+        name = read_short_title(path)
+    except SectionError as err:
+        print(f"msw-state.py: {err}", file=sys.stderr)
+        return 1
+    print(f"short title: {name}")
+    return 0
+
+
+def short_title_set(number: int, analysis: str, base: str, dry_run: bool) -> int:
+    try:
+        name = read_short_title(analysis)
+    except SectionError as err:
+        raise UsageError(str(err)) from err
+    config = settings(base, "short_title")
+    if config["source"] == "field":
+        current, entry_id = raw_field(number, config)
+    else:
+        current, entry_id = raw_label(number, config), None
+    if current is not None:
+        print(f"#{number} {config['name']} is already set to {sanitise(current)}; left unchanged")
+        return 0
+    if config["source"] == "labels":
+        set_labels(number, name, config, dry_run)
+        return 0
+    if not dry_run:
+        write_field(number, name, config, entry_id)
+    print(f"set #{number} {config['name']} to {name} (was none)")
+    return 0
+
+
+def short_title_get(number: int, base: str) -> int:
+    config = settings(base, "short_title")
+    issue = gh([f"repos/{{owner}}/{{repo}}/issues/{number}"])
+    title = issue.get("title") if isinstance(issue, dict) else None
+    if not isinstance(title, str):
+        raise RuntimeError(f"GitHub returned no title for #{number}")
+    value = raw_field(number, config)[0] if config["source"] == "field" else raw_label(number, config)
+    print(f"{config['name']}: {display_name(value, title)}")
+    return 0
+
+
 def main(argv: list) -> int:
-    parser = argparse.ArgumentParser(description="Set or show an issue's msw-state value, its status and verdicts.")
+    parser = argparse.ArgumentParser(
+        description="Set or show an issue's msw-state value, its status, verdicts and short title."
+    )
     sub = parser.add_subparsers(dest="action", required=True)
     base_help = "ref to read the config at (default origin/master)"
     s = sub.add_parser("set", help="set the issue's msw-state value, then its issue status")
@@ -702,12 +893,41 @@ def main(argv: list) -> int:
     fr = fsub.add_parser("resolve", help="learn the field ids from issues and the organisation")
     fr.add_argument("numbers", type=int, nargs="*", metavar="ISSUE", help="issues that hold the fields")
     fr.add_argument("--base", default="origin/master", help=base_help)
+    t = sub.add_parser("short-title", help="read, set or show the item's short title")
+    tsub = t.add_subparsers(dest="short_title", required=True)
+    tr = tsub.add_parser("read", help="print the short title the analysis proposes")
+    tr.add_argument("analysis", help="the analysis to read")
+    ts = tsub.add_parser("set", help="write the analysis's short title when the issue holds none")
+    ts.add_argument("number", type=int, help="issue number")
+    ts.add_argument("--analysis", required=True, help="the analysis to read the name from")
+    ts.add_argument("--base", default="origin/master", help=base_help)
+    ts.add_argument("--dry-run", action="store_true", help="print the line, change nothing")
+    tg = tsub.add_parser("get", help="print the issue's display name")
+    tg.add_argument("number", type=int, help="issue number")
+    tg.add_argument("--base", default="origin/master", help=base_help)
+    tn = tsub.add_parser("name", help="print the display name for a title and value, offline")
+    tn.add_argument("--title", required=True, help="the item's title")
+    tn.add_argument("--value", default="", help="the field's or label's value, if any")
     args = parser.parse_args(argv)
 
     try:
-        numbers = args.numbers if args.action == "fields" else [args.number]
+        if args.action == "fields":
+            numbers = args.numbers
+        elif args.action == "short-title" and args.short_title in ("read", "name"):
+            numbers = []
+        else:
+            numbers = [args.number]
         if any(number <= 0 for number in numbers):
             raise UsageError("the issue number must be positive")
+        if args.action == "short-title":
+            if args.short_title == "read":
+                return short_title_read(args.analysis)
+            if args.short_title == "set":
+                return short_title_set(args.number, args.analysis, args.base, args.dry_run)
+            if args.short_title == "get":
+                return short_title_get(args.number, args.base)
+            print(display_name(args.value, args.title))
+            return 0
         if args.action == "set":
             return set_state(args.number, args.value, args.base, args.dry_run)
         if args.action == "get":

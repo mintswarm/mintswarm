@@ -30,8 +30,10 @@
 # it, none and status: off leave it alone); field ids resolved by name into the
 # per-account cache (learnt from an issue, a recreated field, a refused stale id,
 # a renamed field, a failure that keeps the cache, fields resolve, the account
-# key); its verdict mode for plan, decomp and pr; and the README's msw-state
-# tables against the script's VALUES and STATUS. Secrets and the manifest code
+# key); its verdict mode for plan, decomp and pr; its short-title mode (the
+# analysis section read strictly, written only when the field or label is
+# empty, and the case-keeping fallback and sanitising rule); and the README's
+# msw-state tables against the script's VALUES and STATUS. Secrets and the manifest code
 # must appear in no recorded argv, nothing may be left in TMPDIR, each create
 # adds only its own App's config to HOME, and .git/config stays byte-identical
 # across pushes. Every background process runs in its own process group, every
@@ -413,14 +415,16 @@ cat > "$stubs/gh" <<'EOF'
 # "field_ignores_post", and is refused with HTTP 422 for an id the table lacks;
 # with "field_post_fails" a POST answers HTTP 502, and with "fields_unavailable"
 # both answer HTTP 404), "labels" (names, served and PUT at
-# issues/<n>/labels) and "status" (a status name or null; the issue GET returns
-# it with node_id I_<n>). The repository's labels are in labels.json (served and
+# issues/<n>/labels), "status" (a status name or null; the issue GET returns
+# it with node_id I_<n>) and "title" (the issue GET returns it, empty by
+# default). A POSTed msw-short-title value is stored as a text field's value,
+# with no single_select_option. The repository's labels are in labels.json (served and
 # POSTed at repos/.../labels) and its issue statuses in statuses.json
 # ([{"id", "name", "category"}], four by default); api graphql with --input -
 # answers the planningStatuses query from them and applies setIssueStatus to the issue whose
 # node id is I_<n>, unless that issue has "status_ignores_set". The organisation's
-# field table is org-fields.json ([{"id", "name"}], msw-state, msw-plan and
-# msw-decomp by default); orgs/<owner>/issue-fields lists it only while
+# field table is org-fields.json ([{"id", "name"}], msw-state, msw-plan,
+# msw-decomp and msw-short-title by default); orgs/<owner>/issue-fields lists it only while
 # org-fields-readable exists, and answers HTTP 403 otherwise, as it does for a bot
 # without read:org. repos/<owner>/<repo> answers the owner login in repo-owner
 # (mintswarm by default).
@@ -433,7 +437,8 @@ STATUSES = [{"id": "S_todo", "name": "Todo", "category": "TODO"},
             {"id": "S_review", "name": "In review", "category": "IN_PROGRESS"},
             {"id": "S_done", "name": "Done", "category": "DONE"}]
 ORG_FIELDS = [{"id": 50325307, "name": "msw-state"}, {"id": 50375240, "name": "msw-plan"},
-              {"id": 50375368, "name": "msw-decomp"}]
+              {"id": 50375368, "name": "msw-decomp"}, {"id": 50411001, "name": "msw-short-title"}]
+TEXT_FIELDS = ("msw-short-title",)
 argv = sys.argv[1:]
 record("gh", argv)
 names = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
@@ -573,10 +578,14 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/(is
         if method == "POST" and not item.get("field_ignores_post"):
             for fv in json.loads(data)["issue_field_values"]:
                 fields[:] = [f for f in fields if f["issue_field_id"] != fv["field_id"]]
-                fields.append({"issue_field_id": fv["field_id"], "node_id": "IFV_%d" % fv["field_id"],
-                               "data_type": "single_select", "issue_field_name": table[fv["field_id"]],
-                               "value": fv["value"],
-                               "single_select_option": {"id": 1, "name": fv["value"], "color": "GRAY"}})
+                entry = {"issue_field_id": fv["field_id"], "node_id": "IFV_%d" % fv["field_id"],
+                         "data_type": "single_select", "issue_field_name": table[fv["field_id"]],
+                         "value": fv["value"],
+                         "single_select_option": {"id": 1, "name": fv["value"], "color": "GRAY"}}
+                if entry["issue_field_name"] in TEXT_FIELDS:
+                    entry["data_type"] = "text"
+                    del entry["single_select_option"]
+                fields.append(entry)
         out = fields
     else:
         if method == "PUT":
@@ -666,7 +675,8 @@ elif argv[:1] == ["api"] and any(re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+(/as
         spath = os.path.join(STATE, "statuses.json")
         statuses = json.load(open(spath)) if os.path.exists(spath) else STATUSES
         status = next((s for s in statuses if s["name"] == item.get("status")), None)
-        out = {"number": int(n), "node_id": "I_%s" % n, "assignees": [{"login": a} for a in item["assignees"]],
+        out = {"number": int(n), "node_id": "I_%s" % n, "title": item.get("title", ""),
+               "assignees": [{"login": a} for a in item["assignees"]],
                "type": {"name": item["type"]} if item["type"] else None, "user": item.get("user"),
                "status": {"category": status["category"], "id": status["id"], "name": status["name"]}
                if status else None}
@@ -3016,13 +3026,15 @@ check "fields resolve reports a field no issue holds as unresolved and exits 1" 
 check "after caching the ids it found" eq "$(cat "$sandbox/ms.out") $(cache_ids)" \
   'msw-state: 50325307 (from #54)
 msw-plan: 50375240 (from #54)
-msw-decomp: unresolved {"mintswarm":{"msw-plan":50375240,"msw-state":50325307}}'
+msw-decomp: unresolved
+msw-short-title: unresolved {"mintswarm":{"msw-plan":50375240,"msw-state":50325307}}'
 touch "$MSW_STUB_STATE/org-fields-readable"
 check "fields resolve learns from the organisation's fields when they are readable" \
   eq "$(ms fields resolve --base "$real_base" 2>&1) $(jq -c .mintswarm.\"msw-decomp\" "$MSW_FIELD_CACHE")" \
   'msw-state: 50325307 (from the organisation)
 msw-plan: 50375240 (from the organisation)
-msw-decomp: 50375368 (from the organisation) 50375368'
+msw-decomp: 50375368 (from the organisation)
+msw-short-title: 50411001 (from the organisation) 50375368'
 rm -f "$MSW_STUB_STATE/org-fields-readable"
 printf 'someone-else\n' > "$MSW_STUB_STATE/repo-owner"
 seed 56 '{}'
@@ -3207,6 +3219,107 @@ check "a verdict source other than field or labels exits 2" exits_2 ms verdict s
   --base "$(commit_config "$(verdict_cfg '{source: other, label: "msw-plan:{option}"}')")"
 check "a verdict block with a status key exits 2" exits_2 ms verdict set 71 plan safe \
   --base "$(commit_config "$(verdict_cfg '{source: labels, label: "msw-plan:{option}", status: off}')")"
+
+# --- msw-state.py short-title ------------------------------------------------
+
+short_of() { jq -r --arg n "$1" '[.[$n].fields // [] | .[] | select(.issue_field_name == "msw-short-title") | .value] | join(",")' "$MSW_STUB_STATE/issues.json"; }
+st_analysis() {  # st_analysis NAME SECTION: an analysis whose ## Size is followed by SECTION, written to $sandbox/NAME
+  printf '# Analysis: x\n\n## Split\n\n```json\n{"split": {"proposed": false, "reason": "none", "components": [], "finding": ""}}\n```\n\n## Size\nsize: M\n- a reason\n%s## Approaches\nnone\n' \
+    "$2" > "$sandbox/$1"
+}
+st_read() {  # st_read RC NAME SECTION: short-title read exits RC on that analysis
+  st_analysis "$2" "$3"
+  ms_rc "$1" short-title read "$sandbox/$2"
+}
+st_good="$sandbox/st-good.md"
+st_analysis st-good.md $'## Short title\n\nshort title: Factory metrics  \n\n'
+cp "$MSW_FIELD_CACHE" "$sandbox/st-cache.json"
+pycache() { if [ -e "$here/__pycache__" ]; then echo yes; else echo no; fi; }
+pycache_before="$(pycache)"
+check "short-title read prints a natural-case name" eq "$(ms short-title read "$st_good" 2>&1)" "short title: Factory metrics"
+check "and leaves no bytecode next to the scripts" eq "$(pycache)" "$pycache_before"
+check "an upper-case name is read as written" st_read 0 st-upper.md $'## Short title\nshort title: FACTORY METRICS\n'
+check "a 24-character name is read" st_read 0 st-24.md $'## Short title\nshort title: Abcdefghijk Mnopqrstuvwx\n'
+check "a missing section exits 1" st_read 1 st-missing.md ''
+check "a section after another heading exits 1" st_read 1 st-after.md $'## Risks\nnone\n## Short title\nshort title: Factory metrics\n'
+check "four words exit 1" st_read 1 st-four.md $'## Short title\nshort title: One two three four\n'
+check "one word exits 1" st_read 1 st-one.md $'## Short title\nshort title: Metrics\n'
+check "25 characters exit 1" st_read 1 st-25.md $'## Short title\nshort title: Abcdefghijkl Mnopqrstuvwx\n'
+check "prose after the line exits 1" st_read 1 st-prose.md $'## Short title\nshort title: Factory metrics\nBecause it counts.\n'
+check "punctuation in the name exits 1" st_read 1 st-punct.md $'## Short title\nshort title: Factory-metrics now\n'
+check "a double space in the name exits 1" st_read 1 st-space.md $'## Short title\nshort title: Factory  metrics\n'
+check "a heading inside a fence does not count" st_read 1 st-fence.md $'```text\n## Short title\nshort title: Factory metrics\n```\n'
+check "two sections exit 1" st_read 1 st-two.md $'## Short title\nshort title: Factory metrics\n## Short title\nshort title: Other name\n'
+check "an unreadable analysis exits 2" ms_rc 2 short-title read "$sandbox/st-nonexistent.md"
+
+printf '%s\n' '{"mintswarm": {"msw-short-title": 50411001}}' > "$MSW_FIELD_CACHE"
+seed 91 '{"title": "feat(core): Bootstrap crates/core"}'
+posts_before="$(field_posts)"
+out="$(ms short-title set 91 --analysis "$st_good" --base "$real_base" 2>&1)" || out="(failed) $out"
+check "short-title set writes an empty field once, in the name's case" \
+  eq "$out $(( $(field_posts) - posts_before )) $(short_of 91)" "set #91 msw-short-title to Factory metrics (was none) 1 Factory metrics"
+check "with the exact body" \
+  present '{"issue_field_values": [{"field_id": 50411001, "value": "Factory metrics"}]}' "$MSW_STUB_STATE/stdin-gh.log"
+posts_before="$(field_posts)"
+out="$(ms short-title set 91 --analysis "$st_good" --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a re-run writes nothing" eq "$out $(( $(field_posts) - posts_before ))" \
+  "#91 msw-short-title is already set to Factory metrics; left unchanged 0"
+for v in "OAuth callback" "none"; do
+  seed 92 "$(jq -nc --arg v "$v" '{fields: [{issue_field_id: 50411001, issue_field_name: "msw-short-title", data_type: "text", value: $v}]}')"
+  posts_before="$(field_posts)"
+  out="$(ms short-title set 92 --analysis "$st_good" --base "$real_base" 2>&1)" || out="(failed) $out"
+  check "a hand-set value ($v) is left unchanged" eq "$out $(( $(field_posts) - posts_before )) $(short_of 92)" \
+    "#92 msw-short-title is already set to $v; left unchanged 0 $v"
+done
+seed 93 '{"fields": [{"issue_field_id": 50411001, "issue_field_name": "msw-short-title", "data_type": "text", "value": "  "}]}'
+out="$(ms short-title set 93 --analysis "$st_good" --base "$real_base" 2>&1)" || out="(failed) $out"
+check "a blank value is written" eq "$out $(short_of 93)" "set #93 msw-short-title to Factory metrics (was none) Factory metrics"
+printf '%s\n' '{"mintswarm": {}}' > "$MSW_FIELD_CACHE"
+seed 94 '{}'
+posts_before="$(field_posts)"
+check "an unresolved id exits 1" ms_rc 1 short-title set 94 --analysis "$st_good" --base "$real_base"
+check "naming fields resolve and writing nothing" \
+  eq "$(grep -c 'msw-state.py fields resolve ISSUE' "$sandbox/ms.out") $(( $(field_posts) - posts_before )) $(short_of 94)" "1 0 "
+out="$(ms short-title set 94 --analysis "$st_good" --base "$real_base" --dry-run 2>&1)" || out="(failed) $out"
+check "--dry-run prints the line and writes nothing" eq "$out $(( $(field_posts) - posts_before )) $(short_of 94)" \
+  "set #94 msw-short-title to Factory metrics (was none) 0 "
+check "set exits 2 on a malformed section" exits_2 ms short-title set 94 --analysis "$sandbox/st-four.md" --base "$real_base"
+check "set exits 2 on a base without tracker.short_title" exits_2 ms short-title set 94 --analysis "$st_good" --base "$labels_only_base"
+check "set exits 2 on a short_title block with a status key" exits_2 ms short-title set 94 --analysis "$st_good" \
+  --base "$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{value}", status: off}}')"
+
+st_labels_base="$(commit_config 'tracker: {short_title: {source: labels, label: "msw-short-title:{value}"}}')"
+seed 95 '{"labels": ["bug"]}'
+out="$(ms short-title set 95 --analysis "$st_good" --base "$st_labels_base" 2>&1)" || out="(failed) $out"
+check "labels mode: no label adds one" eq "$out $(labels_of 95)" \
+  "set #95 msw-short-title to Factory metrics (was none) bug,msw-short-title:Factory metrics"
+seed 96 '{"labels": ["msw-short-title:OAuth callback"]}'
+writes_before="$(label_writes)"
+out="$(ms short-title set 96 --analysis "$st_good" --base "$st_labels_base" 2>&1)" || out="(failed) $out"
+check "labels mode: an existing label is left alone" eq "$out $(( $(label_writes) - writes_before )) $(labels_of 96)" \
+  "#96 msw-short-title is already set to OAuth callback; left unchanged 0 msw-short-title:OAuth callback"
+
+st_name() {  # st_name WANT TITLE [VALUE]: short-title name prints WANT
+  eq "$(ms short-title name --title "$2" ${3+--value "$3"} 2>&1)" "$1"
+}
+check "the fallback drops the prefix and takes three words" \
+  st_name "Bootstrap crates core" "feat(core): Bootstrap crates/core, crates/server and crates/steward"
+check "the fallback drops a type! prefix" st_name "Make parser faster" "fix!: Make the parser faster"
+check "the fallback drops filler words" st_name "guide runner gates" "docs: The guide to the runner and its gates"
+check "the fallback keeps case as written" st_name "OAuth CALLBACK handler" "feat: OAuth CALLBACK handler"
+check "the fallback cuts a long word to 24" st_name "Superextraordinarilylong" "feat: Superextraordinarilylongwordthatgoeson here"
+check "the fallback drops trailing words to fit 24" st_name "Factory metrics" "chore: Factory metrics dashboards"
+check "the fallback gives Untitled with no word left" st_name "Untitled" "fix: the of a"
+check "a value is sanitised, keeping its case" st_name "b H llo /b w rld & co." "feat: Fine thing" "<b>Héllo</b>  wörld & co."
+check "a value over 24 characters is cut" st_name "Abcdefghijklmnopqrstuvwx" "feat: Fine thing" "Abcdefghijklmnopqrstuvwxyz"
+check "a value that sanitises to nothing gives the fallback" st_name "Fine thing" "feat: Fine thing" "***"
+seed 97 '{"title": "feat: Fine thing", "fields": [{"issue_field_id": 50411001, "issue_field_name": "msw-short-title", "data_type": "text", "value": "<i>OAuth</i> callback, now with extras!"}]}'
+check "get prints the sanitised and cut field value" eq "$(ms short-title get 97 --base "$real_base" 2>&1)" \
+  "msw-short-title: i OAuth /i callback now"
+seed 98 '{"title": "feat(core): Bootstrap crates/core, crates/server and crates/steward"}'
+check "get prints the fallback when the field is empty" eq "$(ms short-title get 98 --base "$real_base" 2>&1)" \
+  "msw-short-title: Bootstrap crates core"
+cp "$sandbox/st-cache.json" "$MSW_FIELD_CACHE"
 
 cat > "$sandbox/mscheck.py" <<'PY'
 # mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
