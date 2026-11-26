@@ -1203,6 +1203,7 @@ dependencies = [
 name = "mintswarm-proto"
 version = "0.1.0"
 dependencies = [
+ "mintswarm-domain",
  "mintswarm-proto",
  "prost",
  "prost-types",
