@@ -32,7 +32,7 @@ pub use bundle::{BundleError, Documents, plan_floor_bundle};
 pub use diff::{DIFF_OPTIONS, PATCH_OPTIONS, PINNED_OPTIONS};
 pub use retry::{FetchFailure, UnrecognisedFailure};
 pub use snapshot::{Snapshots, snapshots_path};
-pub use store::{GIT_REQUIREMENT, store_path};
+pub use store::{Checkout, GIT_REQUIREMENT, store_path};
 
 /// What went wrong in the git adapter.
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +73,9 @@ pub enum GitError {
     /// The store has attributes of its own, which no option makes git ignore.
     #[error("the store {0} has a non-empty info/attributes")]
     Attributes(PathBuf),
+    /// A directory that is not in a working tree of a repository.
+    #[error("{0} is not in a repository")]
+    NotInRepository(PathBuf),
     /// Revision syntax other than a full id, or `ID..ID` where a range is read.
     #[error("`{0}` is not a full id")]
     RevisionSyntax(String),
@@ -166,6 +169,9 @@ pub struct GitStore {
     warnings: Vec<String>,
     /// Whether `file://` remotes are allowed; only tests set it.
     allow_file: bool,
+    /// The repository's own attributes file, checked at `diff`; set only by
+    /// [`GitStore::open_checkout`], since `open` refuses a store that has one.
+    attributes: Option<PathBuf>,
     /// How `fetch` retries a transient failure.
     retry: RetryPolicy,
 }
@@ -229,6 +235,11 @@ impl Vcs for GitStore {
         opts: DiffOpts,
         paths: &[RepoPath],
     ) -> Result<ChangeSet, GitError> {
+        if let Some(attributes) = &self.attributes
+            && store::non_empty(attributes)?
+        {
+            return Err(GitError::Attributes(self.path.clone()));
+        }
         diff::diff(self, base, head, &opts, paths)
     }
 

@@ -17,12 +17,10 @@ use mintswarm_domain::records::{Decision, DecisionRecord, FloorRecord, LayerStat
 use super::comment::requires_maintainer;
 use super::{bounded, code_list};
 use crate::binding::digest;
+use crate::command::PackageKind;
 use crate::markdown::py_strip;
 use crate::plan_decision::envelope::band_name;
 use crate::plan_floor::mode_name;
-
-/// The first line of every approval package.
-pub const PACKAGE_MARKER: &str = "<!-- mintswarm: plan approval package -->";
 
 /// The fewest and the most bullets a usable TL;DR holds.
 const TLDR_BULLETS: std::ops::RangeInclusive<usize> = 3..=6;
@@ -248,9 +246,9 @@ fn reason_text(reason: &str) -> String {
 /// the Commands section.
 pub fn approval_package(package: &Package<'_>) -> String {
     let mut out = format!(
-        "{PACKAGE_MARKER}\nPlan sha256: {}\n\n## Approval package: plan\n\n- **[TL;DR]({})** · \
-         **[Plan]({})**\n",
-        digest(package.plan),
+        "{}\n{}\n\n## Approval package: plan\n\n- **[TL;DR]({})** · **[Plan]({})**\n",
+        PackageKind::Plan.marker(),
+        PackageKind::Plan.digest_line(&digest(package.plan)),
         package.tldr_url,
         package.plan_url
     );

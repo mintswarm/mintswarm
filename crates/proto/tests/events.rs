@@ -13,7 +13,7 @@ use mintswarm_proto::runner::v1::{
     AttemptStarted, DirectiveDisposition, DirectiveReceipt, EventBatch, GateResult, Progress,
     Question, QuestionKind, QuestionOption, QuestionRecommendation, QuestionReference,
     QuestionReferenceKind, QuestionShape, RecordPut, RunnerEvent, StageResult, StageStatus, Usage,
-    Warning, progress, record_put, runner_event, usage,
+    Warning, progress, runner_event, usage,
 };
 use prost::{Message, Name};
 
@@ -27,13 +27,6 @@ fn record_put() -> RecordPut {
         version: 1,
         sha256: "ab".repeat(32),
         size: 512,
-        bound: Some(record_put::Bound {
-            inputs: vec![record_put::Binding {
-                path: "plan.md".to_owned(),
-                sha256: "cd".repeat(32),
-            }],
-            commits: vec!["0123456789abcdef0123456789abcdef01234567".to_owned()],
-        }),
     }
 }
 
@@ -310,20 +303,11 @@ fn record_put_fields() {
     let version: u32 = 2;
     let sha256: String = "01".repeat(32);
     let size: u64 = 1_024;
-    let path: String = "analysis.md".to_owned();
-    let input_sha256: String = "23".repeat(32);
-    let inputs: Vec<record_put::Binding> = vec![record_put::Binding {
-        path,
-        sha256: input_sha256,
-    }];
-    let commits: Vec<String> = vec!["89abcdef0123456789abcdef0123456789abcdef".to_owned()];
-    let bound: Option<record_put::Bound> = Some(record_put::Bound { inputs, commits });
     let record = RecordPut {
         kind,
         version,
         sha256,
         size,
-        bound,
     };
 
     let RecordPut {
@@ -331,19 +315,11 @@ fn record_put_fields() {
         version,
         sha256,
         size,
-        bound,
     } = record;
     assert_eq!(kind, "decision");
     assert_eq!(version, 2);
     assert_eq!(sha256.len(), 64);
     assert_eq!(size, 1_024);
-    let record_put::Bound { inputs, commits } = bound.expect("bound is set");
-    let [record_put::Binding { path, sha256 }] = inputs.as_slice() else {
-        panic!("one input binding, got {inputs:?}");
-    };
-    assert_eq!(path, "analysis.md");
-    assert_eq!(sha256.len(), 64);
-    assert_eq!(commits.len(), 1);
 }
 
 /// Writes `message` as proto3 JSON through `mintswarm_proto::json`.

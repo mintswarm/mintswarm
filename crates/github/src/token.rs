@@ -1,7 +1,7 @@
-//! Installation tokens, each narrowed to one repository and the read permissions asked for,
-//! kept in memory and minted again five minutes before they expire.
+//! Installation tokens, each narrowed to one repository and the permissions asked for, each at
+//! read or write level, kept in memory and minted again five minutes before they expire.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,14 +62,48 @@ impl fmt::Debug for Clock {
     }
 }
 
-/// The permissions an installation token is narrowed to. Only read access can be asked for.
+/// The level of access a permission is asked for at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Access {
+    /// Read access.
+    Read,
+    /// Write access, which on GitHub includes read access.
+    Write,
+}
+
+impl Access {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// The permissions an installation token is narrowed to, each by name at read or write level.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Permissions(BTreeSet<String>);
+pub struct Permissions(BTreeMap<String, Access>);
 
 impl Permissions {
     /// Read access to each of `names`, for example `contents` or `issues`.
     pub fn read<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
-        Self(names.into_iter().map(str::to_owned).collect())
+        Self::at(names, Access::Read)
+    }
+
+    /// Write access to each of `names`, for example `issues`. It grants nothing else: a write
+    /// that also needs `metadata` asks for it with [`Permissions::and`].
+    pub fn write<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::at(names, Access::Write)
+    }
+
+    /// Both sets; a name in both is asked for at the higher level, write over read.
+    #[must_use]
+    pub fn and(mut self, other: Self) -> Self {
+        for (name, access) in other.0 {
+            let level = self.0.entry(name).or_insert(access);
+            *level = (*level).max(access);
+        }
+        self
     }
 
     /// Whether no permission is asked for.
@@ -77,10 +111,19 @@ impl Permissions {
         self.0.is_empty()
     }
 
+    fn at<'a>(names: impl IntoIterator<Item = &'a str>, access: Access) -> Self {
+        Self(
+            names
+                .into_iter()
+                .map(|name| (name.to_owned(), access))
+                .collect(),
+        )
+    }
+
     fn body(&self) -> serde_json::Map<String, serde_json::Value> {
         self.0
             .iter()
-            .map(|name| (name.clone(), serde_json::Value::from("read")))
+            .map(|(name, access)| (name.clone(), serde_json::Value::from(access.as_str())))
             .collect()
     }
 }
@@ -224,7 +267,7 @@ impl TokenClient {
         self
     }
 
-    /// An installation token for `owner/repo` with read access to `permissions` only: the
+    /// An installation token for `owner/repo` with `permissions` only, each at its level: the
     /// cached one while more than [`REFRESH_MARGIN_SECS`] remain, otherwise a new one.
     pub async fn token(
         &self,
@@ -235,7 +278,7 @@ impl TokenClient {
         if permissions.is_empty() {
             return Err(TokenError::NoPermissions);
         }
-        for name in &permissions.0 {
+        for name in permissions.0.keys() {
             if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
                 return Err(TokenError::InvalidName {
                     what: "permission",
@@ -385,6 +428,57 @@ fn parse_utc(text: &str) -> Option<u64> {
     Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
+/// An HTTP `Date` header in IMF-fixdate form (`Wed, 26 Nov 2026 10:00:00 GMT`) as
+/// `YYYY-MM-DDTHH:MM:SSZ`; `None` for any other form, a weekday that does not match the date, a
+/// zone other than `GMT` or a field out of range.
+pub(crate) fn http_date_to_rfc3339(text: &str) -> Option<String> {
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let b = text.as_bytes();
+    if !text.is_ascii()
+        || b.len() != 29
+        || &text[3..5] != ", "
+        || b[7] != b' '
+        || b[11] != b' '
+        || b[16] != b' '
+        || b[19] != b':'
+        || b[22] != b':'
+        || &text[25..] != " GMT"
+    {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<u64> {
+        let digits = &text[range];
+        if digits.bytes().all(|c| c.is_ascii_digit()) {
+            digits.parse().ok()
+        } else {
+            None
+        }
+    };
+    let weekday = WEEKDAYS.iter().position(|name| *name == &text[0..3])?;
+    let month = MONTHS.iter().position(|name| *name == &text[8..11])? as u64 + 1;
+    let (day, year) = (number(5..7)?, number(12..16)?);
+    let (hour, minute, second) = (number(17..19)?, number(20..22)?, number(23..25)?);
+    if year < 1970
+        || day < 1
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    // 1970-01-01 was a Thursday.
+    if (days_from_civil(year, month, day) + 4) % 7 != weekday as u64 {
+        return None;
+    }
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    ))
+}
+
 fn days_in_month(year: u64, month: u64) -> u64 {
     match month {
         2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
@@ -407,7 +501,7 @@ fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Permissions, parse_utc};
+    use super::{Permissions, http_date_to_rfc3339, parse_utc};
 
     #[test]
     fn parses_utc_times() {
@@ -436,7 +530,53 @@ mod tests {
     }
 
     #[test]
-    fn permissions_are_sorted_and_read_only() {
+    fn converts_http_dates_to_utc_times() {
+        for (date, utc) in [
+            ("Thu, 01 Jan 1970 00:00:00 GMT", "1970-01-01T00:00:00Z"),
+            ("Thu, 29 Feb 2024 12:34:56 GMT", "2024-02-29T12:34:56Z"),
+            ("Fri, 15 Jan 2027 08:00:00 GMT", "2027-01-15T08:00:00Z"),
+            ("Thu, 26 Nov 2026 10:00:00 GMT", "2026-11-26T10:00:00Z"),
+        ] {
+            let converted = http_date_to_rfc3339(date);
+            assert_eq!(converted.as_deref(), Some(utc), "{date}");
+            assert!(parse_utc(utc).is_some(), "{utc}");
+        }
+        assert_eq!(
+            http_date_to_rfc3339("Fri, 15 Jan 2027 08:00:00 GMT").and_then(|utc| parse_utc(&utc)),
+            Some(1_800_000_000)
+        );
+    }
+
+    #[test]
+    fn refuses_other_http_dates() {
+        for bad in [
+            "",
+            // The wrong weekday.
+            "Wed, 15 Jan 2027 08:00:00 GMT",
+            // Another zone.
+            "Fri, 15 Jan 2027 08:00:00 UTC",
+            "Fri, 15 Jan 2027 08:00:00 +0000",
+            // The obsolete RFC 850 and asctime forms.
+            "Friday, 15-Jan-27 08:00:00 GMT",
+            "Fri Jan 15 08:00:00 2027",
+            // Fields out of range or malformed.
+            "Thu, 29 Feb 2023 00:00:00 GMT",
+            "Fri, 00 Jan 2027 08:00:00 GMT",
+            "Fri, 15 Foo 2027 08:00:00 GMT",
+            "Fri, 15 Jan 2027 24:00:00 GMT",
+            "Fri, 15 Jan 2027 08:60:00 GMT",
+            "Fri, 15 Jan 2027 08:00:60 GMT",
+            "Wed, 31 Dec 1969 23:59:59 GMT",
+            "Fri, 15 Jan 2027 8:00:00 GMT",
+            "Fri, 1a Jan 2027 08:00:00 GMT",
+            "fri, 15 Jan 2027 08:00:00 GMT",
+        ] {
+            assert_eq!(http_date_to_rfc3339(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn permissions_are_sorted_with_their_levels_and_write_wins() {
         let permissions = Permissions::read(["issues", "contents", "issues"]);
         let body = serde_json::Value::Object(permissions.body());
         assert_eq!(
@@ -444,5 +584,26 @@ mod tests {
             serde_json::json!({"contents": "read", "issues": "read"})
         );
         assert!(Permissions::read([]).is_empty());
+        assert!(Permissions::write([]).is_empty());
+
+        let body = |permissions: Permissions| serde_json::Value::Object(permissions.body());
+        assert_eq!(
+            body(Permissions::write(["issues"]).and(Permissions::read(["metadata"]))),
+            serde_json::json!({"issues": "write", "metadata": "read"})
+        );
+        // A name asked for at both levels is asked for at write, in either order.
+        let expected = serde_json::json!({"contents": "read", "issues": "write"});
+        assert_eq!(
+            body(Permissions::read(["issues", "contents"]).and(Permissions::write(["issues"]))),
+            expected
+        );
+        assert_eq!(
+            body(Permissions::write(["issues"]).and(Permissions::read(["issues", "contents"]))),
+            expected
+        );
+        assert_ne!(
+            Permissions::read(["issues"]),
+            Permissions::write(["issues"])
+        );
     }
 }

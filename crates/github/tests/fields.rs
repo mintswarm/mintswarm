@@ -11,7 +11,9 @@ use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
 use mintswarm_domain::ids::IssueNumber;
-use mintswarm_github::{Exhausted, Failure, FieldClient, GitHubFieldCatalogue, RetryPolicy, Token};
+use mintswarm_github::{
+    Exhausted, Failure, FieldClient, GitHubFieldCatalogue, Permissions, RetryPolicy, Token,
+};
 use support::{Request, Responder};
 
 const TOKEN: &str = "ghs_f13ldT0kenV4lue";
@@ -30,6 +32,18 @@ const ORG_FIELDS: &str = r#"[{"id":202,"name":"Priority"},{"id":101,"name":"Effo
 
 fn token() -> Token {
     Token::new(TOKEN.to_owned(), 0)
+}
+
+#[test]
+fn a_pass_token_asks_for_issues_write_and_metadata_read() {
+    assert_eq!(
+        FieldClient::permissions(),
+        Permissions::write(["issues"]).and(Permissions::read(["metadata"]))
+    );
+    assert_ne!(
+        FieldClient::permissions(),
+        Permissions::read(["issues", "metadata"])
+    );
 }
 
 fn names(names: &[&str]) -> Vec<String> {

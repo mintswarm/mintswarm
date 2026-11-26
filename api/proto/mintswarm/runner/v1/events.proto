@@ -233,22 +233,6 @@ message Warning {
 // The record's bytes are never in the event: they travel through the blob
 // calls, by `sha256`, and the plane checks the blob is present.
 message RecordPut {
-  // The inputs and commits a record is bound to.
-  message Bound {
-    // The input files, each bound by its sha256.
-    repeated Binding inputs = 1;
-    // The commits the record is bound to.
-    repeated string commits = 2;
-  }
-
-  // A file bound by its sha256.
-  message Binding {
-    // The file's path.
-    string path = 1;
-    // The lowercase hex sha256 of the file's bytes.
-    string sha256 = 2;
-  }
-
   // The record kind's serde name, for example `floor`.
   string kind = 1;
   // The record kind's schema version.
@@ -257,8 +241,8 @@ message RecordPut {
   string sha256 = 3;
   // The size of the record's bytes.
   uint64 size = 4;
-  // What the record is bound to.
-  Bound bound = 5;
+
+  // Records carry their own bindings; field 5 is unused, and not reserved.
 }
 
 // An artefact revision was put. Its bytes travel through the blob calls, by

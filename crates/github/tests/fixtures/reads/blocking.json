@@ -1,0 +1,17 @@
+[
+  {
+    "id": 3000190,
+    "number": 190,
+    "title": "feat(core): the tracker adapter over GitHub",
+    "state": "open",
+    "state_reason": null,
+    "url": "https://api.github.com/repos/acme/widgets/issues/190",
+    "repository_url": "https://api.github.com/repos/acme/widgets",
+    "html_url": "https://github.com/acme/widgets/issues/190",
+    "user": { "login": "maintainer", "id": 1, "type": "User" },
+    "labels": [{ "id": 11, "name": "mintswarm" }],
+    "created_at": "2026-11-21T09:00:00Z",
+    "updated_at": "2026-11-24T10:00:00Z",
+    "closed_at": null
+  }
+]

@@ -436,6 +436,7 @@ mod tests {
             retry_after: None,
             reset_wait: None,
             next_page: None,
+            date: None,
             body: Vec::new(),
             after_ambiguous: false,
         }
