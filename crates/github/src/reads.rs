@@ -28,7 +28,7 @@ use mintswarm_domain::tracker::{
 };
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
-use crate::rest::{ClientError, Rest, check_names, path_segment};
+use crate::rest::{ClientError, Reply, Rest, check_names, path_segment};
 use crate::secret::Token;
 use crate::token::{Permissions, http_date_to_rfc3339};
 
@@ -684,6 +684,53 @@ fn map_artifact(body: &Value, endpoint: &str) -> Result<Artifact, ReadError> {
         name: str_at(artifact, "name", endpoint)?,
         body: text_at(artifact, "body", endpoint)?,
     })
+}
+
+/// What a GraphQL reply says, before a caller maps it to its own error type.
+#[derive(Debug)]
+pub(crate) enum GraphQlReply {
+    /// The reply's `data`, an object.
+    Data(Value),
+    /// The status is not a success.
+    Refused,
+    /// A non-empty `errors`, with only the errors' types.
+    Errors(Vec<String>),
+    /// A body that is not JSON, an `errors` that is not an array, or a `data` that is not an
+    /// object.
+    Unexpected,
+}
+
+/// Reads a GraphQL reply into a [`GraphQlReply`].
+pub(crate) fn graphql_reply(reply: &Reply) -> GraphQlReply {
+    if !reply.status.is_success() {
+        return GraphQlReply::Refused;
+    }
+    let Ok(mut body) = serde_json::from_slice::<Value>(&reply.body) else {
+        return GraphQlReply::Unexpected;
+    };
+    match body.get("errors") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(errors)) if errors.is_empty() => {}
+        Some(Value::Array(errors)) => {
+            return GraphQlReply::Errors(
+                errors
+                    .iter()
+                    .map(|error| {
+                        error
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
+                    })
+                    .collect(),
+            );
+        }
+        Some(_) => return GraphQlReply::Unexpected,
+    }
+    match body.get_mut("data").map(Value::take) {
+        Some(data @ Value::Object(_)) => GraphQlReply::Data(data),
+        _ => GraphQlReply::Unexpected,
+    }
 }
 
 pub(crate) fn unexpected(endpoint: &str) -> ReadError {

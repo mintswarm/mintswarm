@@ -15,8 +15,8 @@ use mintswarm_domain::tracker::{
 use mintswarm_domain::vcs::BranchName;
 
 use crate::reads::{
-    GitHubReads, MAX_PAGES, PER_PAGE, ReadError, login_at, opt_str_at, str_at, text_at, u64_at,
-    unexpected,
+    GitHubReads, GraphQlReply, MAX_PAGES, PER_PAGE, ReadError, graphql_reply, login_at, opt_str_at,
+    str_at, text_at, u64_at, unexpected,
 };
 use crate::rest::{GRAPHQL_PATH, Reply, path_segment};
 use crate::secret::Token;
@@ -28,6 +28,12 @@ const THREADS_QUERY: &str = concat!(
     " reviewThreads(first: 100, after: $after) {",
     " nodes { id isResolved } pageInfo { hasNextPage endCursor } } } } }",
 );
+
+/// The most files GitHub lists for one pull request.
+const MAX_PR_FILES: usize = 3000;
+
+// The paged read must be able to reach GitHub's limit, or a cut-off list would come back short.
+const _: () = assert!(MAX_PAGES as usize * PER_PAGE >= MAX_PR_FILES);
 
 impl GitHubReads {
     /// Pull request `pr`: its head, state, mergeable state and requested reviewers, its
@@ -270,9 +276,8 @@ impl GitHubReads {
 
     /// Every file pull request `pr` changes, with the previous path of a rename.
     ///
-    /// GitHub lists at most 3000 files, [`MAX_PAGES`] pages of [`PER_PAGE`], and no page after
-    /// them, so a list that reaches that many is [`ReadError::TooManyPages`]: it may be cut off,
-    /// and is never returned short.
+    /// GitHub lists at most [`MAX_PR_FILES`] files, so a list that reaches that many is
+    /// [`ReadError::TooManyPages`]: it may be cut off, and is never returned short.
     pub async fn read_changed_files(
         &self,
         token: &Token,
@@ -281,8 +286,7 @@ impl GitHubReads {
         let path = format!("{}/files", self.pull_path(&pr));
         let endpoint = format!("GET {path}");
         let files = self.get_paged(token, &path, None).await?;
-        let cap = usize::try_from(MAX_PAGES).map_or(usize::MAX, |pages| pages * PER_PAGE);
-        if files.len() >= cap {
+        if files.len() >= MAX_PR_FILES {
             return Err(ReadError::TooManyPages { endpoint });
         }
         files
@@ -301,7 +305,7 @@ impl GitHubReads {
 }
 
 /// Whether the user object `user` is a bot: of type `Bot`, or with a login ending in `[bot]`.
-pub(crate) fn is_bot(user: &Value) -> bool {
+fn is_bot(user: &Value) -> bool {
     user.get("type").and_then(Value::as_str) == Some("Bot")
         || user
             .get("login")
@@ -455,40 +459,21 @@ fn map_changed_file(body: &Value, endpoint: &str) -> Result<ChangedFile, ReadErr
 /// [`ReadError::Unexpected`].
 fn graphql_data(reply: &Reply) -> Result<Value, ReadError> {
     let endpoint = &reply.endpoint;
-    if reply.status == reqwest::StatusCode::NOT_FOUND {
-        return Err(ReadError::NotFound {
-            endpoint: endpoint.clone(),
-        });
-    }
-    if !reply.status.is_success() {
-        return Err(ReadError::Status {
+    match graphql_reply(reply) {
+        GraphQlReply::Data(data) => Ok(data),
+        GraphQlReply::Refused if reply.status == reqwest::StatusCode::NOT_FOUND => {
+            Err(ReadError::NotFound {
+                endpoint: endpoint.clone(),
+            })
+        }
+        GraphQlReply::Refused => Err(ReadError::Status {
             endpoint: endpoint.clone(),
             status: reply.status.as_u16(),
-        });
-    }
-    let mut body: Value = serde_json::from_slice(&reply.body).map_err(|_| unexpected(endpoint))?;
-    match body.get("errors") {
-        None | Some(Value::Null) => {}
-        Some(Value::Array(errors)) if errors.is_empty() => {}
-        Some(Value::Array(errors)) => {
-            return Err(ReadError::GraphQl {
-                endpoint: endpoint.clone(),
-                types: errors
-                    .iter()
-                    .map(|error| {
-                        error
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned()
-                    })
-                    .collect(),
-            });
-        }
-        Some(_) => return Err(unexpected(endpoint)),
-    }
-    match body.get_mut("data").map(Value::take) {
-        Some(data @ Value::Object(_)) => Ok(data),
-        _ => Err(unexpected(endpoint)),
+        }),
+        GraphQlReply::Errors(types) => Err(ReadError::GraphQl {
+            endpoint: endpoint.clone(),
+            types,
+        }),
+        GraphQlReply::Unexpected => Err(unexpected(endpoint)),
     }
 }
