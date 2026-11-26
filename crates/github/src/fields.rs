@@ -492,6 +492,7 @@ mod tests {
             retry_after: None,
             reset_wait: None,
             next_page: None,
+            date: None,
             body: body.as_bytes().to_vec(),
             after_ambiguous: false,
         }

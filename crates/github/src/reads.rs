@@ -1,5 +1,7 @@
-//! GET-only reads of one repository's issues, comments, links and artifacts as the runner App,
-//! design §9 "Reads and writes".
+//! GET-only reads of one repository's issues, comments, links, dependencies and artifacts as the
+//! runner App, design §9 "Reads and writes": an issue with its comments, the issues that block it
+//! or that it blocks, and a listing of issues by state, update time, labels and creator, which
+//! drops pull requests and gives GitHub's clock at its first reply.
 //!
 //! Every GET goes through one ETag cache, so a repeated read is revalidated with
 //! `If-None-Match` and a 304 is served from the cache. Lists are read with `per_page=100`, page
@@ -19,14 +21,14 @@ use mintswarm_domain::field::FieldError;
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 use mintswarm_domain::tracker::{
-    Artifact, ArtifactSummary, Comment, CommentMark, Cursor, Issue, IssueRead, IssueType, Link,
-    LinkKind, Login,
+    Artifact, ArtifactSummary, Comment, CommentMark, Cursor, Dependency, Direction, Issue,
+    IssueRead, IssueType, Link, LinkKind, Login,
 };
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
 use crate::rest::{ClientError, Rest, check_names, path_segment};
 use crate::secret::Token;
-use crate::token::Permissions;
+use crate::token::{Permissions, http_date_to_rfc3339};
 
 /// Items asked for per page.
 pub const PER_PAGE: usize = 100;
@@ -169,6 +171,46 @@ pub fn comment_mark(comment: &Comment, trusted: &[Login], bot: &Login) -> Option
     }
 }
 
+/// Which issues a listing asks for, by state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueState {
+    /// Open issues only.
+    Open,
+    /// Open and closed issues.
+    All,
+}
+
+impl IssueState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::All => "all",
+        }
+    }
+}
+
+/// What [`GitHubReads::list_issues`] asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueQuery {
+    pub state: IssueState,
+    /// Only issues updated at or after this time, as `YYYY-MM-DDTHH:MM:SSZ`.
+    pub since: Option<String>,
+    /// Only issues carrying every one of these labels. A label holding a comma cannot be asked
+    /// for, as GitHub splits the list at commas.
+    pub labels: Vec<String>,
+    /// Only issues opened by this login.
+    pub creator: Option<Login>,
+}
+
+/// The issues a listing found, with GitHub's clock at its first reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueList {
+    pub issues: Vec<Issue>,
+    /// The first reply's `Date`, as `YYYY-MM-DDTHH:MM:SSZ`: a checkpoint for the next listing's
+    /// `since` on GitHub's clock, not this host's.
+    pub date: String,
+}
+
 /// GET-only reads of one repository with a token its caller passes in.
 #[derive(Debug)]
 pub struct GitHubReads {
@@ -276,6 +318,67 @@ impl GitHubReads {
         })
     }
 
+    /// The issues that block `issue`, or that it blocks, from `dependencies/blocked_by` or
+    /// `dependencies/blocking`. A dependency may be in another repository.
+    pub async fn read_dependencies(
+        &self,
+        token: &Token,
+        issue: IssueNumber,
+        direction: Direction,
+    ) -> Result<Vec<Dependency>, ReadError> {
+        let leaf = match direction {
+            Direction::BlockedBy => "blocked_by",
+            Direction::Blocking => "blocking",
+        };
+        let path = format!("{}/dependencies/{leaf}", self.issue_path(issue.0));
+        let endpoint = format!("GET {path}");
+        self.get_paged(token, &path, None)
+            .await?
+            .iter()
+            .map(|dependency| map_dependency(dependency, &endpoint))
+            .collect()
+    }
+
+    /// The repository's issues that `query` asks for, without pull requests, and GitHub's clock
+    /// at the first reply.
+    ///
+    /// The date is the first reply's `Date` even when that reply is a 304 served from the ETag
+    /// cache; a reply without a `Date` in IMF-fixdate form is [`ReadError::Unexpected`].
+    pub async fn list_issues(
+        &self,
+        token: &Token,
+        query: &IssueQuery,
+    ) -> Result<IssueList, ReadError> {
+        let mut path = format!("{}/issues?state={}", self.repo_path(), query.state.as_str());
+        if let Some(since) = &query.since {
+            path.push_str(&format!("&since={}", path_segment(since)));
+        }
+        if !query.labels.is_empty() {
+            let labels = query
+                .labels
+                .iter()
+                .map(|label| path_segment(label))
+                .collect::<Vec<_>>()
+                .join(",");
+            path.push_str(&format!("&labels={labels}"));
+        }
+        if let Some(Login(creator)) = &query.creator {
+            path.push_str(&format!("&creator={}", path_segment(creator)));
+        }
+        let endpoint = format!("GET {path}");
+        let (items, date) = self.get_paged_dated(token, &path, None).await?;
+        let date = date
+            .as_deref()
+            .and_then(http_date_to_rfc3339)
+            .ok_or_else(|| unexpected(&endpoint))?;
+        let issues = items
+            .iter()
+            .filter(|item| item.get("pull_request").is_none_or(Value::is_null))
+            .map(|item| self.map_issue(item, &endpoint).map(|(issue, _)| issue))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(IssueList { issues, date })
+    }
+
     /// `issue`'s parent, if it has one, and its sub-issues.
     pub async fn read_links(
         &self,
@@ -378,11 +481,16 @@ impl GitHubReads {
 
     /// The JSON at `path`, revalidated against the ETag cache.
     pub(crate) async fn get(&self, token: &Token, path: &str) -> Result<Arc<Value>, ReadError> {
-        Ok(self.get_page(token, path).await?.body)
+        Ok(self.get_page(token, path).await?.0.body)
     }
 
-    /// The JSON at `path` with its next-page hint, revalidated against the ETag cache.
-    async fn get_page(&self, token: &Token, path: &str) -> Result<Page, ReadError> {
+    /// The JSON at `path` with its next-page hint, revalidated against the ETag cache, and the
+    /// reply's own `Date`, which is never cached: a 304 gives its own.
+    async fn get_page(
+        &self,
+        token: &Token,
+        path: &str,
+    ) -> Result<(Page, Option<String>), ReadError> {
         let cached = self.cache().get(&path.to_owned());
         let reply = self
             .rest
@@ -392,7 +500,7 @@ impl GitHubReads {
             let (_, page) = cached.ok_or_else(|| {
                 ReadError::Transport(format!("{}: 304 with nothing cached", reply.endpoint))
             })?;
-            return Ok(page);
+            return Ok((page, reply.date));
         }
         if reply.status.is_success() {
             let page = Page {
@@ -407,7 +515,7 @@ impl GitHubReads {
                 Some(etag) => cache.insert(path.to_owned(), etag, page.clone()),
                 None => cache.remove(&path.to_owned()),
             }
-            return Ok(page);
+            return Ok((page, reply.date));
         }
         Err(if reply.status == StatusCode::NOT_FOUND {
             ReadError::NotFound {
@@ -431,11 +539,25 @@ impl GitHubReads {
         path: &str,
         items: Option<&str>,
     ) -> Result<Vec<Value>, ReadError> {
+        Ok(self.get_paged_dated(token, path, items).await?.0)
+    }
+
+    /// The list [`GitHubReads::get_paged`] reads, with the first reply's raw `Date` header.
+    async fn get_paged_dated(
+        &self,
+        token: &Token,
+        path: &str,
+        items: Option<&str>,
+    ) -> Result<(Vec<Value>, Option<String>), ReadError> {
         let separator = if path.contains('?') { '&' } else { '?' };
         let mut all = Vec::new();
-        for page in 1..=MAX_PAGES {
-            let page_path = format!("{path}{separator}per_page={PER_PAGE}&page={page}");
-            let page = self.get_page(token, &page_path).await?;
+        let mut first_date = None;
+        for number in 1..=MAX_PAGES {
+            let page_path = format!("{path}{separator}per_page={PER_PAGE}&page={number}");
+            let (page, date) = self.get_page(token, &page_path).await?;
+            if number == 1 {
+                first_date = date;
+            }
             let list = match items {
                 Some(key) => page.body.get(key),
                 None => Some(page.body.as_ref()),
@@ -444,7 +566,7 @@ impl GitHubReads {
             .ok_or_else(|| unexpected(&format!("GET {page_path}")))?;
             all.extend(list.iter().cloned());
             if !page.next.unwrap_or(list.len() >= PER_PAGE) {
-                return Ok(all);
+                return Ok((all, first_date));
             }
         }
         Err(ReadError::TooManyPages {
@@ -455,6 +577,22 @@ impl GitHubReads {
     fn cache(&self) -> std::sync::MutexGuard<'_, EtagCache<String, Page>> {
         self.etags.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// One entry of `GET issues/{n}/dependencies/blocked_by` or `/blocking`: an issue, with its
+/// repository read from the `owner/name` after `/repos/` in its `repository_url`.
+fn map_dependency(body: &Value, endpoint: &str) -> Result<Dependency, ReadError> {
+    let url = str_at(body, "repository_url", endpoint)?;
+    let (owner, name) = url
+        .split_once("/repos/")
+        .and_then(|(_, repository)| repository.split_once('/'))
+        .filter(|(owner, name)| check_names(owner, name).is_ok())
+        .ok_or_else(|| unexpected(endpoint))?;
+    Ok(Dependency {
+        repository: format!("{owner}/{name}"),
+        number: IssueNumber(u64_at(body, "number", endpoint)?),
+        open: str_at(body, "state", endpoint)? == "open",
+    })
 }
 
 fn map_comment(body: &Value, endpoint: &str) -> Result<Comment, ReadError> {

@@ -1,0 +1,32 @@
+[
+  {
+    "id": 3000175,
+    "number": 175,
+    "title": "feat(domain): the tracker's capability traits",
+    "state": "closed",
+    "state_reason": "completed",
+    "url": "https://api.github.com/repos/acme/widgets/issues/175",
+    "repository_url": "https://api.github.com/repos/acme/widgets",
+    "html_url": "https://github.com/acme/widgets/issues/175",
+    "user": { "login": "maintainer", "id": 1, "type": "User" },
+    "labels": [{ "id": 11, "name": "mintswarm" }],
+    "created_at": "2026-11-18T09:00:00Z",
+    "updated_at": "2026-11-23T10:00:00Z",
+    "closed_at": "2026-11-23T10:00:00Z"
+  },
+  {
+    "id": 4000042,
+    "number": 42,
+    "title": "Expose dependency summaries on the REST issue",
+    "state": "open",
+    "state_reason": null,
+    "url": "https://api.github.com/repos/acme-tools/gadgets/issues/42",
+    "repository_url": "https://api.github.com/repos/acme-tools/gadgets",
+    "html_url": "https://github.com/acme-tools/gadgets/issues/42",
+    "user": { "login": "someone", "id": 2, "type": "User" },
+    "labels": [],
+    "created_at": "2026-11-10T09:00:00Z",
+    "updated_at": "2026-11-21T10:00:00Z",
+    "closed_at": null
+  }
+]
