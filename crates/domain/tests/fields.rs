@@ -215,6 +215,34 @@ fn label_pattern_is_the_one_labels_matcher() {
 }
 
 #[test]
+fn label_pattern_takes_its_placeholder() {
+    let component = LabelPattern::with_placeholder("component:{name}", "{name}").unwrap();
+    assert_eq!(component.option_of("Component:Runner"), Some("Runner"));
+    assert_eq!(component.option_of("component:"), None);
+    assert_eq!(component.label("runner"), "component:runner");
+    assert_eq!((component.prefix(), component.suffix()), ("component:", ""));
+
+    let verdict = LabelPattern::with_placeholder("msw-verdict:{value}", "{value}").unwrap();
+    assert_eq!(verdict.option_of("MSW-Verdict:Safe"), Some("Safe"));
+    assert_eq!(verdict.option_of("msw-plan:safe"), None);
+    assert_eq!(verdict.label("likely-safe"), "msw-verdict:likely-safe");
+
+    assert_eq!(
+        LabelPattern::with_placeholder("{name}:{name}", "{name}"),
+        None
+    );
+    assert_eq!(
+        LabelPattern::with_placeholder("component:{option}", "{name}"),
+        None
+    );
+    assert_eq!(LabelPattern::with_placeholder("component:", ""), None);
+    assert_eq!(
+        LabelPattern::with_placeholder("effort:{option}", "{option}"),
+        LabelPattern::new("effort:{option}")
+    );
+}
+
+#[test]
 fn no_cost_model_is_none() {
     let model = NoCostModel;
     for account in ["main", "spare", ""] {

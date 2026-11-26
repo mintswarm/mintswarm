@@ -16,6 +16,8 @@
 //!   bundle.
 //! - [`plan_decision`]: the plan-approval decision, `plan-approval/decision.py`'s two layers and
 //!   mode over the same bundle, with the `decision.json` record.
+//! - [`pr_labels`]: the pull request labelling rule, the component and band labels a factory PR
+//!   should carry.
 //! - [`render`]: the plan-approval comment bodies, the Commands section, and the confinement of
 //!   model and session text in them.
 //! - [`command`]: the approve, reject and help commands a comment gives, the hints for near
@@ -34,6 +36,7 @@ pub mod markdown;
 pub mod output;
 pub mod plan_decision;
 pub mod plan_floor;
+pub mod pr_labels;
 pub mod py;
 pub mod render;
 pub mod size;
