@@ -199,6 +199,38 @@ fn a_pattern_that_builds_mintswarm_labels_is_refused() {
 }
 
 #[test]
+fn a_component_name_that_builds_mintswarm_labels_is_refused() {
+    for (label, component) in [
+        ("msw-{name}", "plan:x"),
+        ("msw-{name}", "verdict:safe"),
+        ("{name}-c", "msw-a:b"),
+    ] {
+        let yaml = format!(
+            "tracker:\n  components:\n    source: labels\n    label: \"{label}\"\n\
+             components:\n  \"{component}\":\n    paths: [\"x/**\"]\n{PIPELINE}"
+        );
+        assert!(
+            matches!(
+                view(yaml.as_bytes()),
+                Err(Error::ComponentLabel { component: ref c, .. }) if c == component
+            ),
+            "{label:?} {component:?}"
+        );
+        let mut by_hand = small(&format!("    source: labels\n    label: \"{label}\"\n"));
+        by_hand
+            .paths
+            .insert(component.to_owned(), vec!["x/**".to_owned()]);
+        assert!(
+            matches!(
+                changes(&by_hand, &["web/app.tsx"], None, &["bug"], &NONE),
+                Err(Error::ComponentLabel { .. })
+            ),
+            "{label:?} {component:?}"
+        );
+    }
+}
+
+#[test]
 fn a_pattern_that_would_match_every_label_is_refused() {
     for label in ["{name}", "{name}{name}", "component", ""] {
         let yaml = config(&format!("    source: labels\n    label: \"{label}\"\n"));
@@ -476,4 +508,9 @@ fn a_config_that_does_not_load_is_a_config_error() {
         pattern: "{name}".to_owned(),
     });
     assert!(!pattern.message().is_empty());
+    let component = Unusable::from(Error::ComponentLabel {
+        component: "plan:x".to_owned(),
+        label: "msw-plan:x".to_owned(),
+    });
+    assert!(!component.message().is_empty());
 }

@@ -58,6 +58,14 @@ pub enum Error {
         /// The pattern as configured, empty when absent.
         pattern: String,
     },
+    /// The label the component pattern builds for a configured component is a band label or
+    /// another `msw-<family>:<value>` label.
+    ComponentLabel {
+        /// The component's name.
+        component: String,
+        /// The label built for it.
+        label: String,
+    },
     /// A label name is longer than [`MAX_NAME`] characters.
     NameTooLong {
         /// The name.
@@ -79,6 +87,11 @@ impl fmt::Display for Error {
                 "config: tracker.components.label {pattern:?} must hold {COMPONENT_PLACEHOLDER} \
                  exactly once, with text around it, and must not build \
                  {FAMILY_PREFIX}<family>:<value> labels"
+            ),
+            Error::ComponentLabel { component, label } => write!(
+                f,
+                "config: tracker.components.label builds {label:?} for component {component:?}, \
+                 which is a {FAMILY_PREFIX}<family>:<value> label"
             ),
             Error::NameTooLong { name } => {
                 write!(f, "label {name:?} is longer than {MAX_NAME} characters")
@@ -135,7 +148,7 @@ pub fn view(bytes: &[u8]) -> Result<View, Error> {
             )));
         }
     };
-    component_pattern(&label)?;
+    component_pattern(&label, &paths)?;
     Ok(View {
         paths,
         shared,
@@ -145,19 +158,30 @@ pub fn view(bytes: &[u8]) -> Result<View, Error> {
 
 /// `label` split at its one `{name}`; an error unless it holds `{name}` exactly once with some
 /// text around it, since a bare `{name}` would match every label, and unless the labels it
-/// builds are neither band labels nor other `msw-<family>:<value>` labels, which the rule never
-/// reads as component labels.
-fn component_pattern(label: &str) -> Result<LabelPattern<'_>, Error> {
+/// builds, for any name and for each component in `paths`, are neither band labels nor other
+/// `msw-<family>:<value>` labels, which the rule never reads as component labels.
+fn component_pattern<'l>(
+    label: &'l str,
+    paths: &BTreeMap<String, Vec<String>>,
+) -> Result<LabelPattern<'l>, Error> {
     let verdict = verdict_pattern()?;
-    LabelPattern::with_placeholder(label, COMPONENT_PLACEHOLDER)
+    let own = |built: &str| verdict.option_of(built).is_some() || is_family(built);
+    let pattern = LabelPattern::with_placeholder(label, COMPONENT_PLACEHOLDER)
         .filter(|pattern| !(pattern.prefix().is_empty() && pattern.suffix().is_empty()))
-        .filter(|pattern| {
-            let built = pattern.label("x");
-            verdict.option_of(&built).is_none() && !is_family(&built)
-        })
+        .filter(|pattern| !own(&pattern.label("x")))
         .ok_or_else(|| Error::Pattern {
             pattern: label.to_owned(),
-        })
+        })?;
+    for component in paths.keys() {
+        let built = pattern.label(component);
+        if own(&built) {
+            return Err(Error::ComponentLabel {
+                component: component.clone(),
+                label: built,
+            });
+        }
+    }
+    Ok(pattern)
 }
 
 /// [`VERDICT_LABEL`] split at its one [`VERDICT_PLACEHOLDER`].
@@ -270,7 +294,7 @@ where
     L: AsRef<str>,
     R: AsRef<str>,
 {
-    let component = component_pattern(&view.label)?;
+    let component = component_pattern(&view.label, &view.paths)?;
     let verdict = verdict_pattern()?;
 
     let mut touched = BTreeSet::new();
