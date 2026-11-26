@@ -621,7 +621,7 @@ impl GitHubReads {
             }
             if last {
                 // Set on page 1 above; the fallback is never taken.
-                let (body, date) = first.unwrap_or_else(|| (page.body, None));
+                let (body, date) = first.unwrap_or((page.body, None));
                 return Ok(Paged {
                     items: all,
                     first: body,
