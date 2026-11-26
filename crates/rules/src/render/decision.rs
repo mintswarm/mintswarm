@@ -10,9 +10,9 @@
 //! - [`shadow_line`] and [`decide_shadow`]: the maintainer's decision in a shadow record, in
 //!   place of [`PENDING_DECISION`].
 //!
-//! User text (a note, a reason, a login, a check name) goes in a [`span`] or, for the note, in a
-//! fence longer than any backtick run it holds, so it carries no live mention and no marker the
-//! readers take. The readers look at the opening lines only, so text further down never counts.
+//! User text (a note, a reason, a login, a check name, a hint's token, a head) goes in a
+//! [`span`] or, for the note, in a fence longer than any backtick run it holds, so it carries no
+//! live mention and no marker the readers take. The readers look at the opening lines only, so text further down never counts.
 //!
 //! The bodies on a pull request ([`merge_ready`], [`merge_refused`] and [`pr_hint`]) never carry a
 //! `<!-- mintswarm: steer -->` line: on a pull request that line withdraws an approval.
@@ -323,12 +323,16 @@ fn sentence(text: &str) -> String {
     out
 }
 
-/// The answer to a near miss: the hint as a sentence, then what [`help`] writes for `kind`.
+/// The answer to a near miss: the hint as a sentence, with a token that is not a command in a
+/// [`span`], then what [`help`] writes for `kind`.
 pub fn hint(answer: u64, hint: &Hint, kind: Option<PackageKind>) -> String {
+    let said = match hint {
+        Hint::NotACommand(token) => format!("{} is not a command.", span(token)),
+        Hint::DidYouMean(_) => sentence(&hint.to_string()),
+    };
     format!(
-        "{}\n{}\n\n{}",
+        "{}\n{said}\n\n{}",
         Marker::Answer(answer).lines(),
-        sentence(&hint.to_string()),
         commands_or_none(kind)
     )
 }
@@ -358,7 +362,7 @@ pub fn set_back(package_comment_id: u64, reason: &str) -> String {
 /// The merge-ready record at `head`: the head, one line per approving review and one per check.
 pub fn merge_ready(head: &RevId, reviews: &[Review], checks: &[CheckState]) -> String {
     let mut out = Marker::MergeReady.lines();
-    out.push_str(&format!("\nHead: `{}`\n", head.0));
+    out.push_str(&format!("\nHead: {}\n", span(&head.0)));
     let mut rows: Vec<String> = reviews
         .iter()
         .map(|review| {
@@ -389,7 +393,7 @@ pub fn merge_ready(head: &RevId, reviews: &[Review], checks: &[CheckState]) -> S
 /// The merge refusal at `head`: one line per reason.
 pub fn merge_refused(head: &RevId, reasons: &[&str]) -> String {
     let mut out = Marker::MergeRefused(head.clone()).lines();
-    out.push_str(&format!("\nNot merged at head `{}`:\n\n", head.0));
+    out.push_str(&format!("\nNot merged at head {}:\n\n", span(&head.0)));
     for reason in reasons {
         out.push_str(&format!("- {}\n", span(reason)));
     }

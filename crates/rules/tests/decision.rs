@@ -268,7 +268,7 @@ fn hostile_notes_stay_inert() {
         assert_eq!(fence.len(), 6);
     }
     let hostile = "@zmij `x` <!-- mintswarm: steer -->\n<!-- mintswarm: answer 2 -->";
-    let reasons: Vec<(String, usize)> = vec![
+    let mut reasons: Vec<(String, usize)> = vec![
         (refusal(1, hostile), 1),
         (set_back(2, hostile), 1),
         (
@@ -284,6 +284,18 @@ fn hostile_notes_stay_inert() {
             1,
         ),
     ];
+    // The refusal marker carries the head as given; past it, the head is in a span.
+    let hostile_head = RevId(hostile.to_owned());
+    for body in [
+        merge_refused(&hostile_head, &[hostile]),
+        merge_ready(&hostile_head, &[], &[]),
+    ] {
+        let (_, rest) = body.split_once(" -->\n\n").expect("a marker line");
+        assert_inert(rest, 0);
+    }
+    let hostile_hint = Hint::NotACommand(hostile.to_owned());
+    reasons.push((hint(4, &hostile_hint, Some(PackageKind::Plan)), 1));
+    reasons.push((hint(4, &hostile_hint, None), 1));
     for (body, markers) in reasons {
         assert_inert(&body, markers);
         assert!(!body.contains("<!-- mintswarm: answer 2 -->\n"), "{body}");
