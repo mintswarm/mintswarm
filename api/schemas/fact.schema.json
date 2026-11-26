@@ -1,0 +1,3294 @@
+{
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.landed_by": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.item.outcome": {
+              "enum": [
+                "merged",
+                "decomposed",
+                "closed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.item.outcome"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "item_root",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.item",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.effort": {
+              "type": "string"
+            },
+            "mintswarm.harness": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.round": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.run.id": {
+              "type": "string"
+            },
+            "mintswarm.stage": {
+              "enum": [
+                "analyse",
+                "design",
+                "decompose",
+                "assess-decomposition",
+                "plan",
+                "assess",
+                "implement",
+                "gates",
+                "review",
+                "address",
+                "merge",
+                "landing"
+              ],
+              "type": "string"
+            },
+            "mintswarm.trigger": {
+              "enum": [
+                "pipeline",
+                "human",
+                "factory",
+                "retry"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.stage",
+            "mintswarm.harness",
+            "mintswarm.round",
+            "mintswarm.run.id",
+            "mintswarm.trigger"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "stage_run"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "stage_run_started",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes",
+        "concerns"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run"
+        ],
+        "name": "mintswarm.stage_run.started",
+        "natural_key": [
+          "mintswarm.run.id"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "gen_ai.agent.name": {
+              "type": "string"
+            },
+            "gen_ai.operation.name": {
+              "enum": [
+                "invoke_agent"
+              ],
+              "type": "string"
+            },
+            "gen_ai.provider.name": {
+              "type": "string"
+            },
+            "gen_ai.request.model": {
+              "type": "string"
+            },
+            "mintswarm.effort": {
+              "type": "string"
+            },
+            "mintswarm.harness": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "type": "string"
+            },
+            "mintswarm.outcome.status": {
+              "enum": [
+                "complete",
+                "needs_input",
+                "failed",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.result.assumptions": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.findings.blocker": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.findings.major": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.findings.minor": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.findings.nit": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.gate_verdict": {
+              "enum": [
+                "passed",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.result.lines_added": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.lines_removed": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.must_decide": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.result.questions": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.round": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.run.id": {
+              "type": "string"
+            },
+            "mintswarm.run.queued_at": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.stage": {
+              "enum": [
+                "analyse",
+                "design",
+                "decompose",
+                "assess-decomposition",
+                "plan",
+                "assess",
+                "implement",
+                "gates",
+                "review",
+                "address",
+                "merge",
+                "landing"
+              ],
+              "type": "string"
+            },
+            "mintswarm.trigger": {
+              "enum": [
+                "pipeline",
+                "human",
+                "factory",
+                "retry"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.stage",
+            "mintswarm.harness",
+            "mintswarm.round",
+            "mintswarm.run.id",
+            "mintswarm.trigger",
+            "gen_ai.provider.name",
+            "gen_ai.request.model",
+            "gen_ai.operation.name",
+            "gen_ai.agent.name",
+            "mintswarm.outcome.status"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "additionalProperties": false,
+              "properties": {
+                "local": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "span": {
+                  "enum": [
+                    "stage_run",
+                    "turn",
+                    "tool_call",
+                    "phase",
+                    "wait"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "span",
+                "local"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "local"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "stage_run",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "concerns",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run"
+        ],
+        "name": "invoke_agent {mintswarm.stage}",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "gen_ai.operation.name": {
+              "enum": [
+                "chat"
+              ],
+              "type": "string"
+            },
+            "gen_ai.provider.name": {
+              "type": "string"
+            },
+            "gen_ai.request.model": {
+              "type": "string"
+            },
+            "gen_ai.response.id": {
+              "type": "string"
+            },
+            "gen_ai.response.model": {
+              "type": "string"
+            },
+            "gen_ai.usage.cache_creation.input_tokens": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "gen_ai.usage.cache_read.input_tokens": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "gen_ai.usage.input_tokens": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "gen_ai.usage.output_tokens": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "gen_ai.provider.name",
+            "gen_ai.request.model",
+            "gen_ai.usage.input_tokens",
+            "gen_ai.usage.output_tokens",
+            "gen_ai.usage.cache_read.input_tokens",
+            "gen_ai.usage.cache_creation.input_tokens",
+            "gen_ai.operation.name",
+            "gen_ai.response.id"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "additionalProperties": false,
+              "properties": {
+                "local": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "span": {
+                  "enum": [
+                    "stage_run",
+                    "turn",
+                    "tool_call",
+                    "phase",
+                    "wait"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "span",
+                "local"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "local"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "turn",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "concerns",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "turn"
+        ],
+        "name": "chat {gen_ai.request.model}",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "gen_ai.operation.name": {
+              "enum": [
+                "execute_tool"
+              ],
+              "type": "string"
+            },
+            "gen_ai.tool.call.id": {
+              "type": "string"
+            },
+            "gen_ai.tool.name": {
+              "type": "string"
+            },
+            "mintswarm.activity": {
+              "type": "string"
+            },
+            "mintswarm.activity.source": {
+              "enum": [
+                "default",
+                "project",
+                "none",
+                "unparsed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.mcp.server": {
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.tool.program": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "gen_ai.operation.name",
+            "gen_ai.tool.name",
+            "gen_ai.tool.call.id",
+            "mintswarm.activity",
+            "mintswarm.activity.source"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "additionalProperties": false,
+              "properties": {
+                "local": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "span": {
+                  "enum": [
+                    "stage_run",
+                    "turn",
+                    "tool_call",
+                    "phase",
+                    "wait"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "span",
+                "local"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "local"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "tool_call",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "concerns",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "tool_call"
+        ],
+        "name": "execute_tool {gen_ai.tool.name}",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.phase": {
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.phase"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "additionalProperties": false,
+              "properties": {
+                "local": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "span": {
+                  "enum": [
+                    "stage_run",
+                    "turn",
+                    "tool_call",
+                    "phase",
+                    "wait"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "span",
+                "local"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "local"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "phase",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "concerns",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "phase"
+        ],
+        "name": "mintswarm.phase {mintswarm.phase}",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.wait.kind": {
+              "enum": [
+                "blocked",
+                "to_start",
+                "runner",
+                "human"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.wait.kind"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "wait"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "wait_started",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes",
+        "concerns"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "wait"
+        ],
+        "name": "mintswarm.wait.started",
+        "natural_key": [
+          "concerns"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.wait.kind": {
+              "enum": [
+                "blocked",
+                "to_start",
+                "runner",
+                "human"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.wait.kind"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "additionalProperties": false,
+              "properties": {
+                "local": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "span": {
+                  "enum": [
+                    "stage_run",
+                    "turn",
+                    "tool_call",
+                    "phase",
+                    "wait"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "span",
+                "local"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "local"
+          ],
+          "type": "object"
+        },
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "wait",
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "mintswarm.fact.id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "mintswarm.link.kind": {
+                "enum": [
+                  "blocked_by",
+                  "sub_issue",
+                  "trigger",
+                  "parent"
+                ],
+                "type": "string"
+              },
+              "target": {
+                "additionalProperties": false,
+                "properties": {
+                  "concerns": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "local": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "span": {
+                        "enum": [
+                          "stage_run",
+                          "turn",
+                          "tool_call",
+                          "phase",
+                          "wait"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "span",
+                      "local"
+                    ],
+                    "type": "object"
+                  },
+                  "item": {
+                    "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "mintswarm.link.kind",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "start",
+        "end",
+        "concerns",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "wait"
+        ],
+        "name": "mintswarm.wait {mintswarm.wait.kind}",
+        "signal": "span"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.confidence.band": {
+              "enum": [
+                "safe",
+                "likely-safe",
+                "needs-review",
+                "uncertain",
+                "blocked"
+              ],
+              "type": "string"
+            },
+            "mintswarm.confidence.hard_triggers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.confidence.threshold": {
+              "type": "number"
+            },
+            "mintswarm.confidence.value": {
+              "type": "number"
+            },
+            "mintswarm.judge": {
+              "enum": [
+                "plan",
+                "landing",
+                "decomposition"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.judge",
+            "mintswarm.confidence.value",
+            "mintswarm.confidence.band",
+            "mintswarm.confidence.threshold"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "stage_run"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "confidence_scored",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes",
+        "concerns"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run"
+        ],
+        "name": "mintswarm.confidence.scored",
+        "natural_key": [
+          "concerns",
+          "mintswarm.judge"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.decision.kind": {
+              "enum": [
+                "design_approval",
+                "plan_approval",
+                "decomposition_approval",
+                "landing_approval",
+                "question_round",
+                "round_cap"
+              ],
+              "type": "string"
+            },
+            "mintswarm.decision.required": {
+              "type": "boolean"
+            },
+            "mintswarm.decision.url": {
+              "type": "string"
+            },
+            "mintswarm.decision.where": {
+              "enum": [
+                "session",
+                "github"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.decision.kind",
+            "mintswarm.decision.required",
+            "mintswarm.decision.where"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "stage_run"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "decision_requested",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes",
+        "concerns"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run"
+        ],
+        "name": "mintswarm.decision.requested",
+        "natural_key": [
+          "concerns",
+          "mintswarm.decision.kind",
+          "mintswarm.decision.url"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.actor.id": {
+              "type": "string"
+            },
+            "mintswarm.actor.kind": {
+              "enum": [
+                "agent",
+                "human",
+                "judge",
+                "rule",
+                "delegated"
+              ],
+              "type": "string"
+            },
+            "mintswarm.decision.answers.free_text": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.answers.other_option": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.answers.recommended": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.assumptions.confirmed": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.assumptions.overruled": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.assumptions.silent": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.confidence_fact": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "mintswarm.decision.kind": {
+              "enum": [
+                "design_approval",
+                "plan_approval",
+                "decomposition_approval",
+                "landing_approval",
+                "question_round",
+                "round_cap"
+              ],
+              "type": "string"
+            },
+            "mintswarm.decision.must_decide": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.decision.required": {
+              "type": "boolean"
+            },
+            "mintswarm.decision.url": {
+              "type": "string"
+            },
+            "mintswarm.decision.verdict": {
+              "enum": [
+                "approved",
+                "changes_requested",
+                "rejected",
+                "answered",
+                "continue",
+                "accept"
+              ],
+              "type": "string"
+            },
+            "mintswarm.decision.where": {
+              "enum": [
+                "session",
+                "github"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.actor.kind",
+            "mintswarm.decision.kind",
+            "mintswarm.decision.required",
+            "mintswarm.decision.where",
+            "mintswarm.decision.verdict"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "stage_run"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "decision_taken",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes",
+        "concerns"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run"
+        ],
+        "name": "mintswarm.decision.taken",
+        "natural_key": [
+          "concerns",
+          "mintswarm.decision.kind",
+          "mintswarm.decision.url"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.actor.id": {
+              "type": "string"
+            },
+            "mintswarm.actor.kind": {
+              "enum": [
+                "agent",
+                "human",
+                "judge",
+                "rule",
+                "delegated"
+              ],
+              "type": "string"
+            },
+            "mintswarm.intervention.kind": {
+              "enum": [
+                "assumption_overruled",
+                "steer",
+                "human_review"
+              ],
+              "type": "string"
+            },
+            "mintswarm.intervention.url": {
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.steer.kind": {
+              "enum": [
+                "issue-comment",
+                "pr-comment",
+                "review",
+                "review-comment"
+              ],
+              "type": "string"
+            },
+            "mintswarm.steer.via": {
+              "enum": [
+                "account",
+                "marker"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.actor.kind",
+            "mintswarm.intervention.kind"
+          ],
+          "type": "object"
+        },
+        "concerns": {
+          "additionalProperties": false,
+          "properties": {
+            "local": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "span": {
+              "enum": [
+                "stage_run"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "span",
+            "local"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "intervention",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "stage_run",
+          "root"
+        ],
+        "name": "mintswarm.intervention",
+        "natural_key": [
+          "concerns",
+          "mintswarm.intervention.kind",
+          "mintswarm.intervention.url|time"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "picked_up",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.item.picked_up",
+        "natural_key": [],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.state.from": {
+              "type": "string"
+            },
+            "mintswarm.state.to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.state.from",
+            "mintswarm.state.to"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "state_changed",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.state.changed",
+        "natural_key": [
+          "time",
+          "mintswarm.state.from",
+          "mintswarm.state.to"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.link.kind": {
+              "enum": [
+                "blocked_by",
+                "sub_issue",
+                "trigger",
+                "parent"
+              ],
+              "type": "string"
+            },
+            "mintswarm.link.op": {
+              "enum": [
+                "added",
+                "removed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.link.target": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+              "type": "string"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.link.kind",
+            "mintswarm.link.target",
+            "mintswarm.link.op"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "link_changed",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.link.changed",
+        "natural_key": [
+          "time",
+          "mintswarm.link.kind",
+          "mintswarm.link.target",
+          "mintswarm.link.op"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.pr.authored_by": {
+              "enum": [
+                "factory",
+                "human"
+              ],
+              "type": "string"
+            },
+            "mintswarm.pr.number": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.pr.number",
+            "mintswarm.pr.authored_by"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "pr_opened",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.pr.opened",
+        "natural_key": [
+          "mintswarm.pr.number"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.pr.authored_by": {
+              "enum": [
+                "factory",
+                "human"
+              ],
+              "type": "string"
+            },
+            "mintswarm.pr.number": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.pr.number",
+            "mintswarm.pr.authored_by"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "pr_merged",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.pr.merged",
+        "natural_key": [
+          "mintswarm.pr.number"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.pr.authored_by": {
+              "enum": [
+                "factory",
+                "human"
+              ],
+              "type": "string"
+            },
+            "mintswarm.pr.number": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.revert.pr": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.pr.number",
+            "mintswarm.pr.authored_by",
+            "mintswarm.revert.pr"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "pr_reverted",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.pr.reverted",
+        "natural_key": [
+          "mintswarm.revert.pr"
+        ],
+        "signal": "log"
+      }
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.provenance": {
+              "enum": [
+                "live",
+                "reconstructed"
+              ],
+              "type": "string"
+            },
+            "mintswarm.provenance.gaps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.provenance.source": {
+              "enum": [
+                "session",
+                "tool",
+                "runner",
+                "plane",
+                "transcript",
+                "github",
+                "job_record"
+              ],
+              "type": "string"
+            },
+            "mintswarm.regression.of": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+/[^/#\\s]+#[1-9][0-9]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.provenance",
+            "mintswarm.provenance.source",
+            "mintswarm.regression.of"
+          ],
+          "type": "object"
+        },
+        "item": {
+          "additionalProperties": false,
+          "properties": {
+            "mintswarm.item.components": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "mintswarm.item.kind": {
+              "enum": [
+                "design",
+                "plan",
+                "implementation"
+              ],
+              "type": "string"
+            },
+            "mintswarm.item.number": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mintswarm.item.repository": {
+              "pattern": "^[^/#\\s]+/[^/#\\s]+$",
+              "type": "string"
+            },
+            "mintswarm.item.tracker": {
+              "pattern": "^[^/#\\s]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mintswarm.item.tracker",
+            "mintswarm.item.repository",
+            "mintswarm.item.number",
+            "mintswarm.item.kind",
+            "mintswarm.item.components"
+          ],
+          "type": "object"
+        },
+        "kind": {
+          "const": "regression_linked",
+          "type": "string"
+        },
+        "time": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "item",
+        "time",
+        "attributes"
+      ],
+      "type": "object",
+      "x-otlp": {
+        "attaches_to": [
+          "root"
+        ],
+        "name": "mintswarm.regression.linked",
+        "natural_key": [
+          "mintswarm.regression.of"
+        ],
+        "signal": "log"
+      }
+    }
+  ]
+}

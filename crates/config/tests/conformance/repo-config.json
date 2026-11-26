@@ -436,6 +436,10 @@
         "command": "cargo nextest run -p mintswarm-core --features pg-tests"
       },
       {
+        "name": "schemas-drift",
+        "command": "cargo xtask schemas --check"
+      },
+      {
         "name": "proto-lint",
         "command": "buf lint api/proto"
       },

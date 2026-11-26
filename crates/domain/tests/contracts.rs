@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
+use mintswarm_domain::facts::catalogue::Tokens;
 use mintswarm_domain::ids::{
     AttemptId, DirectiveId, IssueNumber, JobId, LeaseEpoch, RevId, RunnerId, Seq, WorkerId,
 };
@@ -21,7 +22,7 @@ use mintswarm_domain::records::{
     Bound, DecisionRecord, FactsRecord, FloorRecord, Json, LandingFloorRecord, RoundRecord,
 };
 use mintswarm_domain::work::{
-    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, StepJob, StepKind, Tokens, Usage,
+    Cost, InputFile, Limit, OutcomeStatus, StageJob, StageOutcome, StepJob, StepKind, Usage,
 };
 use mintswarm_domain::{
     Question, QuestionKind, QuestionOption, QuestionShape, Recommendation, Reference, ReferenceKind,
@@ -251,7 +252,7 @@ fn plane_types_round_trip() {
             input: 10,
             output: 20,
             cache_read: 30,
-            cache_write: 40,
+            cache_creation: 40,
         },
         cost: Some(Cost {
             amount: 1.25,
