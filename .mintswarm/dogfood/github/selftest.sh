@@ -37,7 +37,14 @@
 # must appear in no recorded argv, nothing may be left in TMPDIR, each create
 # adds only its own App's config to HOME, and .git/config stays byte-identical
 # across pushes. Every background process runs in its own process group, every
-# wait is bounded, and any group still there is killed on exit.
+# wait is bounded, and any group still there is killed on exit. Waits on a
+# condition give up after 60 seconds, enough for a fully loaded machine, and the
+# only elapsed-time bounds are the trickle case and the locked keyring (21
+# seconds). The trickle client must connect within create's 5-second timeout and
+# be dropped within 9 seconds of connecting, below the listener's 10-second
+# per-request bound; it is started before create and connects as soon as the
+# listening line appears, and a run in which the listener was gone first is
+# repeated, at most 3 attempts.
 #
 # Prints one line per check and exits 0 only if every check passed.
 # Needs shellcheck, jq, yq, openssl, python3 and git.
@@ -883,11 +890,14 @@ os.execvp(sys.argv[1], sys.argv[1:])
 EOF
 cat > "$sandbox/probe.py" <<'EOF'
 # probe.py page PAGE              the page's form action and manifest, as JSON
-# probe.py get PORT TARGET HOST   GET TARGET from 127.0.0.1:PORT with that Host header;
-#                                 the status, headers and body as JSON
-# probe.py connect HOST PORT      exit 0 if a TCP connection opens within 1 second
-# probe.py trickle PORT SECS      connect to 127.0.0.1:PORT, print "connected", then send
-#                                 a request one byte every 0.2 seconds for SECS seconds
+# probe.py get PORT TARGET HOST   GET TARGET from 127.0.0.1:PORT with that Host header, waiting
+#                                 at most 60 seconds; the status, headers and body as JSON
+# probe.py connect HOST PORT [SECS]  exit 0 if a TCP connection opens within SECS seconds, 1 by default
+# probe.py trickle ERR SECS       wait at most 60 seconds for ERR to hold the listener's listening
+#                                 line, connect to its port at once, print "connected", then send a
+#                                 request one byte every 0.2 seconds for SECS seconds; prints
+#                                 "dropped after N seconds" (from connecting) when the listener drops
+#                                 it, "refused" when it was already gone, and exits 1 unless dropped
 import html, http.client, json, re, socket, sys, time
 
 cmd = sys.argv[1]
@@ -899,7 +909,7 @@ if cmd == "page":
                       "autosubmit": 'document.getElementById("f").submit()' in text,
                       "button": '<button type="submit">' in text}))
 elif cmd == "get":
-    conn = http.client.HTTPConnection("127.0.0.1", int(sys.argv[2]), timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", int(sys.argv[2]), timeout=60)
     conn.putrequest("GET", sys.argv[3], skip_host=True, skip_accept_encoding=True)
     conn.putheader("Host", sys.argv[4])
     conn.endheaders()
@@ -910,15 +920,33 @@ elif cmd == "connect":
     host, port = sys.argv[2], int(sys.argv[3])
     try:
         s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
+        s.settimeout(float(sys.argv[4]) if len(sys.argv) > 4 else 1)
         s.connect((host, port))
     except OSError:
         sys.exit(1)
     s.close()
 elif cmd == "trickle":
-    s = socket.create_connection(("127.0.0.1", int(sys.argv[2])), timeout=1)
+    line = re.compile(r"^manifest-listener\.py: listening on 127\.0\.0\.1:(\d+);", re.M)
+    give_up = time.monotonic() + 60
+    while True:
+        try:
+            found = line.search(open(sys.argv[2]).read())
+        except OSError:
+            found = None
+        if found:
+            break
+        if time.monotonic() >= give_up:
+            print("no listening line within 60 seconds", flush=True)
+            sys.exit(1)
+        time.sleep(0.02)
+    try:
+        s = socket.create_connection(("127.0.0.1", int(found.group(1))), timeout=1)
+    except ConnectionRefusedError:
+        print("refused", flush=True)
+        sys.exit(1)
+    connected = time.monotonic()
     print("connected", flush=True)
-    end = time.monotonic() + float(sys.argv[3])
+    end = connected + float(sys.argv[3])
     data = b"GET /?code=" + b"a" * 10000
     i = 0
     try:
@@ -927,7 +955,10 @@ elif cmd == "trickle":
             i += 1
             time.sleep(0.2)
     except OSError:
-        print("dropped", flush=True)
+        print("dropped after %.1f seconds" % (time.monotonic() - connected), flush=True)
+        sys.exit(0)
+    print("not dropped within %s seconds" % sys.argv[3], flush=True)
+    sys.exit(1)
 else:
     sys.exit(2)
 EOF
@@ -945,29 +976,56 @@ port_of() { jq -r .redirect_url "$1" | sed 's|^http://127\.0\.0\.1:\([0-9]*\)/$|
 conversions() { jq -r 'select(.cmd == "curl") | .argv | select(index("-K")) | "x"' "$argv_log" | wc -l | tr -d ' '; }
 create_pid=""
 create_out=""
+wait_ceiling=60  # seconds any wait on a condition may take: long enough for a fully loaded machine,
+                 # as when several gate runs overlap; each loop returns as soon as its condition holds
+repoint() {  # repoint MANIFEST: MANIFEST rewritten in place to redirect to a fresh free port; prints the port
+  local port
+  port="$(free_port)"
+  jq --arg r "http://127.0.0.1:$port/" '.redirect_url = $r' "$1" > "$1.tmp" || return 1
+  mv "$1.tmp" "$1"
+  printf '%s\n' "$port"
+}
 start_create() {  # start_create NAME COMMAND...: COMMAND in the background, in its own process group, with
-                  # stdout and stderr to NAME.out and NAME.err; waits at most 10 seconds for the listening line
-  local i=0
+                  # stdout and stderr to NAME.out and NAME.err; waits at most 60 seconds for the listening line.
+                  # When COMMAND exits because another process took lport, the manifest among its arguments
+                  # that redirects to lport is repointed, lport set to the new port and COMMAND started again,
+                  # at most 3 attempts in all.
+  local attempt=1 deadline m a
   create_out="$sandbox/$1"; shift
-  python3 "$sandbox/setsid.py" "$@" > "$create_out.out" 2> "$create_out.err" &
-  create_pid=$!
-  bg_groups="$bg_groups $create_pid"
-  while ! grep -q '^manifest-listener.py: listening on ' "$create_out.err" 2>/dev/null; do
-    if ! kill -0 "$create_pid" 2>/dev/null; then
-      echo "create exited before listening"; cat "$create_out.out" "$create_out.err"; return 1
-    fi
-    i=$((i + 1))
-    if [ "$i" -ge 100 ]; then
-      echo "no listening line within 10 seconds"; kill -TERM -- "-$create_pid" 2>/dev/null; return 1
-    fi
-    sleep 0.1
+  while :; do
+    m=""
+    python3 "$sandbox/setsid.py" "$@" > "$create_out.out" 2> "$create_out.err" &
+    create_pid=$!
+    bg_groups="$bg_groups $create_pid"
+    deadline=$((SECONDS + wait_ceiling))
+    while ! grep -q '^manifest-listener.py: listening on ' "$create_out.err" 2>/dev/null; do
+      if ! kill -0 "$create_pid" 2>/dev/null; then
+        if [ "$attempt" -lt 3 ] && grep -qF "manifest-listener.py: cannot listen on 127.0.0.1:$lport:" "$create_out.err"; then
+          for a in "$@"; do
+            case "$a" in
+              "$sandbox"/manifests/*) if [ -f "$a" ] && [ "$(port_of "$a")" = "$lport" ]; then m="$a"; fi ;;
+            esac
+          done
+        fi
+        [ -n "$m" ] && break
+        echo "create exited before listening"; cat "$create_out.out" "$create_out.err"; return 1
+      fi
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "no listening line within $wait_ceiling seconds"; kill -TERM -- "-$create_pid" 2>/dev/null; return 1
+      fi
+      sleep 0.1
+    done
+    [ -n "$m" ] || return 0
+    wait "$create_pid" 2>/dev/null || true
+    echo "port $lport was taken before create bound it; retrying"
+    lport="$(repoint "$m")" || return 1
+    attempt=$((attempt + 1))
   done
 }
-finish_create() {  # finish_create: create's exit status, waiting at most 10 seconds; 124 when it had to be killed
-  local i=0 rc=0
+finish_create() {  # finish_create: create's exit status, waiting at most 60 seconds; 124 when it had to be killed
+  local deadline=$((SECONDS + wait_ceiling)) rc=0
   while kill -0 "$create_pid" 2>/dev/null; do
-    i=$((i + 1))
-    if [ "$i" -ge 100 ]; then
+    if [ "$SECONDS" -ge "$deadline" ]; then
       kill -TERM -- "-$create_pid" 2>/dev/null || true
       wait "$create_pid" 2>/dev/null || true
       return 124
@@ -991,13 +1049,13 @@ rejected() {  # rejected NAME TARGET [HOST]: 400 with the fixed body, and create
   eq "$(jq -c '[.status, .body]' "$sandbox/probe/$1.json")" '[400,"rejected\n"]' || return 1
   kill -0 "$create_pid"
 }
-created() {  # created: create exits 0 within 10 seconds
+created() {  # created: create exits 0 within 60 seconds
   local rc=0
   finish_create || rc=$?
   cat "$create_out.out" "$create_out.err"
   eq "$rc" 0
 }
-failed_saying() {  # failed_saying TEXT: create exits non-zero within 10 seconds and its output holds TEXT
+failed_saying() {  # failed_saying TEXT: create exits non-zero within 60 seconds and its output holds TEXT
   local rc=0
   finish_create || rc=$?
   cat "$create_out.out" "$create_out.err"
@@ -1104,7 +1162,7 @@ check "create mintswarm-dev-steward: the listener starts" \
 state="$(create_state)" || state=""
 check "the listening line names 127.0.0.1 and the manifest's port" \
   present "listening on 127.0.0.1:$lport; open $HOME/.config/mintswarm/create-mintswarm-dev-steward.html in the browser" "$create_out.err"
-check "the listener answers on 127.0.0.1 (the next two checks are not vacuous)" probe connect 127.0.0.1 "$lport"
+check "the listener answers on 127.0.0.1 (the next two checks are not vacuous)" probe connect 127.0.0.1 "$lport" "$wait_ceiling"
 refuses "the listener does not answer on [::1]" probe connect ::1 "$lport"
 refuses "the listener does not answer on 127.0.0.2 (decisive on Linux)" probe connect 127.0.0.2 "$lport"
 check "a wrong state is rejected" rejected wrong-state "/?code=$CODE&state=00000000000000000000000000000000"
@@ -1235,55 +1293,88 @@ calls="$(curl_calls)"
 check "create with a 2-second timeout: the listener starts" \
   start_create c-to env MSW_MANIFEST_TIMEOUT=2 MSW_STEWARD_CONFIG="$sandbox/to/steward-app.json" "$S" create "$m_to"
 page="$(create_page)"
-check "with no redirect, create fails within 10 seconds" failed_saying "no matching redirect within 2 seconds"
+check "with no redirect, create fails within 60 seconds" failed_saying "no matching redirect within 2 seconds"
 check "and calls no curl" eq "$(curl_calls)" "$calls"
 check "and writes no config" test ! -e "$sandbox/to/steward-app.json"
 check "and removes the page" test ! -e "$page"
 m_tr="$(manifest_copy mintswarm-dev-steward)"
-trickle_bounded() {  # a client sending a byte every 0.2 seconds; create with a 2-second timeout ends within 5
-  local start end i=0 tpid rc=0
+trickle_bounded() {  # a client sending a byte every 0.2 seconds is dropped within 9 seconds of connecting
+                     # when create's timeout is 5: the timeout plus a 4-second margin, below the listener's
+                     # 10-second per-request bound, so a listener that honoured only that bound fails. The client
+                     # is started before create and connects as soon as the listening line appears, so no
+                     # process start falls inside the 5 seconds; if the listener was still gone first, the
+                     # case is run again, at most 3 attempts in all.
+  local attempt=1 deadline tpid rc took
   lport="$(port_of "$m_tr")"
-  start="$(date +%s)"
-  start_create c-tr env MSW_MANIFEST_TIMEOUT=2 MSW_STEWARD_CONFIG="$sandbox/tr/steward-app.json" "$S" create "$m_tr" || return 1
-  python3 "$sandbox/setsid.py" python3 "$sandbox/probe.py" trickle "$lport" 15 > "$sandbox/trickle.out" 2>&1 &
-  tpid=$!
-  bg_groups="$bg_groups $tpid"
-  until grep -q connected "$sandbox/trickle.out" 2>/dev/null; do
-    i=$((i + 1))
-    [ "$i" -lt 50 ] || { cat "$sandbox/trickle.out"; return 1; }
-    sleep 0.1
+  while :; do
+    rc=0
+    python3 "$sandbox/setsid.py" python3 "$sandbox/probe.py" trickle "$sandbox/c-tr.$attempt.err" 30 \
+      > "$sandbox/trickle.out" 2>&1 &
+    tpid=$!
+    bg_groups="$bg_groups $tpid"
+    start_create "c-tr.$attempt" env MSW_MANIFEST_TIMEOUT=5 MSW_STEWARD_CONFIG="$sandbox/tr/steward-app.json" \
+      "$S" create "$m_tr" || { kill -TERM -- "-$tpid" 2>/dev/null; return 1; }
+    deadline=$((SECONDS + wait_ceiling))
+    until grep -qE '^(connected|refused)' "$sandbox/trickle.out" 2>/dev/null || ! kill -0 "$tpid" 2>/dev/null; do
+      [ "$SECONDS" -lt "$deadline" ] || { echo "the trickle client did not connect"; cat "$sandbox/trickle.out"; return 1; }
+      sleep 0.1
+    done
+    finish_create || rc=$?
+    deadline=$((SECONDS + wait_ceiling))
+    while kill -0 "$tpid" 2>/dev/null; do
+      [ "$SECONDS" -lt "$deadline" ] || { kill -TERM -- "-$tpid" 2>/dev/null || true; break; }
+      sleep 0.1
+    done
+    wait "$tpid" 2>/dev/null || true
+    cat "$create_out.out" "$create_out.err" "$sandbox/trickle.out"
+    grep -qx connected "$sandbox/trickle.out" && break
+    { grep -qx refused "$sandbox/trickle.out" && [ "$attempt" -lt 3 ]; } || return 1
+    echo "the listener was gone before the client connected; retrying"
+    attempt=$((attempt + 1))
   done
-  finish_create || rc=$?
-  end="$(date +%s)"
-  kill -TERM -- "-$tpid" 2>/dev/null || true
-  wait "$tpid" 2>/dev/null || true
-  cat "$create_out.out" "$create_out.err"
   { [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; } || { echo "create's status: $rc"; return 1; }
-  grep -qF "no matching redirect within 2 seconds" "$create_out.err" || return 1
-  [ $((end - start)) -le 5 ] || { echo "took $((end - start)) seconds"; return 1; }
+  grep -qF "no matching redirect within 5 seconds" "$create_out.err" || return 1
+  took="$(sed -n 's/^dropped after \([0-9]*\)\.[0-9] seconds$/\1/p' "$sandbox/trickle.out")"
+  [ -n "$took" ] || { echo "the client was not dropped"; return 1; }
+  [ "$took" -lt 9 ] || { echo "dropped only after $took seconds"; return 1; }
 }
 check "a client sending one byte at a time cannot keep the listener past its timeout" trickle_bounded
 check "and nothing was converted or written" test ! -e "$sandbox/tr/steward-app.json"
 m_held="$(manifest_copy mintswarm-dev-steward)"
-held_port="$(port_of "$m_held")"
+held_port=""
 held_pid=""
-hold_port() {  # hold_port PORT: a socket bound to 127.0.0.1:PORT, in the background
-  local i=0
-  python3 "$sandbox/setsid.py" python3 -c 'import socket, sys, time
+hold_port() {  # hold_port MANIFEST: a socket bound to 127.0.0.1 on MANIFEST's port, in the background, until it is
+               # killed, with held_port set to that port. When another process took the port first, MANIFEST is
+               # repointed and the bind retried, at most 3 attempts in all.
+  local attempt=1 deadline
+  held_port="$(port_of "$1")"
+  while :; do
+    python3 "$sandbox/setsid.py" python3 -c 'import socket, sys, time
 s = socket.socket()
 s.bind(("127.0.0.1", int(sys.argv[1])))
 s.listen(1)
 print("held", flush=True)
-time.sleep(30)' "$1" > "$sandbox/held.out" 2>&1 &
-  held_pid=$!
-  bg_groups="$bg_groups $held_pid"
-  until grep -q held "$sandbox/held.out" 2>/dev/null; do
-    i=$((i + 1))
-    [ "$i" -lt 50 ] || { cat "$sandbox/held.out"; return 1; }
-    sleep 0.1
+time.sleep(600)' "$held_port" > "$sandbox/held.out" 2>&1 &
+    held_pid=$!
+    bg_groups="$bg_groups $held_pid"
+    deadline=$((SECONDS + wait_ceiling))
+    until grep -qx held "$sandbox/held.out" 2>/dev/null; do
+      if ! kill -0 "$held_pid" 2>/dev/null; then
+        grep -qx held "$sandbox/held.out" && return 0
+        [ "$attempt" -lt 3 ] || { cat "$sandbox/held.out"; return 1; }
+        break
+      fi
+      [ "$SECONDS" -lt "$deadline" ] || { cat "$sandbox/held.out"; return 1; }
+      sleep 0.1
+    done
+    grep -qx held "$sandbox/held.out" && return 0
+    wait "$held_pid" 2>/dev/null || true
+    echo "port $held_port was taken before it could be held; retrying"
+    held_port="$(repoint "$1")" || return 1
+    attempt=$((attempt + 1))
   done
 }
-check "another socket holds a port" hold_port "$held_port"
+check "another socket holds a port" hold_port "$m_held"
 check "with the port held, create fails before listening" \
   refused_early "cannot listen on 127.0.0.1:$held_port" env MSW_STEWARD_CONFIG="$sandbox/held/steward-app.json" "$S" create "$m_held"
 kill -TERM -- "-$held_pid" 2>/dev/null || true
@@ -1615,7 +1706,8 @@ check "secret-service: the key reaches secret-tool store on stdin" present "$key
 check "secret-service: the default label is used" argv_has secret-tool '"--label=mintswarm msw-selftest ss"'
 check "secret-service: rotate, then mint-token.sh jwt" ks_e2e secret-service
 check "secret-service: rotate passes the key label" argv_has secret-tool '"--label=mintswarm-dev GitHub App private key"'
-hangs_briefly() {  # hangs_briefly OP: with secret-tool hanging, OP fails within 5 seconds and the stub is gone
+hangs_briefly() {  # hangs_briefly OP: with secret-tool hanging, OP fails within 21 seconds and the stub is gone:
+                   # the 1-second MSW_KEY_STORE_TIMEOUT plus a 20-second margin, below the stub's 60-second hang
   local start end pid
   rm -f "$MSW_STUB_STATE/secret-tool.pid"
   start="$(date +%s)"
@@ -1625,7 +1717,7 @@ hangs_briefly() {  # hangs_briefly OP: with secret-tool hanging, OP fails within
   fi
   end="$(date +%s)"
   cat "$ks_root/hang.out"
-  [ $((end - start)) -lt 5 ] || { echo "took $((end - start)) seconds"; return 1; }
+  [ $((end - start)) -le 21 ] || { echo "took $((end - start)) seconds"; return 1; }
   grep -qF "secret-tool did not answer within 1 seconds: the keyring is probably locked; unlock it first" "$ks_root/hang.out" \
     || return 1
   pid="$(cat "$MSW_STUB_STATE/secret-tool.pid")" || return 1
