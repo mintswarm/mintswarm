@@ -365,6 +365,9 @@ impl GitHubReads {
             issue_type,
             author: login_at(body, "user", endpoint)?,
             url: str_at(body, "html_url", endpoint)?,
+            // The sub-issue and dependency summaries are not mapped yet.
+            sub_issues: 0,
+            blocked_by: 0,
         };
         Ok((issue, str_at(body, "created_at", endpoint)?))
     }

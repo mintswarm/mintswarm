@@ -10,12 +10,9 @@ use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldMap, FieldMapError, FieldMapSpec, FieldRead, FieldRef,
     FieldValue, LabelPattern, OptionSpec, SourceSpec, read_labels,
 };
-use mintswarm_domain::ids::{AccountNickname, IssueNumber, PrNumber};
+use mintswarm_domain::ids::{AccountNickname, IssueNumber};
 use mintswarm_domain::scale::{Scale, Size};
-use mintswarm_domain::tracker::{
-    Artifact, AssignmentReason, Comment, Cursor, Issue, IssueRead, IssueType, Link, Login, SubItem,
-    Tracker,
-};
+use mintswarm_domain::tracker::Fields;
 
 fn option(name: &str, range: &str, write: bool, reads_as: Option<&str>) -> OptionSpec {
     OptionSpec {
@@ -228,104 +225,10 @@ fn no_cost_model_is_none() {
     }
 }
 
-/// A tracker that answers every call at once.
+/// A tracker's field operations that answer at once.
 struct Stub;
 
-fn unused<T>() -> std::future::Ready<Result<T, FieldError>> {
-    ready(Err(FieldError::Transport("unused".into())))
-}
-
-impl Tracker for Stub {
-    type Error = FieldError;
-
-    fn fetch_ready(&self) -> impl Future<Output = Result<Vec<Issue>, Self::Error>> + Send {
-        unused()
-    }
-
-    fn post_comment(
-        &self,
-        _issue: IssueNumber,
-        _body: String,
-    ) -> impl Future<Output = Result<Comment, Self::Error>> + Send {
-        unused()
-    }
-
-    fn set_status(
-        &self,
-        _issue: IssueNumber,
-        _status: String,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
-    fn create_sub_item(
-        &self,
-        _parent: IssueNumber,
-        _item: SubItem,
-    ) -> impl Future<Output = Result<Issue, Self::Error>> + Send {
-        unused()
-    }
-
-    fn link_pr(
-        &self,
-        _issue: IssueNumber,
-        _pr: PrNumber,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
-    fn read_links(
-        &self,
-        _issue: IssueNumber,
-    ) -> impl Future<Output = Result<Vec<Link>, Self::Error>> + Send {
-        unused()
-    }
-
-    fn link_dependency(
-        &self,
-        _issue: IssueNumber,
-        _blocker: IssueNumber,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
-    fn read_issue(
-        &self,
-        _issue: IssueNumber,
-        _since: Option<Cursor>,
-    ) -> impl Future<Output = Result<IssueRead, Self::Error>> + Send {
-        unused()
-    }
-
-    fn publish_artifact(
-        &self,
-        _issue: IssueNumber,
-        _artifact: Artifact,
-    ) -> impl Future<Output = Result<String, Self::Error>> + Send {
-        unused()
-    }
-
-    fn set_issue_type(
-        &self,
-        _issue: IssueNumber,
-        _kind: IssueType,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
-    fn assign(
-        &self,
-        _issue: IssueNumber,
-        _who: Vec<Login>,
-        _reason: AssignmentReason,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
-    fn release(&self, _issue: IssueNumber) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        unused()
-    }
-
+impl Fields for Stub {
     fn read_field(
         &self,
         _issue: IssueNumber,
@@ -360,19 +263,19 @@ fn poll_once<F: Future + Send>(future: F) -> F::Output {
     }
 }
 
+/// Exercises the field operations of anything that has them, and nothing else.
+fn exercise_fields(fields: &impl Fields, field: &FieldRef) {
+    let read: Result<FieldRead, FieldError> = poll_once(fields.read_field(IssueNumber(1), field));
+    assert!(matches!(read, Ok(FieldRead::Value(FieldValue { ref name, .. })) if name == "XS"));
+
+    let set: Result<(), FieldError> = poll_once(fields.set_field(IssueNumber(1), field, Some("M")));
+    assert_eq!(set, Ok(()));
+    let cleared: Result<(), FieldError> = poll_once(fields.set_field(IssueNumber(1), field, None));
+    assert!(cleared.is_err());
+}
+
 #[test]
 fn tracker_declares_field_operations() {
     let map = FieldMap::<Size>::new(field_spec("M", partition())).unwrap();
-    let field = map.field_ref();
-    let tracker = Stub;
-
-    let read: Result<FieldRead, FieldError> = poll_once(tracker.read_field(IssueNumber(1), &field));
-    assert!(matches!(read, Ok(FieldRead::Value(FieldValue { ref name, .. })) if name == "XS"));
-
-    let set: Result<(), FieldError> =
-        poll_once(tracker.set_field(IssueNumber(1), &field, Some("M")));
-    assert_eq!(set, Ok(()));
-    let cleared: Result<(), FieldError> =
-        poll_once(tracker.set_field(IssueNumber(1), &field, None));
-    assert!(cleared.is_err());
+    exercise_fields(&Stub, &map.field_ref());
 }
