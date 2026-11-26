@@ -608,7 +608,7 @@ fn map_dependency(body: &Value, endpoint: &str) -> Result<Dependency, ReadError>
     })
 }
 
-fn map_comment(body: &Value, endpoint: &str) -> Result<Comment, ReadError> {
+pub(crate) fn map_comment(body: &Value, endpoint: &str) -> Result<Comment, ReadError> {
     Ok(Comment {
         id: u64_at(body, "id", endpoint)?,
         author: login_at(body, "user", endpoint)?,
