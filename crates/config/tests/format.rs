@@ -201,9 +201,15 @@ fn duplicate_name_names_the_first_entry() {
 
 #[test]
 fn absent_null_or_empty_format_reads_as_none() {
-    let unchanged = load(real()).expect("the real config loads");
+    let mut absent = real();
+    absent
+        .pointer_mut("/gates")
+        .and_then(Value::as_object_mut)
+        .expect("the config has a gates mapping")
+        .remove("format");
+    let unchanged = load(absent.clone()).expect("the config without gates.format loads");
     assert!(unchanged.formatters().is_empty());
-    assert_eq!(unchanged.value(), &real());
+    assert_eq!(unchanged.value(), &absent);
     for format in [Value::Null, json!([])] {
         let loaded = load(with_format(format.clone())).expect("the config loads");
         assert!(loaded.formatters().is_empty(), "{format}");

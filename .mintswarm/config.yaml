@@ -20,7 +20,24 @@ tracker:
     source: field                    # field (organisation issue field, single select) | labels
     field: msw-state                 # field mode only
     label: "msw-state:{option}"      # labels mode: exactly one per issue the session has touched
-    status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
+    status: issue_status             # issue_status (the GitHub issue status of the value's options entry) | off
+    # The values, in lifecycle order; the field's options and labels are matched by exact name,
+    # not by position. A value without status leaves the issue status alone. none, queued,
+    # blocked and done must be listed.
+    options:
+      - { name: none }                                    # not a mintswarm job, or its job was rejected, cancelled or dropped
+      - { name: queued, status: Todo }                    # picked up, waiting for a runner
+      - { name: blocked, status: Todo }                   # waiting on other issues: open dependencies, or a parent on its children
+      - { name: analysing, status: In progress }          # the analyse stage runs, or its worktree is being prepared
+      - { name: designing, status: In progress }          # the design stage runs
+      - { name: planning, status: In progress }           # re-classification, decomposition, filing children, plan, floor, assessment or decision
+      - { name: awaiting approval, status: In review }    # a plan, decomposition or design waits for a human's approval
+      - { name: plan approved, status: In progress }      # a human approved the plan and implement has not started yet
+      - { name: implementing, status: In progress }       # implement, its commit, the gates, their summary or the push runs
+      - { name: in review, status: In review }            # review and address rounds, and the landing floor, judge and decision
+      - { name: awaiting merge, status: In review }       # the PR is ready and waits to be merged, or is being merged and released
+      - { name: escalated, status: In review }            # a human is needed: needs_input, external steps after the merge, or an escalation
+      - { name: done, status: Done }                      # the issue's work is merged and closed
   # The approval stages' verdicts; the values are the five band identifiers:
   # blocked, uncertain, needs-review, likely-safe, safe.
   plan_verdict:                      # the plan assessment's band

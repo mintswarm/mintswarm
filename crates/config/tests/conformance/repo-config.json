@@ -21,7 +21,122 @@
       "source": "field",
       "field": "msw-state",
       "label": "msw-state:{option}",
-      "status": "issue_status"
+      "status": "issue_status",
+      "options": [
+        {
+          "name": "none"
+        },
+        {
+          "name": "queued",
+          "status": "Todo"
+        },
+        {
+          "name": "blocked",
+          "status": "Todo"
+        },
+        {
+          "name": "analysing",
+          "status": "In progress"
+        },
+        {
+          "name": "designing",
+          "status": "In progress"
+        },
+        {
+          "name": "planning",
+          "status": "In progress"
+        },
+        {
+          "name": "awaiting approval",
+          "status": "In review"
+        },
+        {
+          "name": "plan approved",
+          "status": "In progress"
+        },
+        {
+          "name": "implementing",
+          "status": "In progress"
+        },
+        {
+          "name": "in review",
+          "status": "In review"
+        },
+        {
+          "name": "awaiting merge",
+          "status": "In review"
+        },
+        {
+          "name": "escalated",
+          "status": "In review"
+        },
+        {
+          "name": "done",
+          "status": "Done"
+        }
+      ]
+    },
+    "plan_verdict": {
+      "source": "field",
+      "field": "msw-plan",
+      "label": "msw-plan:{option}"
+    },
+    "decomp_verdict": {
+      "source": "field",
+      "field": "msw-decomp",
+      "label": "msw-decomp:{option}"
+    },
+    "short_title": {
+      "source": "field",
+      "field": "msw-short-title",
+      "label": "msw-short-title:{option}"
+    },
+    "fields": {
+      "size": {
+        "source": "field",
+        "field": "Effort",
+        "label": "effort:{option}",
+        "default": "M",
+        "options": {
+          "XS": {
+            "range": "XS"
+          },
+          "S": {
+            "range": "S"
+          },
+          "M": {
+            "range": "M"
+          },
+          "L": {
+            "range": "L"
+          },
+          "XL": {
+            "range": "XL"
+          },
+          "2XL": {
+            "range": "2XL"
+          },
+          "3XL": {
+            "range": "3XL"
+          },
+          "4XL": {
+            "range": "4XL"
+          },
+          "Low": {
+            "range": "XS-S",
+            "write": false
+          },
+          "Medium": {
+            "range": "M-L",
+            "write": false
+          },
+          "High": {
+            "range": "XL-4XL",
+            "write": false,
+            "reads_as": "2XL"
+          }
+        }
+      }
     },
     "ingest": {
       "trusted": {
@@ -59,7 +174,8 @@
       "description": "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary",
       "paths": [
         "crates/core/**",
-        "crates/server/**"
+        "crates/server/**",
+        "crates/steward/**"
       ]
     },
     "runner": {
@@ -114,7 +230,8 @@
       "paths": [
         "xtask/**",
         ".github/**",
-        "tests/**"
+        "tests/**",
+        "Makefile"
       ]
     },
     "docs": {
@@ -141,7 +258,8 @@
     "clippy.toml",
     ".cargo/config.toml",
     "pyproject.toml",
-    ".shellcheckrc"
+    ".shellcheckrc",
+    "docs/architecture/repository-layout.md"
   ],
   "agents": {
     "default": {
@@ -230,7 +348,8 @@
       "max_rounds": 5,
       "reviewers": [
         "zmij"
-      ]
+      ],
+      "clear": "nit"
     }
   },
   "gates": {
@@ -254,7 +373,7 @@
       },
       {
         "name": "python-format",
-        "command": "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs"
+        "command": "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit"
       },
       {
         "name": "shell-lint",
@@ -271,6 +390,10 @@
       {
         "name": "plan-approval-selftest",
         "command": "python3 .mintswarm/dogfood/plan-approval/selftest.py"
+      },
+      {
+        "name": "decomposition-approval-selftest",
+        "command": "python3 .mintswarm/dogfood/decomposition-approval/selftest.py"
       },
       {
         "name": "landing-floor-selftest",
@@ -306,7 +429,15 @@
       },
       {
         "name": "rust-test",
-        "command": "cargo test --workspace"
+        "command": "cargo nextest run --workspace && cargo test --doc --workspace"
+      },
+      {
+        "name": "rust-test-postgres",
+        "command": "cargo nextest run -p mintswarm-core --features pg-tests"
+      },
+      {
+        "name": "proto-lint",
+        "command": "buf lint api/proto"
       },
       {
         "name": "dependencies-selftest",
@@ -331,6 +462,39 @@
       {
         "name": "typescript-test",
         "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run"
+      },
+      {
+        "name": "commit-selftest",
+        "command": "python3 .mintswarm/dogfood/commit-selftest.py"
+      }
+    ],
+    "format": [
+      {
+        "name": "rust-format",
+        "command": "cargo fmt --all",
+        "paths": [
+          "**/*.rs"
+        ],
+        "gate": "rust-format"
+      },
+      {
+        "name": "python-format",
+        "command": "black . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit",
+        "paths": [
+          "**/*.py",
+          ".mintswarm/dogfood/github/linux/yq",
+          ".mintswarm/dogfood/msw-vcs",
+          ".mintswarm/dogfood/hooks/pre-commit"
+        ],
+        "gate": "python-format"
+      },
+      {
+        "name": "typescript-format",
+        "command": "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --write .",
+        "paths": [
+          "web/**"
+        ],
+        "gate": "typescript-format"
       }
     ],
     "report": {

@@ -459,6 +459,12 @@ fn tracker_state_values() {
             "field": "msw-state",
             "label": "msw-state:{option}",
             "status": "issue_status",
+            "options": [
+                {"name": "none"},
+                {"name": "queued", "status": "Todo"},
+                {"name": "blocked", "status": "Todo"},
+                {"name": "done", "status": "Done"},
+            ],
         })
     };
     let state = |change: &dyn Fn(&mut Value)| {
@@ -502,6 +508,35 @@ fn tracker_state_values() {
     let error = load_repo_config(&variant(|c| set(c, "/tracker", "state", json!("field"))))
         .expect_err("not a mapping");
     assert_eq!(error.path(), "tracker.state", "{error}");
+}
+
+const TRACKER_STATE_JSON: &str = include_str!("conformance/tracker-state.json");
+
+/// The shared `tracker.state` cases, which `github/selftest.sh` also runs through
+/// `msw-state.py` `settings`: an accepted block loads, and a rejected one fails at its `path`.
+#[test]
+fn tracker_state_cases_match_msw_state() {
+    let cases: Value =
+        serde_json::from_str(TRACKER_STATE_JSON).expect("tracker-state.json is JSON");
+    let cases = cases["cases"].as_array().expect("a list of cases");
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().expect("a case name");
+        let block = case["state"].clone();
+        let loaded = load_repo_config(&variant(|c| set(c, "/tracker", "state", block)));
+        match case
+            .get("path")
+            .map(|path| path.as_str().expect("a string path"))
+        {
+            None => {
+                loaded.unwrap_or_else(|error| panic!("{name}: {error}"));
+            }
+            Some(path) => {
+                let error = loaded.expect_err(name);
+                assert_eq!(error.path(), path, "{name}: {error}");
+            }
+        }
+    }
 }
 
 /// `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title` as `msw-state.py`

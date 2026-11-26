@@ -7,6 +7,7 @@
 mod probes;
 mod runner;
 mod schema;
+mod state;
 mod trust;
 mod yaml;
 
@@ -20,6 +21,9 @@ pub use runner::{DEFAULT_WALL_CLOCK, RunnerConfig, Stage, load_runner_config};
 pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
     RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
+};
+pub use state::{
+    BLOCKED, DONE, NONE, QUEUED, REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
 };
 pub use trust::{Trust, TrustMatch};
 pub use yaml::parse_yaml;

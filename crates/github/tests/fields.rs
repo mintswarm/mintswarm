@@ -7,6 +7,7 @@ mod support;
 
 use std::time::Duration;
 
+use mintswarm_config::{RepoConfig, load_repo_config, parse_yaml};
 use mintswarm_domain::field::{
     FieldCatalogue, FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
@@ -748,5 +749,119 @@ async fn a_label_pattern_without_its_option_is_refused_before_any_request() {
     );
     let catalogue = catalogue(&responder);
     assert_eq!(catalogue.options(&field).await, Err(missing));
+    assert!(responder.requests().is_empty());
+}
+
+/// The live repository config, read from the repository root.
+const REPO_CONFIG: &str = include_str!("../../../.mintswarm/config.yaml");
+/// The id the caller resolved for the msw-state field by name.
+const STATE_ID: Option<u64> = Some(303);
+
+/// `tracker.state.field_ref()` of the live config, with `tracker.state.source` set to `source`.
+fn state_ref(source: &str) -> FieldRef {
+    let config = if source == "field" {
+        load_repo_config(REPO_CONFIG).unwrap()
+    } else {
+        let mut value = parse_yaml(REPO_CONFIG).unwrap();
+        value["tracker"]["state"]["source"] = serde_json::json!(source);
+        RepoConfig::from_value(value).unwrap()
+    };
+    config.state().unwrap().field_ref()
+}
+
+fn state_values(name: &str) -> String {
+    serde_json::json!([{
+        "issue_field_id": 303,
+        "issue_field_name": "msw-state",
+        "data_type": "single_select",
+        "value": name,
+        "single_select_option": { "id": 3007, "name": name, "color": "gray" }
+    }])
+    .to_string()
+}
+
+#[tokio::test]
+async fn the_state_field_ref_reads_and_writes_the_msw_state_field() {
+    let field = state_ref("field");
+    assert_eq!(
+        field.source,
+        FieldSource::Field {
+            name: "msw-state".into()
+        }
+    );
+    let responder = Responder::start().await;
+    responder.reply(200, state_values("awaiting approval"));
+    responder.reply(200, state_values("plan approved"));
+    let client = client(&responder);
+    let read = client
+        .pass(&token())
+        .read_field(ISSUE, &field, STATE_ID)
+        .await;
+    assert_eq!(
+        read,
+        Ok(FieldRead::Value(value(
+            Some(303),
+            Some(3007),
+            "awaiting approval"
+        )))
+    );
+    client
+        .pass(&token())
+        .set_field(ISSUE, &field, STATE_ID, Some("plan approved"))
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(
+        body(&requests[1]),
+        serde_json::json!({"issue_field_values": [{"field_id": 303, "value": "plan approved"}]})
+    );
+}
+
+#[tokio::test]
+async fn the_state_field_ref_reads_and_writes_msw_state_labels() {
+    let field = state_ref("labels");
+    assert_eq!(
+        field.source,
+        FieldSource::Labels {
+            label: "msw-state:{option}".into()
+        }
+    );
+    let responder = Responder::start().await;
+    responder.reply(200, r#"{"labels":[{"name":"bug"}]}"#);
+    responder.reply(200, "[]");
+    responder.reply(
+        200,
+        r#"{"labels":[{"name":"bug"},{"name":"msw-state:awaiting approval"}]}"#,
+    );
+    let client = client(&responder);
+    client
+        .pass(&token())
+        .set_field(ISSUE, &field, None, Some("awaiting approval"))
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(
+        body(&requests[1]),
+        serde_json::json!({"labels": ["msw-state:awaiting approval"]})
+    );
+    let read = client.pass(&token()).read_field(ISSUE, &field, None).await;
+    assert_eq!(
+        read,
+        Ok(FieldRead::Value(value(None, None, "awaiting approval")))
+    );
+}
+
+#[tokio::test]
+async fn the_state_field_ref_refuses_an_unlisted_value() {
+    let responder = Responder::start().await;
+    let error = client(&responder)
+        .pass(&token())
+        .set_field(ISSUE, &state_ref("field"), STATE_ID, Some("parked"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, FieldError::Field(FieldFinding::OptionUnmapped));
     assert!(responder.requests().is_empty());
 }

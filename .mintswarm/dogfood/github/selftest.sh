@@ -33,7 +33,8 @@
 # key); its verdict mode for plan, decomp and pr; its short-title mode (the
 # analysis section read strictly, written only when the field or label is
 # empty, and the case-keeping fallback and sanitising rule); and the README's
-# msw-state tables against the script's VALUES and STATUS. Secrets and the manifest code
+# msw-state section against tracker.state.options, whose checks run the shared
+# tracker-state.json cases as the Rust loader does. Secrets and the manifest code
 # must appear in no recorded argv, nothing may be left in TMPDIR, each create
 # adds only its own App's config to HOME, and .git/config stays byte-identical
 # across pushes. Every background process runs in its own process group, every
@@ -3013,18 +3014,22 @@ ms_rc() {  # ms_rc RC ARGS...: msw-state.py exits RC
   eq "$rc" "$want"
 }
 cache_ids() { if [ -f "$MSW_FIELD_CACHE" ]; then jq -c . "$MSW_FIELD_CACHE"; else echo none; fi; }
+# The real config's values, as a flow list every tracker.state base below carries.
+state_options="$(yq -o=json . "$here/../../config.yaml" | jq -c .tracker.state.options)"
 state_cfg() {  # state_cfg SOURCE STATUS: a config with tracker.state only
-  printf 'tracker: {state: {source: %s, field: msw-state, label: "msw-state:{option}", status: %s}}' "$1" "$2"
+  printf 'tracker: {state: {source: %s, field: msw-state, label: "msw-state:{option}", status: %s, options: %s}}' \
+    "$1" "$2" "$state_options"
 }
 bad_source_base="$(commit_config "$(state_cfg other issue_status)")"
 bad_status_base="$(commit_config "$(state_cfg field on)")"
-leftover_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{option}", status: off}}')"
-bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, label: "msw-state", status: off}}')"
+leftover_id_base="$(commit_config "tracker: {state: {source: field, field: msw-state, field_id: \"50325307\", label: \"msw-state:{option}\", status: off, options: $state_options}}")"
+bad_label_base="$(commit_config "tracker: {state: {source: labels, field: msw-state, label: \"msw-state\", status: off, options: $state_options}}")"
 off_base="$(commit_config "$(state_cfg field off)")"
-labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{option}", status: off}}')"
-value_label_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
+labels_only_base="$(commit_config "tracker: {state: {source: labels, label: \"msw-state:{option}\", status: off, options: $state_options}}")"
+value_label_base="$(commit_config "tracker: {state: {source: labels, label: \"msw-state:{value}\", status: off, options: $state_options}}")"
 labels_base="$(commit_config "$(state_cfg labels off)")"
 labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
+no_options_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, label: "msw-state:{option}", status: issue_status}}')"
 
 check "an unknown value exits 2" exits_2 ms set 41 bogus --base "$real_base"
 check "a source other than field or labels exits 2" exits_2 ms set 41 queued --base "$bad_source_base"
@@ -3033,6 +3038,39 @@ check "a leftover field_id is ignored" eq "$(ms get 41 --base "$leftover_id_base
 check "a label without {option} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
 check "a {value} label exits 2" exits_2 ms set 41 queued --base "$value_label_base"
 check "number 0 exits 2" exits_2 ms set 0 queued --base "$real_base"
+check "a base without tracker.state.options exits 2" exits_2 ms set 41 queued --base "$no_options_base"
+
+cat > "$sandbox/statecheck.py" <<'PY'
+# statecheck.py FIXTURE SCRIPT CONFIG_JSON: msw-state.py settings accepts and rejects each shared
+# tracker.state case as crates/config/tests/floor.rs requires of the Rust loader, at the same path.
+import copy, importlib.util, json, sys
+
+sys.dont_write_bytecode = True  # no __pycache__ next to the script
+spec = importlib.util.spec_from_file_location("msw_state", sys.argv[2])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+real = json.load(open(sys.argv[3], encoding="utf-8"))
+errors = []
+for case in json.load(open(sys.argv[1], encoding="utf-8"))["cases"]:
+    config = copy.deepcopy(real)
+    config["tracker"]["state"] = case["state"]
+    try:
+        mod.settings("fixture", config=config)
+        got = None
+    except mod.UsageError as err:
+        got = str(err)
+    want = case.get("path")
+    if want is None and got is not None:
+        errors.append("%s: rejected: %s" % (case["name"], got))
+    elif want is not None and (got is None or not got.startswith(want + " ")):
+        errors.append("%s: want a rejection at %s, got %s" % (case["name"], want, got))
+print("\n".join(errors))
+sys.exit(1 if errors else 0)
+PY
+yq -o=json . "$here/../../config.yaml" > "$sandbox/real-config.json"
+check "msw-state.py settings agrees with the Rust loader on every tracker-state.json case" \
+  python3 -I "$sandbox/statecheck.py" "$here/../../../crates/config/tests/conformance/tracker-state.json" "$MS" \
+  "$sandbox/real-config.json"
 
 seed 41 '{"status": "Todo"}'
 posts_before="$(field_posts)"
@@ -3232,7 +3270,8 @@ set #65 status to In progress (was Todo) In progress"
 
 label_puts() { jq -c 'select(.cmd == "gh") | .argv | select(index("PUT")) | select(any(.[]; endswith("/labels")))' "$argv_log" | wc -l | tr -d ' '; }
 verdict_cfg() {  # verdict_cfg BLOCK: a config with tracker.plan_verdict set to BLOCK
-  printf 'tracker: {state: {source: labels, label: "msw-state:{option}", status: off}, plan_verdict: %s}' "$1"
+  printf 'tracker: {state: {source: labels, label: "msw-state:{option}", status: off, options: %s}, plan_verdict: %s}' \
+    "$state_options" "$1"
 }
 decomp_labels_base="$(commit_config 'tracker: {decomp_verdict: {source: labels, label: "msw-decomp:{option}"}}')"
 seed 71 '{"status": "Todo"}'
@@ -3414,13 +3453,16 @@ check "get prints the fallback when the field is empty" eq "$(ms short-title get
 cp "$sandbox/st-cache.json" "$MSW_FIELD_CACHE"
 
 cat > "$sandbox/mscheck.py" <<'PY'
-# mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
+# mscheck.py README SCRIPT REF: the README's msw-state section holds only the runner-state and
+# pipeline-state tables, each row maps to a name in tracker.state.options at REF, and the section
+# points at tracker.state.options.
 import importlib.util, re, sys
 
 sys.dont_write_bytecode = True  # no __pycache__ next to the script
 spec = importlib.util.spec_from_file_location("msw_state", sys.argv[2])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+names = mod.settings(sys.argv[3])["options"]
 text = open(sys.argv[1], encoding="utf-8").read()
 section = text.split("\n## msw-state\n", 1)[1].split("\n## ", 1)[0]
 tables, rows = {}, None
@@ -3435,27 +3477,28 @@ for line in section.split("\n"):
         rows.append(cells)
 errors = []
 ticked = lambda cell: re.findall(r"`([^`]*)`", cell)
-values = [ticked(r[0])[0] for r in tables.pop(("Value", "When it applies"))]
-if values != list(mod.VALUES):
-    errors.append("the Values table lists %s, not VALUES %s" % (values, list(mod.VALUES)))
-status = {ticked(r[0])[0]: r[1] for r in tables.pop(("msw-state", "Issue status"))}
-if status != dict(mod.STATUS, none="left alone"):
-    errors.append("the Issue status table %s differs from STATUS" % status)
-for head in (("Runner state", "msw-state"), ("Pipeline state", "msw-state")):
-    for r in tables.pop(head):
+heads = [("Runner state", "msw-state"), ("Pipeline state", "msw-state")]
+if list(tables) != heads:
+    errors.append("the tables are %s, not only %s" % (list(tables), heads))
+for head in heads:
+    for r in tables.get(head, []):
         got = ticked(r[-1])
-        if got and not all(v in mod.VALUES for v in got) or not got and r[-1] != "the value of the state it pauses":
-            errors.append("%s row %s maps to no value in VALUES" % (head[0], r))
-if tables:
-    errors.append("unexpected tables: %s" % list(tables))
+        if got and not all(v in names for v in got) or not got and r[-1] != "the value of the state it pauses":
+            errors.append("%s row %s maps to no name in tracker.state.options" % (head[0], r))
+if "`tracker.state.options`" not in section:
+    errors.append("the section does not point at tracker.state.options")
 print("\n".join(errors))
 sys.exit(1 if errors else 0)
 PY
-check "the README's msw-state tables match the script's VALUES and STATUS" python3 -I "$sandbox/mscheck.py" "$here/README.md" "$MS"
-sed 's/| `escalated` | In review |/| `escalated` | Done |/' "$here/README.md" > "$sandbox/README-bad.md"
-refuses "and the cross-check catches a status that differs" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
+check "the README's msw-state section matches tracker.state.options" \
+  python3 -I "$sandbox/mscheck.py" "$here/README.md" "$MS" "$real_base"
 sed 's/| `ready`, `merging`, `releasing` | `awaiting merge` |/| `ready`, `merging`, `releasing` | `waiting` |/' "$here/README.md" > "$sandbox/README-bad.md"
-refuses "and a runner state mapped to an unknown value" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS"
+refuses "and a runner state mapped to an unknown value" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS" "$real_base"
+awk '/^### Pipeline states$/ { print "| msw-state | Issue status |"; print "| --- | --- |"; print "| `done` | Done |"; print "" } { print }' \
+  "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and an added issue status table" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS" "$real_base"
+sed 's/`tracker\.state\.options`/`tracker.state`/g' "$here/README.md" > "$sandbox/README-bad.md"
+refuses "and the pointer at tracker.state.options removed" python3 -I "$sandbox/mscheck.py" "$sandbox/README-bad.md" "$MS" "$real_base"
 
 # --- watch-plan-approvals.py -------------------------------------------------
 
@@ -3498,7 +3541,7 @@ wpa_seed_labels() {  # wpa_seed_labels ISSUE EVENTS_JSON COMMENT_JSON...: a labe
   seed "$n" "$(jq -nc --argjson e "$events" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
     --argjson u "$wpa_author" '{user: $u, labels: ["bug", "msw-state:plan approved"], events: $e, comments: $c}')"
 }
-wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{option}", status: issue_status}}')"
+wpa_labels_base="$(commit_config "tracker: {state: {source: labels, label: \"msw-state:{option}\", status: issue_status, options: $state_options}}")"
 wpa_argv_before="$(wc -l < "$argv_log" | tr -d ' ')"
 p81="package $(wpa_url 81 10) sha256 $wpa_sha"
 
