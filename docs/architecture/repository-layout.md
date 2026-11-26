@@ -44,7 +44,7 @@ mintswarm/
 │   ├── domain/             # shared types and traits
 │   ├── config/             # repository and runner config
 │   ├── github/             # GitHub App client
-│   ├── rules/              # shared pure rules
+│   ├── rules/              # shared pure rules, PR labels
 │   ├── proto/              # Rust generated from protos
 │   ├── core/               # control plane library
 │   │   └── migrations/     # append-only SQL migrations
