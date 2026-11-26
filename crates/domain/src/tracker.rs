@@ -340,6 +340,129 @@ pub struct Review {
     pub submitted_at: Option<String>,
     pub commit: Option<RevId>,
     pub url: String,
+    /// Whether the author is a bot: a `Bot` account, or a login ending in `[bot]`.
+    #[serde(default)]
+    pub author_is_bot: bool,
+}
+
+/// A comment on a pull request's diff, part of a review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewComment {
+    pub id: u64,
+    /// The review the comment belongs to, if any.
+    pub review: Option<u64>,
+    pub author: Login,
+    /// Whether the author is a bot, as for [`Review::author_is_bot`].
+    pub author_is_bot: bool,
+    pub body: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339.
+    pub updated_at: String,
+    pub url: String,
+}
+
+/// A review thread on a pull request and whether it is resolved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewThread {
+    /// The host's id of the thread.
+    pub id: String,
+    pub resolved: bool,
+}
+
+/// The people and teams a pull request's review is requested from and not yet given by.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestedReviewers {
+    pub users: Vec<Login>,
+    /// Team slugs.
+    pub teams: Vec<String>,
+}
+
+/// A check run on a commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckRun {
+    pub id: u64,
+    pub name: String,
+    /// For example `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// How the run ended (`success`, `failure`, ...); `None` until it completes.
+    pub conclusion: Option<String>,
+    /// The slug of the app that made the run.
+    pub app: Option<String>,
+    /// The id of the check suite the run belongs to.
+    pub suite: Option<u64>,
+}
+
+/// A check suite on a commit: one app's runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckSuite {
+    pub id: u64,
+    /// The slug of the app the suite belongs to, which names it.
+    pub app: Option<String>,
+    /// For example `queued`, `in_progress` or `completed`.
+    pub status: Option<String>,
+    /// How the suite ended; `None` until it completes.
+    pub conclusion: Option<String>,
+    /// How many runs the suite's latest attempt holds.
+    pub latest_check_runs_count: u64,
+}
+
+/// The commit statuses on a commit, combined.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CombinedStatus {
+    /// The combined state: `success`, `failure` or `pending`.
+    pub state: String,
+    /// How many statuses the host counts; the list may hold fewer.
+    pub total_count: u64,
+    /// The latest status of each context, with source `status`.
+    pub statuses: Vec<CheckState>,
+}
+
+/// A file a pull request changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedFile {
+    pub path: String,
+    /// The path before a rename; `None` for any other change.
+    pub previous_path: Option<String>,
+    /// For example `added`, `modified`, `removed` or `renamed`.
+    pub status: String,
+}
+
+impl ChangedFile {
+    /// Every path the change touches: the path, and the previous one of a rename.
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.path.as_str()).chain(self.previous_path.as_deref())
+    }
+}
+
+/// A pull request's own fields, without its reviews or checks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullDetail {
+    pub number: PrNumber,
+    pub url: String,
+    pub title: String,
+    pub state: String,
+    pub draft: bool,
+    pub base: BranchName,
+    pub branch: BranchName,
+    pub head: RevId,
+    /// The head's repository, in `owner/name` form; `None` when it was deleted.
+    pub head_repo: Option<String>,
+    pub labels: Vec<String>,
+    /// Whether it can be merged; `None` while the host is still working it out.
+    pub mergeable: Option<bool>,
+    pub mergeable_state: Option<String>,
+    pub merged: bool,
+    /// The merge commit once merged; before that, the host's test merge, if any.
+    pub merge_commit: Option<RevId>,
+    /// How many files it changes, as the host counts them.
+    pub changed_files: u64,
+}
+
+/// A pull request merged, with its merge commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Merged {
+    pub sha: RevId,
 }
 
 /// A check run or commit status on a pull request's head.

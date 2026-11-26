@@ -20,6 +20,7 @@ use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
+use crate::reads::{GraphQlReply, graphql_reply};
 use crate::rest::{ClientError, GRAPHQL_PATH, Reply, Rest, check_names};
 use crate::secret::Token;
 use crate::token::Permissions;
@@ -295,33 +296,14 @@ fn map_statuses(data: &Value, endpoint: &str) -> Result<Vec<(String, String)>, S
 /// A GraphQL reply's `data`: a status that is not a success, a body that is not JSON, a
 /// non-empty `errors` or a `data` that is not an object is a failure.
 fn graphql_data(reply: &Reply) -> Result<Value, StatusError> {
-    if !reply.status.is_success() {
-        return Err(refused(reply));
-    }
-    let mut body = json(reply)?;
-    match body.get("errors") {
-        None | Some(Value::Null) => {}
-        Some(Value::Array(errors)) if errors.is_empty() => {}
-        Some(Value::Array(errors)) => {
-            return Err(StatusError::GraphQl {
-                endpoint: reply.endpoint.clone(),
-                types: errors
-                    .iter()
-                    .map(|error| {
-                        error
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned()
-                    })
-                    .collect(),
-            });
-        }
-        Some(_) => return Err(unexpected(&reply.endpoint)),
-    }
-    match body.get_mut("data").map(Value::take) {
-        Some(data @ Value::Object(_)) => Ok(data),
-        _ => Err(unexpected(&reply.endpoint)),
+    match graphql_reply(reply) {
+        GraphQlReply::Data(data) => Ok(data),
+        GraphQlReply::Refused => Err(refused(reply)),
+        GraphQlReply::Errors(types) => Err(StatusError::GraphQl {
+            endpoint: reply.endpoint.clone(),
+            types,
+        }),
+        GraphQlReply::Unexpected => Err(unexpected(&reply.endpoint)),
     }
 }
 

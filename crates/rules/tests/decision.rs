@@ -51,6 +51,7 @@ fn review(name: &str) -> Review {
         submitted_at: Some("2026-11-26T10:00:00Z".to_owned()),
         commit: Some(RevId(HEAD40.to_owned())),
         url: "https://github.com/o/r/pull/9#pullrequestreview-1".to_owned(),
+        author_is_bot: false,
     }
 }
 
