@@ -1,13 +1,19 @@
 //! Creating and opening the trusted store: mode 0700, bare, neither shallow nor partial, no
-//! alternates and no attributes of its own, and a git that meets [`GIT_REQUIREMENT`].
+//! alternates and no attributes of its own, and a git that meets [`GIT_REQUIREMENT`]; and opening
+//! a working directory's repository, which is not trusted, for `mintswarm-runner tool msw-vcs`.
 
+use std::ffi::OsStr;
 use std::fs::{DirBuilder, Permissions};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use mintswarm_domain::ids::RevId;
 use mintswarm_domain::probe::{Check, ProbeResult, ProbeValue, VersionRequirement};
 use mintswarm_domain::retry::RetryPolicy;
 
+use super::env::success;
+use super::read::id_text;
 use super::{GitError, GitStore};
 
 /// The git versions the store works with, checked against the `tool.git` probe result.
@@ -21,6 +27,17 @@ const STORE_MODE: u32 = 0o700;
 
 /// Words git reads as false in a boolean setting.
 const FALSE_WORDS: &[&str] = &["false", "no", "off", "0"];
+
+/// A working directory's repository, opened by [`GitStore::open_checkout`].
+#[derive(Debug)]
+pub struct Checkout {
+    /// The repository, on its absolute git directory.
+    pub store: GitStore,
+    /// The top of the working tree.
+    pub top: PathBuf,
+    /// The commit `HEAD` names, or `None` when it names none.
+    pub head: Option<RevId>,
+}
 
 /// The store of `repository` under the runner's state directory: `<state>/repos/<repository>.git`.
 ///
@@ -81,7 +98,58 @@ impl GitStore {
         }
         let mut store = GitStore::unchecked(path);
         store.check_shape()?;
-        store.id_len = match store.line(["rev-parse", "--show-object-format"])?.as_str() {
+        store.set_format()?;
+        store.warnings = warnings;
+        Ok(store)
+    }
+
+    /// Open the repository whose working tree holds `dir`, which is not trusted: none of
+    /// [`GitStore::open`]'s checks are made. Its own attributes file, `info/attributes` in the
+    /// git directory, is checked at each `diff` instead, which fails with
+    /// [`GitError::Attributes`] while that file is not empty. A directory outside any working
+    /// tree is [`GitError::NotInRepository`].
+    pub fn open_checkout(dir: &Path) -> Result<Checkout, GitError> {
+        let probe = GitStore::unchecked(PathBuf::new());
+        // Discovered as git discovers it from `cwd`, never from a `GIT_DIR` of the environment.
+        let discover = |cwd: &Path, args: &[&str]| {
+            let mut command = probe.command(args);
+            command.env_remove("GIT_DIR").current_dir(cwd);
+            probe.output(command, "rev-parse")
+        };
+        let output = discover(dir, &["rev-parse", "--show-toplevel"])?;
+        let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+        if !output.status.success() || top.is_empty() {
+            return Err(GitError::NotInRepository(dir.to_owned()));
+        }
+        let top = PathBuf::from(OsStr::from_bytes(top));
+        let path_of = |args: &[&str]| -> Result<PathBuf, GitError> {
+            let out = success("rev-parse", discover(&top, args)?)?;
+            let path = Path::new(OsStr::from_bytes(out.strip_suffix(b"\n").unwrap_or(&out)));
+            Ok(top.join(path))
+        };
+        let git_dir = path_of(&["rev-parse", "--absolute-git-dir"])?;
+        let attributes = path_of(&["rev-parse", "--git-path", "info/attributes"])?;
+        let mut store = GitStore::unchecked(git_dir);
+        store.set_format()?;
+        store.attributes = Some(attributes);
+        let output = store.output(
+            store.command(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]),
+            "rev-parse",
+        )?;
+        let head = match output.status.code() {
+            Some(0) => Some(RevId(id_text(
+                &store,
+                output.stdout.trim_ascii_end(),
+                "rev-parse",
+            )?)),
+            _ => None,
+        };
+        Ok(Checkout { store, top, head })
+    }
+
+    /// Read the object format, and set the empty tree as the attribute source.
+    fn set_format(&mut self) -> Result<(), GitError> {
+        self.id_len = match self.line(["rev-parse", "--show-object-format"])?.as_str() {
             "sha1" => 40,
             "sha256" => 64,
             other => {
@@ -92,9 +160,8 @@ impl GitStore {
             }
         };
         // The empty tree: no `.gitattributes` from any tree applies.
-        store.attr_source = Some(store.line(["hash-object", "-t", "tree", "--stdin"])?);
-        store.warnings = warnings;
-        Ok(store)
+        self.attr_source = Some(self.line(["hash-object", "-t", "tree", "--stdin"])?);
+        Ok(())
     }
 
     /// A store at `path` before any check.
@@ -106,6 +173,7 @@ impl GitStore {
             id_len: 40,
             warnings: Vec::new(),
             allow_file: false,
+            attributes: None,
             retry: RetryPolicy::default(),
         }
     }
@@ -215,7 +283,7 @@ fn check_version(git: &ProbeResult) -> Result<Vec<String>, GitError> {
 }
 
 /// Whether a file exists with content; anything but a regular file counts as content.
-fn non_empty(path: &Path) -> Result<bool, GitError> {
+pub(super) fn non_empty(path: &Path) -> Result<bool, GitError> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => Ok(!meta.is_file() || meta.len() > 0),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
