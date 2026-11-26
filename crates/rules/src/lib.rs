@@ -18,8 +18,9 @@
 //!   mode over the same bundle, with the `decision.json` record.
 //! - [`pr_labels`]: the pull request labelling rule, the component and band labels a factory PR
 //!   should carry.
-//! - [`render`]: the plan-approval comment bodies, the Commands section, and the confinement of
-//!   model and session text in them.
+//! - [`render`]: the plan-approval comment bodies, the Commands section, the decision records,
+//!   answers, set-backs, merge records and the shadow decision line, and the confinement of model,
+//!   session and user text in them.
 //! - [`command`]: the approve, reject and help commands a comment gives, the hints for near
 //!   misses, and the digest an approval package binds.
 //!

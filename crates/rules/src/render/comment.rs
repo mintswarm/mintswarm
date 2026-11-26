@@ -5,6 +5,7 @@ use mintswarm_domain::records::{
     Decision, DecisionRecord, FloorLayer, Json, JudgementLayer, LayerStatus, Verdict,
 };
 
+use super::decision::PENDING_DECISION;
 use super::{AUTHORITY_TRIGGERS, code_list, span, span_of};
 use crate::json;
 use crate::plan_decision::envelope::band_name;
@@ -380,6 +381,6 @@ pub fn shadow_comment(
         decision(record.judged_decision)
     ));
     lines.push(format!("- **Decision:** `{}`", decision(record.decision)));
-    lines.push("- **Maintainer decision:** pending".to_owned());
+    lines.push(PENDING_DECISION.to_owned());
     lines.join("\n") + "\n"
 }

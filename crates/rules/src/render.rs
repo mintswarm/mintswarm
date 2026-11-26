@@ -1,4 +1,5 @@
-//! The plan-approval comment bodies, and the confinement of model and session text in them.
+//! The comment bodies the factory posts, and the confinement of model, session and user text in
+//! them.
 //!
 //! - [`inert`] and [`span`]: `decision.py`'s confinement of model and session text, one line
 //!   without control or format characters or backticks, set in a bounded code span;
@@ -7,7 +8,9 @@
 //! - [`approval`]: the TL;DR check and comment of step 1 of `plan-approval/README.md`, and the
 //!   approval package the session posts;
 //! - [`commands`]: the Commands section of a plan, design or decomposition approval, the only copy
-//!   of it, listing every [`Command`].
+//!   of it, listing every [`Command`];
+//! - [`decision`]: the decision records, answers, set-backs and merge records of design #548 §7,
+//!   the readers of their markers, and the shadow record's maintainer decision row.
 //!
 //! Deliberate divergence: [`inert`] removes the characters of the Unicode categories Cc, Cf, Zl and
 //! Zp from a table written for Unicode 14.0, the version of the Python that captured the parity
@@ -15,6 +18,7 @@
 
 pub mod approval;
 pub mod comment;
+pub mod decision;
 
 use mintswarm_domain::records::Json;
 
