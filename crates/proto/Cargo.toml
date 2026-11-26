@@ -10,7 +10,8 @@ fakes = []
 
 [dependencies]
 prost = { workspace = true }
-prost-types = { workspace = true }
+prost-reflect = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 
@@ -20,12 +21,15 @@ tonic-prost = { workspace = true }
 # workspace-wide test and lint runs build every crate against proto with
 # `fakes`, so each crate that uses the fakes must declare the feature itself.
 mintswarm-proto = { path = ".", features = ["fakes"] }
+serde_json = { workspace = true }
 # Both serve only `tests/job_v1.rs`, the temporary parity test against
 # `domain::job`; job-in-proto removes them together with it.
 mintswarm-domain = { path = "../domain" }
 protox = { workspace = true }
 
 [build-dependencies]
+# For `Message::encode_to_vec`, which writes the descriptor set to `OUT_DIR`.
+prost = { workspace = true }
 protox = { workspace = true }
 # Not called by build.rs, which goes through tonic-prost-build; declared so the
 # crates that build on this one share the pinned tonic-build version.

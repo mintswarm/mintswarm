@@ -3,6 +3,7 @@
 
 #![cfg(test)]
 
+use mintswarm_proto::json;
 use mintswarm_proto::runner::v1::{
     AuthenticateRequest, AuthenticateResponse, ConnectRequest, ConnectResponse, GetBlobHeader,
     GetBlobRequest, GetBlobResponse, PutBlobHeader, PutBlobRequest, PutBlobResponse,
@@ -18,6 +19,13 @@ fn secret() -> Option<Secret> {
     Some(Secret {
         value: SENTINEL.to_owned(),
     })
+}
+
+/// Writes `message` as proto3 JSON text through `mintswarm_proto::json`.
+fn to_json<M: prost::Message + prost::Name>(message: &M) -> String {
+    let mut written = Vec::new();
+    json::serialize(message, &mut serde_json::Serializer::new(&mut written)).expect("serialises");
+    String::from_utf8(written).expect("JSON is UTF-8")
 }
 
 fn register_request() -> RegisterRequest {
@@ -48,7 +56,7 @@ fn authenticate_request() -> AuthenticateRequest {
 fn authenticate_response() -> AuthenticateResponse {
     AuthenticateResponse {
         access_token: secret(),
-        expires_at: Some(prost_types::Timestamp {
+        expires_at: Some(mintswarm_proto::prost_types::Timestamp {
             seconds: 1_800_000_000,
             nanos: 0,
         }),
@@ -73,6 +81,24 @@ fn secrets_are_redacted() {
             reauthenticate.clone(),
         )),
     };
+    let json = [
+        ("Secret", to_json(&secret)),
+        ("RegisterRequest", to_json(&register)),
+        ("AuthenticateRequest", to_json(&authenticate)),
+        ("AuthenticateResponse", to_json(&authenticated)),
+        ("Reauthenticate", to_json(&reauthenticate)),
+        ("ConnectRequest", to_json(&connect)),
+    ];
+    for (name, written) in json {
+        assert!(
+            !written.contains(SENTINEL),
+            "{name} writes its secret: {written}"
+        );
+        assert!(
+            written.contains("<redacted>"),
+            "{name} does not write the redaction: {written}"
+        );
+    }
     let messages: [(&str, &dyn std::fmt::Debug); 6] = [
         ("Secret", &secret),
         ("RegisterRequest", &register),
@@ -93,6 +119,35 @@ fn secrets_are_redacted() {
             );
         }
     }
+}
+
+/// A `Secret` is never read from JSON, in the proto3 object form, empty, or
+/// as the redaction; a message whose `Secret` field is absent still parses.
+#[test]
+fn secret_is_never_read_from_json() {
+    for written in [
+        serde_json::json!({"value": "x"}),
+        serde_json::json!({}),
+        serde_json::json!("<redacted>"),
+    ] {
+        assert!(
+            json::deserialize::<Secret, _>(written.clone()).is_err(),
+            "{written}"
+        );
+    }
+
+    let mut register = serde_json::json!({
+        "registrationToken": {"value": "x"},
+        "host": "build-1",
+    });
+    assert!(json::deserialize::<RegisterRequest, _>(register.clone()).is_err());
+
+    if let Some(object) = register.as_object_mut() {
+        object.remove("registrationToken");
+    }
+    let parsed: RegisterRequest = json::deserialize(register).expect("parses");
+    assert_eq!(parsed.registration_token, None);
+    assert_eq!(parsed.host, "build-1");
 }
 
 /// Builds every message with full struct literals, so a field of design §8.2,

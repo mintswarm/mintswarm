@@ -7,7 +7,9 @@ package mintswarm.runner.v1;
 //
 // Never logged (design §9.5): `crates/proto` generates this message without
 // a derived `Debug` and prints it as `Secret(<redacted>)`, so no message that
-// contains a `Secret` prints its value.
+// contains a `Secret` prints its value. Its proto3 JSON, through
+// `mintswarm_proto::json`, writes the value as `<redacted>`, and no JSON that
+// holds a `Secret` is read.
 message Secret {
   // The secret itself.
   string value = 1;

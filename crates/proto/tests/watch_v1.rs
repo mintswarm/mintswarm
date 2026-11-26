@@ -27,8 +27,8 @@ fn untrusted(text: &str) -> UntrustedText {
     }
 }
 
-fn timestamp(seconds: i64) -> prost_types::Timestamp {
-    prost_types::Timestamp { seconds, nanos: 0 }
+fn timestamp(seconds: i64) -> mintswarm_proto::prost_types::Timestamp {
+    mintswarm_proto::prost_types::Timestamp { seconds, nanos: 0 }
 }
 
 /// An event with every envelope field set and no body.
@@ -238,7 +238,7 @@ fn filter_and_server_info_carry_the_design_fields() {
         store_epoch: "0193a1b2-0000-7000-8000-000000000001".to_owned(),
         kinds: vec!["github.webhook".to_owned()],
         retention: Some(Retention {
-            max_age: Some(prost_types::Duration {
+            max_age: Some(mintswarm_proto::prost_types::Duration {
                 seconds: 7 * 24 * 60 * 60,
                 nanos: 0,
             }),

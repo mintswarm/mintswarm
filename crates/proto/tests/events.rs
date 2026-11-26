@@ -7,6 +7,7 @@
 
 #![cfg(test)]
 
+use mintswarm_proto::json;
 use mintswarm_proto::runner::v1::{
     ArtefactPut, AttemptOutcome, AttemptOutcomeKind, AttemptStartFailed, AttemptStartFailedReason,
     AttemptStarted, DirectiveDisposition, DirectiveReceipt, EventBatch, GateResult, Progress,
@@ -14,10 +15,10 @@ use mintswarm_proto::runner::v1::{
     QuestionReferenceKind, QuestionShape, RecordPut, RunnerEvent, StageResult, StageStatus, Usage,
     Warning, progress, runner_event, usage,
 };
-use prost::Message;
+use prost::{Message, Name};
 
-fn at(seconds: i64) -> Option<prost_types::Timestamp> {
-    Some(prost_types::Timestamp { seconds, nanos: 0 })
+fn at(seconds: i64) -> Option<mintswarm_proto::prost_types::Timestamp> {
+    Some(mintswarm_proto::prost_types::Timestamp { seconds, nanos: 0 })
 }
 
 fn record_put() -> RecordPut {
@@ -319,4 +320,168 @@ fn record_put_fields() {
     assert_eq!(version, 2);
     assert_eq!(sha256.len(), 64);
     assert_eq!(size, 1_024);
+}
+
+/// Writes `message` as proto3 JSON through `mintswarm_proto::json`.
+fn to_json<M: Message + Name>(message: &M) -> serde_json::Value {
+    json::serialize(message, serde_json::value::Serializer).expect("serialises")
+}
+
+/// Reads `M` from proto3 JSON through `mintswarm_proto::json`.
+fn from_json<M: Message + Name + Default>(value: serde_json::Value) -> serde_json::Result<M> {
+    json::deserialize(value)
+}
+
+/// A `StageResult` with every field set, including each proto3 `optional`.
+fn full_stage_result() -> StageResult {
+    StageResult {
+        status: StageStatus::NeedsInput.into(),
+        artefact: "handoff".to_owned(),
+        outputs: vec![".mintswarm/job/outputs/handoff.md".to_owned()],
+        questions: vec![Question {
+            id: "q1".to_owned(),
+            kind: QuestionKind::Assumption.into(),
+            question: "Which crate owns the parser?".to_owned(),
+            why: "It decides the reviewers.".to_owned(),
+            shape: QuestionShape::One.into(),
+            options: vec![QuestionOption {
+                id: "a".to_owned(),
+                label: "proto".to_owned(),
+                consequence: "The wire types and the parser live together.".to_owned(),
+                trade_off: Some("A larger crate.".to_owned()),
+            }],
+            recommendation: Some(QuestionRecommendation {
+                choice: vec!["a".to_owned()],
+                answer: Some("proto".to_owned()),
+                reason: "It holds the protos.".to_owned(),
+            }),
+            references: vec![QuestionReference {
+                kind: QuestionReferenceKind::File.into(),
+                target: "crates/proto/src/lib.rs".to_owned(),
+                lines: Some("1-20".to_owned()),
+            }],
+        }],
+        reason: "Waiting on a decision.".to_owned(),
+        commit: Some("feat(api): proto3 JSON".to_owned()),
+        pr_title: Some("feat(api): proto3 JSON for runner/v1".to_owned()),
+    }
+}
+
+#[test]
+fn stage_result_json_uses_camel_case_and_enum_names() {
+    let result = full_stage_result();
+    let json = to_json(&result);
+
+    assert_eq!(json["prTitle"], "feat(api): proto3 JSON for runner/v1");
+    assert!(json.get("pr_title").is_none(), "{json}");
+    assert_eq!(json["status"], "STAGE_STATUS_NEEDS_INPUT");
+    let question = &json["questions"][0];
+    assert_eq!(question["kind"], "QUESTION_KIND_ASSUMPTION");
+    assert_eq!(question["options"][0]["tradeOff"], "A larger crate.");
+    assert!(question["options"][0].get("trade_off").is_none(), "{json}");
+
+    let parsed: StageResult = from_json(json).expect("parses");
+    assert_eq!(parsed, result);
+}
+
+#[test]
+fn stage_result_parses_proto_field_names() {
+    let json = serde_json::json!({
+        "status": "STAGE_STATUS_NEEDS_INPUT",
+        "artefact": "handoff",
+        "outputs": [".mintswarm/job/outputs/handoff.md"],
+        "questions": [{
+            "id": "q1",
+            "kind": "QUESTION_KIND_ASSUMPTION",
+            "question": "Which crate owns the parser?",
+            "why": "It decides the reviewers.",
+            "shape": "QUESTION_SHAPE_ONE",
+            "options": [{
+                "id": "a",
+                "label": "proto",
+                "consequence": "The wire types and the parser live together.",
+                "trade_off": "A larger crate.",
+            }],
+            "recommendation": {
+                "choice": ["a"],
+                "answer": "proto",
+                "reason": "It holds the protos.",
+            },
+            "references": [{
+                "kind": "QUESTION_REFERENCE_KIND_FILE",
+                "target": "crates/proto/src/lib.rs",
+                "lines": "1-20",
+            }],
+        }],
+        "reason": "Waiting on a decision.",
+        "commit": "feat(api): proto3 JSON",
+        "pr_title": "feat(api): proto3 JSON for runner/v1",
+    });
+    let parsed: StageResult = from_json(json).expect("parses");
+    assert_eq!(parsed, full_stage_result());
+}
+
+#[test]
+fn optional_fields_keep_presence() {
+    type Field = fn(&mut StageResult) -> &mut Option<String>;
+    let fields: [(&str, Field); 2] = [
+        ("commit", |result| &mut result.commit),
+        ("prTitle", |result| &mut result.pr_title),
+    ];
+    for (key, field) in fields {
+        for value in [None, Some(String::new()), Some("x".to_owned())] {
+            let mut result = full_stage_result();
+            *field(&mut result) = value.clone();
+            let json = to_json(&result);
+            match &value {
+                None => assert!(json.get(key).is_none(), "{key} is written: {json}"),
+                Some(text) => assert_eq!(json[key], text.as_str(), "{key}: {json}"),
+            }
+            let mut parsed: StageResult = from_json(json).expect("parses");
+            assert_eq!(*field(&mut parsed), value, "{key}");
+            assert_eq!(parsed, result);
+        }
+    }
+}
+
+#[test]
+fn unknown_keys_are_refused() {
+    let json = to_json(&full_stage_result());
+
+    let mut top = json.clone();
+    top["extra"] = 1.into();
+    assert!(from_json::<StageResult>(top).is_err());
+
+    let mut nested = json;
+    nested["questions"][0]["extra"] = 1.into();
+    assert!(from_json::<StageResult>(nested).is_err());
+}
+
+#[test]
+fn timestamp_is_rfc3339() {
+    let event = RunnerEvent {
+        seq: 1,
+        at: at(0),
+        job_id: "job-1".to_owned(),
+        attempt_id: "attempt-1".to_owned(),
+        lease_epoch: 1,
+        body: Some(runner_event::Body::Started(AttemptStarted {})),
+    };
+    assert_eq!(to_json(&event)["at"], "1970-01-01T00:00:00Z");
+}
+
+#[test]
+fn result_block_fixtures_round_trip() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/result-blocks");
+    let mut read = 0;
+    for entry in std::fs::read_dir(&dir).expect("fixtures directory") {
+        let path = entry.expect("directory entry").path();
+        let text = std::fs::read_to_string(&path).expect("fixture reads");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("fixture is JSON");
+        let result: StageResult = from_json(json.clone())
+            .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
+        assert_eq!(to_json(&result), json, "{}", path.display());
+        read += 1;
+    }
+    assert!(read >= 3, "read {read} fixtures");
 }

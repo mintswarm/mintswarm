@@ -5,6 +5,12 @@
 //! `src/lib.rs` implements one that prints `Secret(<redacted>)`, so no secret
 //! is ever logged (design §9.5).
 //!
+//! Every message implements `prost::Name` with its full proto name, and the
+//! descriptor set `protox` returns is written to `OUT_DIR/descriptors.bin`.
+//! `src/lib.rs` builds the proto3 JSON mapping on the two, through
+//! `prost-reflect`. The well-known types, such as `google.protobuf.Timestamp`,
+//! are `prost-reflect`'s re-export of `prost-types`.
+//!
 //! `ProbeResult.Known.facts` is generated as a `BTreeMap`, the map type of
 //! `domain::probe`.
 //!
@@ -17,6 +23,8 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use prost::Message as _;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -36,7 +44,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let fds = protox::compile(&files, [&root])?;
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
+    fs::write(out_dir.join("descriptors.bin"), fds.encode_to_vec())?;
+
+    let mut config = tonic_prost_build::Config::new();
+    // `prost::Name` gives `src/lib.rs` each message's descriptor in the set.
+    config.enable_type_names();
     tonic_prost_build::configure()
+        // Without `compile_well_known_types`, prost maps `.google.protobuf`
+        // to `::prost_types` itself and refuses a second mapping; with it,
+        // the `extern_path` decides, and none of them is compiled here.
+        .compile_well_known_types(true)
+        .extern_path(".google.protobuf", "::prost_reflect::prost_types")
         // `RunnerServiceClient::connect(dst)` would clash with the `Connect`
         // RPC's `connect` method; see the module doc.
         .build_transport(false)
@@ -55,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ".mintswarm.watch.v1.SubscribeResponse.message",
             "#[allow(clippy::large_enum_variant)]",
         )
-        .compile_fds(fds)?;
+        .compile_fds_with_config(fds, config)?;
     Ok(())
 }
 

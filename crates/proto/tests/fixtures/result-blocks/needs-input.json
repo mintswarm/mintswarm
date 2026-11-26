@@ -1,0 +1,91 @@
+{
+  "status": "STAGE_STATUS_NEEDS_INPUT",
+  "artefact": "analysis",
+  "outputs": [
+    ".mintswarm/job/outputs/analysis.md"
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "QUESTION_KIND_MUST_DECIDE",
+      "question": "Which component owns the parser?",
+      "why": "Decides the plan's component and reviewers.",
+      "shape": "QUESTION_SHAPE_ONE",
+      "options": [
+        {
+          "id": "a",
+          "label": "domain",
+          "consequence": "The types and the parser live together."
+        },
+        {
+          "id": "b",
+          "label": "runner",
+          "consequence": "Only the runner reads blocks."
+        }
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "QUESTION_KIND_ASSUMPTION",
+      "question": "Are trailing comments allowed?",
+      "why": "Changes the parser's grammar.",
+      "shape": "QUESTION_SHAPE_YES_NO",
+      "recommendation": {
+        "choice": [
+          "yes"
+        ],
+        "reason": "stages.md already uses them"
+      }
+    },
+    {
+      "id": "q3",
+      "kind": "QUESTION_KIND_RECOMMENDED",
+      "question": "Which harnesses record replies?",
+      "why": "Sets the fixtures the runner keeps.",
+      "shape": "QUESTION_SHAPE_SEVERAL",
+      "options": [
+        {
+          "id": "claude",
+          "label": "Claude Code",
+          "consequence": "Records stream-json."
+        },
+        {
+          "id": "codex",
+          "label": "Codex",
+          "consequence": "Records its event log.",
+          "tradeOff": "Its format changes often."
+        },
+        {
+          "id": "none",
+          "label": "Neither",
+          "consequence": "Tests use hand-written replies."
+        }
+      ],
+      "recommendation": {
+        "choice": [
+          "claude",
+          "codex"
+        ],
+        "reason": "Both run stages today."
+      },
+      "references": [
+        {
+          "kind": "QUESTION_REFERENCE_KIND_FILE",
+          "target": "crates/runner/tests/harness/claude/record.sh",
+          "lines": "1200-1240"
+        }
+      ]
+    },
+    {
+      "id": "q4",
+      "kind": "QUESTION_KIND_MUST_DECIDE",
+      "question": "What is the parser's module called?",
+      "why": "Other crates import it by name.",
+      "shape": "QUESTION_SHAPE_OPEN",
+      "recommendation": {
+        "answer": "result_block",
+        "reason": "It matches the stage's wording."
+      }
+    }
+  ]
+}
