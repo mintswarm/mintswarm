@@ -23,7 +23,8 @@ pub use schema::{
     RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
 };
 pub use state::{
-    BLOCKED, DONE, NONE, QUEUED, REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
+    AWAITING_APPROVAL, AWAITING_MERGE, BLOCKED, DONE, NONE, PLAN_APPROVED, PLANNING, QUEUED,
+    REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
 };
 pub use trust::{Trust, TrustMatch};
 pub use yaml::parse_yaml;

@@ -4,6 +4,7 @@
 pub mod approval;
 pub mod codeowners;
 pub mod cost;
+pub mod facts;
 pub mod field;
 pub mod hosting;
 pub mod ids;

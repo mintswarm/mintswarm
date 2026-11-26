@@ -3,11 +3,12 @@
 //! [`Retrying`] owns a single-attempt [`Transport`] and offers only calls typed by whether they
 //! are safe to repeat: [`get`](Retrying::get), [`delete`](Retrying::delete) and
 //! [`post_idempotent`](Retrying::post_idempotent) are retried as they are;
-//! [`put`](Retrying::put) is never sent again after an attempt that may have been carried out;
-//! [`create`](Retrying::create) cannot be called without a probe that tells whether an earlier
-//! attempt landed. The transport trait is sealed and its only real
-//! implementation cannot be built outside `rest.rs`, so no request reaches GitHub around the
-//! layer.
+//! [`patch`](Retrying::patch) and [`post_idempotent_gated`](Retrying::post_idempotent_gated) are
+//! retried as they are behind a gate, as a create is; [`put`](Retrying::put) is never sent again
+//! after an attempt that may have been carried out; [`create`](Retrying::create) cannot be called
+//! without a probe that tells whether an earlier attempt landed. The transport trait is sealed and
+//! its only real implementation cannot be built outside `rest.rs`, so no request reaches GitHub
+//! around the layer.
 //!
 //! A success, a 304 or a 4xx that is not a rate limit is returned at once, and a request that
 //! could not be built ([`Failure::Request`]) ends the call after its one attempt. A 5xx, a
@@ -24,7 +25,7 @@
 //! [`Failure::Timeout`], and a wait that would end past it is not started. When the attempts or
 //! the total run out, the call gives up with [`Exhausted`]. A create's probe is the caller's own
 //! call, not bounded by the create's total; its gate is, and a gate still waiting when the total
-//! ends is cut off and ends the call.
+//! ends is cut off and ends the call. A gated idempotent call's gate is bounded the same way.
 
 use std::fmt;
 use std::future::Future;
@@ -100,8 +101,8 @@ pub(crate) enum Landing {
 pub(crate) type Probe<'a> =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = Landing> + Send + 'a>> + Send + Sync + 'a>;
 
-/// Waits before each attempt of a create after the first, for example for a grant from a
-/// budget of content-creating requests.
+/// Waits before each attempt of a create or a gated idempotent call after the first, for
+/// example for a grant from a budget of content-creating requests.
 pub(crate) type Gate<'a> =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send + Sync + 'a>;
 
@@ -109,6 +110,9 @@ pub(crate) type Gate<'a> =
 enum Class<'a> {
     /// Repeating it leaves GitHub as one success would.
     Idempotent,
+    /// Repeating it leaves GitHub as one success would, but each attempt after the first waits
+    /// on its gate.
+    Gated(Gate<'a>),
     /// Repeating it after it landed would make a second one; its probe and its gate.
     Create(Probe<'a>, Gate<'a>),
     /// Repeating it after it landed would answer as a refusal of the first, so it is sent
@@ -238,6 +242,45 @@ impl<T: Transport> Retrying<T> {
             if_none_match: None,
         };
         self.run(&request, Class::Idempotent).await
+    }
+
+    /// A PATCH that sets fields of a resource to `body` whatever they held, such as a comment's
+    /// body. `gate` is awaited before every attempt after the first, as a create's is.
+    pub async fn patch<'a>(
+        &self,
+        path: &str,
+        token: &Token,
+        body: &Value,
+        gate: Gate<'a>,
+    ) -> Result<Reply, Exhausted> {
+        let request = Request {
+            method: Method::PATCH,
+            path,
+            token,
+            body: Some(body),
+            if_none_match: None,
+        };
+        self.run(&request, Class::Gated(gate)).await
+    }
+
+    /// A POST that is safe to repeat, as [`post_idempotent`](Retrying::post_idempotent) is, but
+    /// that changes content, such as a reaction. `gate` is awaited before every attempt after
+    /// the first, as a create's is. Each caller says next to the call why repeating is safe.
+    pub async fn post_idempotent_gated<'a>(
+        &self,
+        path: &str,
+        token: &Token,
+        body: &Value,
+        gate: Gate<'a>,
+    ) -> Result<Reply, Exhausted> {
+        let request = Request {
+            method: Method::POST,
+            path,
+            token,
+            body: Some(body),
+            if_none_match: None,
+        };
+        self.run(&request, Class::Gated(gate)).await
     }
 
     /// A POST that creates something, such as a comment, an artefact or a pull request. After
@@ -385,7 +428,7 @@ impl<T: Transport> Retrying<T> {
                     }
                 }
             }
-            if let Class::Create(_, gate) = &class {
+            if let Class::Create(_, gate) | Class::Gated(gate) = &class {
                 // A gate refused at the end of the total takes nothing, so cutting it off there
                 // spends no grant on an attempt that is never sent.
                 match end {
@@ -996,6 +1039,55 @@ mod tests {
         assert_eq!(start.elapsed(), Duration::from_secs(60));
         assert_eq!(error.attempts, 1);
         assert_eq!(error.last, Failure::Connect);
+        assert_eq!(offsets(&layer).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn patch_and_gated_posts_are_retried_behind_their_gate() {
+        let body = serde_json::json!({"body": "edited"});
+        for post in [false, true] {
+            let layer = scripted([Ok(reply(502)), Ok(reply(200))]);
+            let gated = AtomicUsize::new(0);
+            let gate: Gate<'_> = Box::new(|| {
+                gated.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async {})
+            });
+            let got = if post {
+                layer
+                    .post_idempotent_gated("/x", &token(), &body, gate)
+                    .await
+            } else {
+                layer.patch("/x", &token(), &body, gate).await
+            }
+            .expect("a reply");
+            assert_eq!(got.status, StatusCode::OK);
+            assert!(got.after_ambiguous);
+            assert_eq!(gated.load(Ordering::Relaxed), 1, "post: {post}");
+            assert_eq!(offsets(&layer).len(), 2);
+        }
+
+        // A gate still waiting when the total ends ends the call, and nothing more is sent.
+        let layer = layer_with(
+            [Ok(reply(502)), Ok(reply(200))],
+            RetryPolicy {
+                total: Duration::from_secs(60),
+                ..RetryPolicy::default()
+            },
+            Duration::ZERO,
+        );
+        let start = Instant::now();
+        let error = layer
+            .patch(
+                "/x",
+                &token(),
+                &body,
+                Box::new(|| Box::pin(tokio::time::sleep(Duration::from_secs(120)))),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(start.elapsed(), Duration::from_secs(60));
+        assert_eq!(error.attempts, 1);
+        assert_eq!(error.last, Failure::Status(502));
         assert_eq!(offsets(&layer).len(), 1);
     }
 

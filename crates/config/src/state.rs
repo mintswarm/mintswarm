@@ -1,6 +1,6 @@
 //! `tracker.state`: the `msw-state` values and the issue status each one maps to, design §5.2.
 //!
-//! The values live in `tracker.state.options` only. The four names the pipeline itself sets
+//! The values live in `tracker.state.options` only. The eight names the pipeline itself sets
 //! are the constants here, the only Rust copy of any value; there is no enum of the values.
 
 use mintswarm_domain::field::{FieldRef, FieldSource};
@@ -15,10 +15,27 @@ pub const NONE: &str = "none";
 pub const QUEUED: &str = "queued";
 /// The value of an issue waiting on another one.
 pub const BLOCKED: &str = "blocked";
+/// The value of an issue a runner is planning.
+pub const PLANNING: &str = "planning";
+/// The value of an issue whose plan waits for an approval.
+pub const AWAITING_APPROVAL: &str = "awaiting approval";
+/// The value of an issue whose plan is approved.
+pub const PLAN_APPROVED: &str = "plan approved";
+/// The value of an issue whose pull request waits to be merged.
+pub const AWAITING_MERGE: &str = "awaiting merge";
 /// The value of an issue whose work has landed.
 pub const DONE: &str = "done";
-/// The names `tracker.state.options` must list, matched exactly.
-pub const REQUIRED_OPTIONS: [&str; 4] = [NONE, QUEUED, BLOCKED, DONE];
+/// The names `tracker.state.options` must list, matched exactly, in lifecycle order.
+pub const REQUIRED_OPTIONS: [&str; 8] = [
+    NONE,
+    QUEUED,
+    BLOCKED,
+    PLANNING,
+    AWAITING_APPROVAL,
+    PLAN_APPROVED,
+    AWAITING_MERGE,
+    DONE,
+];
 
 /// `tracker.state.status`: whether setting a value also sets the issue status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

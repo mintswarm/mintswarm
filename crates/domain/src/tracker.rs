@@ -4,6 +4,7 @@
 
 use std::future::Future;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::field::{FieldError, FieldRead, FieldRef};
@@ -16,12 +17,32 @@ use crate::vcs::BranchName;
 pub struct Login(pub String);
 
 /// The kind of an issue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueType {
     Design,
     Plan,
     Implementation,
+}
+
+/// A login's role on a repository, as GitHub's collaborator permission read names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoRole {
+    Admin,
+    Maintain,
+    Write,
+    Triage,
+    Read,
+    /// Not a collaborator, or no such login.
+    NoAccess,
+}
+
+impl RepoRole {
+    /// Whether the role may push to the repository: admin, maintain and write.
+    pub fn can_write(self) -> bool {
+        matches!(self, Self::Admin | Self::Maintain | Self::Write)
+    }
 }
 
 /// An issue.
@@ -493,4 +514,23 @@ pub trait CodeHost: Send + Sync {
         &self,
         pr: PrNumber,
     ) -> impl Future<Output = Result<PullRequest, Self::Error>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RepoRole;
+
+    #[test]
+    fn only_admin_maintain_and_write_can_write() {
+        for (role, writes) in [
+            (RepoRole::Admin, true),
+            (RepoRole::Maintain, true),
+            (RepoRole::Write, true),
+            (RepoRole::Triage, false),
+            (RepoRole::Read, false),
+            (RepoRole::NoAccess, false),
+        ] {
+            assert_eq!(role.can_write(), writes, "{role:?}");
+        }
+    }
 }

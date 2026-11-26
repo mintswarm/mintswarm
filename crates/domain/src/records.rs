@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
@@ -209,7 +210,7 @@ pub enum LayerStatus {
 }
 
 /// An assessment's confidence band.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Band {
     Safe,
@@ -363,7 +364,7 @@ pub struct Check {
 }
 
 /// A gates round's verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GateVerdict {
     Passed,
@@ -415,7 +416,7 @@ pub struct ReviewRound {
 }
 
 /// Where a steer was given.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SteerKind {
     IssueComment,
@@ -425,7 +426,7 @@ pub enum SteerKind {
 }
 
 /// Why an item counts as a steer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SteerVia {
     Account,

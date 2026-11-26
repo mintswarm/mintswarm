@@ -1,0 +1,17 @@
+[package]
+name = "mintswarm-xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+mintswarm-domain = { path = "../crates/domain" }
+schemars = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
