@@ -3,7 +3,10 @@
 
 #![cfg(test)]
 
-use mintswarm_config::{REQUIRED_OPTIONS, RepoConfig, StateOption, StatusMode, load_repo_config};
+use mintswarm_config::{
+    AWAITING_APPROVAL, AWAITING_MERGE, PLAN_APPROVED, PLANNING, REQUIRED_OPTIONS, RepoConfig,
+    StateOption, StatusMode, load_repo_config,
+};
 use mintswarm_domain::field::FieldSource;
 use serde_json::{Value, json};
 
@@ -26,13 +29,17 @@ fn state(config: &mut Value) -> &mut serde_json::Map<String, Value> {
         .expect("tracker.state is a mapping")
 }
 
-/// The real config with `options` set to the four required names, then `extra` appended.
+/// The real config with `options` set to the eight required names, then `extra` appended.
 fn with_options(extra: Value) -> Result<RepoConfig, mintswarm_config::Error> {
     variant(|c| {
         let mut options = vec![
             json!({"name": "none"}),
             json!({"name": "queued", "status": "Todo"}),
             json!({"name": "blocked", "status": "Todo"}),
+            json!({"name": "planning", "status": "In progress"}),
+            json!({"name": "awaiting approval", "status": "In review"}),
+            json!({"name": "plan approved", "status": "In progress"}),
+            json!({"name": "awaiting merge", "status": "In review"}),
             json!({"name": "done", "status": "Done"}),
         ];
         options.extend(extra.as_array().expect("a list").iter().cloned());
@@ -105,7 +112,19 @@ fn an_absent_state_block_gives_none() {
 
 #[test]
 fn the_required_names() {
-    assert_eq!(REQUIRED_OPTIONS, ["none", "queued", "blocked", "done"]);
+    assert_eq!(
+        REQUIRED_OPTIONS,
+        [
+            "none",
+            "queued",
+            "blocked",
+            "planning",
+            "awaiting approval",
+            "plan approved",
+            "awaiting merge",
+            "done"
+        ]
+    );
 }
 
 #[test]
@@ -115,37 +134,37 @@ fn bad_options_are_rejected_at_their_path() {
         (
             "exact duplicate",
             json!([{"name": "parked"}, {"name": "parked"}]),
-            format!("{options}[5].name"),
+            format!("{options}[9].name"),
         ),
         (
             "duplicate in another case",
             json!([{"name": "parked"}, {"name": "PARKED"}]),
-            format!("{options}[5].name"),
+            format!("{options}[9].name"),
         ),
         (
             "empty name",
             json!([{"name": ""}]),
-            format!("{options}[4].name"),
+            format!("{options}[8].name"),
         ),
         (
             "blank name",
             json!([{"name": " \t"}]),
-            format!("{options}[4].name"),
+            format!("{options}[8].name"),
         ),
         (
             "number status",
             json!([{"name": "parked", "status": 1}]),
-            format!("{options}[4].status"),
+            format!("{options}[8].status"),
         ),
         (
             "null status",
             json!([{"name": "parked", "status": null}]),
-            format!("{options}[4].status"),
+            format!("{options}[8].status"),
         ),
         (
             "list status",
             json!([{"name": "parked", "status": ["Todo"]}]),
-            format!("{options}[4].status"),
+            format!("{options}[8].status"),
         ),
     ];
     for (label, extra, path) in cases {
@@ -165,6 +184,29 @@ fn each_required_name_is_needed() {
         })
         .expect_err(required);
         assert_eq!(error.path(), "tracker.state.options", "{required}: {error}");
+        assert!(error.message().contains(required), "{required}: {error}");
+    }
+}
+
+#[test]
+fn approval_states_are_required() {
+    let approval = [AWAITING_APPROVAL, PLAN_APPROVED, PLANNING, AWAITING_MERGE];
+    for required in approval {
+        let error = variant(|c| {
+            let options = state(c)["options"].as_array_mut().expect("a list");
+            options.retain(|o| o["name"] != required);
+        })
+        .expect_err(required);
+        assert_eq!(error.path(), "tracker.state.options", "{required}: {error}");
+        assert!(error.message().contains(required), "{required}: {error}");
+    }
+    let error = variant(|c| {
+        let options = state(c)["options"].as_array_mut().expect("a list");
+        options.retain(|o| !approval.iter().any(|name| o["name"] == *name));
+    })
+    .expect_err("all four missing");
+    assert_eq!(error.path(), "tracker.state.options", "{error}");
+    for required in approval {
         assert!(error.message().contains(required), "{required}: {error}");
     }
 }

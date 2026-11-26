@@ -463,6 +463,10 @@ fn tracker_state_values() {
                 {"name": "none"},
                 {"name": "queued", "status": "Todo"},
                 {"name": "blocked", "status": "Todo"},
+                {"name": "planning", "status": "In progress"},
+                {"name": "awaiting approval", "status": "In review"},
+                {"name": "plan approved", "status": "In progress"},
+                {"name": "awaiting merge", "status": "In review"},
                 {"name": "done", "status": "Done"},
             ],
         })

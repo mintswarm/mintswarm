@@ -5,7 +5,8 @@
 //!   written by [`Marker::lines`] and read back by [`read`] and [`answer_of`];
 //! - [`record`]: the approval and rejection record of a plan, design or decomposition;
 //! - [`refusal`], [`help`], [`hint`] and [`pr_hint`]: the answers to a comment;
-//! - [`set_back`]: the reply when a hand-set approval is set back to `awaiting approval`;
+//! - [`set_back`]: the reply when a hand-set approval is set back to
+//!   [`AWAITING_APPROVAL`](mintswarm_config::AWAITING_APPROVAL);
 //! - [`merge_ready`] and [`merge_refused`]: the merge records on a pull request, for a head of
 //!   40 or 64 lowercase hexadecimal characters only;
 //! - [`shadow_line`] and [`decide_shadow`]: the maintainer's decision in a shadow record, in
@@ -349,12 +350,14 @@ pub fn pr_hint(answer: u64) -> String {
 }
 
 /// The reply when a hand-set approval of the package in comment `package_comment_id` is set
-/// back to `awaiting approval`, with the reason and how to approve.
+/// back to [`AWAITING_APPROVAL`](mintswarm_config::AWAITING_APPROVAL), with the reason and how to
+/// approve.
 pub fn set_back(package_comment_id: u64, reason: &str) -> String {
     format!(
-        "{}\n`msw-state` went back to `awaiting approval`: {}.\n\nTo approve, comment `{}` on a \
-         line of its own.\n",
+        "{}\n`msw-state` went back to `{}`: {}.\n\nTo approve, comment `{}` on a line of its \
+         own.\n",
         Marker::SetBack(package_comment_id).lines(),
+        mintswarm_config::AWAITING_APPROVAL,
         span(reason),
         Command::Approve.word()
     )

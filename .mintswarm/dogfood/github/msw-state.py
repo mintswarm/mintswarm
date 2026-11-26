@@ -41,9 +41,9 @@ in this order as the Rust loader checks it: absent or not a list; an entry not
 a mapping; an entry key other than name and status (the first in sorted
 order); a name missing, not a string or blank; a name equal to an earlier one
 in ASCII case; a status present but not a non-blank string; and then none,
-queued, blocked or done missing by exact name. Each message starts with the key
-path, for example tracker.state.options[2].name. A VALUE that is not an
-option's name exits 2.
+queued, blocked, planning, awaiting approval, plan approved, awaiting merge or
+done missing by exact name. Each message starts with the key path, for example
+tracker.state.options[2].name. A VALUE that is not an option's name exits 2.
 
 With source field, the value is the organisation issue field: set GETs
 repos/{owner}/{repo}/issues/N/issue-field-values and takes the entry whose
@@ -184,7 +184,16 @@ HERE = Path(__file__).resolve().parent
 BOT_GH = HERE / "bot-gh.sh"
 CONFIG = ".mintswarm/config.yaml"
 # The values tracker.state.options must list, matched exactly.
-REQUIRED = ("none", "queued", "blocked", "done")
+REQUIRED = (
+    "none",
+    "queued",
+    "blocked",
+    "planning",
+    "awaiting approval",
+    "plan approved",
+    "awaiting merge",
+    "done",
+)
 BANDS = ("blocked", "uncertain", "needs-review", "likely-safe", "safe")
 SOURCES = ("field", "labels")
 STATUS_MODES = ("issue_status", "off")
