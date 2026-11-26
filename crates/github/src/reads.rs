@@ -1,7 +1,9 @@
-//! GET-only reads of one repository's issues, comments, links, dependencies and artifacts as the
-//! runner App, design §9 "Reads and writes": an issue with its comments, the issues that block it
-//! or that it blocks, and a listing of issues by state, update time, labels and creator, which
-//! drops pull requests and gives GitHub's clock at its first reply.
+//! Reads of one repository's issues, comments, links, dependencies and artifacts as the runner
+//! App, design §9 "Reads and writes": an issue with its comments, the issues that block it or that
+//! it blocks, and a listing of issues by state, update time, labels and creator, which drops pull
+//! requests and gives GitHub's clock at its first reply. The reads are GETs, plus read-only
+//! GraphQL queries for what REST does not show, such as whether a review thread is resolved; a
+//! GraphQL reply with `errors` is [`ReadError::GraphQl`].
 //!
 //! Every GET goes through one ETag cache, so a repeated read is revalidated with
 //! `If-None-Match` and a 304 is served from the cache. Lists are read with `per_page=100`, page
@@ -76,6 +78,14 @@ pub enum ReadError {
     Unexpected {
         /// The method and path.
         endpoint: String,
+    },
+    /// GraphQL refused a query with errors other than a rate limit.
+    #[error("{endpoint}: GraphQL errors of types {types:?}")]
+    GraphQl {
+        /// The method and path.
+        endpoint: String,
+        /// The `type` of each error, in order; GitHub's messages are not kept.
+        types: Vec<String>,
     },
     /// A listing asked for a label holding a comma, which GitHub would split into two labels;
     /// nothing is sent.
@@ -218,7 +228,8 @@ pub struct IssueList {
     pub date: String,
 }
 
-/// GET-only reads of one repository with a token its caller passes in.
+/// Reads of one repository with a token its caller passes in: GETs, and read-only GraphQL
+/// queries.
 #[derive(Debug)]
 pub struct GitHubReads {
     pub(crate) rest: Rest,
@@ -229,6 +240,15 @@ pub struct GitHubReads {
     bot: Login,
     /// The last ETag and page of each path read, kept across reads.
     etags: Mutex<EtagCache<String, Page>>,
+}
+
+/// A list read page by page: every item, and the first page's whole body and raw `Date` header.
+#[derive(Debug)]
+pub(crate) struct Paged {
+    pub items: Vec<Value>,
+    /// The first page's JSON, for the fields beside the list, such as a `total_count`.
+    pub first: Arc<Value>,
+    pub date: Option<String>,
 }
 
 /// One read's JSON and whether the list it is a page of goes on.
@@ -446,6 +466,14 @@ impl GitHubReads {
         map_artifact(&body, &format!("GET {path}"))
     }
 
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(crate) fn repo(&self) -> &str {
+        &self.repo
+    }
+
     pub(crate) fn repo_path(&self) -> String {
         format!("/repos/{}/{}", self.owner, self.repo)
     }
@@ -552,7 +580,7 @@ impl GitHubReads {
         path: &str,
         items: Option<&str>,
     ) -> Result<Vec<Value>, ReadError> {
-        Ok(self.get_paged_dated(token, path, items).await?.0)
+        Ok(self.get_paged_first(token, path, items).await?.items)
     }
 
     /// The list [`GitHubReads::get_paged`] reads, with the first reply's raw `Date` header.
@@ -562,15 +590,24 @@ impl GitHubReads {
         path: &str,
         items: Option<&str>,
     ) -> Result<(Vec<Value>, Option<String>), ReadError> {
+        let paged = self.get_paged_first(token, path, items).await?;
+        Ok((paged.items, paged.date))
+    }
+
+    /// The list [`GitHubReads::get_paged`] reads, with the first page's whole body and raw
+    /// `Date` header.
+    pub(crate) async fn get_paged_first(
+        &self,
+        token: &Token,
+        path: &str,
+        items: Option<&str>,
+    ) -> Result<Paged, ReadError> {
         let separator = if path.contains('?') { '&' } else { '?' };
         let mut all = Vec::new();
-        let mut first_date = None;
+        let mut first = None;
         for number in 1..=MAX_PAGES {
             let page_path = format!("{path}{separator}per_page={PER_PAGE}&page={number}");
             let (page, date) = self.get_page(token, &page_path).await?;
-            if number == 1 {
-                first_date = date;
-            }
             let list = match items {
                 Some(key) => page.body.get(key),
                 None => Some(page.body.as_ref()),
@@ -578,8 +615,18 @@ impl GitHubReads {
             .and_then(Value::as_array)
             .ok_or_else(|| unexpected(&format!("GET {page_path}")))?;
             all.extend(list.iter().cloned());
-            if !page.next.unwrap_or(list.len() >= PER_PAGE) {
-                return Ok((all, first_date));
+            let last = !page.next.unwrap_or(list.len() >= PER_PAGE);
+            if first.is_none() {
+                first = Some((Arc::clone(&page.body), date));
+            }
+            if last {
+                // Set on page 1 above; the fallback is never taken.
+                let (body, date) = first.unwrap_or_else(|| (page.body, None));
+                return Ok(Paged {
+                    items: all,
+                    first: body,
+                    date,
+                });
             }
         }
         Err(ReadError::TooManyPages {

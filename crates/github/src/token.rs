@@ -106,6 +106,12 @@ impl Permissions {
         self
     }
 
+    /// What a squash merge of a pull request asks for: writing contents and pull requests, and
+    /// reading the repository's metadata.
+    pub fn merge() -> Self {
+        Self::write(["contents", "pull_requests"]).and(Self::read(["metadata"]))
+    }
+
     /// Whether no permission is asked for.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

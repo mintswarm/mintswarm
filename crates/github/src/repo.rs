@@ -1,5 +1,6 @@
 //! Repository reads without a clone, design §9.4: the default branch's head and a file's bytes
-//! at a commit, through the contents, repository and branch endpoints.
+//! at a commit, through the contents, repository and branch endpoints, and on top of them a
+//! file's text and the CODEOWNERS file in force at a commit.
 //!
 //! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache, its retry
 //! layer and policy, and its rate-limit pause. A file is read inline from the contents API; a
@@ -13,7 +14,7 @@ use std::future::Future;
 
 use serde_json::Value;
 
-use mintswarm_domain::hosting::{RepoReadError, RepoReads};
+use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::retry::{Exhausted, Failure};
 use mintswarm_domain::vcs::RepoPath;
@@ -49,6 +50,38 @@ impl GitHubRepoReads<'_> {
     /// [`TokenClient`](crate::TokenClient).
     pub fn permissions() -> Permissions {
         Permissions::read(["contents", "metadata"])
+    }
+
+    /// The text of the file at `path` in commit `rev`, read as
+    /// [`read_file`](RepoReads::read_file) reads its bytes: `None` when there is no file, and
+    /// [`RepoReadError::NotText`] when its bytes are not UTF-8.
+    pub async fn read_text(
+        &self,
+        rev: &RevId,
+        path: &RepoPath,
+    ) -> Result<Option<String>, RepoReadError> {
+        match self.file(rev, path).await? {
+            Some(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| RepoReadError::NotText),
+            None => Ok(None),
+        }
+    }
+
+    /// The CODEOWNERS file in force at commit `rev`: the first of [`CODEOWNERS_PATHS`] that
+    /// holds a file, read in that order and no further, or `None` when none does. `rev` must be
+    /// a full commit id, or the read fails with [`RepoReadError::InvalidRev`] before a request.
+    pub async fn codeowners(&self, rev: &RevId) -> Result<Option<CodeOwnersFile>, RepoReadError> {
+        if !is_commit_id(&rev.0) {
+            return Err(RepoReadError::InvalidRev);
+        }
+        for candidate in CODEOWNERS_PATHS {
+            let path = RepoPath(candidate.as_bytes().to_vec());
+            if let Some(text) = self.read_text(rev, &path).await? {
+                return Ok(Some(CodeOwnersFile { path, text }));
+            }
+        }
+        Ok(None)
     }
 
     async fn head(&self) -> Result<RevId, RepoReadError> {
@@ -135,7 +168,7 @@ fn encode_segments(text: &str) -> String {
 }
 
 /// Whether `sha` is a full commit id: 40 or 64 lowercase hexadecimal characters.
-fn is_commit_id(sha: &str) -> bool {
+pub(crate) fn is_commit_id(sha: &str) -> bool {
     matches!(sha.len(), 40 | 64)
         && sha
             .bytes()
@@ -207,6 +240,7 @@ fn read_error(error: ReadError) -> RepoReadError {
         ReadError::Status { .. }
         | ReadError::Unexpected { .. }
         | ReadError::TooManyPages { .. }
+        | ReadError::GraphQl { .. }
         | ReadError::CommaInLabel { .. } => RepoReadError::Unexpected,
     }
 }

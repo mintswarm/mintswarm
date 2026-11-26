@@ -28,6 +28,8 @@ pub enum RepoReadError {
     InvalidRev,
     /// The file is too large for the host to return inline.
     TooLarge,
+    /// The file is not UTF-8 text.
+    NotText,
     /// The host answered with a status or a shape the reader does not expect.
     Unexpected,
     /// The request could not be sent or its answer not read.
@@ -45,6 +47,7 @@ impl fmt::Display for RepoReadError {
             Self::InvalidPath => f.write_str("the path cannot be read from the host"),
             Self::InvalidRev => f.write_str("the revision is not a full commit id"),
             Self::TooLarge => f.write_str("the file is too large to read inline"),
+            Self::NotText => f.write_str("the file is not UTF-8 text"),
             Self::Unexpected => f.write_str("the host's answer is not of the expected shape"),
             Self::Transport(detail) => write!(f, "transport error: {detail}"),
         }
@@ -67,6 +70,17 @@ impl RepoReadError {
     pub fn is_rate_limited(&self) -> bool {
         matches!(self, Self::RateLimited { .. })
     }
+}
+
+/// Where a CODEOWNERS file is looked for, in order: the first that exists is the one in force.
+pub const CODEOWNERS_PATHS: [&str; 3] = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+
+/// The CODEOWNERS file in force at a commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeOwnersFile {
+    /// Which of [`CODEOWNERS_PATHS`] it was found at.
+    pub path: RepoPath,
+    pub text: String,
 }
 
 /// Reads of one hosted repository at a commit, without a clone.
@@ -96,12 +110,13 @@ mod tests {
 
     use super::RepoReadError;
 
-    fn others() -> [RepoReadError; 6] {
+    fn others() -> [RepoReadError; 7] {
         [
             RepoReadError::Inaccessible,
             RepoReadError::InvalidPath,
             RepoReadError::InvalidRev,
             RepoReadError::TooLarge,
+            RepoReadError::NotText,
             RepoReadError::Unexpected,
             RepoReadError::Transport("GET /repos/a/b: the request failed".into()),
         ]

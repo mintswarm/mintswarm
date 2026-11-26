@@ -5,13 +5,19 @@
 //! dropped after signing. [`FieldClient`] and [`GitHubFieldCatalogue`] read and write a role's
 //! issue field or labels with a token their caller passes in.
 //!
-//! [`GitHubReads`] is the runner's GET-only view of one repository, design §9 "Reads and
-//! writes": issues with their comments since a cursor, parent and sub-issue links, the issues
-//! that block an issue or that it blocks, a listing of issues since a time with GitHub's clock at
-//! its first reply, issue artifacts and pull requests with their reviews and checks, paged,
-//! revalidated with ETags and paused by `retry-after`. [`comment_mark`] tells steers and notes from other comments.
-//! [`GitHubRepoReads`] reads the default branch's head and a file's bytes at a commit through
-//! the same GET path, so the plane needs no clone.
+//! [`GitHubReads`] is the read-only view of one repository, design §9 "Reads and writes":
+//! issues with their comments since a cursor, parent and sub-issue links, the issues that block
+//! an issue or that it blocks, a listing of issues since a time with GitHub's clock at its first
+//! reply, issue artifacts, and pull requests with their reviews, review comments, review threads
+//! (a read-only GraphQL query), requested reviewers and changed files, and the check runs,
+//! check suites and statuses on a commit, paged, revalidated with ETags and paused by
+//! `retry-after`. [`comment_mark`] tells steers and notes from other comments.
+//! [`GitHubRepoReads`] reads the default branch's head, a file's bytes or text and the
+//! CODEOWNERS file in force at a commit through the same GET path, so the plane needs no clone.
+//!
+//! [`MergeClient`] squash-merges a pull request pinned to a head sha with a token its caller
+//! passes in; its PUT is never sent again after an attempt that may have landed, and GitHub's
+//! refusals come back as [`MergeError`] classes.
 //!
 //! [`StatusClient`] reads an issue's status name and sets it by name through GraphQL, querying
 //! the repository's statuses once per [`StatusPass`]; a GraphQL reply with `errors` is a failure,
@@ -31,6 +37,7 @@ mod fields;
 mod jwt;
 mod key_store;
 mod limit;
+mod merges;
 mod pulls;
 mod reads;
 mod repo;
@@ -47,6 +54,7 @@ pub use fields::{FieldClient, FieldPass};
 pub use jwt::{JWT_BACKDATE_SECS, JWT_LIFETIME_SECS, JwtError, app_jwt};
 pub use key_store::{DEFAULT_TIMEOUT, KeyStoreEnv, KeyStoreError, Tools, read_key};
 pub use limit::{CONTENT_PER_HOUR, CONTENT_PER_MINUTE, ContentLimiter};
+pub use merges::{MergeClient, MergeError};
 pub use mintswarm_domain::retry::{Exhausted, Failure, RetryPolicy};
 pub use reads::{
     GitHubReads, IssueList, IssueQuery, IssueState, KindSource, Kinds, MAX_PAGES, NOTE_MARKER,

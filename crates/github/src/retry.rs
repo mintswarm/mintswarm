@@ -1,17 +1,19 @@
 //! The one retry layer every GitHub request goes through.
 //!
 //! [`Retrying`] owns a single-attempt [`Transport`] and offers only calls typed by whether they
-//! are safe to repeat: [`get`](Retrying::get), [`put`](Retrying::put),
-//! [`delete`](Retrying::delete) and [`post_idempotent`](Retrying::post_idempotent) are retried
-//! as they are; [`create`](Retrying::create) cannot be called without a probe that tells
-//! whether an earlier attempt landed. The transport trait is sealed and its only real
+//! are safe to repeat: [`get`](Retrying::get), [`delete`](Retrying::delete) and
+//! [`post_idempotent`](Retrying::post_idempotent) are retried as they are;
+//! [`put`](Retrying::put) is never sent again after an attempt that may have been carried out;
+//! [`create`](Retrying::create) cannot be called without a probe that tells whether an earlier
+//! attempt landed. The transport trait is sealed and its only real
 //! implementation cannot be built outside `rest.rs`, so no request reaches GitHub around the
 //! layer.
 //!
 //! A success, a 304 or a 4xx that is not a rate limit is returned at once, and a request that
 //! could not be built ([`Failure::Request`]) ends the call after its one attempt. A 5xx, a
 //! timeout, a broken connection or an unreadable body may have been carried out, so an
-//! idempotent call waits and tries again while a create first asks its probe. A refused
+//! idempotent call waits and tries again, a create first asks its probe, and a PUT ends in
+//! [`Exhausted`] with that failure as its last. A refused
 //! connection and a rate-limited reply were not carried out, so they are retried without a
 //! probe. Each wait is [`RetryPolicy::jittered`], raised to the wait a rate-limited reply names
 //! in `retry-after` or `x-ratelimit-reset`, or to [`SECONDARY_LIMIT_WAIT`], doubled for each
@@ -109,6 +111,9 @@ enum Class<'a> {
     Idempotent,
     /// Repeating it after it landed would make a second one; its probe and its gate.
     Create(Probe<'a>, Gate<'a>),
+    /// Repeating it after it landed would answer as a refusal of the first, so it is sent
+    /// again only after a failure that was not carried out.
+    Once,
 }
 
 /// A draw from `[0, 1]` for the jitter of a wait.
@@ -189,12 +194,10 @@ impl<T: Transport> Retrying<T> {
         self.run(&request, Class::Idempotent).await
     }
 
-    /// A PUT, which sets a resource to `body` whatever it held, such as a merge with its `sha`
-    /// pinned.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the M2 writes, such as the merge, call it")
-    )]
+    /// A PUT, such as a merge with its `sha` pinned. A merge that landed answers a second
+    /// attempt with a refusal, so the PUT is sent again only after a refused connection or a
+    /// rate limit; after any failure that may have been carried out the call ends in
+    /// [`Exhausted`] with that failure as its last.
     pub async fn put(&self, path: &str, token: &Token, body: &Value) -> Result<Reply, Exhausted> {
         let request = Request {
             method: Method::PUT,
@@ -203,7 +206,7 @@ impl<T: Transport> Retrying<T> {
             body: Some(body),
             if_none_match: None,
         };
-        self.run(&request, Class::Idempotent).await
+        self.run(&request, Class::Once).await
     }
 
     /// A DELETE. A 404 after an attempt that may have landed is the resource that attempt
@@ -355,7 +358,7 @@ impl<T: Transport> Retrying<T> {
                 %failure,
                 "a GitHub request failed transiently"
             );
-            if attempts >= self.policy.attempts {
+            if attempts >= self.policy.attempts || (!definite && matches!(class, Class::Once)) {
                 return Err(give_up(attempts, failure));
             }
             let wait = self.policy.jittered(attempts, (self.jitter)()).max(floor);
@@ -779,10 +782,31 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn put_and_delete_are_retried() {
         let body = serde_json::json!({"sha": "abc"});
-        let layer = scripted([Ok(reply(502)), Ok(reply(200))]);
-        let got = layer.put("/x", &token(), &body).await.expect("a reply");
-        assert_eq!(got.status, StatusCode::OK);
-        assert_eq!(offsets(&layer).len(), 2);
+        // A PUT is sent again only after an attempt that was not carried out.
+        for definite in [Err(Failure::Connect), Ok(limited(Some(1), None))] {
+            let layer = scripted([definite, Ok(reply(200))]);
+            let got = layer.put("/x", &token(), &body).await.expect("a reply");
+            assert_eq!(got.status, StatusCode::OK);
+            assert!(!got.after_ambiguous);
+            assert_eq!(offsets(&layer).len(), 2);
+        }
+        // After one that may have been, the call ends with it.
+        for ambiguous in [
+            Ok(reply(502)),
+            Err(Failure::Timeout),
+            Err(Failure::Reset),
+            Err(Failure::Body),
+        ] {
+            let last = match &ambiguous {
+                Ok(_) => Failure::Status(502),
+                Err(failure) => *failure,
+            };
+            let layer = scripted([ambiguous, Ok(reply(200))]);
+            let error = layer.put("/x", &token(), &body).await.unwrap_err();
+            assert_eq!(error.attempts, 1);
+            assert_eq!(error.last, last);
+            assert_eq!(offsets(&layer).len(), 1);
+        }
 
         // The first DELETE may have removed it, so the 404 says so.
         let layer = scripted([Err(Failure::Reset), Ok(reply(404))]);
