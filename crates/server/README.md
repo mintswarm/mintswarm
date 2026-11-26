@@ -42,7 +42,7 @@ One trailing newline is removed from the value; an empty value is refused. Gener
 
 ### Running it with compose
 
-The root `compose.yaml` runs the receiver as the service `webhooks` and an ngrok agent forwarding the reserved domain to it as the service `ngrok`. Both restart unless stopped, so they come back after a crash, a Docker restart or the machine waking. The receiver publishes no port; only ngrok reaches it. Docker with Compose v2 and BuildKit is needed.
+The root `compose.yaml` runs the receiver as the service `webhooks` and an ngrok agent forwarding the reserved domain to it as the service `ngrok`. Both restart unless stopped, so they come back after a crash, a Docker restart or the machine waking. The receiver publishes no port; only ngrok reaches it. Docker with Compose v2.24 or later and BuildKit is needed.
 
 It reads three files on the host at run time; none is copied into the repository or an image:
 
