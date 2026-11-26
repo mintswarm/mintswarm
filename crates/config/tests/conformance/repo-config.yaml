@@ -12,12 +12,66 @@ tracker:
   components:
     source: labels                   # labels (per repository) | field (account-wide select or free text)
     label: "component:{name}"        # an issue carries one or more, one label per component
-  # Read from the base ref, never the worktree, by .mintswarm/dogfood/github/msw-state.py.
+  # state, plan_verdict, decomp_verdict and short_title are read from the base ref, never the worktree, by
+  # .mintswarm/dogfood/github/msw-state.py. Fields are named, never given by id: msw-state.py
+  # resolves the ids per account into its cache outside the repository (see "Field ids" in
+  # .mintswarm/dogfood/github/README.md).
   state:
     source: field                    # field (organisation issue field, single select) | labels
     field: msw-state                 # field mode only
     label: "msw-state:{option}"      # labels mode: exactly one per issue the session has touched
-    status: issue_status             # issue_status (GitHub issue statuses, mapped from the value) | off
+    status: issue_status             # issue_status (the GitHub issue status of the value's options entry) | off
+    # The values, in lifecycle order; the field's options and labels are matched by exact name,
+    # not by position. A value without status leaves the issue status alone. none, queued,
+    # blocked and done must be listed.
+    options:
+      - { name: none }                                    # not a mintswarm job, or its job was rejected, cancelled or dropped
+      - { name: queued, status: Todo }                    # picked up, waiting for a runner
+      - { name: blocked, status: Todo }                   # waiting on other issues: open dependencies, or a parent on its children
+      - { name: analysing, status: In progress }          # the analyse stage runs, or its worktree is being prepared
+      - { name: designing, status: In progress }          # the design stage runs
+      - { name: planning, status: In progress }           # re-classification, decomposition, filing children, plan, floor, assessment or decision
+      - { name: awaiting approval, status: In review }    # a plan, decomposition or design waits for a human's approval
+      - { name: plan approved, status: In progress }      # a human approved the plan and implement has not started yet
+      - { name: implementing, status: In progress }       # implement, its commit, the gates, their summary or the push runs
+      - { name: in review, status: In review }            # review and address rounds, and the landing floor, judge and decision
+      - { name: awaiting merge, status: In review }       # the PR is ready and waits to be merged, or is being merged and released
+      - { name: escalated, status: In review }            # a human is needed: needs_input, external steps after the merge, or an escalation
+      - { name: done, status: Done }                      # the issue's work is merged and closed
+  # The approval stages' verdicts; the values are the five band identifiers:
+  # blocked, uncertain, needs-review, likely-safe, safe.
+  plan_verdict:                      # the plan assessment's band
+    source: field                    # field | labels
+    field: msw-plan                  # field mode only
+    label: "msw-plan:{option}"       # labels mode: exactly one per issue
+  decomp_verdict:                    # the decomposition assessment's band
+    source: field                    # field | labels
+    field: msw-decomp                # field mode only
+    label: "msw-decomp:{option}"     # labels mode: exactly one per issue
+  short_title:                       # the item's short name, proposed by analyse; written only when empty
+    source: field                    # field (organisation issue field, free text) | labels
+    field: msw-short-title           # field mode only
+    label: "msw-short-title:{option}" # labels mode: at most one per issue
+  # Field mappings per role (size here); each role fixes its read point in code (size: the job's pinned base).
+  # A field is named, never given by id: its id is resolved from the name and cached, never written here.
+  fields:
+    size:
+      source: field                  # field | labels | off
+      field: Effort
+      label: "effort:{option}"       # labels mode only
+      default: M                     # also the fallback value
+      options:
+        XS:  { range: XS }
+        S:   { range: S }
+        M:   { range: M }
+        L:   { range: L }
+        XL:  { range: XL }
+        2XL: { range: 2XL }
+        3XL: { range: 3XL }
+        4XL: { range: 4XL }
+        Low:    { range: XS-S,   write: false }
+        Medium: { range: M-L,    write: false }
+        High:   { range: XL-4XL, write: false, reads_as: 2XL }
   ingest:
     trusted:
       labels: [mintswarm]            # maintainer-only; never applied by an issue template
@@ -38,7 +92,7 @@ components:
     paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
-    paths: ["crates/core/**", "crates/server/**"]
+    paths: ["crates/core/**", "crates/server/**", "crates/steward/**"]
   runner:
     description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
     paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
@@ -59,7 +113,7 @@ components:
     paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
   tooling:
     description: "repository tasks, CI workflows and end-to-end tests"
-    paths: ["xtask/**", ".github/**", "tests/**"]
+    paths: ["xtask/**", ".github/**", "tests/**", "Makefile"]
   docs:
     description: "architecture documents, guides and the repository's top-level documents"
     paths: ["docs/**", "README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", "LICENSE.md"]
@@ -77,6 +131,7 @@ shared:                              # any component may touch these
   - .cargo/config.toml
   - pyproject.toml
   - .shellcheckrc
+  - docs/architecture/repository-layout.md   # describes every crate; CONTRIBUTING.md requires same-PR updates
 
 # Chooses the model at run time; the tier in .mintswarm/stages/<stage>.md is the stage default that .claude/agents/ is rendered with.
 agents:
@@ -111,16 +166,18 @@ pipeline:
   landing:
     mode: shadow                     # always | shadow | judged | never
                                      # shadow: floor, landing stage and landing/decision.py run and are recorded on every PR, while a human decides
-    require_human:                   # any changed path that matches sends the change to a human
+    require_human:                   # a matching changed path that the human-approved plan does not cover sends the change to a human
       paths: [".mintswarm/**", ".github/**", "AGENTS.md", "CLAUDE.md", ".claude/agents/**", ".claude/skills/**"]
     footprint: { lines_factor: 1.5 } # rounded down: the diff's production lines (paths matching no plan_approval.non_production glob)
                                      # up to production_lines × lines_factor, and all its lines up to estimated_lines × lines_factor
   # Read from the base ref, never the worktree, by the session, through dependencies/new-packages.py.
   dependencies:
     review: agent                    # agent | off; agent: the review stage judges each new or upgraded package
+  # clear is read from the base ref, never the worktree, by the review, implement (address rounds) and landing stages.
   review:
     max_rounds: 5
     reviewers: [zmij]                # default reviewers of a PR; see components above
+    clear: nit                       # blocker | major | minor | nit; findings at or above it must be cleared before the PR is ready; absent: major
 
 gates:
   tests: selftests                   # only none forces plan approval
@@ -134,7 +191,7 @@ gates:
     - name: packs-selftest
       command: "python3 .mintswarm/dogfood/packs/selftest.py"
     - name: python-format
-      command: "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs"
+      command: "black --check . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit"
     - name: shell-lint
       command: "bash .mintswarm/dogfood/shell-lint.sh"
     - name: save-output-selftest
@@ -143,6 +200,8 @@ gates:
       command: "python3 .mintswarm/dogfood/msw-vcs-selftest.py"
     - name: plan-approval-selftest
       command: "python3 .mintswarm/dogfood/plan-approval/selftest.py"
+    - name: decomposition-approval-selftest
+      command: "python3 .mintswarm/dogfood/decomposition-approval/selftest.py"
     - name: landing-floor-selftest
       command: "python3 .mintswarm/dogfood/landing/floor-selftest.py"
     - name: landing-facts-selftest
@@ -160,7 +219,9 @@ gates:
     - name: rust-lint
       command: "cargo clippy --workspace --all-targets -- -D warnings"
     - name: rust-test
-      command: "cargo test --workspace"
+      command: "cargo nextest run --workspace && cargo test --doc --workspace"
+    - name: proto-lint
+      command: "buf lint api/proto"
     - name: dependencies-selftest
       command: "python3 .mintswarm/dogfood/dependencies/selftest.py"
     - name: dependencies-prefetch-selftest
@@ -173,6 +234,23 @@ gates:
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --check ."
     - name: typescript-test
       command: "bash .mintswarm/dogfood/web-install.sh && cd ./web/apps/ui && ./node_modules/.bin/vitest run"
+    - name: commit-selftest
+      command: "python3 .mintswarm/dogfood/commit-selftest.py"
+  # Formatters that rewrite files, run on the paths a commit stages by .mintswarm/dogfood/commit.py
+  # and its pre-commit hook; gate names the gates.run entry that checks the same formatting.
+  format:
+    - name: rust-format
+      command: "cargo fmt --all"
+      paths: ["**/*.rs"]
+      gate: rust-format
+    - name: python-format
+      command: "black . .mintswarm/dogfood/github/linux/yq .mintswarm/dogfood/msw-vcs .mintswarm/dogfood/hooks/pre-commit"
+      paths: ["**/*.py", ".mintswarm/dogfood/github/linux/yq", ".mintswarm/dogfood/msw-vcs", ".mintswarm/dogfood/hooks/pre-commit"]
+      gate: python-format
+    - name: typescript-format
+      command: "bash .mintswarm/dogfood/web-install.sh && cd ./web && ./node_modules/.bin/prettier --write ."
+      paths: ["web/**"]
+      gate: typescript-format
   report:                            # read by the runner (report-gates.py), never by agents
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py

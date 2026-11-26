@@ -7,7 +7,10 @@
 //! `readiness/check.py` `review_config`, `readiness/check.py` `trusted_ingest` for
 //! `tracker.ingest.match`, and `github/msw-state.py` `settings`, which covers `tracker.state`,
 //! `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title`. A change to any of
-//! those, or to the config's keys, changes this module in the same change.
+//! those, or to the config's keys, changes this module in the same change. The
+//! `tracker.state.options` check is `state.rs` `check_options`, and the shared cases in
+//! `tests/conformance/tracker-state.json` hold it and `settings` to the same outcome and key
+//! path.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
 //! some mismatched types; this module checks every key and rejects each mismatch instead. A
@@ -35,13 +38,14 @@
 use std::collections::BTreeMap;
 
 use mintswarm_domain::field::{
-    FieldMap, FieldMapError, FieldMapSpec, LabelPattern, OptionSpec, SourceSpec,
+    FieldMap, FieldMapError, FieldMapSpec, FieldSource, LabelPattern, OptionSpec, SourceSpec,
 };
 use mintswarm_domain::role::{Role, RoleDescriptor, roles};
 use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
-use crate::{Error, Path, Stage, Trust, TrustMatch, parse_yaml};
+use crate::state::check_options;
+use crate::{Error, Path, Stage, StateSettings, StatusMode, Trust, TrustMatch, parse_yaml};
 
 /// The plan-approval and landing modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +197,7 @@ pub struct RepoConfig {
     gates_summary: GatesSummary,
     formatters: Vec<Formatter>,
     trust: Trust,
+    state: Option<StateSettings>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -255,9 +260,9 @@ impl RepoConfig {
                 "gates",
             ],
         )?;
-        let trust = match top.get("tracker") {
+        let (trust, state) = match top.get("tracker") {
             Some(tracker) => check_tracker(tracker, &root.key("tracker"), roles)?,
-            None => Trust::default(),
+            None => (Trust::default(), None),
         };
         if let Some(design) = top.get("design") {
             strings_only(design, &root.key("design"), &["store"], &[])?;
@@ -302,6 +307,7 @@ impl RepoConfig {
             gates_summary,
             formatters,
             trust,
+            state,
         })
     }
 
@@ -350,6 +356,11 @@ impl RepoConfig {
         &self.trust
     }
 
+    /// `tracker.state`, `None` when it is absent.
+    pub fn state(&self) -> Option<&StateSettings> {
+        self.state.as_ref()
+    }
+
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
     ///
     /// The entry was checked at load when the role was registered then; an entry that does not
@@ -362,7 +373,7 @@ impl RepoConfig {
     }
 }
 
-fn kind(value: &Value) -> &'static str {
+pub(crate) fn kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "a bool",
@@ -373,14 +384,14 @@ fn kind(value: &Value) -> &'static str {
     }
 }
 
-fn mapping<'a>(value: &'a Value, path: &Path) -> Result<&'a Map<String, Value>, Error> {
+pub(crate) fn mapping<'a>(value: &'a Value, path: &Path) -> Result<&'a Map<String, Value>, Error> {
     value
         .as_object()
         .ok_or_else(|| Error::schema(path, format!("must be a mapping, not {}", kind(value))))
 }
 
 /// Rejects the first key of `map` that is not in `allowed`, naming it.
-fn known(map: &Map<String, Value>, path: &Path, allowed: &[&str]) -> Result<(), Error> {
+pub(crate) fn known(map: &Map<String, Value>, path: &Path, allowed: &[&str]) -> Result<(), Error> {
     match map.keys().find(|key| !allowed.contains(&key.as_str())) {
         Some(key) => Err(Error::schema(&path.key(key), "unknown key")),
         None => Ok(()),
@@ -453,7 +464,7 @@ fn check_tracker(
     value: &Value,
     path: &Path,
     roles: &[&dyn RoleDescriptor],
-) -> Result<Trust, Error> {
+) -> Result<(Trust, Option<StateSettings>), Error> {
     let tracker = mapping(value, path)?;
     known(
         tracker,
@@ -497,9 +508,10 @@ fn check_tracker(
             &[],
         )?;
     }
-    if let Some(state) = tracker.get("state") {
-        check_tracker_value(state, &path.key("state"), true)?;
-    }
+    let state = match tracker.get("state") {
+        Some(state) => check_tracker_value(state, &path.key("state"), true)?,
+        None => None,
+    };
     for key in ["plan_verdict", "decomp_verdict", "short_title"] {
         if let Some(verdict) = tracker.get(key) {
             check_tracker_value(verdict, &path.key(key), false)?;
@@ -508,10 +520,11 @@ fn check_tracker(
     if let Some(fields) = tracker.get("fields") {
         check_fields(fields, &path.key("fields"), roles)?;
     }
-    match tracker.get("ingest") {
-        Some(ingest) => check_ingest(ingest, &path.key("ingest")),
-        None => Ok(Trust::default()),
-    }
+    let trust = match tracker.get("ingest") {
+        Some(ingest) => check_ingest(ingest, &path.key("ingest"))?,
+        None => Trust::default(),
+    };
+    Ok((trust, state))
 }
 
 /// `tracker.ingest`, built into a [`Trust`]. A missing `match` reads as `any`.
@@ -549,10 +562,17 @@ fn check_ingest(value: &Value, path: &Path) -> Result<Trust, Error> {
 /// `tracker.state` (`with_status`), `tracker.plan_verdict`, `tracker.decomp_verdict` or
 /// `tracker.short_title`, checked as `msw-state.py` `settings` checks it. Fields are named only:
 /// their ids are resolved per account, so a `field_id` key is unknown here.
-fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<(), Error> {
+///
+/// `tracker.state` also takes `options`, and is built into [`StateSettings`]; the other blocks
+/// give `None`.
+fn check_tracker_value(
+    value: &Value,
+    path: &Path,
+    with_status: bool,
+) -> Result<Option<StateSettings>, Error> {
     let block = mapping(value, path)?;
     let keys: &[&str] = if with_status {
-        &["source", "field", "label", "status"]
+        &["source", "field", "label", "status", "options"]
     } else {
         &["source", "field", "label"]
     };
@@ -569,25 +589,42 @@ fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<
             ),
         )),
     };
-    if one_of("source", ["field", "labels"])? == "field" {
+    let field = if one_of("source", ["field", "labels"])? == "field" {
         match block.get("field") {
-            Some(Value::String(field)) if !field.trim().is_empty() => {}
+            Some(Value::String(field)) if !field.trim().is_empty() => Some(field),
             _ => return Err(Error::schema(&path.key("field"), "must be a field name")),
         }
-    }
-    match block.get("label") {
-        Some(Value::String(label)) if LabelPattern::new(label).is_some() => {}
+    } else {
+        None
+    };
+    let label = match block.get("label") {
+        Some(Value::String(label)) if LabelPattern::new(label).is_some() => label,
         _ => {
             return Err(Error::schema(
                 &path.key("label"),
                 format!("must hold {OPTION} exactly once"),
             ));
         }
+    };
+    if !with_status {
+        return Ok(None);
     }
-    if with_status {
-        one_of("status", ["issue_status", "off"]).map(drop)?;
-    }
-    Ok(())
+    let status = match one_of("status", ["issue_status", "off"])? {
+        "issue_status" => StatusMode::IssueStatus,
+        _ => StatusMode::Off,
+    };
+    let options = check_options(block.get("options"), &path.key("options"))?;
+    let source = match field {
+        Some(name) => FieldSource::Field { name: name.clone() },
+        None => FieldSource::Labels {
+            label: label.clone(),
+        },
+    };
+    Ok(Some(StateSettings {
+        source,
+        status,
+        options,
+    }))
 }
 
 /// `tracker.fields`: each `<role>` entry is checked through the registered descriptor of that
