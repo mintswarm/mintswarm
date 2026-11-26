@@ -10,7 +10,7 @@ use mintswarm_domain::ids::RevId;
 use tempfile::TempDir;
 
 use super::wire::{self, Reply};
-use super::{PREFIX, RequestRecord, RequestSink, ToolDir, ToolError, sweep};
+use super::{PREFIX, RequestRecord, RequestSink, ToolDir, ToolError, lock_new, sweep, try_lock};
 use crate::exec::git::tests::{fixture_command, fixture_git, git_probe, run_fixture, text};
 use crate::exec::git::{GitStore, store_path};
 
@@ -279,6 +279,61 @@ fn sweep_removes_stale_directories_and_never_follows_a_symlink() {
     assert!(target.join("kept").exists());
     assert!(other.exists());
     assert_eq!(sweep(&job.dir.path().join("missing")), 0);
+}
+
+#[test]
+fn a_live_directory_survives_a_sweep() {
+    let job = Job::new();
+    // a live tool directory holds its lock, so a sweep, of any runner, cannot take it
+    let tools = job.tools("live", nowhere());
+    assert!(try_lock(tools.path()).unwrap().is_none());
+
+    // a sweep skips a held directory and removes the one nobody holds
+    let temp = job.dir.path().join("tmp");
+    let held = temp.join(format!("{PREFIX}held"));
+    let stale = temp.join(format!("{PREFIX}stale"));
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::write(held.join("s"), "").unwrap();
+    std::fs::create_dir(&stale).unwrap();
+    let lock = try_lock(&held).unwrap().unwrap();
+    assert_eq!(sweep(&temp), 1);
+    assert!(held.join("s").exists());
+    assert!(!stale.exists());
+
+    // once released, it is stale too
+    drop(lock);
+    assert_eq!(sweep(&temp), 1);
+    assert!(!held.exists());
+
+    let dir = tools.path().to_owned();
+    tools.close().unwrap();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn a_directory_a_sweep_took_first_is_refused_and_kept() {
+    let job = Job::new();
+    let temp = job.dir.path().join("tmp");
+    std::fs::create_dir(&temp).unwrap();
+
+    // the sweep holds the lock between the mkdir and the lock
+    let taken = temp.join(format!("{PREFIX}taken"));
+    std::fs::create_dir(&taken).unwrap();
+    let lock = try_lock(&taken).unwrap().unwrap();
+    assert!(matches!(lock_new(&taken), Err(ToolError::Held(_))));
+    assert!(taken.exists());
+    drop(lock);
+
+    // the sweep removed it before the lock
+    let gone = temp.join(format!("{PREFIX}gone"));
+    assert!(matches!(lock_new(&gone), Err(ToolError::Held(_))));
+    assert!(!gone.exists());
+
+    // nobody took it: it is locked
+    let free = temp.join(format!("{PREFIX}free"));
+    std::fs::create_dir(&free).unwrap();
+    let _lock = lock_new(&free).unwrap();
+    assert!(try_lock(&free).unwrap().is_none());
 }
 
 #[test]

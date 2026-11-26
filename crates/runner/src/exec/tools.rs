@@ -6,16 +6,17 @@
 //!
 //! The server is scoped to the job: it runs the same pipeline as `mintswarm-runner tool msw-vcs`
 //! ([`crate::tool::msw_vcs`]) over the job's base and head, and passes every request to a
-//! [`RequestSink`]. [`ToolDir`] removes the directory when it is closed or dropped, and
-//! [`sweep`] removes those a killed runner left behind.
+//! [`RequestSink`]. [`ToolDir`] holds an exclusive `flock` on the directory while it lives and
+//! removes the directory when it is closed or dropped; [`sweep`] removes those whose lock no
+//! process holds, the ones a killed runner left behind.
 
 #[cfg(test)]
 mod tests;
 pub mod wire;
 
-use std::fs::{DirBuilder, OpenOptions, Permissions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +26,8 @@ use std::time::Duration;
 
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::vcs::Vcs;
+use rustix::fs::{FlockOperation, Mode, OFlags};
+use rustix::io::Errno;
 
 use crate::exec::git::GitError;
 use crate::tool::msw_vcs::args::{self, Fail};
@@ -87,6 +90,10 @@ pub enum ToolError {
     /// NUL.
     #[error("the attempt id `{0}` cannot name a tool directory")]
     AttemptId(String),
+    /// Another process holds the directory's lock, or removed the directory before it was
+    /// locked.
+    #[error("{0} is held by another process")]
+    Held(PathBuf),
     /// A socket path longer than the platform allows.
     #[error("the socket path {0} is too long")]
     SocketPath(PathBuf),
@@ -121,6 +128,10 @@ struct Shared {
 /// dropping it stops the thread and removes the directory.
 pub struct ToolDir {
     path: PathBuf,
+    /// The directory, open with its exclusive `flock` held, so that [`sweep`] skips it. The
+    /// lock is released when this closes, after the directory is removed, or when the process
+    /// dies; the descriptor is close-on-exec, so no stage inherits it.
+    _lock: File,
     socket: PathBuf,
     shared: Arc<Shared>,
     rescope: Box<Rescope>,
@@ -140,6 +151,7 @@ impl ToolDir {
     /// Create `<temp_dir>/msw-attempt-<attempt>` with mode 0700, copy `client` into it as
     /// `msw-vcs` with mode 0755, bind the socket `s` with mode 0600 and serve the job of `base`
     /// and `head` on it. The directory must not exist; a symlink in its place is refused too.
+    /// The directory is locked before anything is put in it, and held until it is removed.
     pub fn create<V>(
         attempt: &str,
         client: &Path,
@@ -163,6 +175,9 @@ impl ToolDir {
             .mode(0o700)
             .create(&path)
             .map_err(io_error(format!("cannot create {}", path.display())))?;
+        // A sweep that took the lock first removes the directory; this one then fails as held
+        // and must not remove what may since be another's.
+        let lock = lock_new(&path)?;
         // From here on, a failure removes what was made.
         let made = Made(Some(path.clone()));
         // The umask may have narrowed the mode, never widened it; set it exactly.
@@ -195,6 +210,7 @@ impl ToolDir {
         made.keep();
         Ok(ToolDir {
             path,
+            _lock: lock,
             socket,
             shared,
             rescope,
@@ -265,6 +281,42 @@ impl Drop for Made {
         if let Some(path) = &self.0 {
             let _ = std::fs::remove_dir_all(path);
         }
+    }
+}
+
+/// Open `path`, a directory and never a symlink, and take an exclusive, non-blocking `flock`
+/// on it. `Ok(None)` when another process holds it.
+fn try_lock(path: &Path) -> io::Result<Option<File>> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let dir = File::from(rustix::fs::open(path, flags, Mode::empty())?);
+    match rustix::fs::flock(&dir, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(dir)),
+        Err(errno) if errno == Errno::WOULDBLOCK => Ok(None),
+        Err(errno) => Err(errno.into()),
+    }
+}
+
+/// Lock the directory just made at `path`, and check that it is still the one at `path`: a
+/// sweep may have locked and removed it between the `mkdir` and the lock.
+fn lock_new(path: &Path) -> Result<File, ToolError> {
+    let context = || format!("cannot lock {}", path.display());
+    let held = || ToolError::Held(path.to_owned());
+    let lock = match try_lock(path) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return Err(held()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(held()),
+        Err(error) => {
+            // Nothing locks it yet and nothing is in it: it is this one's, so remove it if empty.
+            let _ = std::fs::remove_dir(path);
+            return Err(io_error(context())(error));
+        }
+    };
+    let locked = lock.metadata().map_err(io_error(context()))?;
+    match std::fs::symlink_metadata(path) {
+        Ok(now) if now.dev() == locked.dev() && now.ino() == locked.ino() => Ok(lock),
+        Ok(_) => Err(held()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(held()),
+        Err(error) => Err(io_error(context())(error)),
     }
 }
 
@@ -349,9 +401,10 @@ fn failed(fail: &Fail) -> Reply {
 }
 
 /// Remove the tool directories in `temp_dir` that a killed runner left: every `msw-attempt-*`
-/// entry that is a directory, never a symlink, ignoring those that cannot be removed. Only the
-/// runner's start, before any attempt, may call it, since it also removes a live attempt's
-/// directory; that is `exec-supervisor`'s start-up recovery. Returns how many were removed.
+/// entry that is a directory, never a symlink, and whose `flock` it can take, ignoring those
+/// that cannot be removed. A live [`ToolDir`], this runner's or another's, holds its lock and
+/// is skipped, so any runner may call it at any time; `exec-supervisor`'s start-up recovery is
+/// meant to. The lock is held while the directory is removed. Returns how many were removed.
 pub fn sweep(temp_dir: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(temp_dir) else {
         return 0;
@@ -365,6 +418,13 @@ pub fn sweep(temp_dir: &Path) -> usize {
                 .starts_with(PREFIX.as_bytes())
         })
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter(|entry| std::fs::remove_dir_all(entry.path()).is_ok())
+        .filter(|entry| {
+            let path = entry.path();
+            // Held by a live attempt, or gone or unreadable: leave it.
+            let Ok(Some(_lock)) = try_lock(&path) else {
+                return false;
+            };
+            std::fs::remove_dir_all(&path).is_ok()
+        })
         .count()
 }
