@@ -2912,14 +2912,15 @@ ms_rc() {  # ms_rc RC ARGS...: msw-state.py exits RC
 }
 cache_ids() { if [ -f "$MSW_FIELD_CACHE" ]; then jq -c . "$MSW_FIELD_CACHE"; else echo none; fi; }
 state_cfg() {  # state_cfg SOURCE STATUS: a config with tracker.state only
-  printf 'tracker: {state: {source: %s, field: msw-state, label: "msw-state:{value}", status: %s}}' "$1" "$2"
+  printf 'tracker: {state: {source: %s, field: msw-state, label: "msw-state:{option}", status: %s}}' "$1" "$2"
 }
 bad_source_base="$(commit_config "$(state_cfg other issue_status)")"
 bad_status_base="$(commit_config "$(state_cfg field on)")"
-leftover_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{value}", status: off}}')"
+leftover_id_base="$(commit_config 'tracker: {state: {source: field, field: msw-state, field_id: "50325307", label: "msw-state:{option}", status: off}}')"
 bad_label_base="$(commit_config 'tracker: {state: {source: labels, field: msw-state, label: "msw-state", status: off}}')"
 off_base="$(commit_config "$(state_cfg field off)")"
-labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
+labels_only_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{option}", status: off}}')"
+value_label_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}}')"
 labels_base="$(commit_config "$(state_cfg labels off)")"
 labels_status_base="$(commit_config "$(state_cfg labels issue_status)")"
 
@@ -2927,7 +2928,8 @@ check "an unknown value exits 2" exits_2 ms set 41 bogus --base "$real_base"
 check "a source other than field or labels exits 2" exits_2 ms set 41 queued --base "$bad_source_base"
 check "a status other than issue_status or off exits 2" exits_2 ms set 41 queued --base "$bad_status_base"
 check "a leftover field_id is ignored" eq "$(ms get 41 --base "$leftover_id_base" 2>&1)" "msw-state: none"
-check "a label without {value} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
+check "a label without {option} exits 2" exits_2 ms set 41 queued --base "$bad_label_base"
+check "a {value} label exits 2" exits_2 ms set 41 queued --base "$value_label_base"
 check "number 0 exits 2" exits_2 ms set 0 queued --base "$real_base"
 
 seed 41 '{"status": "Todo"}'
@@ -3126,9 +3128,9 @@ set #65 status to In progress (was Todo) In progress"
 
 label_puts() { jq -c 'select(.cmd == "gh") | .argv | select(index("PUT")) | select(any(.[]; endswith("/labels")))' "$argv_log" | wc -l | tr -d ' '; }
 verdict_cfg() {  # verdict_cfg BLOCK: a config with tracker.plan_verdict set to BLOCK
-  printf 'tracker: {state: {source: labels, label: "msw-state:{value}", status: off}, plan_verdict: %s}' "$1"
+  printf 'tracker: {state: {source: labels, label: "msw-state:{option}", status: off}, plan_verdict: %s}' "$1"
 }
-decomp_labels_base="$(commit_config 'tracker: {decomp_verdict: {source: labels, label: "msw-decomp:{value}"}}')"
+decomp_labels_base="$(commit_config 'tracker: {decomp_verdict: {source: labels, label: "msw-decomp:{option}"}}')"
 seed 71 '{"status": "Todo"}'
 posts_before="$(field_posts)" gql_before="$(graphql_calls)"
 out="$(ms verdict set 71 plan likely-safe --base "$real_base" 2>&1)" || out="(failed) $out"
@@ -3202,9 +3204,9 @@ check "an unknown band exits 2" exits_2 ms verdict set 71 plan great --base "$re
 check "an unknown kind exits 2" exits_2 ms verdict set 71 issue safe --base "$real_base"
 check "a base without the block exits 2" exits_2 ms verdict set 71 plan safe --base "$labels_only_base"
 check "a verdict source other than field or labels exits 2" exits_2 ms verdict set 71 plan safe \
-  --base "$(commit_config "$(verdict_cfg '{source: other, label: "msw-plan:{value}"}')")"
+  --base "$(commit_config "$(verdict_cfg '{source: other, label: "msw-plan:{option}"}')")"
 check "a verdict block with a status key exits 2" exits_2 ms verdict set 71 plan safe \
-  --base "$(commit_config "$(verdict_cfg '{source: labels, label: "msw-plan:{value}", status: off}')")"
+  --base "$(commit_config "$(verdict_cfg '{source: labels, label: "msw-plan:{option}", status: off}')")"
 
 cat > "$sandbox/mscheck.py" <<'PY'
 # mscheck.py README SCRIPT: the README's msw-state tables agree with the script's VALUES and STATUS.
@@ -3291,7 +3293,7 @@ wpa_seed_labels() {  # wpa_seed_labels ISSUE EVENTS_JSON COMMENT_JSON...: a labe
   seed "$n" "$(jq -nc --argjson e "$events" --argjson c "$(printf '%s\n' "$@" | jq -sc .)" \
     --argjson u "$wpa_author" '{user: $u, labels: ["bug", "msw-state:plan approved"], events: $e, comments: $c}')"
 }
-wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{value}", status: issue_status}}')"
+wpa_labels_base="$(commit_config 'tracker: {state: {source: labels, label: "msw-state:{option}", status: issue_status}}')"
 wpa_argv_before="$(wc -l < "$argv_log" | tr -d ' ')"
 p81="package $(wpa_url 81 10) sha256 $wpa_sha"
 
