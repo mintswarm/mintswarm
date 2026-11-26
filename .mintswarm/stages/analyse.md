@@ -22,9 +22,10 @@ You analyse one issue so that the next stage (design, decompose or plan) can wor
 2. Find what already exists: code, documents in `docs/architecture/`, conventions in `AGENTS.md` and `CONTRIBUTING.md`, earlier artefacts. Cite paths.
 3. Name the components the work touches. An implementation issue carries every component its change must touch to leave the repository consistent; name any component the work needs but the issue lacks, so that its `component:<name>` label is added. Record the result in `## Split`: for an implementation issue that bundles independent changes that should be split into children, set `proposed` to `true`, `reason` to `components` (independent changes in different components) or `other`, `components` to the components it spans and `finding` to the one-line finding that calls for the split; spanning several components is no reason to split on its own. Otherwise set `proposed` to `false`, `reason` to `none` and `finding` to an empty string. The section is always there; `proposed` counts only for implementation issues.
 4. Estimate the size in `## Size`. For an implementation issue, the size is the expected cost of its phase 2: implement, the gates, review and address rounds, and landing. For a design or plan issue, it is the judged size of the work the issue covers. A size states no wall-clock time.
-5. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
-6. List risks and unknowns.
-7. List questions in `## Questions`, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question the next stage cannot proceed sensibly without is a `Must decide`, or a `Recommended` when you have a recommendation; everything else is an `Assumption`, which the next stage works on.
+5. Name the item in `## Short title`: two or three words of ASCII letters and digits in natural case, separated by single spaces, at most 24 characters, for example `Factory metrics`, short enough for displays with little room. The tooling writes it to the issue's short-title field when that is empty; you change nothing.
+6. Outline the approaches worth considering, with their main trade-off each. Do not choose for the plan stage unless one is clearly forced.
+7. List risks and unknowns.
+8. List questions in `## Questions`, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question the next stage cannot proceed sensibly without is a `Must decide`, or a `Recommended` when you have a recommendation; everything else is an `Assumption`, which the next stage works on.
 
     Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
 
@@ -50,6 +51,8 @@ Return `analysis.md` as `.mintswarm/stages.md` describes:
 ## Size
 size: M
 - <reason>
+## Short title
+short title: <name>
 ## Approaches
 ## Risks
 ## Questions
@@ -71,6 +74,8 @@ size: M
 `## Split` holds exactly one json fence with that object: `proposed` is a boolean, `reason` is `components`, `other` or `none`, `components` is a list of component names and `finding` is one line.
 
 `## Size` comes right after `## Split` and opens no fence. Ignoring blank lines, its first line is exactly `size: <value>`, the value one of `XS`, `S`, `M`, `L`, `XL`, `2XL`, `3XL` or `4XL`, as written (no other case, no leading or trailing text; trailing spaces and tabs on any line of the section are ignored); then come one to three reasons, each one line starting with `- `, and nothing else: no prose, continuation line, nested bullet or fence. A missing or malformed section makes the analysis unusable, as a malformed `## Split` does.
+
+`## Short title` comes right after `## Size` and opens no fence. Ignoring blank lines, it holds only the line `short title: <name>`, the name two or three words of ASCII letters and digits separated by single spaces and at most 24 characters (trailing spaces and tabs are ignored); nothing else: no prose, bullet or fence. A missing or malformed section makes the analysis unusable, as for `## Size`.
 
 Status: `needs_input` exactly when the Questions hold a `Must decide` or `Recommended` bullet, otherwise `complete`.
 
