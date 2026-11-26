@@ -116,8 +116,10 @@ impl CommentClient {
     /// `body` must hold a line equal to [`NOTE_MARKER`] and a line equal to `key`, lines split
     /// at LF and trimmed, and `key` must be neither [`NOTE_MARKER`] nor [`STEER_MARKER`], or the
     /// call is [`CommentError::Unmarked`] before any request. Each attempt of the create waits
-    /// until the limiter grants it one request. After an attempt that may have landed, the probe's find is returned in place of a second post. A rate
-    /// limit that ends the call with a named wait also pauses the limiter for that long.
+    /// until the limiter grants it one request, a wait the create's total cuts off for every
+    /// attempt after the first. After an attempt that may have landed, the probe's find is
+    /// returned in place of a second post. A rate limit that ends the call with a named wait also
+    /// pauses the limiter for that long.
     pub async fn post_note(
         &self,
         token: &Token,
