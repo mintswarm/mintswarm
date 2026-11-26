@@ -14,8 +14,8 @@
 Dogfooding stand-in for the runner's tracker effects that show where an issue
 is in the pipeline and what the approval stages judged. Every GitHub call goes
 through bot-gh.sh, so as mintswarm-dev[bot]. VALUE is one of the coarse phases
-in VALUES; the README's `## msw-state` section maps every runner state and
-every Pipeline state wording to one of them.
+named in tracker.state.options at --base; the README's `## msw-state` section
+maps every runner state and every Pipeline state wording to one of them.
 
 Every subcommand reads .mintswarm/config.yaml at the base ref (--base, resolved
 with `git rev-parse --verify` in the current directory), never the worktree's
@@ -28,11 +28,22 @@ copy: `git show COMMIT:.mintswarm/config.yaml` piped to
         field: msw-state             # field mode only
         label: "msw-state:{option}"
         status: issue_status         # issue_status | off
+        options:                     # the values, in lifecycle order
+          - { name: none }
+          - { name: queued, status: Todo }
+          ...
 
 A source other than field or labels, a label without {option} or a status
 other than issue_status or off exits 2; with source field, so does an empty
 field. Source labels needs no field. A leftover field_id is ignored: fields are
-named, and their ids are resolved (below).
+named, and their ids are resolved (below). So does a bad options list, checked
+in this order as the Rust loader checks it: absent or not a list; an entry not
+a mapping; an entry key other than name and status (the first in sorted
+order); a name missing, not a string or blank; a name equal to an earlier one
+in ASCII case; a status present but not a non-blank string; and then none,
+queued, blocked or done missing by exact name. Each message starts with the key
+path, for example tracker.state.options[2].name. A VALUE that is not an
+option's name exits 2.
 
 With source field, the value is the organisation issue field: set GETs
 repos/{owner}/{repo}/issues/N/issue-field-values and takes the entry whose
@@ -89,11 +100,11 @@ is the target, it writes nothing. Otherwise it reads the repository's labels
 target in one request, so the issue never has zero or two; the response must
 hold exactly one matching label, the target (exit 1 if not).
 
-Then, when status is issue_status and VALUE is not none, set syncs the issue
+Then, when status is issue_status and VALUE's option has a status, set syncs the issue
 status, whatever the source and even when the value was already current, so
 a re-run repairs a status that GitHub's own automations moved (assigning sets
 Todo, linking a PR sets In review). It GETs the issue for node_id and
-status.name (unset when null); when that is already STATUS[VALUE] it prints
+status.name (unset when null); when that is already the option's status it prints
 `#N status is already NAME`. Otherwise it reads the issue's repository's
 planningStatuses through GraphQL, picks the status of that name (exit 1 when
 there is none, saying tracker.state.status: off turns this off), runs
@@ -172,35 +183,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BOT_GH = HERE / "bot-gh.sh"
 CONFIG = ".mintswarm/config.yaml"
-VALUES = (
-    "none",
-    "queued",
-    "blocked",
-    "analysing",
-    "designing",
-    "planning",
-    "awaiting approval",
-    "plan approved",
-    "implementing",
-    "in review",
-    "awaiting merge",
-    "escalated",
-    "done",
-)
-STATUS = {
-    "queued": "Todo",
-    "blocked": "Todo",
-    "analysing": "In progress",
-    "designing": "In progress",
-    "planning": "In progress",
-    "implementing": "In progress",
-    "awaiting approval": "In review",
-    "plan approved": "In progress",
-    "in review": "In review",
-    "awaiting merge": "In review",
-    "escalated": "In review",
-    "done": "Done",
-}
+# The values tracker.state.options must list, matched exactly.
+REQUIRED = ("none", "queued", "blocked", "done")
 BANDS = ("blocked", "uncertain", "needs-review", "likely-safe", "safe")
 SOURCES = ("field", "labels")
 STATUS_MODES = ("issue_status", "off")
@@ -283,10 +267,12 @@ def settings(ref: str, key: str = "state", config=None) -> dict:
     label = block.get("label")
     if not isinstance(label, str) or label.count("{option}") != 1:
         raise UsageError(f"{path}.label at {ref} must hold {{option}} once, not {label!r}")
+    options, statuses = [], {}
     if key == "state":
         if block.get("status") not in STATUS_MODES:
             raise UsageError(f"{path}.status at {ref} must be issue_status or off, not {block.get('status')!r}")
         status = block["status"]
+        options, statuses = state_options(block.get("options"), f"{path}.options", ref)
     elif "status" in block:
         raise UsageError(f"{path} at {ref} takes no status")
     else:
@@ -297,10 +283,43 @@ def settings(ref: str, key: str = "state", config=None) -> dict:
         "field": field,
         "label": label,
         "status": status,
+        "options": options,
+        "statuses": statuses,
         "path": path,
         "name": name,
         "description": description,
     }
+
+
+def state_options(entries, path: str, ref: str) -> tuple:
+    """The option names, in order, and the status of each option that has one, checked as the
+    Rust loader checks them, in the same order."""
+    if not isinstance(entries, list):
+        raise UsageError(f"{path} at {ref} must be a list of options")
+    names, folded, statuses = [], set(), {}
+    for i, entry in enumerate(entries):
+        at = f"{path}[{i}]"
+        if not isinstance(entry, dict):
+            raise UsageError(f"{at} at {ref} must be a mapping")
+        unknown = sorted(k for k in entry if k not in ("name", "status"))
+        if unknown:
+            raise UsageError(f"{at}.{unknown[0]} at {ref} is an unknown key")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise UsageError(f"{at}.name at {ref} must be a non-empty string")
+        if name.encode().lower() in folded:
+            raise UsageError(f"{at}.name at {ref} repeats an earlier name in any case: {name!r}")
+        if "status" in entry:
+            value = entry["status"]
+            if not isinstance(value, str) or not value.strip():
+                raise UsageError(f"{at}.status at {ref} must be a non-empty string when present")
+            statuses[name] = value
+        names.append(name)
+        folded.add(name.encode().lower())
+    missing = [required for required in REQUIRED if required not in names]
+    if missing:
+        raise UsageError(f"{path} at {ref} must list {', '.join(missing)}")
+    return names, statuses
 
 
 def gh(args: list, body: dict = None):
@@ -633,8 +652,7 @@ def status_id(node: str, name: str, number: int) -> str:
     )
 
 
-def set_status(number: int, value: str, dry_run: bool) -> None:
-    name = STATUS[value]
+def set_status(number: int, name: str, dry_run: bool) -> None:
     node, old = issue_status(number)
     if old == name:
         print(f"#{number} status is already {name}")
@@ -663,12 +681,14 @@ def get_value(number: int, config: dict) -> str:
 
 
 def set_state(number: int, value: str, base: str, dry_run: bool) -> int:
-    if value not in VALUES:
-        raise UsageError(f"the value must be one of {', '.join(VALUES)}, not {value!r}")
     config = settings(base)
+    if value not in config["options"]:
+        raise UsageError(
+            f"the value must be one of tracker.state.options at {base}: {', '.join(config['options'])}, not {value!r}"
+        )
     set_value(number, value, config, dry_run)
-    if config["status"] == "issue_status" and value != "none":
-        set_status(number, value, dry_run)
+    if config["status"] == "issue_status" and value in config["statuses"]:
+        set_status(number, config["statuses"][value], dry_run)
     return 0
 
 
@@ -870,7 +890,7 @@ def main(argv: list) -> int:
     base_help = "ref to read the config at (default origin/master)"
     s = sub.add_parser("set", help="set the issue's msw-state value, then its issue status")
     s.add_argument("number", type=int, help="issue number")
-    s.add_argument("value", help="one of: " + ", ".join(VALUES))
+    s.add_argument("value", help="the name of one of tracker.state.options at --base")
     s.add_argument("--base", default="origin/master", help=base_help)
     s.add_argument("--dry-run", action="store_true", help="print the lines, change nothing")
     g = sub.add_parser("get", help="print the issue's msw-state value and its issue status")
