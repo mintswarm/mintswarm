@@ -1,0 +1,13 @@
+# Docker build context filter: an allowlist. Every image builds from the
+# repository root, and only what the Rust workspace build needs enters the
+# context, so build/, .mintswarm/, web/ and .git never do.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!.cargo/config.toml
+!crates/
+!api/proto/
+**/build
+**/target
+**/node_modules

@@ -1,0 +1,43 @@
+# Development compose file, run from the repository root.
+# webhooks: the GitHub App webhook receiver, `mintswarm-server webhooks`.
+# ngrok: an ngrok agent forwarding the reserved domain to the receiver.
+# Start, stop and tail them as crates/server/README.md says. #487 adds the
+# development Postgres to this file.
+#
+# No secret is in this file or an image: each is read from the host at run time.
+
+services:
+  webhooks:
+    build:
+      context: .
+      dockerfile: docker/webhooks/Dockerfile
+    restart: unless-stopped
+    # Above twice --read-timeout (20 s by default), so a stop lets the queue drain.
+    stop_grace_period: 30s
+    command:
+      - --listen
+      - 0.0.0.0:8787
+      - --log
+      - /var/log/mintswarm/webhooks.jsonl
+      - --secret-env
+      - mintswarm-dev-secret
+    # Its line mintswarm-dev-secret=<value> sets the variable --secret-env names.
+    env_file: ${HOME}/.config/mintswarm/webhook-secret
+    volumes:
+      - ./build/webhooks:/var/log/mintswarm
+
+  ngrok:
+    image: ngrok/ngrok:3.39.13-alpine
+    restart: unless-stopped
+    depends_on: [webhooks]
+    secrets: [ngrok.yml, ngrok-domain]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec ngrok http --config /run/secrets/ngrok.yml --url "$$(cat /run/secrets/ngrok-domain)" webhooks:8787
+
+secrets:
+  # ngrok's own config, which holds the auth token.
+  ngrok.yml:
+    file: ${NGROK_CONFIG:-${HOME}/Library/Application Support/ngrok/ngrok.yml}
+  ngrok-domain:
+    file: ${HOME}/.config/mintswarm/ngrok-domain
