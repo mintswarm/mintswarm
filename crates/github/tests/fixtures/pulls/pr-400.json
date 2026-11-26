@@ -1,0 +1,342 @@
+{
+  "pull": {
+    "url": "https://api.github.com/repos/acme/widgets/pulls/400",
+    "id": 5000400,
+    "node_id": "PR_kwDOAbCdEs4AAQ1A",
+    "html_url": "https://github.com/acme/widgets/pull/400",
+    "number": 400,
+    "state": "open",
+    "locked": false,
+    "title": "feat(domain): GitHub REST reads",
+    "user": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot", "site_admin": false },
+    "body": "Closes #180.",
+    "labels": [
+      { "id": 11, "node_id": "LA_kwDOAbCdEs8AAAAB", "name": "mintswarm", "color": "0e8a16", "default": false },
+      { "id": 12, "node_id": "LA_kwDOAbCdEs8AAAAC", "name": "component:domain", "color": "1d76db", "default": false }
+    ],
+    "created_at": "2026-11-24T08:00:00Z",
+    "updated_at": "2026-11-25T09:30:00Z",
+    "closed_at": null,
+    "merged_at": null,
+    "merge_commit_sha": "fedcba9876543210fedcba9876543210fedcba98",
+    "requested_reviewers": [
+      { "login": "maintainer", "id": 1, "type": "User", "site_admin": false }
+    ],
+    "requested_teams": [
+      { "id": 21, "slug": "reviewers", "name": "Reviewers" }
+    ],
+    "head": {
+      "label": "acme:mintswarm/180-rest-reads",
+      "ref": "mintswarm/180-rest-reads",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "user": { "login": "acme", "id": 3, "type": "Organization" },
+      "repo": { "id": 1, "name": "widgets", "full_name": "acme/widgets", "private": false }
+    },
+    "base": {
+      "label": "acme:master",
+      "ref": "master",
+      "sha": "89abcdef0123456789abcdef0123456789abcdef",
+      "user": { "login": "acme", "id": 3, "type": "Organization" },
+      "repo": { "id": 1, "name": "widgets", "full_name": "acme/widgets", "private": false }
+    },
+    "author_association": "NONE",
+    "draft": false,
+    "merged": false,
+    "mergeable": true,
+    "rebaseable": true,
+    "mergeable_state": "blocked",
+    "merged_by": null,
+    "comments": 3,
+    "review_comments": 2,
+    "maintainer_can_modify": false,
+    "commits": 4,
+    "additions": 120,
+    "deletions": 8,
+    "changed_files": 3
+  },
+  "reviews": [
+    {
+      "id": 77,
+      "node_id": "PRR_kwDOAbCdEs4AAABN",
+      "user": { "login": "maintainer", "id": 1, "type": "User", "site_admin": false },
+      "body": "Looks right.",
+      "state": "APPROVED",
+      "html_url": "https://github.com/acme/widgets/pull/400#pullrequestreview-77",
+      "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/400",
+      "author_association": "OWNER",
+      "submitted_at": "2026-11-25T10:00:00Z",
+      "commit_id": "0123456789abcdef0123456789abcdef01234567"
+    },
+    {
+      "id": 78,
+      "node_id": "PRR_kwDOAbCdEs4AAABO",
+      "user": { "login": "review-helper", "id": 9, "type": "Bot", "site_admin": false },
+      "body": "Two findings.",
+      "state": "COMMENTED",
+      "html_url": "https://github.com/acme/widgets/pull/400#pullrequestreview-78",
+      "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/400",
+      "author_association": "NONE",
+      "submitted_at": "2026-11-25T10:05:00Z",
+      "commit_id": "00112233445566778899aabbccddeeff00112233"
+    },
+    {
+      "id": 79,
+      "node_id": "PRR_kwDOAbCdEs4AAABP",
+      "user": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot", "site_admin": false },
+      "body": "",
+      "state": "CHANGES_REQUESTED",
+      "html_url": "https://github.com/acme/widgets/pull/400#pullrequestreview-79",
+      "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/400",
+      "author_association": "NONE",
+      "submitted_at": "2026-11-25T10:10:00Z",
+      "commit_id": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ],
+  "review_comments": [
+    {
+      "url": "https://api.github.com/repos/acme/widgets/pulls/comments/901",
+      "pull_request_review_id": 78,
+      "id": 901,
+      "node_id": "PRRC_kwDOAbCdEs4AAAOF",
+      "diff_hunk": "@@ -1,3 +1,4 @@",
+      "path": "crates/github/src/pulls.rs",
+      "commit_id": "00112233445566778899aabbccddeeff00112233",
+      "original_commit_id": "00112233445566778899aabbccddeeff00112233",
+      "user": { "login": "review-helper", "id": 9, "type": "Bot", "site_admin": false },
+      "body": "This mapper drops the app.",
+      "created_at": "2026-11-25T10:05:00Z",
+      "updated_at": "2026-11-25T10:06:00Z",
+      "html_url": "https://github.com/acme/widgets/pull/400#discussion_r901",
+      "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/400",
+      "author_association": "NONE",
+      "line": 4,
+      "side": "RIGHT"
+    },
+    {
+      "url": "https://api.github.com/repos/acme/widgets/pulls/comments/902",
+      "pull_request_review_id": null,
+      "id": 902,
+      "node_id": "PRRC_kwDOAbCdEs4AAAOG",
+      "diff_hunk": "@@ -10,2 +11,2 @@",
+      "path": "crates/github/src/reads.rs",
+      "commit_id": "0123456789abcdef0123456789abcdef01234567",
+      "original_commit_id": "0123456789abcdef0123456789abcdef01234567",
+      "user": { "login": "maintainer", "id": 1, "type": "User", "site_admin": false },
+      "body": null,
+      "created_at": "2026-11-25T11:00:00Z",
+      "updated_at": "2026-11-25T11:00:00Z",
+      "html_url": "https://github.com/acme/widgets/pull/400#discussion_r902",
+      "pull_request_url": "https://api.github.com/repos/acme/widgets/pulls/400",
+      "author_association": "OWNER",
+      "line": 11,
+      "side": "RIGHT"
+    }
+  ],
+  "requested_reviewers": {
+    "users": [
+      { "login": "maintainer", "id": 1, "type": "User", "site_admin": false }
+    ],
+    "teams": [
+      { "id": 21, "node_id": "T_kwDOAbCdEs4AAAAV", "slug": "reviewers", "name": "Reviewers", "privacy": "closed", "permission": "push" }
+    ]
+  },
+  "threads_page_1": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviewThreads": {
+            "nodes": [
+              { "id": "PRRT_kwDOAbCdEs5AAAAB", "isResolved": true },
+              { "id": "PRRT_kwDOAbCdEs5AAAAC", "isResolved": false }
+            ],
+            "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMS0yNVQxMDowNTowMFo" }
+          }
+        }
+      }
+    }
+  },
+  "threads_page_2": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviewThreads": {
+            "nodes": [
+              { "id": "PRRT_kwDOAbCdEs5AAAAD", "isResolved": true }
+            ],
+            "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMS0yNVQxMTowMDowMFo" }
+          }
+        }
+      }
+    }
+  },
+  "threads_errors": {
+    "data": { "repository": null },
+    "errors": [
+      {
+        "type": "FORBIDDEN",
+        "path": ["repository"],
+        "locations": [{ "line": 1, "column": 82 }],
+        "message": "Resource not accessible by integration"
+      }
+    ]
+  },
+  "threads_no_pull": {
+    "data": { "repository": { "pullRequest": null } },
+    "errors": []
+  },
+  "check_runs": {
+    "total_count": 2,
+    "check_runs": [
+      {
+        "id": 3001,
+        "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        "node_id": "CR_kwDOAbCdEs8AAAAAAAAAuQ",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/widgets/check-runs/3001",
+        "html_url": "https://github.com/acme/widgets/runs/3001",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-25T09:31:00Z",
+        "completed_at": "2026-11-25T09:40:00Z",
+        "name": "rust-test",
+        "check_suite": { "id": 2001 },
+        "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+        "pull_requests": []
+      },
+      {
+        "id": 3002,
+        "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        "node_id": "CR_kwDOAbCdEs8AAAAAAAAAug",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/widgets/check-runs/3002",
+        "html_url": "https://github.com/acme/widgets/runs/3002",
+        "status": "in_progress",
+        "conclusion": null,
+        "started_at": "2026-11-25T09:31:00Z",
+        "completed_at": null,
+        "name": "rust-lint",
+        "check_suite": { "id": 2001 },
+        "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+        "pull_requests": []
+      }
+    ]
+  },
+  "check_suites": {
+    "total_count": 2,
+    "check_suites": [
+      {
+        "id": 2001,
+        "node_id": "CS_kwDOAbCdEs8AAAAAAAAH0Q",
+        "head_branch": "mintswarm/180-rest-reads",
+        "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        "status": "in_progress",
+        "conclusion": null,
+        "url": "https://api.github.com/repos/acme/widgets/check-suites/2001",
+        "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+        "latest_check_runs_count": 2,
+        "rerequestable": true,
+        "runs_rerequestable": true
+      },
+      {
+        "id": 2002,
+        "node_id": "CS_kwDOAbCdEs8AAAAAAAAH0g",
+        "head_branch": "mintswarm/180-rest-reads",
+        "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        "status": "completed",
+        "conclusion": "neutral",
+        "url": "https://api.github.com/repos/acme/widgets/check-suites/2002",
+        "app": { "id": 2, "slug": "dependency-checker", "name": "Dependency checker" },
+        "latest_check_runs_count": 0,
+        "rerequestable": true,
+        "runs_rerequestable": false
+      }
+    ]
+  },
+  "status": {
+    "state": "failure",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "total_count": 2,
+    "statuses": [
+      {
+        "url": "https://api.github.com/repos/acme/widgets/statuses/0123456789abcdef0123456789abcdef01234567",
+        "id": 4001,
+        "node_id": "SC_kwDOAbCdEs8AAAAAAAAPoQ",
+        "state": "pending",
+        "description": "The gates are running",
+        "target_url": null,
+        "context": "mintswarm/gates",
+        "created_at": "2026-11-25T09:32:00Z",
+        "updated_at": "2026-11-25T09:32:00Z"
+      },
+      {
+        "url": "https://api.github.com/repos/acme/widgets/statuses/0123456789abcdef0123456789abcdef01234567",
+        "id": 4002,
+        "node_id": "SC_kwDOAbCdEs8AAAAAAAAPog",
+        "state": "failure",
+        "description": "Two findings",
+        "target_url": null,
+        "context": "mintswarm/review",
+        "created_at": "2026-11-25T10:06:00Z",
+        "updated_at": "2026-11-25T10:06:00Z"
+      }
+    ],
+    "commit_url": "https://api.github.com/repos/acme/widgets/commits/0123456789abcdef0123456789abcdef01234567",
+    "url": "https://api.github.com/repos/acme/widgets/commits/0123456789abcdef0123456789abcdef01234567/status"
+  },
+  "files_page_1": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "filename": "crates/github/src/pulls.rs",
+      "status": "modified",
+      "additions": 80,
+      "deletions": 4,
+      "changes": 84,
+      "blob_url": "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/crates%2Fgithub%2Fsrc%2Fpulls.rs",
+      "raw_url": "https://github.com/acme/widgets/raw/0123456789abcdef0123456789abcdef01234567/crates%2Fgithub%2Fsrc%2Fpulls.rs",
+      "contents_url": "https://api.github.com/repos/acme/widgets/contents/crates%2Fgithub%2Fsrc%2Fpulls.rs?ref=0123456789abcdef0123456789abcdef01234567",
+      "patch": "@@ -1,3 +1,4 @@"
+    },
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "filename": "crates/github/src/merges.rs",
+      "status": "added",
+      "additions": 40,
+      "deletions": 0,
+      "changes": 40,
+      "blob_url": "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/crates%2Fgithub%2Fsrc%2Fmerges.rs",
+      "raw_url": "https://github.com/acme/widgets/raw/0123456789abcdef0123456789abcdef01234567/crates%2Fgithub%2Fsrc%2Fmerges.rs",
+      "contents_url": "https://api.github.com/repos/acme/widgets/contents/crates%2Fgithub%2Fsrc%2Fmerges.rs?ref=0123456789abcdef0123456789abcdef01234567",
+      "patch": "@@ -0,0 +1,40 @@"
+    }
+  ],
+  "files_page_2": [
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "filename": "docs/architecture/github.md",
+      "status": "renamed",
+      "additions": 0,
+      "deletions": 4,
+      "changes": 4,
+      "blob_url": "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/docs%2Farchitecture%2Fgithub.md",
+      "raw_url": "https://github.com/acme/widgets/raw/0123456789abcdef0123456789abcdef01234567/docs%2Farchitecture%2Fgithub.md",
+      "contents_url": "https://api.github.com/repos/acme/widgets/contents/docs%2Farchitecture%2Fgithub.md?ref=0123456789abcdef0123456789abcdef01234567",
+      "patch": "@@ -1,8 +1,4 @@",
+      "previous_filename": "docs/github.md"
+    }
+  ],
+  "merge_ok": {
+    "sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+    "merged": true,
+    "message": "Pull Request successfully merged"
+  },
+  "merge_head_moved": {
+    "message": "Head branch was modified. Review and try the merge again.",
+    "documentation_url": "https://docs.github.com/rest/pulls/pulls#merge-a-pull-request",
+    "status": "409"
+  },
+  "merge_not_mergeable": {
+    "message": "Pull Request is not mergeable",
+    "documentation_url": "https://docs.github.com/rest/pulls/pulls#merge-a-pull-request",
+    "status": "405"
+  }
+}

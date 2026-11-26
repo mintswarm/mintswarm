@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use mintswarm_domain::hosting::{RepoReadError, RepoReads};
+use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::tracker::{IssueType, Login};
 use mintswarm_domain::vcs::RepoPath;
@@ -525,4 +525,148 @@ fn the_repository_reads_ask_for_contents_and_metadata_only() {
         GitHubRepoReads::permissions(),
         Permissions::read(["contents", "metadata"])
     );
+}
+
+/// A contents answer for a file holding `bytes`, in the shape `config-contents.json` records.
+fn contents_json(name: &str, bytes: &[u8]) -> String {
+    serde_json::json!({
+        "type": "file",
+        "encoding": "base64",
+        "size": bytes.len(),
+        "name": name.rsplit('/').next(),
+        "path": name,
+        "content": base64(bytes),
+        "sha": "3f1c2a9e8b7d6c5f4e3a2b1c0d9e8f7a6b5c4d3e",
+    })
+    .to_string()
+}
+
+/// `bytes` in standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = chunk.iter().enumerate().fold(0u32, |word, (i, byte)| {
+            word | (u32::from(*byte) << (16 - 8 * i))
+        });
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((word >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+const CODEOWNERS: &str = "* @acme/maintainers\n/crates/github/ @acme/github-owners\n";
+
+#[tokio::test]
+async fn read_text_returns_text_at_a_commit() {
+    let responder = Responder::start().await;
+    responder.reply(200, CONFIG_CONTENTS);
+    let reads = client(&responder);
+    let token = token();
+    let text = reads
+        .repo_reads(&token)
+        .read_text(&commit(), &path(CONFIG_PATH))
+        .await
+        .unwrap();
+    assert_eq!(text.as_deref().map(str::as_bytes), Some(CONFIG));
+    assert_eq!(
+        responder.requests()[0].path,
+        contents_path(".mintswarm/config.yaml")
+    );
+}
+
+#[tokio::test]
+async fn a_missing_text_file_is_none() {
+    let responder = Responder::start().await;
+    responder.reply(404, NOT_FOUND);
+    let reads = client(&responder);
+    let token = token();
+    let text = reads
+        .repo_reads(&token)
+        .read_text(&commit(), &path(MISSING_PATH))
+        .await
+        .unwrap();
+    assert_eq!(text, None);
+}
+
+#[tokio::test]
+async fn non_utf8_is_not_text() {
+    let responder = Responder::start().await;
+    responder.reply(200, contents_json("assets/logo.bin", b"\x89PNG\xff\xfe"));
+    let reads = client(&responder);
+    let token = token();
+    let error = reads
+        .repo_reads(&token)
+        .read_text(&commit(), &path("assets/logo.bin"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RepoReadError::NotText), "{error:?}");
+}
+
+#[tokio::test]
+async fn codeowners_is_the_first_of_three_paths() {
+    let responder = Responder::start().await;
+    responder.reply(404, NOT_FOUND);
+    responder.reply(200, contents_json("CODEOWNERS", CODEOWNERS.as_bytes()));
+    let reads = client(&responder);
+    let token = token();
+    let found = reads
+        .repo_reads(&token)
+        .codeowners(&commit())
+        .await
+        .unwrap();
+    assert_eq!(
+        found,
+        Some(CodeOwnersFile {
+            path: path("CODEOWNERS"),
+            text: CODEOWNERS.to_owned(),
+        })
+    );
+    // `docs/CODEOWNERS` is never asked for.
+    let paths: Vec<_> = responder.requests().into_iter().map(|r| r.path).collect();
+    assert_eq!(
+        paths,
+        [
+            contents_path(".github/CODEOWNERS"),
+            contents_path("CODEOWNERS")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn no_codeowners_file_is_none() {
+    let responder = Responder::start().await;
+    for _ in CODEOWNERS_PATHS {
+        responder.reply(404, NOT_FOUND);
+    }
+    let reads = client(&responder);
+    let token = token();
+    let found = reads
+        .repo_reads(&token)
+        .codeowners(&commit())
+        .await
+        .unwrap();
+    assert_eq!(found, None);
+    let paths: Vec<_> = responder.requests().into_iter().map(|r| r.path).collect();
+    let expected: Vec<_> = CODEOWNERS_PATHS.iter().map(|p| contents_path(p)).collect();
+    assert_eq!(paths, expected);
+}
+
+#[tokio::test]
+async fn codeowners_at_a_moving_ref_is_refused_before_any_request() {
+    let responder = Responder::start().await;
+    let reads = client(&responder);
+    let token = token();
+    let error = reads
+        .repo_reads(&token)
+        .codeowners(&RevId("master".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RepoReadError::InvalidRev), "{error:?}");
+    assert!(responder.requests().is_empty());
 }
