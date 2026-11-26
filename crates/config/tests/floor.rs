@@ -504,13 +504,14 @@ fn tracker_state_values() {
     assert_eq!(error.path(), "tracker.state", "{error}");
 }
 
-/// `tracker.plan_verdict` and `tracker.decomp_verdict` as `msw-state.py` `settings` checks them:
-/// `tracker.state`'s rules without `status`, and no `field_id`.
+/// `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title` as `msw-state.py`
+/// `settings` checks them: `tracker.state`'s rules without `status`, and no `field_id`.
 #[test]
 fn tracker_verdict_values() {
     for (key, field) in [
         ("plan_verdict", "msw-plan"),
         ("decomp_verdict", "msw-decomp"),
+        ("short_title", "msw-short-title"),
     ] {
         let base = || {
             json!({

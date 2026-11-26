@@ -12,7 +12,7 @@ tracker:
   components:
     source: labels                   # labels (per repository) | field (account-wide select or free text)
     label: "component:{name}"        # an issue carries one or more, one label per component
-  # state, plan_verdict and decomp_verdict are read from the base ref, never the worktree, by
+  # state, plan_verdict, decomp_verdict and short_title are read from the base ref, never the worktree, by
   # .mintswarm/dogfood/github/msw-state.py. Fields are named, never given by id: msw-state.py
   # resolves the ids per account into its cache outside the repository (see "Field ids" in
   # .mintswarm/dogfood/github/README.md).
@@ -31,6 +31,10 @@ tracker:
     source: field                    # field | labels
     field: msw-decomp                # field mode only
     label: "msw-decomp:{option}"     # labels mode: exactly one per issue
+  short_title:                       # the item's short name, proposed by analyse; written only when empty
+    source: field                    # field (organisation issue field, free text) | labels
+    field: msw-short-title           # field mode only
+    label: "msw-short-title:{option}" # labels mode: at most one per issue
   # Field mappings per role (size here); each role fixes its read point in code (size: the job's pinned base).
   # A field is named, never given by id: its id is resolved from the name and cached, never written here.
   fields:

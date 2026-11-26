@@ -6,7 +6,7 @@
 //! `dependencies/new-packages.py` `review_mode`, `report-gates.py` `resolve`,
 //! `readiness/check.py` `review_config`, `readiness/check.py` `trusted_ingest` for
 //! `tracker.ingest.match`, and `github/msw-state.py` `settings`, which covers `tracker.state`,
-//! `tracker.plan_verdict` and `tracker.decomp_verdict`. A change to any of those, or to the
+//! `tracker.plan_verdict`, `tracker.decomp_verdict` and `tracker.short_title`. A change to any of those, or to the
 //! config's keys, changes this module in the same change.
 //!
 //! The loader is stricter than the dogfood tools. They read only the keys they use and coerce
@@ -18,8 +18,8 @@
 //! - a non-string `gates.run[].name`, which `plan-approval/floor.py` tolerates;
 //! - `gates.report.converters: []`, which `report-gates.py` reads as empty;
 //! - a key under `pipeline.dependencies` other than `review`, which `new-packages.py` ignores;
-//! - a `field_id` under `tracker.state`, `tracker.plan_verdict` or `tracker.decomp_verdict`,
-//!   which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
+//! - a `field_id` under `tracker.state`, `tracker.plan_verdict`, `tracker.decomp_verdict` or
+//!   `tracker.short_title`, which `msw-state.py` ignores: field ids are resolved per account and are not configuration.
 //!
 //! It is looser in one place: a missing `tracker.ingest.match` reads as `any`, where
 //! `trusted_ingest` reports it as not any or all.
@@ -464,6 +464,7 @@ fn check_tracker(
             "state",
             "plan_verdict",
             "decomp_verdict",
+            "short_title",
             "fields",
             "ingest",
         ],
@@ -498,7 +499,7 @@ fn check_tracker(
     if let Some(state) = tracker.get("state") {
         check_tracker_value(state, &path.key("state"), true)?;
     }
-    for key in ["plan_verdict", "decomp_verdict"] {
+    for key in ["plan_verdict", "decomp_verdict", "short_title"] {
         if let Some(verdict) = tracker.get(key) {
             check_tracker_value(verdict, &path.key(key), false)?;
         }
@@ -544,9 +545,9 @@ fn check_ingest(value: &Value, path: &Path) -> Result<Trust, Error> {
     Ok(trust)
 }
 
-/// `tracker.state` (`with_status`), `tracker.plan_verdict` or `tracker.decomp_verdict`, checked
-/// as `msw-state.py` `settings` checks it. Fields are named only: their ids are resolved per
-/// account, so a `field_id` key is unknown here.
+/// `tracker.state` (`with_status`), `tracker.plan_verdict`, `tracker.decomp_verdict` or
+/// `tracker.short_title`, checked as `msw-state.py` `settings` checks it. Fields are named only:
+/// their ids are resolved per account, so a `field_id` key is unknown here.
 fn check_tracker_value(value: &Value, path: &Path, with_status: bool) -> Result<(), Error> {
     let block = mapping(value, path)?;
     let keys: &[&str] = if with_status {
