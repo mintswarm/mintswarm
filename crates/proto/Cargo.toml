@@ -20,6 +20,10 @@ tonic-prost = { workspace = true }
 # workspace-wide test and lint runs build every crate against proto with
 # `fakes`, so each crate that uses the fakes must declare the feature itself.
 mintswarm-proto = { path = ".", features = ["fakes"] }
+# Both serve only `tests/job_v1.rs`, the temporary parity test against
+# `domain::job`; job-in-proto removes them together with it.
+mintswarm-domain = { path = "../domain" }
+protox = { workspace = true }
 
 [build-dependencies]
 protox = { workspace = true }

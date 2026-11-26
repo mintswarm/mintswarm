@@ -1,0 +1,234 @@
+syntax = "proto3";
+
+package mintswarm.job.v1;
+
+// The job vocabulary of design §12.2 "Stored job values": the names of a
+// job's kinds, states, events, escalation causes and assignment reasons,
+// shared by the runner's and the plane's stores.
+//
+// How one stage attempt ended is `mintswarm.runner.v1.AttemptOutcomeKind`;
+// this package has no copy of it.
+
+// The kind of a job, from the issue type per `tracker.kinds` (§6, "States").
+enum JobKind {
+  // Not set; never sent.
+  JOB_KIND_UNSPECIFIED = 0;
+  // A design issue: analyse, design, approval, then decompose.
+  JOB_KIND_DESIGN = 1;
+  // A plan issue: analyse, then decompose into children.
+  JOB_KIND_PLAN = 2;
+  // An implementation issue: analyse, plan, implement, review and land.
+  JOB_KIND_IMPLEMENTATION = 3;
+}
+
+// A state of the job loop (§6, "States"). `paused` is a flag on the job, never
+// a state.
+enum JobState {
+  // Not set; never sent.
+  JOB_STATE_UNSPECIFIED = 0;
+  // Waiting for a trusted signal, its blockers, the account's throttle and a
+  // free worker.
+  JOB_STATE_QUEUED = 1;
+  // Step `prepare`: pins the base commit and writes the inputs.
+  JOB_STATE_PREPARING = 2;
+  // Stage `analyse`.
+  JOB_STATE_ANALYSING = 3;
+  // Human wait: a stage returned `needs_input`, and the issue is assigned.
+  JOB_STATE_AWAITING_INPUT = 4;
+  // Re-classification of an implementation issue whose analysis proposes a
+  // split (#146).
+  JOB_STATE_RECLASSIFYING = 5;
+  // Stage `design`, for design issues only.
+  JOB_STATE_DESIGNING = 6;
+  // Human wait: the design artefact is published and the issue assigned.
+  JOB_STATE_AWAITING_DESIGN_APPROVAL = 7;
+  // Stage `decompose`.
+  JOB_STATE_DECOMPOSING = 8;
+  // Human wait: the decomposition waits for approval.
+  JOB_STATE_AWAITING_DECOMPOSITION_APPROVAL = 9;
+  // Step `file_children`: files the children and their dependency links.
+  JOB_STATE_FILING_CHILDREN = 10;
+  // Deterministic wait until every child is done.
+  JOB_STATE_AWAITING_CHILDREN = 11;
+  // Stage `plan`.
+  JOB_STATE_PLANNING = 12;
+  // Step `bundle` of the plan floor, once per plan revision.
+  JOB_STATE_PLAN_FLOOR = 13;
+  // Stage `assess`.
+  JOB_STATE_ASSESSING = 14;
+  // The plan-approval decision under `pipeline.plan_approval`.
+  JOB_STATE_DECIDING = 15;
+  // Human wait: the approval package is posted and the issue assigned.
+  JOB_STATE_AWAITING_PLAN_APPROVAL = 16;
+  // Stage `implement`, also in conflict mode.
+  JOB_STATE_IMPLEMENTING = 17;
+  // Step `commit`: the footprint check and the runner's commit.
+  JOB_STATE_COMMITTING = 18;
+  // Step `gates`: one gate round; the verdict always comes from here.
+  JOB_STATE_GATING = 19;
+  // Stage `gates`, opt-in under `gates.summary: agent`, after a failed round.
+  JOB_STATE_SUMMARISING_GATES = 20;
+  // Step `push`; opens the draft PR on the first push.
+  JOB_STATE_PUSHING = 21;
+  // Stage `review`, round n.
+  JOB_STATE_REVIEWING = 22;
+  // Stage `implement` in address mode: answers the findings.
+  JOB_STATE_ADDRESSING = 23;
+  // Steps `landing_facts` and `bundle` of the landing floor.
+  JOB_STATE_LANDING_FLOOR = 24;
+  // Stage `landing`.
+  JOB_STATE_LANDING_JUDGING = 25;
+  // The landing decision.
+  JOB_STATE_LANDING_DECIDING = 26;
+  // Human wait: the PR is ready, review is requested and the PR is assigned.
+  JOB_STATE_READY = 27;
+  // The merge-ready record is written; waits for the watch to observe
+  // `merged`.
+  JOB_STATE_MERGING = 28;
+  // Releases assignments, posts external steps if any, and closes.
+  JOB_STATE_RELEASING = 29;
+  // Human wait: the PR's `external_steps` are not empty.
+  JOB_STATE_AWAITING_EXTERNAL_STEPS = 30;
+  // Human wait, left only by a maintainer command.
+  JOB_STATE_ESCALATED = 31;
+  // Terminal: the job's work landed.
+  JOB_STATE_DONE = 32;
+  // Terminal: rejected at an approval.
+  JOB_STATE_REJECTED = 33;
+  // Terminal: cancelled; after a hand-over the branch is kept.
+  JOB_STATE_CANCELLED = 34;
+}
+
+// An event that moves a job (§6, "Main guards and events", and the states and
+// commands it implies). The approval commands `approve` and `changes` arrive
+// as `approved` and `changes_requested`.
+enum Event {
+  // Not set; never sent.
+  EVENT_UNSPECIFIED = 0;
+  // The queue starts a queued job.
+  EVENT_DISPATCH = 1;
+  // `prepare` wrote the inputs.
+  EVENT_PREPARED = 2;
+  // A stage returned a valid envelope with status `complete`.
+  EVENT_STAGE_COMPLETE = 3;
+  // A stage returned `needs_input`.
+  EVENT_STAGE_NEEDS_INPUT = 4;
+  // A trusted author answered the question of `awaiting_input`.
+  EVENT_ANSWERED = 5;
+  // The `approve` command at an approval.
+  EVENT_APPROVED = 6;
+  // The `changes` command at an approval.
+  EVENT_CHANGES_REQUESTED = 7;
+  // The `reject` command at an approval.
+  EVENT_REJECT = 8;
+  // The `veto` command after a plan approval, before the first push.
+  EVENT_VETO = 9;
+  // `reclassifying` set the issue type to `Plan` (#146).
+  EVENT_RECLASSIFIED = 10;
+  // `file_children` filed every child and link.
+  EVENT_CHILDREN_FILED = 11;
+  // `file_children` refused a parent whose type is neither `Plan` nor
+  // `Design`.
+  EVENT_PARENT_TYPE_REFUSED = 12;
+  // Every child of the job is done.
+  EVENT_CHILDREN_DONE = 13;
+  // A floor (plan or landing) was recorded.
+  EVENT_FLOOR_RECORDED = 14;
+  // A decision (plan or landing) was taken.
+  EVENT_DECIDED = 15;
+  // `commit` committed the staged work.
+  EVENT_COMMITTED = 16;
+  // `commit` found a changed path outside the footprint.
+  EVENT_OUT_OF_FOOTPRINT = 17;
+  // A gate round failed.
+  EVENT_GATES_FAILED = 18;
+  // A gate round passed under the `--verdict` conditions.
+  EVENT_GATES_PASSED = 19;
+  // `push` pushed the branch.
+  EVENT_PUSHED = 20;
+  // `push` found the pushed branch behind its base, with a conflict.
+  EVENT_PUSH_CONFLICT = 21;
+  // The review verdict `pass`.
+  EVENT_VERDICT_PASS = 22;
+  // The review verdict `changes_required`.
+  EVENT_VERDICT_CHANGES_REQUIRED = 23;
+  // A human reviewer requested changes on the ready PR.
+  EVENT_REVIEW_CHANGES_REQUESTED = 24;
+  // The watch saw the PR approved.
+  EVENT_PR_APPROVED = 25;
+  // The watch saw the PR merged.
+  EVENT_MERGED = 26;
+  // The PR's head moved away from the recorded head before the merge.
+  EVENT_HEAD_MOVED = 27;
+  // The steward refused the merge.
+  EVENT_MERGE_REFUSED = 28;
+  // `releasing` released the assignments.
+  EVENT_RELEASED = 29;
+  // A person finished the PR's external steps.
+  EVENT_EXTERNAL_STEPS_DONE = 30;
+  // A stage attempt ended `failed`, `timed_out`, `stalled`, `invalid_output`
+  // or `lost`.
+  EVENT_ATTEMPT_FAILED = 31;
+  // A stage attempt ended `throttled`.
+  EVENT_ATTEMPT_THROTTLED = 32;
+  // A stage attempt ended `model_unavailable`.
+  EVENT_MODEL_UNAVAILABLE = 33;
+  // A stage attempt ended `cancelled`.
+  EVENT_ATTEMPT_CANCELLED = 34;
+  // A deterministic step's input is unusable (exit 2 semantics).
+  EVENT_INPUT_UNUSABLE = 35;
+  // The `steer` command in `escalated`.
+  EVENT_STEER = 36;
+  // The `continue` command in `escalated`.
+  EVENT_CONTINUE = 37;
+  // The `accept` command in `escalated`.
+  EVENT_ACCEPT = 38;
+  // The `replan` command in `escalated`.
+  EVENT_REPLAN = 39;
+  // The `cancel` command; every state but the terminal ones takes it.
+  EVENT_CANCEL = 40;
+}
+
+// Why a job is in `escalated` (§6, "States", `escalated`).
+enum EscalationCause {
+  // Not set; never sent.
+  ESCALATION_CAUSE_UNSPECIFIED = 0;
+  // The review cap was reached with a `blocker` or `major` finding open.
+  ESCALATION_CAUSE_REVIEW_CAP = 1;
+  // A stage failed the attempt cap's number of attempts.
+  ESCALATION_CAUSE_ATTEMPTS_EXHAUSTED = 2;
+  // A stage's model is not available.
+  ESCALATION_CAUSE_MODEL_UNAVAILABLE = 3;
+  // A step failed the gate-round cap's number of gate rounds.
+  ESCALATION_CAUSE_GATE_CAP = 4;
+  // The commit changed a path outside the footprint.
+  ESCALATION_CAUSE_OUT_OF_FOOTPRINT = 5;
+  // A deterministic step's input is unusable.
+  ESCALATION_CAUSE_INPUT_UNUSABLE = 6;
+  // The steward refused the merge.
+  ESCALATION_CAUSE_MERGE_REFUSED = 7;
+  // `file_children` refused the parent's issue type.
+  ESCALATION_CAUSE_PARENT_TYPE_REFUSED = 8;
+  // The PR was merged at a head other than the recorded one.
+  ESCALATION_CAUSE_MERGED_HEAD_MISMATCH = 9;
+}
+
+// Who a row assigns the issue or PR to, and why.
+enum AssignReason {
+  // Not set; never sent.
+  ASSIGN_REASON_UNSPECIFIED = 0;
+  // A stage returned `needs_input`.
+  ASSIGN_REASON_NEEDS_INPUT = 1;
+  // The design waits for approval.
+  ASSIGN_REASON_DESIGN = 2;
+  // The decomposition waits for approval.
+  ASSIGN_REASON_DECOMPOSITION = 3;
+  // The plan waits for approval.
+  ASSIGN_REASON_PLAN_APPROVAL = 4;
+  // The ready PR waits for review.
+  ASSIGN_REASON_REVIEW = 5;
+  // The PR's external steps wait for a person.
+  ASSIGN_REASON_EXTERNAL_STEPS = 6;
+  // The job escalated; assigned to the approvers.
+  ASSIGN_REASON_ESCALATION = 7;
+}

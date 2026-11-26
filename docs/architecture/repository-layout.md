@@ -36,6 +36,7 @@ mintswarm/
 │   │   ├── buf.yaml        # buf module and rules
 │   │   ├── buf.gen.yaml    # buf generator plugins
 │   │   └── mintswarm/
+│   │       ├── job/v1/     # job vocabulary enums
 │   │       └── runner/v1/  # runner ⇄ plane gRPC stream
 │   ├── openapi/            # OpenAPI generated from proto
 │   └── schemas/            # JSON Schemas from Rust types
