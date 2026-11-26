@@ -8,6 +8,7 @@ pub mod field;
 pub mod hosting;
 pub mod ids;
 pub mod job;
+pub mod ownership;
 pub mod plane;
 pub mod priority;
 pub mod probe;
