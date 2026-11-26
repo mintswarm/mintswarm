@@ -11,17 +11,19 @@ workspace = true
 # Short-lived Postgres instances for tests, in `mintswarm_core::testing::pg`. Enabled only
 # explicitly: no self dev-dependency turns it on, so workspace-wide test and lint runs need no
 # Postgres.
-pg-tests = ["dep:tokio", "dep:tempfile", "dep:thiserror", "dep:rustix"]
+pg-tests = ["dep:tokio", "dep:tempfile", "dep:rustix"]
 
 [dependencies]
 chacha20poly1305 = { workspace = true }
 deadpool-postgres = { workspace = true }
 mintswarm-domain = { path = "../domain" }
+mintswarm-github = { path = "../github" }
 rustix = { workspace = true, features = ["process"], optional = true }
 tempfile = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"], optional = true }
 tokio-postgres = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
