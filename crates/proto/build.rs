@@ -40,7 +40,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         // RPC's `connect` method; see the module doc.
         .build_transport(false)
         .skip_debug([".mintswarm.runner.v1.Secret"])
-        // A `BTreeMap`, as in `domain::probe`, so the facts need no conversion.
+        // A `BTreeMap`, the map type of `domain::probe`, so the keys keep the
+        // same order.
         .btree_map(".mintswarm.runner.v1.ProbeResult.Known.facts")
         // `Hello` is far larger than the other cases; it is sent once per
         // stream, so it stays unboxed.

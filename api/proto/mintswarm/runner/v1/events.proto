@@ -241,6 +241,8 @@ message RecordPut {
   string sha256 = 3;
   // The size of the record's bytes.
   uint64 size = 4;
+
+  // Records carry their own bindings; field 5 is unused, and not reserved.
 }
 
 // An artefact revision was put. Its bytes travel through the blob calls, by

@@ -133,7 +133,8 @@ message ProbeResult {
   // The probe failed, timed out or found nothing it could report.
   message Unknown {}
 
-  // What the probe found: a version, facts, or both.
+  // The probe found the capability; its version and facts, when it reports
+  // them.
   message Known {
     // The version the probe found, if it reports one.
     optional string version = 1;
@@ -165,7 +166,8 @@ message ProbeResult {
   oneof result {
     // The probe found nothing it could report.
     Unknown unknown = 5;
-    // The probe found a version, facts, or both.
+    // The probe found the capability; its version and facts, when it
+    // reports them.
     Known known = 6;
   }
 }
