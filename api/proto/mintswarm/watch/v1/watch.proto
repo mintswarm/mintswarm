@@ -271,7 +271,8 @@ message SubscribeRequest {
     StartAt start_at = 3;
   }
   // How often an idle stream sends a `HEARTBEAT` mark, in seconds: zero
-  // means the default of 30; at least 5.
+  // means the default of 30; at least 5. Out-of-range values are clamped,
+  // not refused: a value from 1 to 4 is raised to 5.
   uint32 heartbeat_seconds = 4;
   // Whether each `GitHubWebhook` carries its raw `payload`.
   bool include_payload = 5;
@@ -348,7 +349,9 @@ message ListWatchEventsRequest {
   // List the events after this cursor; empty lists from the oldest stored
   // event.
   string after = 2;
-  // The most events to return, at most 500.
+  // The most events to return, at most 500. Out-of-range values are
+  // clamped, not refused: zero means the default of 100, and a value above
+  // 500 is capped at 500.
   uint32 limit = 3;
   // Whether each `GitHubWebhook` carries its raw `payload`.
   bool include_payload = 4;

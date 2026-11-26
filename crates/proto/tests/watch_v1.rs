@@ -425,6 +425,20 @@ fn cursor_rules_are_documented() {
 }
 
 #[test]
+fn clamped_limits_are_documented() {
+    let subscribe = block(WATCH, "message SubscribeRequest {");
+    let heartbeat = leading_comment(subscribe, "uint32 heartbeat_seconds = 4;");
+    assert_says(&heartbeat, "zero means the default of 30");
+    assert_says(&heartbeat, "clamped, not refused");
+    assert_says(&heartbeat, "a value from 1 to 4 is raised to 5");
+    let list = block(WATCH, "message ListWatchEventsRequest {");
+    let limit = leading_comment(list, "uint32 limit = 3;");
+    assert_says(&limit, "clamped, not refused");
+    assert_says(&limit, "zero means the default of 100");
+    assert_says(&limit, "a value above 500 is capped at 500");
+}
+
+#[test]
 fn no_seq_in_the_package() {
     for src in [WATCH, GITHUB] {
         assert!(
