@@ -1,0 +1,105 @@
+{
+  "status": "STAGE_STATUS_COMPLETE",
+  "artefact": "plan",
+  "outputs": [
+    ".mintswarm/job/outputs/plan.md"
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "kind": "QUESTION_KIND_ASSUMPTION",
+      "question": "Where do the fixtures live?",
+      "why": "The Python self-test reads the same files.",
+      "shape": "QUESTION_SHAPE_ONE",
+      "options": [
+        {
+          "id": "a",
+          "label": "One directory per case",
+          "consequence": "Each case keeps its block and result together.",
+          "tradeOff": "More directories."
+        },
+        {
+          "id": "b",
+          "label": "Flat files",
+          "consequence": "Names carry the case."
+        }
+      ],
+      "recommendation": {
+        "choice": [
+          "a"
+        ],
+        "reason": "Cases stay self-contained."
+      },
+      "references": [
+        {
+          "kind": "QUESTION_REFERENCE_KIND_DESIGN",
+          "target": "#339 §10.4"
+        },
+        {
+          "kind": "QUESTION_REFERENCE_KIND_ANSWER",
+          "target": "s3/q2"
+        },
+        {
+          "kind": "QUESTION_REFERENCE_KIND_URL",
+          "target": "https://yaml.org/spec/1.2.2/"
+        }
+      ]
+    },
+    {
+      "id": "q2",
+      "kind": "QUESTION_KIND_ASSUMPTION",
+      "question": "Which shapes do the fixtures cover?",
+      "why": "Each shape has its own rules.",
+      "shape": "QUESTION_SHAPE_SEVERAL",
+      "options": [
+        {
+          "id": "one",
+          "label": "one",
+          "consequence": "Single choice."
+        },
+        {
+          "id": "several",
+          "label": "several",
+          "consequence": "Multiple choices."
+        },
+        {
+          "id": "open",
+          "label": "open",
+          "consequence": "Free text."
+        }
+      ],
+      "recommendation": {
+        "choice": [
+          "one",
+          "several"
+        ],
+        "reason": "Assumptions cannot be open."
+      }
+    },
+    {
+      "id": "q3",
+      "kind": "QUESTION_KIND_ASSUMPTION",
+      "question": "Is the closing bracket indented?",
+      "why": "The four-space rule covers it.",
+      "shape": "QUESTION_SHAPE_YES_NO",
+      "options": [
+        {
+          "id": "yes",
+          "label": "Yes",
+          "consequence": "Every continuation line is indented."
+        },
+        {
+          "id": "no",
+          "label": "No",
+          "consequence": "The bracket sits at column three."
+        }
+      ],
+      "recommendation": {
+        "choice": [
+          "yes"
+        ],
+        "reason": "One rule for every line."
+      }
+    }
+  ]
+}

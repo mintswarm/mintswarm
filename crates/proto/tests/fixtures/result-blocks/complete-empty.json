@@ -1,0 +1,9 @@
+{
+  "status": "STAGE_STATUS_COMPLETE",
+  "artefact": "handoff",
+  "outputs": [
+    ".mintswarm/job/outputs/handoff.md"
+  ],
+  "commit": "feat(domain): structured Question objects in StageOutcome",
+  "prTitle": "feat(domain): structured Question objects in StageOutcome"
+}
