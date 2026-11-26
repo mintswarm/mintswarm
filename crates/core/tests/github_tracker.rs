@@ -502,15 +502,11 @@ impl Request {
     }
 }
 
-/// A scripted reply: its status, extra response headers and body. Status [`DROP`] closes the
-/// connection without an answer.
-type Reply = (u16, Vec<(String, String)>, String);
-
-/// The scripted status that drops the connection after reading the request.
-const DROP: u16 = 0;
+/// A scripted reply: its status and body.
+type Reply = (u16, String);
 
 /// An HTTP/1.1 responder on a local port that serves one connection at a time, records each
-/// request and answers from a script of `(status, headers, body)` replies, one per request.
+/// request and answers from a script of `(status, body)` replies, one per request.
 pub struct Responder {
     pub base: String,
     requests: Arc<Mutex<Vec<Request>>>,
@@ -535,36 +531,19 @@ impl Responder {
                     continue;
                 };
                 recorded.lock().expect("poisoned").push(request);
-                let (status, headers, body) = {
+                let (status, body) = {
                     let mut replies = replies.lock().expect("poisoned");
                     if replies.is_empty() {
-                        (
-                            500,
-                            Vec::new(),
-                            String::from("{\"message\":\"no reply scripted\"}"),
-                        )
+                        (500, String::from("{\"message\":\"no reply scripted\"}"))
                     } else {
                         replies.remove(0)
                     }
                 };
-                if status == DROP {
-                    drop(stream);
-                    continue;
-                }
-                let mut response = format!("HTTP/1.1 {status} Scripted\r\n");
-                for (name, value) in &headers {
-                    response.push_str(&format!("{name}: {value}\r\n"));
-                }
-                if status == 304 {
-                    // A 304 has no body and no length.
-                    response.push_str("Connection: close\r\n\r\n");
-                } else {
-                    response.push_str(&format!(
-                        "Content-Type: application/json\r\nContent-Length: {}\r\n\
-                         Connection: close\r\n\r\n{body}",
-                        body.len()
-                    ));
-                }
+                let response = format!(
+                    "HTTP/1.1 {status} Scripted\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.shutdown().await;
             }
@@ -576,26 +555,12 @@ impl Responder {
         }
     }
 
-    /// Queues a reply with no extra headers.
+    /// Queues a reply.
     pub fn reply(&self, status: u16, body: impl Into<String>) {
-        self.reply_with(status, &[], body);
-    }
-
-    /// Queues a reply with extra response headers, such as `ETag` or `retry-after`.
-    pub fn reply_with(&self, status: u16, headers: &[(&str, &str)], body: impl Into<String>) {
-        let headers = headers
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect();
         self.script
             .lock()
             .expect("poisoned")
-            .push((status, headers, body.into()));
-    }
-
-    /// Queues a dropped connection: the request is read and the connection closed unanswered.
-    pub fn drop_connection(&self) {
-        self.reply(DROP, "");
+            .push((status, body.into()));
     }
 
     pub fn requests(&self) -> Vec<Request> {
