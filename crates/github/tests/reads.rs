@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     ArtifactSummary, CheckState, Comment, CommentMark, Cursor, Dependency, Direction, IssueType,
-    Link, LinkKind, Login,
+    Link, LinkKind, Login, RepoRole,
 };
 use mintswarm_domain::vcs::BranchName;
 use mintswarm_github::{
@@ -27,6 +27,10 @@ const PULL: &str = include_str!("fixtures/reads/pull.json");
 const BLOCKED_BY: &str = include_str!("fixtures/reads/blocked-by.json");
 const BLOCKING: &str = include_str!("fixtures/reads/blocking.json");
 const ISSUES_LIST: &str = include_str!("fixtures/reads/issues-list.json");
+const PERMISSION: &str = include_str!("fixtures/reads/permission.json");
+const PERMISSION_NONE: &str = include_str!("fixtures/reads/permission-none.json");
+const PARENT_NONE: &str = include_str!("fixtures/reads/parent-none.json");
+const PERMISSION_PATH: &str = "/repos/acme/widgets/collaborators/zmij/permission";
 const ISSUE: IssueNumber = IssueNumber(180);
 const ISSUE_PATH: &str = "/repos/acme/widgets/issues/180";
 const BOT: &str = "mintswarm-dev[bot]";
@@ -664,6 +668,174 @@ async fn read_links_returns_parent_and_sub_issues() {
         [
             format!("{ISSUE_PATH}/parent"),
             format!("{ISSUE_PATH}/sub_issues?per_page=100&page=1"),
+        ]
+    );
+}
+
+/// The recorded permission fixture with `role_name` and `permission` set, or removed for `None`.
+fn permission(role_name: Option<&str>, permission: Option<&str>) -> String {
+    let mut body: serde_json::Value = serde_json::from_str(PERMISSION).unwrap();
+    let object = body.as_object_mut().unwrap();
+    for (key, value) in [("role_name", role_name), ("permission", permission)] {
+        match value {
+            Some(value) => object.insert(key.to_owned(), value.into()),
+            None => object.remove(key),
+        };
+    }
+    body.to_string()
+}
+
+fn zmij() -> Login {
+    Login("zmij".into())
+}
+
+#[tokio::test]
+async fn read_permission_maps_every_role() {
+    let responder = Responder::start().await;
+    // The recorded answer as it stands, then with each other role.
+    responder.reply(200, PERMISSION);
+    let roles = [
+        ("maintain", "write", RepoRole::Maintain),
+        ("write", "write", RepoRole::Write),
+        ("triage", "read", RepoRole::Triage),
+        ("read", "read", RepoRole::Read),
+    ];
+    for (role_name, granted, _) in roles {
+        responder.reply(200, permission(Some(role_name), Some(granted)));
+    }
+    responder.reply(404, PERMISSION_NONE);
+    let client = client(&responder);
+    assert_eq!(
+        client.read_permission(&token(), &zmij()).await,
+        Ok(RepoRole::Admin)
+    );
+    for (_, _, role) in roles {
+        assert_eq!(client.read_permission(&token(), &zmij()).await, Ok(role));
+    }
+    assert_eq!(
+        client.read_permission(&token(), &zmij()).await,
+        Ok(RepoRole::NoAccess)
+    );
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 6);
+    for request in &requests {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, PERMISSION_PATH);
+    }
+    assert_token_only_in_authorization(&requests);
+}
+
+#[tokio::test]
+async fn read_permission_falls_back_to_the_permission_field() {
+    let responder = Responder::start().await;
+    let cases = [
+        (None, "admin", RepoRole::Admin),
+        (None, "write", RepoRole::Write),
+        (None, "read", RepoRole::Read),
+        (None, "none", RepoRole::NoAccess),
+        (Some("release-manager"), "write", RepoRole::Write),
+        (Some("auditor"), "read", RepoRole::Read),
+    ];
+    for (role_name, granted, _) in cases {
+        responder.reply(200, permission(role_name, Some(granted)));
+    }
+    let client = client(&responder);
+    for (role_name, granted, role) in cases {
+        assert_eq!(
+            client.read_permission(&token(), &zmij()).await,
+            Ok(role),
+            "{role_name:?} {granted}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_permission_of_an_unknown_login_is_no_access() {
+    let responder = Responder::start().await;
+    responder.reply(404, PERMISSION_NONE);
+    let client = client(&responder);
+    let login = Login("no-such-user-msw-0001".into());
+    assert_eq!(
+        client.read_permission(&token(), &login).await,
+        Ok(RepoRole::NoAccess)
+    );
+    // A login is sent as one path segment.
+    responder.reply(404, PERMISSION_NONE);
+    let login = Login("a/b c".into());
+    assert_eq!(
+        client.read_permission(&token(), &login).await,
+        Ok(RepoRole::NoAccess)
+    );
+    assert_eq!(
+        paths(&responder.requests()),
+        [
+            "/repos/acme/widgets/collaborators/no-such-user-msw-0001/permission",
+            "/repos/acme/widgets/collaborators/a%2Fb%20c/permission",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_unrecognised_permission_is_unexpected() {
+    let responder = Responder::start().await;
+    responder.reply(200, permission(None, Some("superuser")));
+    responder.reply(200, permission(Some("custom"), None));
+    let client = client(&responder);
+    let expected = Err(ReadError::Unexpected {
+        endpoint: format!("GET {PERMISSION_PATH}"),
+    });
+    assert_eq!(client.read_permission(&token(), &zmij()).await, expected);
+    assert_eq!(client.read_permission(&token(), &zmij()).await, expected);
+}
+
+#[tokio::test]
+async fn read_parent_returns_the_parent_or_none() {
+    let responder = Responder::start().await;
+    responder.reply(200, ISSUE_JSON);
+    responder.reply(404, PARENT_NONE);
+    let client = client(&responder);
+    assert_eq!(
+        client.read_parent(&token(), IssueNumber(593)).await,
+        Ok(Some(ISSUE))
+    );
+    assert_eq!(
+        client.read_parent(&token(), IssueNumber(593)).await,
+        Ok(None)
+    );
+    let requests = responder.requests();
+    assert_eq!(
+        paths(&requests),
+        [
+            "/repos/acme/widgets/issues/593/parent",
+            "/repos/acme/widgets/issues/593/parent",
+        ]
+    );
+    assert!(requests.iter().all(|request| request.method == "GET"));
+}
+
+#[tokio::test]
+async fn read_permission_and_read_parent_are_retried() {
+    let responder = Responder::start().await;
+    responder.reply(502, "");
+    responder.reply(200, PERMISSION);
+    responder.reply(502, "");
+    responder.reply(200, ISSUE_JSON);
+    let client = client(&responder).with_retry(fast_retries());
+    assert_eq!(
+        client.read_permission(&token(), &zmij()).await,
+        Ok(RepoRole::Admin)
+    );
+    assert_eq!(
+        client.read_parent(&token(), IssueNumber(593)).await,
+        Ok(Some(ISSUE))
+    );
+    assert_eq!(
+        paths(&responder.requests()),
+        [
+            PERMISSION_PATH,
+            PERMISSION_PATH,
+            "/repos/acme/widgets/issues/593/parent",
+            "/repos/acme/widgets/issues/593/parent",
         ]
     );
 }
