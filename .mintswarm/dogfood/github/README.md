@@ -255,7 +255,7 @@ Every open `mintswarm` issue the session works on carries one `msw-state` value,
 
 ### Values
 
-The values, what each one means and the issue status each one sets are `tracker.state.options` in `.mintswarm/config.yaml`, in lifecycle order, one entry per value with its meaning as a comment. `msw-state.py` reads them at `--base` and refuses any other value. `none`, `queued`, `blocked` and `done` must be listed, since the session sets them itself.
+The values, what each one means and the issue status each one sets are `tracker.state.options` in `.mintswarm/config.yaml`, in lifecycle order, one entry per value with its meaning as a comment. `msw-state.py` reads them at `--base` and refuses any other value. `none`, `queued`, `blocked`, `planning`, `awaiting approval`, `plan approved`, `awaiting merge` and `done` must be listed, since the session sets them itself.
 
 ### Runner states
 

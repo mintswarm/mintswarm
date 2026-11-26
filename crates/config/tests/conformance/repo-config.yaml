@@ -23,7 +23,8 @@ tracker:
     status: issue_status             # issue_status (the GitHub issue status of the value's options entry) | off
     # The values, in lifecycle order; the field's options and labels are matched by exact name,
     # not by position. A value without status leaves the issue status alone. none, queued,
-    # blocked and done must be listed.
+    # blocked, planning, awaiting approval, plan approved, awaiting merge and done must be
+    # listed.
     options:
       - { name: none }                                    # not a mintswarm job, or its job was rejected, cancelled or dropped
       - { name: queued, status: Todo }                    # picked up, waiting for a runner
