@@ -19,6 +19,7 @@ axum = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hmac = { workspace = true }
 mintswarm-core = { path = "../core" }
+mintswarm-domain = { path = "../domain" }
 mintswarm-github = { path = "../github" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

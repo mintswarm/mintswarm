@@ -27,6 +27,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use hmac::{Hmac, KeyInit, Mac};
+use mintswarm_domain::time::civil_from_days;
 use mintswarm_github::{KeyStore, KeyStoreEnv, KeyStoreError, SecretBytes, Tools, read_key};
 use serde::Serialize;
 use serde_json::Value;
@@ -259,26 +260,6 @@ pub fn format_rfc3339_utc(time: SystemTime) -> String {
         of_day % 60,
         since.subsec_millis()
     )
-}
-
-/// The proleptic Gregorian date `days` days after 1970-01-01, after Howard Hinnant's
-/// `civil_from_days`, for non-negative days only.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let day_of_era = z % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    (year, month, day)
 }
 
 /// One line of the delivery log, in this key order.
