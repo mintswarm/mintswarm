@@ -882,5 +882,136 @@ fn naming_standard_conforming_strings_is_refused() {
         );
     }
     assert!(split("SELECT 'standard_conforming_strings'").is_ok());
-    assert!(split("SELECT set_config('standard_conforming_strings', 'off', false)").is_ok());
+}
+
+#[test]
+fn naming_set_config_or_pg_settings_is_refused() {
+    for text in [
+        "SELECT set_config('standard_conforming_strings', 'off', false)",
+        "SELECT pg_catalog.SET_CONFIG('x', 'y', true)",
+        "UPDATE pg_settings SET setting = 'off' WHERE name = 'standard_conforming_strings'",
+    ] {
+        assert_eq!(
+            lex_error(&format!("SELECT 1;\n{text};")),
+            LexError::StandardConformingStrings { line: 2 },
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_select_with_any_into_is_ddl() {
+    for text in [
+        "SELECT 1 AS insert INTO newtab",
+        "SELECT x insert INTO newtab FROM foo",
+        "WITH a AS (SELECT 1) SELECT 1 AS merge INTO t FROM a",
+        "WITH a AS (SELECT 1) SELECT (1) insert INTO t FROM a",
+        "WITH a AS (SELECT x insert INTO t FROM u) SELECT 1",
+    ] {
+        assert_eq!(classify(&one(text)), Kind::Ddl, "{text}");
+    }
+    for text in [
+        "WITH a AS (INSERT INTO t VALUES (1) RETURNING x) SELECT * FROM a",
+        "WITH a(x) AS NOT MATERIALIZED (SELECT 1), b AS (SELECT 2) INSERT INTO t SELECT x FROM a",
+    ] {
+        assert_eq!(classify(&one(text)), Kind::Data, "{text}");
+    }
+}
+
+#[test]
+fn role_statements_are_grants() {
+    for text in [
+        "CREATE ROLE r IN ROLE admin",
+        "CREATE ROLE r",
+        "CREATE USER u",
+        "CREATE GROUP g USER u",
+        "ALTER GROUP g ADD USER u",
+        "ALTER GROUP \"G\" DROP USER u, v",
+    ] {
+        assert_eq!(classify(&one(text)), Kind::GrantOrRevoke, "{text}");
+    }
+    assert_eq!(classify(&one("ALTER GROUP g RENAME TO h")), Kind::Ddl);
+}
+
+#[test]
+fn a_number_ends_before_a_dollar() {
+    let all = statements("SELECT 1$$ $$; DROP TABLE jobs; -- $$");
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        all[0].tokens,
+        [
+            Token::Word("select".to_owned()),
+            Token::Word("1".to_owned()),
+            Token::DollarBody,
+        ]
+    );
+    assert_eq!(
+        narrowings(&all[1].text),
+        [(Narrowing::Drop, relation("jobs"))]
+    );
+    assert_eq!(one("SELECT a$1").tokens[1], Token::Word("a$1".to_owned()));
+}
+
+#[test]
+fn drops_that_reach_unnamed_objects_are_narrowings() {
+    use Narrowing::*;
+    let extension = |name: &str| Object::Extension(name.to_owned());
+    let dependants = |drop: &str| Object::Dependants(drop.to_owned());
+    let cases: Vec<(&str, Vec<(Narrowing, Object)>)> = vec![
+        (
+            "DROP EXTENSION pgcrypto",
+            vec![(Drop, extension("pgcrypto"))],
+        ),
+        (
+            "DROP EXTENSION IF EXISTS a, b CASCADE",
+            vec![(Drop, extension("a")), (Drop, extension("b"))],
+        ),
+        (
+            "ALTER EXTENSION pgcrypto SET SCHEMA other",
+            vec![(SetSchema, extension("pgcrypto"))],
+        ),
+        ("DROP OWNED BY app", vec![(Drop, dependants("DROP OWNED"))]),
+        (
+            "DROP SERVER s CASCADE",
+            vec![(Drop, dependants("DROP SERVER"))],
+        ),
+        (
+            "DROP TEXT SEARCH CONFIGURATION c CASCADE",
+            vec![(Drop, dependants("DROP TEXT"))],
+        ),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(narrowings(text), expected, "{text}");
+    }
+    assert!(narrowings("DROP SERVER s").is_empty());
+    assert!(narrowings("ALTER EXTENSION pgcrypto UPDATE").is_empty());
+    assert_eq!(
+        reading("CREATE EXTENSION pgcrypto SCHEMA s").creates,
+        [extension("pgcrypto")]
+    );
+    assert!(
+        reading("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            .creates
+            .is_empty()
+    );
+    assert!(
+        check(&[
+            (FIRST, "CREATE EXTENSION pgcrypto"),
+            (
+                SECOND,
+                "ALTER EXTENSION pgcrypto SET SCHEMA s; DROP EXTENSION pgcrypto"
+            ),
+        ])
+        .is_accepted()
+    );
+    let refused = check(&[(
+        FIRST,
+        "CREATE SERVER s FOREIGN DATA WRAPPER w; DROP OWNED BY app; DROP SERVER s CASCADE",
+    )]);
+    assert_eq!(refused.refusals.len(), 2);
+    assert!(
+        refused.refusals[0]
+            .to_string()
+            .contains("the objects DROP OWNED drops")
+    );
 }
