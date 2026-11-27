@@ -205,6 +205,70 @@ async fn size_and_priority_share_one_request() {
 }
 
 #[tokio::test]
+async fn an_issue_shows_the_ids_of_its_fields() {
+    let responder = Responder::start().await;
+    responder.reply(200, VALUES);
+    let client = client(&responder);
+    let pass = client.pass(&token());
+    assert_eq!(pass.issue_field_id(ISSUE, "Effort").await, Ok(Some(101)));
+    assert_eq!(pass.issue_field_id(ISSUE, "Priority").await, Ok(Some(202)));
+    assert_eq!(pass.issue_field_id(ISSUE, "Severity").await, Ok(None));
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, VALUES_PATH);
+}
+
+#[tokio::test]
+async fn an_issue_without_values_shows_no_field_id() {
+    let responder = Responder::start().await;
+    responder.reply(200, "[]");
+    let id = client(&responder)
+        .pass(&token())
+        .issue_field_id(ISSUE, "Effort")
+        .await;
+    assert_eq!(id, Ok(None));
+}
+
+#[tokio::test]
+async fn a_recreated_field_shows_its_new_id() {
+    let responder = Responder::start().await;
+    responder.reply(200, RECREATED);
+    let id = client(&responder)
+        .pass(&token())
+        .issue_field_id(ISSUE, "Effort")
+        .await;
+    assert_eq!(id, Ok(Some(909)));
+}
+
+#[tokio::test]
+async fn values_that_are_not_a_list_show_no_field_id() {
+    let responder = Responder::start().await;
+    responder.reply(200, r#"{"message":"not a list"}"#);
+    let error = client(&responder)
+        .pass(&token())
+        .issue_field_id(ISSUE, "Effort")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FieldError::Transport(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn learning_the_id_and_reading_the_value_share_one_request() {
+    let responder = Responder::start().await;
+    responder.reply(200, VALUES);
+    let client = client(&responder);
+    let pass = client.pass(&token());
+    let id = pass.issue_field_id(ISSUE, "Effort").await.unwrap();
+    assert_eq!(id, EFFORT_ID);
+    assert_eq!(
+        pass.read_field(ISSUE, &size(), id).await,
+        Ok(FieldRead::Value(value(Some(101), Some(1003), "M")))
+    );
+    assert_eq!(responder.requests().len(), 1);
+}
+
+#[tokio::test]
 async fn a_second_pass_revalidates_with_the_etag() {
     let responder = Responder::start().await;
     responder.reply_with(200, &[("ETag", "\"v1\"")], VALUES);

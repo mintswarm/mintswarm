@@ -3,7 +3,9 @@
 //!
 //! A field is configured by name only; the caller resolves its id (for example with
 //! [`GitHubFieldCatalogue::field_id`](crate::GitHubFieldCatalogue::field_id)) and passes it to
-//! each read and write, and resolves it again when an error calls for it.
+//! each read and write, and resolves it again when an error calls for it. A caller may also learn
+//! the id from an issue that shows the field, with [`FieldPass::issue_field_id`], which reads the
+//! same response the pass's reads use.
 //!
 //! A [`FieldClient`] is bound to one repository and keeps an ETag cache across passes. A
 //! [`FieldPass`] is one pass over issues with one token: every role of an issue is read from one
@@ -135,6 +137,30 @@ impl FieldPass<'_> {
                 resolve_labels(&labels, &pattern, &field.options)
             }
         }
+    }
+
+    /// The id of the field named `name` as `issue`'s `issue-field-values` show it: the
+    /// `issue_field_id` of the first entry whose `issue_field_name` is `name`, or `None` when no
+    /// entry has that name.
+    ///
+    /// It reads the pass's copy of the values, so a later [`read_field`](Self::read_field) of the
+    /// issue in the same pass sends no second request.
+    pub async fn issue_field_id(
+        &self,
+        issue: IssueNumber,
+        name: &str,
+    ) -> Result<Option<u64>, FieldError> {
+        let entries = self.fetch(issue.0, Resource::FieldValues).await?;
+        let entries = entries.as_array().ok_or_else(|| {
+            FieldError::Transport(format!(
+                "GET {}: not the expected JSON",
+                self.client.path(issue.0, Resource::FieldValues)
+            ))
+        })?;
+        Ok(entries
+            .iter()
+            .find(|entry| entry.get("issue_field_name").and_then(Value::as_str) == Some(name))
+            .and_then(|entry| entry.get("issue_field_id").and_then(Value::as_u64)))
     }
 
     /// Sets the role's field on `issue` to the option `option`, or clears it for `None`.

@@ -1173,11 +1173,13 @@ dependencies = [
  "chacha20poly1305",
  "deadpool-postgres",
  "mintswarm-domain",
+ "mintswarm-github",
  "rustix",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]
