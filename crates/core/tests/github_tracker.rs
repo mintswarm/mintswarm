@@ -1,6 +1,7 @@
 //! The GitHub tracker against a scripted local server answering with JSON in the shapes of the
 //! `mintswarm-github` fixtures: field ids learned, reused, forgotten and deferred, and the other
-//! capabilities over their clients.
+//! capabilities over their clients, the reactions, edits and permission reads replaying the
+//! recorded fixtures themselves.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
@@ -14,11 +15,12 @@ use mintswarm_domain::field::{
 };
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Comments, Cursor, Fields, IssueType, Issues, Links, Login, Statuses, SubItem,
+    Collaborators, CommentEdits, Comments, Cursor, Fields, IssueType, Issues, Links, Login,
+    Reactions, RepoRole, Statuses, SubItem,
 };
 use mintswarm_github::{
-    Clock, CommentClient, CommentError, ContentLimiter, FieldClient, GitHubReads, Kinds,
-    NOTE_MARKER, Permissions, RetryPolicy, StatusClient, Token, TokenError,
+    Clock, CommentClient, CommentError, ContentLimiter, FieldClient, GitHubReads, IssueWrites,
+    Kinds, NOTE_MARKER, Permissions, RetryPolicy, StatusClient, Token, TokenError, WriteError,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -71,6 +73,17 @@ const COMMENTS_JSON: &str = r#"[{
 const STATUSES: &str = r#"{"data":{"node":{"repository":{"planningStatuses":{"nodes":[
   {"id":"PS_kwDOAcmeQueued","name":"Queued"},{"id":"PS_kwDOAcmeDone","name":"Done"}]}}}}}"#;
 const SET_STATUS: &str = r#"{"data":{"setIssueStatus":{"clientMutationId":null}}}"#;
+/// The fixtures `mintswarm-github` recorded against GitHub.
+const REACTION: &str = include_str!("../../github/tests/fixtures/writes/reaction.json");
+const COMMENT_EDITED: &str = include_str!("../../github/tests/fixtures/writes/comment-edited.json");
+const ARTIFACT_UPDATED: &str =
+    include_str!("../../github/tests/fixtures/writes/artifact-updated.json");
+const REFUSED: &str = include_str!("../../github/tests/fixtures/writes/refused.json");
+const PERMISSION: &str = include_str!("../../github/tests/fixtures/reads/permission.json");
+const PERMISSION_NONE: &str =
+    include_str!("../../github/tests/fixtures/reads/permission-none.json");
+const PARENT_NONE: &str = include_str!("../../github/tests/fixtures/reads/parent-none.json");
+const COMMENT_ID: u64 = 7_202_074_597;
 const CREATED: &str = r#"{
   "id": 9001, "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-9001",
   "user": {"login": "mintswarm-dev[bot]", "type": "Bot"},
@@ -103,6 +116,7 @@ fn single_attempt() -> RetryPolicy {
 fn tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
     let base = responder.base.as_str();
     let clock = Clock::system();
+    let limiter = Arc::new(ContentLimiter::new(clock.clone()));
     let clients = GitHubClients {
         reads: GitHubReads::new(
             base,
@@ -125,11 +139,14 @@ fn tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
             "acme",
             "widgets",
             Login(BOT.into()),
-            Arc::new(ContentLimiter::new(clock.clone())),
+            Arc::clone(&limiter),
             clock,
         )
         .unwrap()
         .with_retry(single_attempt()),
+        writes: IssueWrites::new(base, "acme", "widgets", limiter)
+            .unwrap()
+            .with_retry(single_attempt()),
     };
     GitHubTracker::new(base, "acme", "widgets", FixedTokens, clients)
 }
@@ -479,6 +496,167 @@ async fn each_status_call_opens_its_own_pass() {
     let mut expected = vec![String::from("GET /repos/acme/widgets/issues/7")];
     expected.extend(set.iter().cycle().take(6).cloned());
     assert_eq!(summary(&responder.requests()), expected);
+}
+
+/// Asserts that `request` is `method path`, sent with the tracker's token.
+fn assert_sent(request: &Request, method: &str, path: &str) {
+    assert_eq!(
+        (request.method.as_str(), request.path.as_str()),
+        (method, path)
+    );
+    assert_eq!(
+        request.header("authorization"),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+}
+
+#[tokio::test]
+async fn reacts_plus_one_to_a_comment() {
+    let responder = Responder::start().await;
+    responder.reply(201, REACTION);
+    tracker(&responder)
+        .react_plus_one(COMMENT_ID)
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_sent(
+        &requests[0],
+        "POST",
+        &format!("/repos/acme/widgets/issues/comments/{COMMENT_ID}/reactions"),
+    );
+    assert!(
+        requests[0].body.contains(r#""content":"+1""#),
+        "{}",
+        requests[0].body
+    );
+}
+
+#[tokio::test]
+async fn edits_a_comment_and_returns_it() {
+    let responder = Responder::start().await;
+    responder.reply(200, COMMENT_EDITED);
+    let body = "<!-- mintswarm: note -->\nScratch comment by mintswarm-dev, edited by the steward.";
+    let comment = tracker(&responder)
+        .edit_comment(COMMENT_ID, body.to_owned())
+        .await
+        .unwrap();
+    assert_eq!(comment.id, COMMENT_ID);
+    assert_eq!(comment.body, body);
+    assert_eq!(comment.updated_at, "2026-11-26T19:54:10Z");
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_sent(
+        &requests[0],
+        "PATCH",
+        &format!("/repos/acme/widgets/issues/comments/{COMMENT_ID}"),
+    );
+    assert!(
+        requests[0].body.contains("edited by the steward"),
+        "{}",
+        requests[0].body
+    );
+}
+
+#[tokio::test]
+async fn updates_an_artifact_by_its_number() {
+    let responder = Responder::start().await;
+    responder.reply(200, ARTIFACT_UPDATED);
+    let body = "# Scratch artefact\n\nVersion 2, by the steward.";
+    let artifact = tracker(&responder)
+        .update_artifact(ISSUE, 1, body.to_owned())
+        .await
+        .unwrap();
+    assert_eq!(artifact.name, "Scratch artefact");
+    assert_eq!(artifact.body, body);
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_sent(
+        &requests[0],
+        "PATCH",
+        "/repos/acme/widgets/issues/7/artifacts/1",
+    );
+}
+
+#[tokio::test]
+async fn a_refused_write_is_kept_as_refused() {
+    let responder = Responder::start().await;
+    responder.reply(403, REFUSED);
+    responder.reply(403, REFUSED);
+    responder.reply(403, REFUSED);
+    let tracker = tracker(&responder);
+    let errors = [
+        tracker.react_plus_one(COMMENT_ID).await.unwrap_err(),
+        tracker
+            .edit_comment(COMMENT_ID, "Edited.".into())
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+        tracker
+            .update_artifact(ISSUE, 1, "Updated.".into())
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+    ];
+    for error in &errors {
+        assert!(
+            matches!(error, GitHubTrackerError::Write(WriteError::Refused { .. })),
+            "{error:?}"
+        );
+    }
+    assert_eq!(responder.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn reads_a_collaborator_permission() {
+    let responder = Responder::start().await;
+    responder.reply(200, PERMISSION);
+    responder.reply(404, PERMISSION_NONE);
+    let tracker = tracker(&responder);
+    assert_eq!(
+        tracker.read_permission(Login("zmij".into())).await.unwrap(),
+        RepoRole::Admin
+    );
+    assert_eq!(
+        tracker
+            .read_permission(Login("no-such-user-msw-0001".into()))
+            .await
+            .unwrap(),
+        RepoRole::NoAccess
+    );
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 2);
+    assert_sent(
+        &requests[0],
+        "GET",
+        "/repos/acme/widgets/collaborators/zmij/permission",
+    );
+    assert_sent(
+        &requests[1],
+        "GET",
+        "/repos/acme/widgets/collaborators/no-such-user-msw-0001/permission",
+    );
+}
+
+#[tokio::test]
+async fn reads_an_issue_parent() {
+    let responder = Responder::start().await;
+    responder.reply(404, PARENT_NONE);
+    responder.reply(
+        200,
+        r#"{"id": 3000548, "number": 548, "title": "The parent"}"#,
+    );
+    let tracker = tracker(&responder);
+    assert_eq!(tracker.read_parent(ISSUE).await.unwrap(), None);
+    assert_eq!(
+        tracker.read_parent(ISSUE).await.unwrap(),
+        Some(IssueNumber(548))
+    );
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_sent(request, "GET", "/repos/acme/widgets/issues/7/parent");
+    }
 }
 
 // The scripted responder, as in `crates/github/tests/support/mod.rs`.

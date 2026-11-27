@@ -1,5 +1,6 @@
 //! The GitHub tracker: the capability traits the plane uses ([`Issues`], [`Links`], [`Fields`],
-//! [`Statuses`] and [`Comments`]) over the `mintswarm-github` clients, design §9.
+//! [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`] and [`Collaborators`]) over the
+//! `mintswarm-github` clients, design §9.
 //!
 //! Every call asks its [`InstallationTokens`] for one installation token, writing issues and
 //! reading the repository's metadata, and opens a fresh pass of the client it uses, so each call
@@ -23,13 +24,14 @@ use std::sync::{Mutex, MutexGuard};
 use mintswarm_domain::field::{FieldError, FieldFinding, FieldRead, FieldRef, FieldSource};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Comment, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead, IssueType, Issues,
-    Link, Links, Statuses, SubItem, TrackerBase,
+    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
+    Fields, Issue, IssueRead, IssueType, Issues, Link, Links, Login, Reactions, RepoRole, Statuses,
+    SubItem, TrackerBase,
 };
 use mintswarm_github::{
     CommentClient, CommentError, FieldClient, FieldPass, GitHubFieldCatalogue, GitHubReads,
-    NOTE_MARKER, Permissions, ReadError, STEER_MARKER, StatusClient, StatusError, Token,
-    TokenClient, TokenError,
+    IssueWrites, NOTE_MARKER, Permissions, ReadError, STEER_MARKER, StatusClient, StatusError,
+    Token, TokenClient, TokenError, WriteError,
 };
 
 /// The operator's step for a field whose id cannot be resolved, as the deferral log names it.
@@ -69,6 +71,10 @@ pub struct GitHubClients {
     pub statuses: StatusClient,
     /// Notes.
     pub comments: CommentClient,
+    /// Reactions, comment edits and artifact updates. It must share the
+    /// [`ContentLimiter`](mintswarm_github::ContentLimiter) of `comments`, so both count against
+    /// one content budget.
+    pub writes: IssueWrites,
 }
 
 /// Why a tracker call failed. Each client's error is kept as it is, so its rate-limit and
@@ -87,6 +93,10 @@ pub enum GitHubTrackerError {
     /// A note could not be posted.
     #[error(transparent)]
     Comment(#[from] CommentError),
+    /// A reaction, comment edit or artifact update failed; [`WriteError::Refused`] when the
+    /// installation may not change the item.
+    #[error(transparent)]
+    Write(#[from] WriteError),
     /// The tracker does not support the operation yet; nothing was sent.
     #[error("the GitHub tracker does not support {operation}")]
     Unsupported {
@@ -308,6 +318,54 @@ impl<T: InstallationTokens> Comments for GitHubTracker<T> {
             .comments
             .post_note(&token, issue, key, &body)
             .await?)
+    }
+}
+
+impl<T: InstallationTokens> Reactions for GitHubTracker<T> {
+    async fn react_plus_one(&self, comment_id: u64) -> Result<(), Self::Error> {
+        let token = self.token().await?;
+        Ok(self
+            .clients
+            .writes
+            .react_plus_one(&token, comment_id)
+            .await?)
+    }
+}
+
+impl<T: InstallationTokens> CommentEdits for GitHubTracker<T> {
+    async fn edit_comment(&self, comment_id: u64, body: String) -> Result<Comment, Self::Error> {
+        let token = self.token().await?;
+        Ok(self
+            .clients
+            .writes
+            .edit_comment(&token, comment_id, &body)
+            .await?)
+    }
+
+    async fn update_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+        body: String,
+    ) -> Result<Artifact, Self::Error> {
+        let token = self.token().await?;
+        Ok(self
+            .clients
+            .writes
+            .update_artifact(&token, issue, number, &body)
+            .await?)
+    }
+}
+
+impl<T: InstallationTokens> Collaborators for GitHubTracker<T> {
+    async fn read_permission(&self, login: Login) -> Result<RepoRole, Self::Error> {
+        let token = self.token().await?;
+        Ok(self.clients.reads.read_permission(&token, &login).await?)
+    }
+
+    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<IssueNumber>, Self::Error> {
+        let token = self.token().await?;
+        Ok(self.clients.reads.read_parent(&token, issue).await?)
     }
 }
 
