@@ -1,9 +1,12 @@
 //! `tracker.ingest` loads into a [`Trust`], and [`Trust::trusts`] combines the trusted labels
-//! and authors as `match` says.
+//! and authors as `match` says. `tracker.actions` loads into an [`ActionTable`] with a row for
+//! every [`Action`], and the loader refuses a table that is not one.
 
 #![cfg(test)]
 
-use mintswarm_config::{Trust, TrustMatch, load_repo_config};
+use mintswarm_config::{
+    Action, ActionTable, ActionTrust, People, Trust, TrustMatch, load_repo_config,
+};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{Issue, Login};
 use serde_json::{Value, json};
@@ -133,4 +136,254 @@ fn all_requires_both() {
         ..trust
     };
     assert!(!no_labels.trusts(&issue(&["mintswarm"], "zmij")));
+}
+
+const TRACKER: &str = "/tracker";
+
+/// The App the repository trusts to merge, and only to merge.
+const STEWARD: &str = "mintswarm-dev-steward";
+
+/// The row the repository's own config gives `action`.
+fn repository_row(action: Action) -> ActionTrust {
+    match action {
+        Action::ApprovePlan | Action::ApproveDesign | Action::ApproveDecomposition => ActionTrust {
+            people: People::IssueOwner,
+            apps: Vec::new(),
+        },
+        Action::ApprovePr => ActionTrust {
+            people: People::Codeowners,
+            apps: Vec::new(),
+        },
+        Action::Merge => ActionTrust {
+            people: People::None,
+            apps: vec![STEWARD.to_owned()],
+        },
+    }
+}
+
+fn people_name(people: People) -> &'static str {
+    People::NAMES
+        .iter()
+        .find(|(_, known)| *known == people)
+        .map(|(name, _)| *name)
+        .expect("every rule has a name")
+}
+
+/// `tracker.actions` as JSON, one row per action from `row`.
+fn actions_value(mut row: impl FnMut(Action) -> ActionTrust) -> Value {
+    let rows = Action::ALL
+        .iter()
+        .map(|&action| {
+            let ActionTrust { people, apps } = row(action);
+            (
+                action.as_str().to_owned(),
+                json!({ "people": people_name(people), "apps": apps }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Value::Object(rows)
+}
+
+/// A variant of the real config whose `tracker.actions` is `actions`.
+fn with_actions(change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> String {
+    variant(|c| {
+        let mut actions = actions_value(repository_row);
+        change(actions.as_object_mut().expect("the table is a mapping"));
+        c.pointer_mut(TRACKER)
+            .and_then(Value::as_object_mut)
+            .expect("tracker is a mapping")
+            .insert("actions".to_owned(), actions);
+    })
+}
+
+fn row(
+    actions: &mut serde_json::Map<String, Value>,
+    action: Action,
+) -> &mut serde_json::Map<String, Value> {
+    actions
+        .get_mut(action.as_str())
+        .and_then(Value::as_object_mut)
+        .expect("the row is a mapping")
+}
+
+fn refused_at(text: &str) -> String {
+    load_repo_config(text)
+        .expect_err("the config is refused")
+        .path()
+        .to_owned()
+}
+
+fn actions_path(action: Action) -> String {
+    format!("tracker.actions.{}", action.as_str())
+}
+
+#[test]
+fn actions_load_into_the_table() {
+    let config = load_repo_config(&with_actions(|_| {})).expect("the config loads");
+    for action in Action::ALL {
+        assert_eq!(
+            config.actions().get(action),
+            &repository_row(action),
+            "{action:?}"
+        );
+    }
+}
+
+#[test]
+fn absent_actions_trust_no_one() {
+    let text = variant(|c| {
+        c.pointer_mut(TRACKER)
+            .and_then(Value::as_object_mut)
+            .expect("tracker is a mapping")
+            .remove("actions");
+    });
+    let config = load_repo_config(&text).expect("the config loads");
+    assert_eq!(config.actions(), &ActionTable::default());
+    for action in Action::ALL {
+        assert_eq!(
+            ActionTable::default().get(action),
+            &ActionTrust {
+                people: People::None,
+                apps: Vec::new(),
+            }
+        );
+    }
+}
+
+#[test]
+fn missing_action_is_refused() {
+    for action in Action::ALL {
+        let text = with_actions(|actions| {
+            actions.remove(action.as_str());
+        });
+        assert_eq!(refused_at(&text), actions_path(action));
+    }
+}
+
+#[test]
+fn unknown_action_is_refused() {
+    let text = with_actions(|actions| {
+        actions.insert(
+            "approve_release".to_owned(),
+            json!({ "people": "none", "apps": [] }),
+        );
+    });
+    assert_eq!(refused_at(&text), "tracker.actions.approve_release");
+}
+
+#[test]
+fn row_keys_are_checked() {
+    for action in Action::ALL {
+        for key in ["people", "apps"] {
+            let text = with_actions(|actions| {
+                row(actions, action).remove(key);
+            });
+            assert_eq!(refused_at(&text), format!("{}.{key}", actions_path(action)));
+        }
+        let text = with_actions(|actions| {
+            row(actions, action).insert("logins".to_owned(), json!([]));
+        });
+        assert_eq!(
+            refused_at(&text),
+            format!("{}.logins", actions_path(action))
+        );
+        let text = with_actions(|actions| {
+            actions.insert(action.as_str().to_owned(), json!("none"));
+        });
+        assert_eq!(refused_at(&text), actions_path(action));
+        for apps in [
+            json!([1]),
+            json!([""]),
+            json!([format!("{STEWARD}[bot]")]),
+            json!(["Mintswarm-Dev-Steward"]),
+            json!(["mintswarm dev"]),
+            json!(["mintswarm_dev"]),
+            json!([STEWARD, STEWARD]),
+        ] {
+            let text = with_actions(|actions| {
+                row(actions, action).insert("apps".to_owned(), apps.clone());
+            });
+            assert_eq!(
+                refused_at(&text),
+                format!("{}.apps", actions_path(action)),
+                "{apps}"
+            );
+        }
+    }
+}
+
+#[test]
+fn app_outside_merge_is_refused() {
+    for action in Action::ALL {
+        let text = with_actions(|actions| {
+            row(actions, action).insert("apps".to_owned(), json!([STEWARD]));
+        });
+        if action == Action::Merge {
+            load_repo_config(&text).expect("merge may trust an App");
+            let text = with_actions(|actions| {
+                row(actions, action).insert("apps".to_owned(), json!([STEWARD, "other-app-2"]));
+            });
+            load_repo_config(&text).expect("merge may trust several Apps");
+        } else {
+            assert_eq!(refused_at(&text), format!("{}.apps", actions_path(action)));
+        }
+    }
+}
+
+#[test]
+fn people_rule_outside_its_rows_is_refused() {
+    for action in Action::ALL {
+        for (name, people) in People::NAMES {
+            let text = with_actions(|actions| {
+                row(actions, action).insert("people".to_owned(), json!(name));
+            });
+            if people.allowed_in(action) {
+                load_repo_config(&text).expect("the rule is allowed in the row");
+            } else {
+                assert_eq!(
+                    refused_at(&text),
+                    format!("{}.people", actions_path(action))
+                );
+            }
+        }
+        for value in [json!("maintainers"), json!(["none"]), Value::Null] {
+            let text = with_actions(|actions| {
+                row(actions, action).insert("people".to_owned(), value.clone());
+            });
+            assert_eq!(
+                refused_at(&text),
+                format!("{}.people", actions_path(action))
+            );
+        }
+    }
+    assert!(People::IssueOwner.allowed_in(Action::ApprovePlan));
+    assert!(!People::Codeowners.allowed_in(Action::ApprovePlan));
+    assert!(!People::IssueOwner.allowed_in(Action::ApprovePr));
+    assert!(People::Codeowners.allowed_in(Action::ApprovePr));
+    assert!(!People::Codeowners.allowed_in(Action::Merge));
+}
+
+#[test]
+fn action_names_follow_the_variants() {
+    for (n, (name, action)) in Action::NAMES.into_iter().enumerate() {
+        assert_eq!(Action::ALL[n], action);
+        assert_eq!(action.as_str(), name);
+    }
+}
+
+#[test]
+fn live_actions_trust_only_the_steward_to_merge() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.mintswarm/config.yaml");
+    let text = std::fs::read_to_string(&path).expect("the repository config is readable");
+    let config = load_repo_config(&text).expect("the repository config loads");
+    for action in Action::ALL {
+        let row = config.actions().get(action);
+        if action == Action::Merge {
+            assert_eq!(row.apps, [STEWARD], "{}", action.as_str());
+        } else {
+            assert!(row.apps.is_empty(), "{}", action.as_str());
+        }
+        assert_eq!(row, &repository_row(action), "{}", action.as_str());
+    }
 }

@@ -30,6 +30,10 @@
 //!
 //! The `gates.format` check is the loader's own: no dogfood tool checks it.
 //!
+//! The `tracker.actions` check is the loader's own as well. When present, the table holds a row
+//! for every [`Action`], each with a `people` rule allowed for that row and an `apps` list that
+//! is empty in every row but `merge`'s; when absent, no one is trusted with any action.
+//!
 //! The `tracker.fields` check is the loader's own too. Each `tracker.fields.<role>` entry is
 //! checked through the role's [`RoleDescriptor`], found by name in a registry, so the check
 //! holds no rule for one role only. A tracker field is named, never given by id: its id is
@@ -45,7 +49,10 @@ use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
 use crate::state::check_options;
-use crate::{Error, Path, Stage, StateSettings, StatusMode, Trust, TrustMatch, parse_yaml};
+use crate::{
+    Action, ActionTable, ActionTrust, Error, Path, People, Stage, StateSettings, StatusMode, Trust,
+    TrustMatch, parse_yaml,
+};
 
 /// The plan-approval and landing modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +205,7 @@ pub struct RepoConfig {
     formatters: Vec<Formatter>,
     trust: Trust,
     state: Option<StateSettings>,
+    actions: ActionTable,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -260,9 +268,9 @@ impl RepoConfig {
                 "gates",
             ],
         )?;
-        let (trust, state) = match top.get("tracker") {
+        let (trust, state, actions) = match top.get("tracker") {
             Some(tracker) => check_tracker(tracker, &root.key("tracker"), roles)?,
-            None => (Trust::default(), None),
+            None => (Trust::default(), None, ActionTable::default()),
         };
         if let Some(design) = top.get("design") {
             strings_only(design, &root.key("design"), &["store"], &[])?;
@@ -308,6 +316,7 @@ impl RepoConfig {
             formatters,
             trust,
             state,
+            actions,
         })
     }
 
@@ -359,6 +368,11 @@ impl RepoConfig {
     /// `tracker.state`, `None` when it is absent.
     pub fn state(&self) -> Option<&StateSettings> {
         self.state.as_ref()
+    }
+
+    /// `tracker.actions`, trusting no one with any action when absent.
+    pub fn actions(&self) -> &ActionTable {
+        &self.actions
     }
 
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
@@ -464,7 +478,7 @@ fn check_tracker(
     value: &Value,
     path: &Path,
     roles: &[&dyn RoleDescriptor],
-) -> Result<(Trust, Option<StateSettings>), Error> {
+) -> Result<(Trust, Option<StateSettings>, ActionTable), Error> {
     let tracker = mapping(value, path)?;
     known(
         tracker,
@@ -479,6 +493,7 @@ fn check_tracker(
             "short_title",
             "fields",
             "ingest",
+            "actions",
         ],
     )?;
     if let Some(kind) = tracker.get("kind") {
@@ -524,7 +539,11 @@ fn check_tracker(
         Some(ingest) => check_ingest(ingest, &path.key("ingest"))?,
         None => Trust::default(),
     };
-    Ok((trust, state))
+    let actions = match tracker.get("actions") {
+        Some(actions) => check_actions(actions, &path.key("actions"))?,
+        None => ActionTable::default(),
+    };
+    Ok((trust, state, actions))
 }
 
 /// `tracker.ingest`, built into a [`Trust`]. A missing `match` reads as `any`.
@@ -557,6 +576,91 @@ fn check_ingest(value: &Value, path: &Path) -> Result<Trust, Error> {
         };
     }
     Ok(trust)
+}
+
+/// `tracker.actions`, built into an [`ActionTable`]: every action has a row, and no other key is
+/// allowed.
+fn check_actions(value: &Value, path: &Path) -> Result<ActionTable, Error> {
+    let map = mapping(value, path)?;
+    let names = Action::NAMES.map(|(name, _)| name);
+    known(map, path, &names)?;
+    let mut table = ActionTable::default();
+    for action in Action::ALL {
+        let row_path = path.key(action.as_str());
+        let row = map
+            .get(action.as_str())
+            .ok_or_else(|| Error::schema(&row_path, "is missing"))?;
+        *table.get_mut(action) = check_action_row(action, row, &row_path)?;
+    }
+    Ok(table)
+}
+
+/// One `tracker.actions.<action>` row: `people` and `apps`, both required.
+fn check_action_row(action: Action, value: &Value, path: &Path) -> Result<ActionTrust, Error> {
+    let row = mapping(value, path)?;
+    known(row, path, &["people", "apps"])?;
+    let required = |key: &str| {
+        row.get(key)
+            .ok_or_else(|| Error::schema(&path.key(key), "is missing"))
+    };
+
+    let people_path = path.key("people");
+    let value = required("people")?;
+    let people = value
+        .as_str()
+        .and_then(|name| People::NAMES.iter().find(|(known, _)| *known == name))
+        .map(|(_, people)| *people)
+        .ok_or_else(|| {
+            let names = People::NAMES.map(|(name, _)| name).join(", ");
+            Error::schema(&people_path, format!("must be one of {names}, not {value}"))
+        })?;
+    if !people.allowed_in(action) {
+        return Err(Error::schema(
+            &people_path,
+            format!("{value} is not allowed for {}", action.as_str()),
+        ));
+    }
+
+    let apps_path = path.key("apps");
+    let apps = string_list(required("apps")?, &apps_path)?;
+    for (index, app) in apps.iter().enumerate() {
+        if app.ends_with("[bot]") {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} must be an App slug, without [bot]"),
+            ));
+        }
+        if !is_app_slug(app) {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} must be an App slug: lowercase letters, digits and hyphens"),
+            ));
+        }
+        if apps[..index].contains(app) {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} is listed twice"),
+            ));
+        }
+    }
+    if action != Action::Merge && !apps.is_empty() {
+        return Err(Error::schema(
+            &apps_path,
+            format!(
+                "must be empty: only {} may trust an App",
+                Action::Merge.as_str()
+            ),
+        ));
+    }
+    Ok(ActionTrust { people, apps })
+}
+
+/// Whether `app` is a GitHub App slug: non-empty, lowercase ASCII letters, digits and hyphens.
+fn is_app_slug(app: &str) -> bool {
+    !app.is_empty()
+        && app
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// `tracker.state` (`with_status`), `tracker.plan_verdict`, `tracker.decomp_verdict` or

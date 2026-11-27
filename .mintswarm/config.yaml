@@ -78,6 +78,16 @@ tracker:
       labels: [mintswarm]            # maintainer-only; never applied by an issue template
       authors: [zmij]
     match: any                       # any | all
+  # Who is trusted with each decision action; every action has a row with both keys.
+  # people: issue_owner (the issue's owner, with write access, not a bot; the approve_plan,
+  # approve_design and approve_decomposition rows), codeowners (approve_pr) or none (any row).
+  # apps: App slugs, without "[bot]"; empty in every row but merge, so no App approves.
+  actions:
+    approve_plan:          { people: issue_owner, apps: [] }
+    approve_design:        { people: issue_owner, apps: [] }
+    approve_decomposition: { people: issue_owner, apps: [] }
+    approve_pr:            { people: codeowners,  apps: [] }
+    merge:                 { people: none,        apps: [mintswarm-dev-steward] }
 
 design:
   store: issue_artifacts             # where design documents live
