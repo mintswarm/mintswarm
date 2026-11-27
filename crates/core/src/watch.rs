@@ -2,6 +2,9 @@
 //! which events a [`Filter`] matches, how ids and [`Cursor`]s are made, parsed and compared,
 //! and the [`Retention`] bounds. Everything works on the generated `mintswarm.watch.v1` types.
 //!
+//! [`normalise`] turns a verified GitHub webhook delivery into a `github.webhook` event, and
+//! [`Senders`] classes its sender (design 5.3, 6.3).
+//!
 //! An id is a UUIDv7 that increases in commit order: a store calls [`next_id`] while it holds
 //! its append lock. Byte order is id order, both in Rust (`Uuid`'s `Ord`) and in Postgres (a
 //! `uuid` column compares bytewise), so stores keep ids as native `uuid`, never as text. A
@@ -23,10 +26,12 @@ use mintswarm_proto::watch::v1;
 use uuid::{Uuid, Variant};
 
 mod filter;
+mod github;
 mod memory;
 mod store;
 
 pub use filter::Filter;
+pub use github::{BODY_LIMIT, Normalised, Senders, WEBHOOK_KIND, normalise, untrusted};
 pub use memory::MemoryWatchLog;
 pub use store::{AppendOutcome, Gap, Page, Pruned, WatchLog};
 
@@ -45,14 +50,19 @@ pub enum WatchError {
     /// No id can follow the latest one.
     #[error("cannot make an id: {0}")]
     Id(String),
+    /// A webhook delivery with an empty delivery id or event name, or a body that is not a JSON
+    /// object.
+    #[error("invalid webhook delivery: {0}")]
+    Payload(String),
 }
 
 impl From<WatchError> for tonic::Status {
     fn from(error: WatchError) -> Self {
         match error {
-            WatchError::Filter(_) | WatchError::Cursor(_) | WatchError::Retention(_) => {
-                tonic::Status::invalid_argument(error.to_string())
-            }
+            WatchError::Filter(_)
+            | WatchError::Cursor(_)
+            | WatchError::Retention(_)
+            | WatchError::Payload(_) => tonic::Status::invalid_argument(error.to_string()),
             WatchError::Id(_) => tonic::Status::internal(error.to_string()),
         }
     }
