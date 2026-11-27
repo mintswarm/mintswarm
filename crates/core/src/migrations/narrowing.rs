@@ -63,6 +63,12 @@ pub enum Object {
     Function(Name),
     /// A schema.
     Schema(String),
+    /// An extension, whose drop or move reaches its functions and types.
+    Extension(String),
+    /// The objects a `DROP OWNED`, or a `CASCADE` drop of a class not read here, drops without
+    /// naming them, by the statement's leading words. Nothing creates it, so its narrowing is
+    /// always refused.
+    Dependants(String),
 }
 
 impl fmt::Display for Object {
@@ -74,6 +80,8 @@ impl fmt::Display for Object {
             Self::Type(name) => write!(f, "type {name}"),
             Self::Function(name) => write!(f, "function {name}"),
             Self::Schema(name) => write!(f, "schema {name}"),
+            Self::Extension(name) => write!(f, "extension {name}"),
+            Self::Dependants(drop) => write!(f, "the objects {drop} drops"),
         }
     }
 }
@@ -186,6 +194,7 @@ enum Class {
     Type,
     Function,
     Schema,
+    Extension,
 }
 
 /// Reads the class keyword of a `DROP` or `CREATE`.
@@ -203,6 +212,8 @@ fn class(cursor: &mut Cursor<'_>) -> Option<Class> {
         Some(Class::Function)
     } else if cursor.eat("schema") {
         Some(Class::Schema)
+    } else if cursor.eat("extension") {
+        Some(Class::Extension)
     } else {
         None
     }
@@ -227,12 +238,19 @@ fn target(cursor: &mut Cursor<'_>, class: Class) -> Option<Object> {
             Some(Object::Function(name))
         }
         Class::Schema => cursor.ident().map(Object::Schema),
+        Class::Extension => cursor.ident().map(Object::Extension),
     }
 }
 
-/// `DROP <class> [IF EXISTS] a, b …`; other drops give nothing.
+/// `DROP <class> [IF EXISTS] a, b …`. `DROP OWNED`, and a drop of another class with `CASCADE`,
+/// narrow their [`Object::Dependants`]; other drops give nothing.
 fn read_drop(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     let Some(class) = class(cursor) else {
+        let cascade = cursor.rest().contains(&Token::Word("cascade".to_owned()));
+        if let Some(first) = cursor.ident().filter(|first| first == "owned" || cascade) {
+            let dependants = Object::Dependants(format!("DROP {}", first.to_uppercase()));
+            reading.narrows(Narrowing::Drop, dependants);
+        }
         return;
     };
     cursor.eat_all(&["if", "exists"]);
@@ -245,7 +263,8 @@ fn read_drop(cursor: &mut Cursor<'_>, reading: &mut Reading) {
 }
 
 /// `ALTER TABLE`, `FOREIGN TABLE`, `VIEW`, `MATERIALIZED VIEW`, `SEQUENCE`, `TYPE`, `DOMAIN`,
-/// `FUNCTION`, `PROCEDURE`, `ROUTINE`, `AGGREGATE` or `SCHEMA`; other alters give nothing.
+/// `FUNCTION`, `PROCEDURE`, `ROUTINE`, `AGGREGATE`, `EXTENSION` or `SCHEMA`; other alters give
+/// nothing.
 fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     if cursor.eat("table") || cursor.eat_all(&["foreign", "table"]) {
         cursor.eat_all(&["if", "exists"]);
@@ -286,6 +305,11 @@ fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
         } else if cursor.eat_all(&["set", "schema"]) {
             reading.narrows(Narrowing::SetSchema, Object::Function(name));
         }
+    } else if cursor.eat("extension")
+        && let Some(name) = cursor.ident()
+        && cursor.eat_all(&["set", "schema"])
+    {
+        reading.narrows(Narrowing::SetSchema, Object::Extension(name));
     } else if cursor.eat("schema")
         && let Some(name) = cursor.ident()
         && cursor.eat_all(&["rename", "to"])
