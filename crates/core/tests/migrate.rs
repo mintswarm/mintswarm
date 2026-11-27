@@ -50,7 +50,7 @@ async fn ledger(client: &Client) -> Vec<Row> {
             &[],
         )
         .await
-        .unwrap()
+        .expect("the ledger is readable")
         .iter()
         .map(|row| {
             (
@@ -76,7 +76,7 @@ async fn exists(client: &Client, relation: &str) -> bool {
     client
         .query_one("SELECT to_regclass($1) IS NOT NULL", &[&relation])
         .await
-        .unwrap()
+        .expect("the catalogue is readable")
         .get(0)
 }
 
@@ -86,13 +86,13 @@ async fn lock_is_free(config: &Config) -> bool {
     let free: bool = probe
         .query_one("SELECT pg_try_advisory_lock($1)", &[&MIGRATION_LOCK_KEY])
         .await
-        .unwrap()
+        .expect("the probe can try the lock")
         .get(0);
     if free {
         probe
             .execute("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_KEY])
             .await
-            .unwrap();
+            .expect("the probe can release the lock");
     }
     free
 }
@@ -285,7 +285,9 @@ async fn a_failing_file_stops_the_run_and_applies_nothing_of_itself() {
 async fn narrowing_an_applied_table_is_refused() {
     let db = pg::database().await.unwrap();
     let a = (up(V1, "create_t"), "CREATE TABLE t (id int);");
-    apply(db.config(), &tree(&[a.clone()])).await.unwrap();
+    apply(db.config(), &tree(std::slice::from_ref(&a)))
+        .await
+        .unwrap();
 
     let drop = up(V3, "drop_t");
     let files = [
