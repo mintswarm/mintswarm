@@ -137,17 +137,18 @@ pub enum ApplyError {
         /// The client's error.
         source: tokio_postgres::Error,
     },
-    /// A file's own transaction control ended the runner's transaction, so the file did not
-    /// run as one transaction with its ledger row. The files before it stay applied.
+    /// A file holds its own transaction control, which may have ended the runner's
+    /// transaction, so the file may not have run as one transaction with its ledger row. Its
+    /// ledger row is not written, and the files before it stay applied.
     #[error(
-        "{file}: the migration ended the runner's transaction with its own transaction \
-         control, so part of it may have been applied; no ledger row was written for it, and \
-         the run stopped"
+        "{file}: the migration holds its own transaction control, which may have ended the \
+         runner's transaction, so part of it may have been applied; no ledger row was written \
+         for it, and the run stopped"
     )]
     Escaped {
         /// The up file, relative to the tree root.
         file: String,
-        /// The client's error, when a statement failed after the transaction ended.
+        /// The client's error, when a statement of the file failed.
         source: Option<tokio_postgres::Error>,
     },
     /// A file's `COMMIT` got no clear answer. The files before it stay applied.

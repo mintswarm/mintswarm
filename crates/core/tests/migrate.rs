@@ -242,7 +242,9 @@ async fn a_lower_unapplied_version_is_applied() {
     let db = pg::database().await.unwrap();
     let earlier = (up(V1, "earlier"), "CREATE TABLE earlier (id int);");
     let later = (up(V2, "later"), "CREATE TABLE later (id int);");
-    apply(db.config(), &tree(&[later.clone()])).await.unwrap();
+    apply(db.config(), &tree(&[later.clone()]))
+        .await
+        .unwrap();
 
     let outcome = apply(db.config(), &tree(&[earlier.clone(), later]))
         .await
@@ -505,4 +507,21 @@ async fn a_commit_before_a_failure_is_not_reported_as_nothing_applied() {
     let client = connect(db.config()).await;
     assert!(versions(&client).await.is_empty());
     assert!(exists(&client, "mintswarm.y").await);
+}
+
+#[tokio::test]
+async fn a_failure_before_the_files_own_commit_gets_no_ledger_row() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "fails_then_commits");
+    let files = [(file.clone(), "CREATE TABLE a (id int); SELECT 1/0; COMMIT;")];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    let ApplyError::Escaped { file: named, .. } = error else {
+        panic!("expected an escaped transaction, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(!exists(&client, "mintswarm.a").await);
+    assert!(lock_is_free(db.config()).await);
 }
