@@ -25,6 +25,7 @@ clap = "4.6.9"
 deadpool-postgres = "0.14.2"
 ed25519-dalek = "2.2.0"
 hmac = "0.13.0"
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 jsonwebtoken = "9.3.1" # first user: hold simple_asn1 0.6.3 and time 0.3.41 in Cargo.lock, or move the toolchain to 1.88
 prost = "0.14.6"
 prost-reflect = "0.16.5"
