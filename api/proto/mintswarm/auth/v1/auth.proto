@@ -14,10 +14,9 @@ import "mintswarm/common/v1/secret.proto";
 // Adding RPCs, fields or enum values is a minor change. A breaking change
 // gets a `v2/` package beside this one.
 //
-// Only the RPCs that return no `Secret` and start no browser flow carry a
-// `google.api.http` annotation, so that the transcoder serves them over HTTP
-// (S2): `ListProviders`, `GetSession`, `ListSessions`, `RevokeSession`,
-// `Unlink` and `GetLink`. The others are gRPC only.
+// Only these RPCs carry a `google.api.http` annotation (§13, S2):
+// `ListProviders`, `GetSession`, `ListSessions`, `RevokeSession`, `Unlink`
+// and `GetLink`. The others have none.
 //
 // A session is presented as `authorization: Bearer <token>`. Every RPC except
 // `ListProviders` and the login RPCs (`BeginLogin`, `PollDeviceLogin` and
@@ -36,8 +35,7 @@ service AuthService {
   // device challenge, or a sign that credentials are expected.
   //
   // Errors: `INVALID_ARGUMENT` for an unknown provider, or for a
-  // `client_kind` of `web` or unspecified, since browsers start flows at the
-  // edge (§7.1).
+  // `client_kind` of `web` or unspecified (§7.1).
   rpc BeginLogin(BeginLoginRequest) returns (BeginLoginResponse);
 
   // Polls a device-flow login with its handle: pending, or the session.
@@ -82,9 +80,8 @@ service AuthService {
   // console MCP link through the `device` case (B4); the `redirect` case
   // mirrors the login loopback form.
   //
-  // Errors: `INVALID_ARGUMENT` for a `client_kind` of `web` or unspecified,
-  // since browsers start flows at the edge (§7.1); `FAILED_PRECONDITION`
-  // for a non-interactive session (§6).
+  // Errors: `INVALID_ARGUMENT` for a `client_kind` of `web` or unspecified
+  // (§7.1); `FAILED_PRECONDITION` for a non-interactive session (§6).
   rpc BeginLink(BeginLinkRequest) returns (BeginLinkResponse);
 
   // Polls a device-flow link with its handle: pending, or the link.
@@ -118,7 +115,7 @@ service AuthService {
 enum ClientKind {
   // Not set; never sent.
   CLIENT_KIND_UNSPECIFIED = 0;
-  // The web UI, which signs in through the HTTP edge.
+  // The web UI.
   CLIENT_KIND_WEB = 1;
   // The command-line client.
   CLIENT_KIND_CLI = 2;
