@@ -242,7 +242,7 @@ async fn a_lower_unapplied_version_is_applied() {
     let db = pg::database().await.unwrap();
     let earlier = (up(V1, "earlier"), "CREATE TABLE earlier (id int);");
     let later = (up(V2, "later"), "CREATE TABLE later (id int);");
-    apply(db.config(), &tree(&[later.clone()]))
+    apply(db.config(), &tree(std::slice::from_ref(&later)))
         .await
         .unwrap();
 
