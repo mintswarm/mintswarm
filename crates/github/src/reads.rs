@@ -880,7 +880,6 @@ fn summary_total_at(
     }
 }
 
-/// The `login` of the user object at `key`.
 /// Whether the user object `user` is a bot, as [`is_bot`] decides from its `login` and `type`.
 pub(crate) fn user_is_bot(user: &Value) -> bool {
     is_bot(
@@ -891,6 +890,7 @@ pub(crate) fn user_is_bot(user: &Value) -> bool {
     )
 }
 
+/// The `login` of the user object at `key`.
 pub(crate) fn login_at(body: &Value, key: &str, endpoint: &str) -> Result<Login, ReadError> {
     body.get(key)
         .map(|user| str_at(user, "login", endpoint))
