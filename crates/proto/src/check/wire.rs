@@ -406,7 +406,8 @@ fn directive(at: &At<'_>, m: &Directive) -> Checked {
             at.text("message", &deliver.message)
         }
         Kind::Drain(drain) => {
-            at.child("kind.drain").present("deadline", &drain.deadline)?;
+            at.child("kind.drain")
+                .present("deadline", &drain.deadline)?;
             Ok(())
         }
         Kind::Upgrade(_) => Ok(()),

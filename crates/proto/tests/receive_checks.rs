@@ -12,17 +12,16 @@ use mintswarm_proto::runner::v1::{
     Ack, ArtefactPut, AttemptOutcome, AttemptOutcomeKind, AttemptStartFailed,
     AttemptStartFailedReason, AttemptStarted, AuthenticateRequest, AuthenticateResponse,
     CancelClaim, CapabilitiesUpdate, Claim, ClaimRefusalReason, ClaimRefused, ClaimResult,
-    ConnectRequest, ConnectResponse, Directive, DirectiveDisposition, DirectiveReceipt,
-    EventBatch, GateResult, GetBlobHeader, GetBlobRequest, GetBlobResponse, GoAway, GoAwayReason,
-    Goodbye, GoodbyeReason, Harness, Heartbeat, HeartbeatAck, HeldAttempt, Hello, HelloAccepted,
-    HelloAck, HelloRejected, HelloRejectionStatus, HelloRepository, HostMetrics, LeaseState,
-    LoadSummary, NeedBlobs, NoWork, PlaneAttemptState, PlaneHeldAttempt, ProbeResult, Progress,
-    PutBlobHeader, PutBlobRequest, PutBlobResponse, Reauthenticate, Reauthenticated, RecordPut,
-    RegisterRequest, RegisterResponse, Repository, Resend, RunnerEvent, RunnerMode, RunnerState,
-    Secret, SessionLimits, SessionTimings, StageResult, StageStatus, StatBlobsRequest,
-    StatBlobsResponse, StepKind, Usage, Warning, connect_request, connect_response, directive,
-    get_blob_response, hello_ack, lease_state, probe_result, progress, put_blob_request,
-    runner_event,
+    ConnectRequest, ConnectResponse, Directive, DirectiveDisposition, DirectiveReceipt, EventBatch,
+    GateResult, GetBlobHeader, GetBlobRequest, GetBlobResponse, GoAway, GoAwayReason, Goodbye,
+    GoodbyeReason, Harness, Heartbeat, HeartbeatAck, HeldAttempt, Hello, HelloAccepted, HelloAck,
+    HelloRejected, HelloRejectionStatus, HelloRepository, HostMetrics, LeaseState, LoadSummary,
+    NeedBlobs, NoWork, PlaneAttemptState, PlaneHeldAttempt, ProbeResult, Progress, PutBlobHeader,
+    PutBlobRequest, PutBlobResponse, Reauthenticate, Reauthenticated, RecordPut, RegisterRequest,
+    RegisterResponse, Repository, Resend, RunnerEvent, RunnerMode, RunnerState, Secret,
+    SessionLimits, SessionTimings, StageResult, StageStatus, StatBlobsRequest, StatBlobsResponse,
+    StepKind, Usage, Warning, connect_request, connect_response, directive, get_blob_response,
+    hello_ack, lease_state, probe_result, progress, put_blob_request, runner_event,
 };
 
 const REQUEST: &str = "mintswarm.runner.v1.ConnectRequest";
@@ -477,7 +476,12 @@ fn a_missing_required_field_is_missing() {
     refused(m.receive(), message, "registration_token", Rule::Missing);
     let mut m = register_request();
     m.registration_token = secret("");
-    refused(m.receive(), message, "registration_token.value", Rule::Missing);
+    refused(
+        m.receive(),
+        message,
+        "registration_token.value",
+        Rule::Missing,
+    );
     let mut m = register_request();
     m.repository = Some(Repository::default());
     refused(m.receive(), message, "repository.remote", Rule::Missing);

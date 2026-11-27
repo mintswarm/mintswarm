@@ -99,9 +99,7 @@ impl fmt::Display for Rule {
             Rule::Unspecified => f.write_str("is unspecified"),
             Rule::UnknownValue { raw } => write!(f, "has the unknown value {raw}"),
             Rule::EmptyId => f.write_str("is an empty id"),
-            Rule::MalformedSha256 => {
-                f.write_str("is not a sha256 of 64 lowercase hex characters")
-            }
+            Rule::MalformedSha256 => f.write_str("is not a sha256 of 64 lowercase hex characters"),
             Rule::Zero => f.write_str("is zero"),
             Rule::PartialFence => f.write_str("is empty while other fence fields are set"),
             Rule::Question(violation) => violation.fmt(f),
@@ -256,7 +254,10 @@ fn enum_value<E: TryFrom<i32>>(raw: i32) -> Result<E, Rule> {
 
 /// Whether `value` is exactly 64 lowercase hex characters.
 fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The full proto name of `M`.
