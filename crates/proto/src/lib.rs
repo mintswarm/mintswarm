@@ -106,9 +106,14 @@ pub mod json {
         .map_err(|error| format!("the descriptor set does not decode: {error}"))
     });
 
+    /// The descriptors of every compiled proto, shared with [`crate::schema`].
+    pub(crate) fn pool() -> Result<&'static DescriptorPool, String> {
+        DESCRIPTORS.as_ref().map_err(Clone::clone)
+    }
+
     /// The descriptor of the generated message `M`.
     fn descriptor<M: Name>() -> Result<MessageDescriptor, String> {
-        let pool = DESCRIPTORS.as_ref().map_err(Clone::clone)?;
+        let pool = pool()?;
         let name = M::full_name();
         pool.get_message_by_name(&name)
             .ok_or_else(|| format!("no descriptor for {name}"))
@@ -185,6 +190,8 @@ pub mod json {
         }
     }
 }
+
+pub mod schema;
 
 /// The protocol's conformance scenarios and, in later changes, fakes of its
 /// services.

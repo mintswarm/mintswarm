@@ -40,7 +40,7 @@ mintswarm/
 │   │       ├── watch/v1/   # watch events gRPC stream
 │   │       └── runner/v1/  # runner ⇄ plane gRPC stream
 │   ├── openapi/            # OpenAPI generated from proto
-│   └── schemas/            # JSON Schemas from Rust types
+│   └── schemas/            # generated JSON Schemas
 │
 ├── crates/                 # Rust workspace members
 │   ├── domain/             # shared types and traits
@@ -145,7 +145,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 - **Protos** (`api/proto/`): `buf lint` runs in CI; `buf breaking` is off until the runner–plane exchange is live (#483). Rust is generated in `build.rs` of `crates/proto`, not committed. Messages exposed over HTTP are written with the proto3 JSON mapping in mind. The `runner/v1` protocol is described in [runner-protocol.md](runner-protocol.md).
 - **HTTP routes** come from `google.api.http` annotations, never from hand-written handlers. The event stream for the browser (`text/event-stream`) is the one exception if the transcoder cannot serve a server-streaming RPC as SSE.
 - **The transcoding layer is isolated.** HTTP JSON is transcoded in process by one module in core; nothing outside it names the transcoding crate, so it can be replaced.
-- **Generated contracts are committed:** `api/openapi/` (from the protos) and `api/schemas/` (from Rust types, via `cargo xtask schemas`). CI regenerates both and fails on drift. TypeScript in `web/packages/api` is generated from `api/openapi/` and not committed.
+- **Generated contracts are committed:** `api/openapi/` (from the protos) and `api/schemas/` (from the protos, generated in `crates/proto` and drift-checked by its cargo tests, and from Rust types, via `cargo xtask schemas`). CI regenerates both and fails on drift. TypeScript in `web/packages/api` is generated from `api/openapi/` and not committed.
 - **Commercial BFF:** implements the same proto services, so the UI never gets more than the console MCP.
 - **Versioning:** a breaking change to any contract gets a new version directory (`v2/`) beside the old one until the old version is retired.
 - **Migrations are append-only.** A merged migration is never edited; fix forward.
