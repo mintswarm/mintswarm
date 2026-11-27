@@ -110,13 +110,13 @@ msw-result:
   artefact: analysis
   outputs: [.mintswarm/job/outputs/analysis.md]
   questions: [
-    {"id": "q1", "kind": "must_decide", "question": "Which component owns the parser?",
-     "why": "Decides the plan's component and reviewers.", "shape": "one",
-     "options": [{"id": "a", "label": "domain", "consequence": "The types and the parser live together."},
-                 {"id": "b", "label": "runner", "consequence": "Only the runner reads blocks."}]},
-    {"id": "q2", "kind": "assumption", "question": "Are trailing comments allowed?",
-     "why": "Changes the parser's grammar.", "shape": "yes_no",
-     "recommendation": {"choice": ["yes"], "reason": "stages.md already uses them"}}
+    {"id": "q1", "kind": "recommended", "question": "Which component owns the parser?",
+     "why": "Decides the plan's component and its reviewers.", "shape": "one",
+     "options": [{"id": "a", "label": "domain", "consequence": "The types and the parser live together.",
+                  "trade_off": "Every reader of a block depends on domain."},
+                 {"id": "b", "label": "runner", "consequence": "Only the runner reads blocks.",
+                  "trade_off": "The control plane cannot read a block without the runner."}],
+     "recommendation": {"choice": ["a"], "reason": "The record types already live in domain."}}
     ]
   reason: ""
 ```

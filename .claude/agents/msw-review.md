@@ -118,7 +118,7 @@ msw-result:
   status: complete          # in either verdict; failed only if you could not review
   artefact: review
   outputs: [.mintswarm/job/outputs/review.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````

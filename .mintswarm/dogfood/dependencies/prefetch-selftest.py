@@ -18,7 +18,10 @@ sockets, the response cap); other sources refused with no request; hash
 mismatches and missing hashes; unsafe archives (absolute, `..`, symlink,
 hard link, FIFO, gzip bomb, member count, outside the top directory,
 oversized selected file); proc-macro through `crate-type`; members equal
-only under case or Unicode folding; data after the gzip stream; build and
+only under case or Unicode folding; data after the gzip stream, a truncated
+gzip stream and data after the tar end; a gzip stream read over several
+slices, valid, a bomb, truncated, and ending on a slice boundary with
+trailing bytes; build and
 install code that names files not copied, or that the scan cannot
 follow (`partial`); errors of any kind
 and non-regular members as `failed`, never a crash; the member cap on
@@ -52,6 +55,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zlib
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -719,6 +723,52 @@ def gzip_tail(box: Box):
         T.check(f"F3 {label}: the reason names it", "after its gzip stream" in record.get("reason", ""), str(record))
 
 
+def stream_ends(box: Box):
+    member = ("package/package.json", b'{"name": "rp"}')
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo(member[0])
+        info.size = len(member[1])
+        tar.addfile(info, io.BytesIO(member[1]))
+    packer = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+    trailing = packer.compress(buffer.getvalue() + b"TRAILING-GARBAGE") + packer.flush()
+    for label, raw, reason in (
+        ("a truncated gzip stream", tgz([member])[:-8], "truncated"),
+        ("data after the tar end", trailing, "after its end"),
+    ):
+        record, _ = one_npm(box, raw=raw)
+        T.check(f"F3 {label}: failed", record.get("status") == "failed", str(record))
+        T.check(f"F3 {label}: the reason names it", reason in record.get("reason", ""), str(record))
+
+
+def noise(size: int) -> bytes:
+    """size bytes that do not compress, the same on every run."""
+    blocks = (hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(size // 32 + 1))
+    return b"".join(blocks)[:size]
+
+
+def slices(box: Box):
+    small = {"MIB": 64}
+    json_member = ("package/package.json", b'{"name": "rp"}')
+    valid = tgz([json_member, ("package/blob", noise(2000))])
+    record, _ = one_npm(box, raw=valid, caps=small)
+    T.check("slices: a valid stream over several slices is fetched", record.get("status") == "fetched", str(record))
+    bomb = tgz([json_member, ("package/zeros", b"\0" * 200000)])
+    boundary = next(
+        archive
+        for archive in (tgz([json_member, ("package/blob", noise(2000 + n))]) for n in range(4096))
+        if len(archive) % small["MIB"] == 0
+    )
+    for label, raw, caps, reason in (
+        ("a gzip bomb", bomb, {"TOTAL_CAP": 100000}, "decompressed"),
+        ("a truncated stream", valid[:-8], {}, "truncated"),
+        ("a stream ending on a slice boundary, then more", boundary + b"TRAILING", {}, "after its gzip stream"),
+    ):
+        record, _ = one_npm(box, raw=raw, caps=dict(small, **caps))
+        T.check(f"slices: {label}: failed", record.get("status") == "failed", str(record))
+        T.check(f"slices: {label}: the reason names it", reason in record.get("reason", ""), str(record))
+
+
 def build_code(box: Box):
     files = {
         "Cargo.toml": CARGO + b"[lib]\nproc-macro = true\n",
@@ -1026,6 +1076,8 @@ def main() -> int:
             proc_macro_forms,
             case_folding,
             gzip_tail,
+            stream_ends,
+            slices,
             build_code,
             fooled_scan,
             no_crash,

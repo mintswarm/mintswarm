@@ -2,8 +2,8 @@
 
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Artifacts, Assignments, Comments, Dependency, Direction, Fields, Issue, Issues, LinkKind,
-    Links, Login, PullLinks, Statuses, Tracker,
+    Artifacts, Assignments, Collaborators, CommentEdits, Comments, Dependency, Direction, Fields,
+    Issue, Issues, LinkKind, Links, Login, PullLinks, Reactions, Statuses, Tracker, TrackerBase,
 };
 
 // Checked at compile time: any type with every capability is a `Tracker`, and a `Tracker` has
@@ -20,6 +20,25 @@ const _: () = {
 
     fn one_error<T: Tracker>(error: T::Error) -> Box<dyn std::error::Error + Send + Sync> {
         Box::new(error)
+    }
+
+    // The capabilities outside `Tracker` share its one error, `T::Error`.
+    async fn one_error_with_extras<T: Tracker + Reactions + CommentEdits + Collaborators>(
+        tracker: &T,
+    ) -> Result<(), T::Error> {
+        tracker.read_status(IssueNumber(1)).await?;
+        tracker.react_plus_one(1).await?;
+        tracker.edit_comment(1, String::new()).await?;
+        tracker.read_permission(Login("someone".into())).await?;
+        Ok(())
+    }
+
+    fn base<T: TrackerBase>() {}
+
+    fn each_implies_the_base<T: Reactions, U: CommentEdits, V: Collaborators>() {
+        base::<T>();
+        base::<U>();
+        base::<V>();
     }
 };
 

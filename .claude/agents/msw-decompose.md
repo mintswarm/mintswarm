@@ -88,7 +88,7 @@ msw-result:
   status: complete          # or needs_input (a blocking question) or failed
   artefact: decomposition
   outputs: [.mintswarm/job/outputs/decomposition.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````

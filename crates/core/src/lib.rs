@@ -2,6 +2,7 @@
 //! adapters that the server binary wires together.
 
 pub mod migrations;
-
-#[cfg(feature = "pg-tests")]
+pub mod state_sync;
 pub mod testing;
+pub mod tracker;
+pub mod watch;

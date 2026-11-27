@@ -53,7 +53,7 @@ msw-result:
   status: complete          # whether or not the gates passed; failed only if the script could not run
   artefact: gates
   outputs: [.mintswarm/job/outputs/gates.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````

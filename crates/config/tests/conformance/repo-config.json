@@ -148,6 +148,30 @@
         ]
       },
       "match": "any"
+    },
+    "actions": {
+      "approve_plan": {
+        "people": "issue_owner",
+        "apps": []
+      },
+      "approve_design": {
+        "people": "issue_owner",
+        "apps": []
+      },
+      "approve_decomposition": {
+        "people": "issue_owner",
+        "apps": []
+      },
+      "approve_pr": {
+        "people": "codeowners",
+        "apps": []
+      },
+      "merge": {
+        "people": "none",
+        "apps": [
+          "mintswarm-dev-steward"
+        ]
+      }
     }
   },
   "design": {

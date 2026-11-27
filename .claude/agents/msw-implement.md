@@ -113,7 +113,7 @@ msw-result:
   status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: handoff
   outputs: [.mintswarm/job/outputs/handoff.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````
@@ -131,7 +131,7 @@ msw-result:
   status: complete          # or needs_input (a Must decide or Recommended question) or failed
   artefact: address
   outputs: [.mintswarm/job/outputs/address.md]
-  questions: []
+  questions: []             # or a JSON array of question objects, laid out as the example in .mintswarm/stages.md, "Result block", shows
   reason: ""
 ```
 `````
