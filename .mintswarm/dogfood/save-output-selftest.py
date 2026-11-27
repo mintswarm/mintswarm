@@ -20,7 +20,8 @@ Checks:
   reported; a final message that is an unfenced document after a good
   earlier draft, which is rejected rather than replaced by the draft; a CRLF reply, saved unchanged. Successes name the assistant
   message used (K of M) and save exactly the document; failures exit 1,
-  name the message checked, and write no file;
+  name the message checked, and write no file; a rejected reply whose
+  OUTPUT names no file still exits 1;
 - --text mode, which saves the same document and names no message;
 - every fault save-output.py reports, each naming its rule, and every rule
   text it prints appearing verbatim in .mintswarm/stages.md;
@@ -45,21 +46,37 @@ Checks:
   example in .mintswarm/stages.md, one question carrying every field;
 - every case under crates/domain/tests/fixtures/result-blocks/: its
   block.yaml, wrapped in a reply, gives exactly its result.json, byte for
-  byte.
+  byte;
+- exit 2 with its exact line, empty stdout and nothing written, when INPUT
+  is missing, a directory, under a regular file, not UTF-8 (in both modes)
+  or unreadable, and when OUTPUT's parent is a regular file, its record is
+  blocked by a non-empty directory, its directory is read-only, or OUTPUT
+  names no file (`/`, `.`, `..`); the two permission cases are skipped
+  where mode bits do not bind (root);
+- errors.py: its phrases, decode_position (which never reads the decoder's
+  message) and crash_line; save-output.py's crash line for an unexpected
+  exception, which never shows the exception's text; no source line of
+  save-output.py or errors.py that embeds an exception's text; and these
+  files and this self-test importing only the standard library.
 
 MSW_IMPL picks the implementation under test. Unset or empty, the checks run
 save-output.py; `rust`, they run `$MSW_RUST_BIN tool save-output`, the
 mintswarm-runner binary, whose path is resolved against the starting
 directory. Any other value, or `rust` without an executable MSW_RUST_BIN,
-exits 2 before any check runs. Under Rust the check that imports
-save-output.py as a module is skipped; the unit test of that name in
-crates/runner/src/tool/save_output.rs covers it.
+exits 2 before any check runs. Under Rust the checks that import
+save-output.py or errors.py as a module, or read their source, are skipped;
+the unit test write_both_cleans_up_on_any_exception in
+crates/runner/src/tool/save_output.rs covers the first.
 
 Prints one line per check and exits 0 only if every check passed.
 Standard library only.
 """
 
+import ast
+import contextlib
+import errno
 import importlib.util
+import io
 import json
 import os
 import re
@@ -72,6 +89,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 SCRIPT = HERE / "save-output.py"
+ERRORS = HERE / "errors.py"
 STAGES_MD = ROOT / ".mintswarm" / "stages.md"
 STAGE_DIR = ROOT / ".mintswarm" / "stages"
 BREAKS = re.compile(r"^breaks (rule [1-6]|Result block) of \.mintswarm/stages\.md: ", re.MULTILINE)
@@ -99,6 +117,18 @@ RECORD = {
     "pr_title": None,
 }
 FIXTURES = ROOT / "crates" / "domain" / "tests" / "fixtures" / "result-blocks"
+
+
+def load(path, name):
+    """The module at path, loaded under name without writing bytecode."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = dont_write
+    return module
 
 
 def usage_error(message):
@@ -344,6 +374,11 @@ class SaveOutput(Harness):
             "no earlier block is used",
             message="assistant message 2 of 2 (msg_2)",
         )
+
+    def test_rejected_reply_with_output_naming_no_file(self):
+        # the reply is checked before OUTPUT, so the rejection wins
+        path = self.reply_file(SUMMARY + "\n")
+        self.assert_rejected(self.run_script("--text", str(path), "/"), "rule 1", "no document block")
 
     def test_record_without_id_is_own_message(self):
         path = self.transcript(record(None, text(REPLY)), record(None, text(SUMMARY)))
@@ -753,6 +788,16 @@ class Questions(Harness):
                 ],
             ),
             (
+                # the decoder stops at a different position for this input on CPython 3.12 and 3.13,
+                # so the line reported is the questions line, never one derived from that position
+                "trailing comma",
+                [line + "," if line.startswith("    {") else line for line in lines],
+                [
+                    f"line {at['  questions: [']}: the questions array is not valid JSON; "
+                    "write it as a JSON array of question objects"
+                ],
+            ),
+            (
                 "unclosed array",
                 [line for line in lines if line != "    ]"],
                 [f"line {at['  questions: [']}: the questions array is not closed by ]"],
@@ -771,13 +816,7 @@ class Questions(Harness):
         "imports save-output.py; under Rust, write_both_cleans_up_on_any_exception in crates/runner/src/tool/save_output.rs covers it",
     )
     def test_write_both_cleans_up_on_any_exception(self):
-        spec = importlib.util.spec_from_file_location("save_output", SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-        try:
-            spec.loader.exec_module(module)
-        finally:
-            sys.dont_write_bytecode = dont_write
+        module = load(SCRIPT, "save_output")
         target = self.dir / "outputs"
         with self.assertRaises(UnicodeEncodeError):
             module.write_both([(target / "review.md", "ok\n"), (target / "review.result.json", "\ud800")])
@@ -849,6 +888,191 @@ class Questions(Harness):
         record = json.loads(self.out.with_name("review.result.json").read_text(encoding="utf-8"))
         self.assertEqual(record["status"], "needs_input")
         self.assertEqual(len(record["questions"]), 1)
+
+
+class Failures(Harness):
+    """Exit 2: INPUT cannot be read or OUTPUT cannot be written, with a fixed phrase and nothing written."""
+
+    def case(self, name):
+        """A fresh directory for one case, holding the well-formed reply as `reply.txt`."""
+        where = self.dir / name
+        where.mkdir()
+        (where / "reply.txt").write_text(REPLY, encoding="utf-8")
+        return where
+
+    def contents(self, where):
+        return sorted(str(p.relative_to(where)) for p in where.rglob("*"))
+
+    def assert_refused(self, where, args, line):
+        before = self.contents(where)
+        proc = subprocess.run(
+            [*tool_command(), *args],
+            cwd=where,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (2, "", f"save-output: {line}\n"))
+        self.assertEqual(self.contents(where), before, "a refused run changed the directory")
+
+    def test_read_failures(self):
+        latin1 = "# R\xe9sum\xe9\n".encode("latin-1")
+        cases = [
+            ("missing", None, ["--text", "missing", "out/review.md"], "cannot read missing: no such file"),
+            ("missing, OUTPUT /", None, ["--text", "missing", "/"], "cannot read missing: no such file"),
+            ("directory", "dir", ["--text", "input", "out/review.md"], "cannot read input: read failed"),
+            (
+                "under a file",
+                "file",
+                ["--text", "input/reply", "out/review.md"],
+                "cannot read input/reply: read failed",
+            ),
+            ("latin-1 text", "latin1", ["--text", "input", "out/review.md"], "cannot read input: not UTF-8 text"),
+            ("latin-1 transcript", "latin1", ["input", "out/review.md"], "cannot read input: not UTF-8 text"),
+            ("mode 000", "000", ["--text", "input", "out/review.md"], "cannot read input: permission denied"),
+        ]
+        for n, (name, kind, args, line) in enumerate(cases):
+            with self.subTest(case=name):
+                where = self.case(f"read-{n}")
+                source = where / "input"
+                if kind == "dir":
+                    source.mkdir()
+                elif kind == "file":
+                    source.write_text(REPLY, encoding="utf-8")
+                elif kind == "latin1":
+                    source.write_bytes(latin1)
+                elif kind == "000":
+                    source.write_text(REPLY, encoding="utf-8")
+                    source.chmod(0)
+                    if os.access(source, os.R_OK):
+                        self.skipTest("mode bits do not bind here, so a mode-000 file is readable")
+                self.assert_refused(where, args, line)
+
+    def test_write_failures(self):
+        cases = [
+            ("parent is a file", "blocker", "blocker/review.md", "a parent is not a directory"),
+            ("deeper parent under a file", "blocker", "blocker/sub/review.md", "a parent is not a directory"),
+            ("record blocked by a directory", "record", "out/review.md", "a directory is in the way"),
+            ("read-only directory", "read-only", "out/review.md", "permission denied"),
+            ("OUTPUT /", None, "/", "it names no file"),
+            ("OUTPUT .", None, ".", "it names no file"),
+            ("OUTPUT ..", None, "..", "it names no file"),
+        ]
+        for n, (name, kind, output, phrase) in enumerate(cases):
+            with self.subTest(case=name):
+                where = self.case(f"write-{n}")
+                out = where / "out"
+                if kind == "blocker":
+                    (where / "blocker").write_text("", encoding="utf-8")
+                elif kind == "record":
+                    (out / "review.result.json").mkdir(parents=True)
+                    (out / "review.result.json" / "keep").write_text("", encoding="utf-8")
+                elif kind == "read-only":
+                    out.mkdir()
+                    out.chmod(0o555)
+                try:
+                    if kind == "read-only" and os.access(out, os.W_OK):
+                        self.skipTest("mode bits do not bind here, so a read-only directory is writable")
+                    self.assert_refused(where, ["--text", "reply.txt", output], f"cannot write {output}: {phrase}")
+                finally:
+                    if kind == "read-only":
+                        out.chmod(0o755)  # so the temporary directory can be removed
+
+
+@unittest.skipIf(RUST, "reads or imports save-output.py and errors.py, which the Rust tool does not use")
+class ErrorModule(unittest.TestCase):
+    """errors.py and save-output.py's use of it, checked in-process and in their source."""
+
+    def setUp(self):
+        self.errors = load(ERRORS, "msw_dogfood_errors_selftest")
+
+    def test_standard_library_only(self):
+        if sys.version_info < (3, 10):
+            self.skipTest("sys.stdlib_module_names needs Python 3.10")
+        for path in (SCRIPT, ERRORS, Path(__file__).resolve()):
+            with self.subTest(file=path.name):
+                names = set()
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                    if isinstance(node, ast.Import):
+                        names.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom):
+                        names.add("." if node.level else node.module.split(".")[0])
+                outside = sorted(n for n in names if n not in sys.stdlib_module_names)
+                self.assertEqual(outside, [], f"{path.name} imports outside the standard library")
+
+    def test_read_phrase(self):
+        cases = [
+            (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "ours"), "not UTF-8 text"),
+            (OSError(errno.ENOENT, "ours"), "no such file"),
+            (OSError(errno.EACCES, "ours"), "permission denied"),
+            (OSError(errno.EPERM, "ours"), "permission denied"),
+            (OSError(errno.EISDIR, "ours"), "read failed"),
+            (OSError(errno.ENOTDIR, "ours"), "read failed"),
+            (OSError(errno.EIO, "ours"), "read failed"),
+        ]
+        for exc, phrase in cases:
+            with self.subTest(exc=type(exc).__name__, errno=getattr(exc, "errno", None)):
+                self.assertEqual(self.errors.read_phrase(exc), phrase)
+
+    def test_write_phrase(self):
+        cases = [
+            (OSError(errno.EACCES, "ours"), "permission denied"),
+            (OSError(errno.EPERM, "ours"), "permission denied"),
+            (OSError(errno.ENOTDIR, "ours"), "a parent is not a directory"),
+            (OSError(errno.EEXIST, "ours"), "a parent is not a directory"),
+            (OSError(errno.EISDIR, "ours"), "a directory is in the way"),
+            (OSError(errno.ENOTEMPTY, "ours"), "a directory is in the way"),
+            (OSError(errno.ENOENT, "ours"), "no such directory"),
+            (OSError(errno.ENOSPC, "ours"), "write failed"),
+            (UnicodeEncodeError("utf-8", "\ud800", 0, 1, "ours"), "write failed"),
+        ]
+        for exc, phrase in cases:
+            with self.subTest(exc=type(exc).__name__, errno=getattr(exc, "errno", None)):
+                self.assertEqual(self.errors.write_phrase(exc), phrase)
+
+    def test_decode_position(self):
+        doc = "[1,\n 2,\n x]"
+        for pos, expected in ((0, (1, 1)), (3, (1, 4)), (4, (2, 1)), (9, (3, 2)), (10, (3, 3))):
+            with self.subTest(pos=pos):
+                self.assertEqual(self.errors.decode_position(json.JSONDecodeError("first", doc, pos)), expected)
+                # the message plays no part
+                self.assertEqual(self.errors.decode_position(json.JSONDecodeError("other", doc, pos)), expected)
+
+    def test_domain_error_and_crash_line(self):
+        self.assertEqual(str(self.errors.DomainError("our words")), "our words")
+        self.assertEqual(
+            self.errors.crash_line("save-output", RuntimeError("leaked text")),
+            "save-output: internal error: unexpected RuntimeError",
+        )
+
+    def test_crash_line_for_an_unexpected_exception(self):
+        module = load(SCRIPT, "save_output_crash")
+
+        def explode(text):
+            raise RuntimeError("leaked text")
+
+        module.extract = explode
+        with tempfile.TemporaryDirectory(prefix="msw-save-output.") as tmp:
+            reply = Path(tmp) / "reply.txt"
+            reply.write_text(REPLY, encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = module.main(["--text", str(reply), str(Path(tmp) / "out" / "review.md")])
+            self.assertEqual(
+                (code, out.getvalue(), err.getvalue()),
+                (2, "", "save-output: internal error: unexpected RuntimeError\n"),
+            )
+            self.assertNotIn("leaked text", err.getvalue())
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["reply.txt"])
+
+    def test_no_exception_text_in_source(self):
+        embeds = [r"\{exc\}", r"\{exc!", r"exc\.msg", r"error\.msg", r"str\(exc\)"]
+        for path in (SCRIPT, ERRORS):
+            source = path.read_text(encoding="utf-8")
+            for pattern in embeds:
+                with self.subTest(file=path.name, pattern=pattern):
+                    self.assertIsNone(re.search(pattern, source), f"{path.name} embeds exception text")
 
 
 class Fixtures(unittest.TestCase):

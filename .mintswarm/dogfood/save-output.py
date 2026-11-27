@@ -953,7 +953,7 @@ def run(argv: list) -> int:
         print(f"save-output: {prefix}{exc.explain()}", file=sys.stderr)
         return 1
     except InputError as exc:
-        print(f"save-output: {exc}", file=sys.stderr)
+        print(f"save-output: {exc.message}", file=sys.stderr)
         return 2
     path = Path(output)
     record = json.dumps(outcome, indent=2, ensure_ascii=False) + "\n"
@@ -966,7 +966,7 @@ def run(argv: list) -> int:
         except (OSError, UnicodeEncodeError) as exc:
             raise OutputError(f"cannot write {output}: {errors.write_phrase(exc)}") from exc
     except OutputError as exc:
-        print(f"save-output: {exc}", file=sys.stderr)
+        print(f"save-output: {exc.message}", file=sys.stderr)
         return 2
     print(result.rstrip())
     if where:
