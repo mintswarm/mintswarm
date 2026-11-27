@@ -82,6 +82,12 @@ pub enum LexError {
         /// The line of the mention.
         line: usize,
     },
+    /// A `U&"…"` identifier with a backslash or followed by `UESCAPE`, whose escapes the lexer
+    /// does not decode, so it could spell a name the lexer refuses.
+    UnicodeEscapes {
+        /// The line of the opening `U&`.
+        line: usize,
+    },
 }
 
 impl LexError {
@@ -94,7 +100,8 @@ impl LexError {
             | Self::UnterminatedDollarQuote { line }
             | Self::AtomicBody { line }
             | Self::SemicolonInParentheses { line }
-            | Self::StandardConformingStrings { line } => *line,
+            | Self::StandardConformingStrings { line }
+            | Self::UnicodeEscapes { line } => *line,
         }
     }
 }
@@ -126,6 +133,10 @@ impl fmt::Display for LexError {
                 f,
                 "line {line}: standard_conforming_strings must stay on, so a migration names neither it, set_config nor pg_settings"
             ),
+            Self::UnicodeEscapes { line } => write!(
+                f,
+                "line {line}: a U&\"…\" identifier cannot use escapes or UESCAPE; write the name plainly"
+            ),
         }
     }
 }
@@ -156,7 +167,8 @@ const DATA: &[&str] = &[
 ///
 /// A `SELECT` with any `into` is DDL, since `SELECT … INTO` creates a table. So is a `WITH` with an
 /// `into` other than in an `insert into` or `merge into` that starts a CTE body, directly after its
-/// `(`, or the main statement: the first word at depth 0 after a `)` that can start one. A
+/// `(`, or the main statement: the first word at depth 0 after a `)` that can start one, unless a
+/// `search` or `cycle` word at depth 0 makes that unsure. A
 /// `CREATE SCHEMA` with any `grant` or `revoke` word is a grant: both words are reserved, so they
 /// cannot be unquoted names.
 pub fn classify(statement: &Statement) -> Kind {
@@ -168,18 +180,27 @@ pub fn classify(statement: &Statement) -> Kind {
     let any = |found: &dyn Fn(usize, &str) -> bool| {
         (0..tokens.len()).any(|at| word(at).is_some_and(|next| found(at, next)))
     };
-    let mut depth = 0usize;
-    let main = (0..tokens.len()).find(|&at| {
+    let (mut depth, mut main, mut searched) = (0usize, None, false);
+    for at in 0..tokens.len() {
         match tokens[at] {
             Token::Symbol('(') => depth += 1,
             Token::Symbol(')') => depth = depth.saturating_sub(1),
             _ => {}
         }
-        depth == 0
+        if depth > 0 {
+            continue;
+        }
+        searched |= matches!(word(at), Some("search" | "cycle"));
+        if main.is_none()
             && at > 0
             && tokens[at - 1] == Token::Symbol(')')
             && matches!(word(at), Some(first) if DATA.contains(&first) || first == "values")
-    });
+        {
+            main = Some(at);
+        }
+    }
+    // After a SEARCH or CYCLE clause the main statement follows a word, so none is exempt.
+    let main = main.filter(|_| !searched);
     let exempt = |at: usize| {
         at >= 2
             && matches!(word(at - 1), Some("insert" | "merge"))
@@ -399,7 +420,20 @@ impl Lexer {
             }
             ('u' | 'U', Some('&'), Some('"')) => {
                 self.bump_by(3);
-                self.quoted(line)
+                let token = self.quoted(line)?;
+                let (at, after) = (self.at, self.line);
+                let uescape = self.skip_gap().is_ok() && {
+                    let next: String = self.chars[self.at..].iter().take(8).collect();
+                    let next = next.to_ascii_lowercase();
+                    next.starts_with("uescape") && !next[7..].starts_with(is_word_start)
+                };
+                (self.at, self.line) = (at, after);
+                match token {
+                    Token::Quoted(name) if !uescape && !name.contains('\\') => {
+                        Ok(Token::Quoted(name))
+                    }
+                    _ => Err(LexError::UnicodeEscapes { line }),
+                }
             }
             ('"', _, _) => {
                 self.bump();
