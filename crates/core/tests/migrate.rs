@@ -441,3 +441,66 @@ async fn the_helper_builds_through_apply() {
     assert!(exists(&client, "mintswarm.a").await);
     assert!(exists(&client, "mintswarm.b").await);
 }
+
+#[tokio::test]
+async fn a_file_ending_in_rollback_gets_no_ledger_row() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "rolls_back");
+    let files = [(file.clone(), "CREATE TABLE x (id int); ROLLBACK;")];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("part of it may have been applied"),
+        "{error}"
+    );
+    let ApplyError::Escaped { file: named, .. } = error else {
+        panic!("expected an escaped transaction, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(!exists(&client, "mintswarm.x").await);
+    assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn a_commit_mid_file_gets_no_ledger_row() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "commits");
+    let files = [(
+        file.clone(),
+        "CREATE TABLE y (id int); COMMIT; CREATE TABLE z (id int);",
+    )];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    let ApplyError::Escaped { file: named, .. } = error else {
+        panic!("expected an escaped transaction, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(exists(&client, "mintswarm.y").await);
+    assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn a_commit_before_a_failure_is_not_reported_as_nothing_applied() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "commits_then_fails");
+    let files = [(file.clone(), "CREATE TABLE y (id int); COMMIT; SELECT 1/0;")];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    assert!(
+        !error.to_string().contains("nothing of it was applied"),
+        "{error}"
+    );
+    let ApplyError::Escaped { file: named, .. } = error else {
+        panic!("expected an escaped transaction, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(exists(&client, "mintswarm.y").await);
+}

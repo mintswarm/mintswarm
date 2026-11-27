@@ -11,6 +11,7 @@ use tokio_postgres::{Client, Config, NoTls};
 
 use super::ledger::{self, Drift, KIND_MIGRATION};
 use super::narrowing::{self, Notice, Refusal};
+use super::sql::{self, Token};
 use super::tree::{Migration, Report, TreeError, Warning, validate};
 
 /// The session advisory lock key every run holds while it reads the ledger and applies files:
@@ -135,6 +136,19 @@ pub enum ApplyError {
         file: String,
         /// The client's error.
         source: tokio_postgres::Error,
+    },
+    /// A file's own transaction control ended the runner's transaction, so the file did not
+    /// run as one transaction with its ledger row. The files before it stay applied.
+    #[error(
+        "{file}: the migration ended the runner's transaction with its own transaction \
+         control, so part of it may have been applied; no ledger row was written for it, and \
+         the run stopped"
+    )]
+    Escaped {
+        /// The up file, relative to the tree root.
+        file: String,
+        /// The client's error, when a statement failed after the transaction ended.
+        source: Option<tokio_postgres::Error>,
     },
     /// A file's `COMMIT` got no clear answer. The files before it stay applied.
     #[error(
@@ -341,6 +355,9 @@ async fn create_schemas(
 
 /// Runs one file and its ledger row in one transaction. On an error, gives it with whether the
 /// session can still release the lock.
+///
+/// The transaction's id is read before and after the file: a file whose own transaction
+/// control ended the runner's transaction gets no ledger row.
 async fn run_file(
     client: &Client,
     insert: &str,
@@ -348,41 +365,52 @@ async fn run_file(
     bytes: &[u8],
 ) -> Result<(), (ApplyError, bool)> {
     let file = &migration.up;
-    let body = async {
-        client.batch_execute("BEGIN").await?;
-        client
-            .batch_execute(&format!(
-                "SET LOCAL search_path TO {}",
-                quoted(&migration.schema)
-            ))
-            .await?;
-        // The tree check refused every file that is not UTF-8.
-        client
-            .batch_execute(std::str::from_utf8(bytes).unwrap_or_default())
-            .await?;
-        client
-            .execute(
-                insert,
-                &[
-                    &migration.schema,
-                    &migration.version,
-                    &migration.name,
-                    &KIND_MIGRATION,
-                    &ledger::digest(bytes),
-                ],
-            )
-            .await?;
-        Ok::<_, tokio_postgres::Error>(())
+    // The tree check refused every file that is not UTF-8.
+    let text = std::str::from_utf8(bytes).unwrap_or_default();
+    let failed = |source| ApplyError::Failed {
+        file: file.clone(),
+        source,
     };
-    if let Err(source) = body.await {
+    let escaped = |source| ApplyError::Escaped {
+        file: file.clone(),
+        source,
+    };
+
+    let txid = match open(client, &migration.schema).await {
+        Ok(txid) => txid,
+        Err(source) => return Err(abandon(client, failed(source)).await),
+    };
+    if let Err(source) = client.batch_execute(text).await {
         let rolled_back = client.batch_execute("ROLLBACK").await.is_ok();
-        return Err((
-            ApplyError::Failed {
-                file: file.clone(),
-                source,
-            },
-            rolled_back,
-        ));
+        let error = if has_transaction_control(text) || committed(client, txid).await {
+            escaped(Some(source))
+        } else {
+            failed(source)
+        };
+        return Err((error, rolled_back));
+    }
+    match current_txid(client).await {
+        Ok(now) if now == txid => {}
+        Ok(_) => return Err(abandon(client, escaped(None)).await),
+        Err(source) if has_transaction_control(text) => {
+            return Err(abandon(client, escaped(Some(source))).await);
+        }
+        Err(source) => return Err(abandon(client, failed(source)).await),
+    }
+    let recorded = client
+        .execute(
+            insert,
+            &[
+                &migration.schema,
+                &migration.version,
+                &migration.name,
+                &KIND_MIGRATION,
+                &ledger::digest(bytes),
+            ],
+        )
+        .await;
+    if let Err(source) = recorded {
+        return Err(abandon(client, failed(source)).await);
     }
     match client.batch_execute("COMMIT").await {
         Ok(()) => Ok(()),
@@ -401,6 +429,60 @@ async fn run_file(
             true,
         )),
     }
+}
+
+/// Opens the file's transaction in its schema and gives the transaction's id.
+async fn open(client: &Client, schema: &str) -> Result<i64, tokio_postgres::Error> {
+    client.batch_execute("BEGIN").await?;
+    client
+        .batch_execute(&format!("SET LOCAL search_path TO {}", quoted(schema)))
+        .await?;
+    current_txid(client).await
+}
+
+/// The id of the session's current transaction. Outside a transaction block, each call runs in
+/// a transaction of its own and so gives a new id.
+async fn current_txid(client: &Client) -> Result<i64, tokio_postgres::Error> {
+    client
+        .query_one("SELECT txid_current()", &[])
+        .await?
+        .try_get(0)
+}
+
+/// Whether the transaction `txid` committed, as far as the server can still tell.
+async fn committed(client: &Client, txid: i64) -> bool {
+    client
+        .query_one("SELECT txid_status($1)", &[&txid])
+        .await
+        .and_then(|row| row.try_get::<_, Option<String>>(0))
+        .is_ok_and(|status| status.as_deref() == Some("committed"))
+}
+
+/// Rolls the file's transaction back after `error`, and gives the error with whether the
+/// rollback succeeded, and so whether the session can still release the lock.
+async fn abandon(client: &Client, error: ApplyError) -> (ApplyError, bool) {
+    let rolled_back = client.batch_execute("ROLLBACK").await.is_ok();
+    (error, rolled_back)
+}
+
+/// Whether a file holds a top-level statement that starts or ends a transaction, through which
+/// it may leave the runner's transaction. A file that cannot be split counts as holding one.
+fn has_transaction_control(text: &str) -> bool {
+    let Ok(statements) = sql::split(text) else {
+        return true;
+    };
+    statements.iter().any(|statement| {
+        let word = |at: usize| match statement.tokens.get(at) {
+            Some(Token::Word(word)) => Some(word.as_str()),
+            _ => None,
+        };
+        match word(0) {
+            Some("begin" | "start" | "commit" | "end" | "abort") => true,
+            Some("rollback") => word(1) != Some("to"),
+            Some("prepare") => word(1) == Some("transaction"),
+            _ => false,
+        }
+    })
 }
 
 /// Whether a `COMMIT` error means the transaction was rolled back: a database error of
