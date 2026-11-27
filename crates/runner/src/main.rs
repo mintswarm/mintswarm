@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mintswarm_rules::exit;
-use mintswarm_runner::tool::{msw_vcs, save_output};
+use mintswarm_runner::tool::{msw_vcs, plan_decision, plan_floor, save_output};
 
 /// The mintswarm runner
 #[derive(Debug, Parser)]
@@ -47,6 +47,36 @@ enum Tool {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         operands: Vec<OsString>,
     },
+    /// Apply the plan floor to a plan at a base commit: the port of `plan-approval/floor.py`
+    #[command(
+        name = "plan-floor",
+        disable_help_flag = true,
+        override_usage = "mintswarm-runner tool plan-floor --plan PATH --components NAMES --base REF [--issue-document PATH] [--analysis PATH] [--screen PATH]"
+    )]
+    PlanFloor {
+        /// The arguments of `floor.py`, checked by the tool itself
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        operands: Vec<OsString>,
+    },
+    /// Decide whether a plan needs a human: the port of `plan-approval/decision.py`
+    #[command(
+        name = "plan-decision",
+        disable_help_flag = true,
+        override_usage = "mintswarm-runner tool plan-decision --issue N --components NAMES --plan PATH --issue-document PATH --analysis PATH --assessment PATH --assessment-artifact REF --base REF --harness NAME --model NAME [--screen PATH]"
+    )]
+    PlanDecision {
+        /// The arguments of `decision.py`, checked by the tool itself
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        operands: Vec<OsString>,
+    },
+}
+
+/// The arguments after `tool <name>`, exactly as given, and the working directory; an unreadable
+/// working directory is then not in a repository.
+fn operands_and_cwd() -> (Vec<OsString>, PathBuf) {
+    let argv: Vec<OsString> = std::env::args_os().skip(3).collect();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    (argv, cwd)
 }
 
 fn main() -> ExitCode {
@@ -73,6 +103,24 @@ fn main() -> ExitCode {
                 &mut io::stderr().lock(),
             );
             return ExitCode::from(code);
+        }
+        Command::Tool(Tool::PlanFloor { .. }) => {
+            let (argv, cwd) = operands_and_cwd();
+            plan_floor::run(
+                &argv,
+                &cwd,
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            )
+        }
+        Command::Tool(Tool::PlanDecision { .. }) => {
+            let (argv, cwd) = operands_and_cwd();
+            plan_decision::run(
+                &argv,
+                &cwd,
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            )
         }
     };
     ExitCode::from(exit::code(&outcome))
