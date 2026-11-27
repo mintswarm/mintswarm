@@ -3,7 +3,8 @@
 //! Parity: `fixtures/plan-approval-record.py` runs `.mintswarm/dogfood/plan-approval/selftest.py`
 //! with every `floor.py` and `decision.py` call made through both sides, live, from the same
 //! starting state. On each call the exit codes, stdout and the `floor.json` and `decision.json`
-//! bytes must be equal, and neither side may leave a temporary file or an object store. Stderr is
+//! bytes must be equal, neither side may leave a temporary file or an object store, and neither
+//! may change the job repository's refs, config, shallow, grafts, index or objects. Stderr is
 //! the same on exit 0 and 1. On exit 2 it is one line each, in each side's own wording: an
 //! argument refusal is the same after the prefix, with the usage line swapped, and a refusal that
 //! names the fetch or a partial clone names it on both sides.
@@ -11,9 +12,12 @@
 //! The differences accepted, each by name in [`Difference`], and each seen at least once:
 //!
 //! - `footprint-reasons`: a footprint the floor cannot read carries the JSON parser's message in
-//!   Python, which the Rust floor words itself; stdout and `floor.json` may differ only there.
-//! - `yq-missing`: with no `yq` on `PATH`, Python exits 2; the Rust tools run no `yq` and give a
-//!   verdict, exit 0 or 1.
+//!   Python, which the Rust floor words itself; stdout and `floor.json` may differ only in a
+//!   footprint reason that starts `the footprint is not valid JSON: ` in Python and `the
+//!   footprint is not strict JSON: ` in Rust.
+//! - `yq-missing`: with no `yq` on `PATH`, Python exits 2 with its one `cannot run yq: ` line; the
+//!   Rust tools run no `yq` and give a verdict, exit 0 or 1, with the floor's stderr empty and
+//!   the decision's its one `decision: ` line.
 //! - `unknown-config-key`: the self-test's forge target adds the top-level key
 //!   `selftest_forge_target` to the config, which Python ignores and `mintswarm_config`'s schema
 //!   refuses, so the Rust floor exits 2 on it.
@@ -117,25 +121,91 @@ fn hex(text: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The verdict with the `footprint` rule's reasons left out.
-fn without_footprint_reasons(bytes: &[u8]) -> Value {
-    let mut verdict: Value = serde_json::from_slice(bytes).expect("a JSON verdict");
-    for rule in verdict["rules"].as_array_mut().expect("rules") {
-        if rule["rule"] == "footprint" {
-            rule["reasons"] = Value::Null;
-        }
-    }
-    verdict
+/// The start of Python's reason for a footprint that is not JSON.
+const PYTHON_FOOTPRINT: &str = "the footprint is not valid JSON: ";
+/// The start of Rust's reason for a footprint that is not JSON.
+const RUST_FOOTPRINT: &str = "the footprint is not strict JSON: ";
+
+/// Whether two footprint reasons are equal, or both say the footprint is not JSON, each in its
+/// own words.
+fn same_footprint_reason(python: &str, rust: &str) -> bool {
+    python == rust || (python.starts_with(PYTHON_FOOTPRINT) && rust.starts_with(RUST_FOOTPRINT))
 }
 
-/// Whether two floor stdouts differ only in the reason of the `footprint` line.
+/// The verdict and the `footprint` rule's reasons, taken out of it.
+fn split_footprint_reasons(bytes: &[u8]) -> (Value, Vec<String>) {
+    let mut verdict: Value = serde_json::from_slice(bytes).expect("a JSON verdict");
+    let mut reasons = Vec::new();
+    for rule in verdict["rules"].as_array_mut().expect("rules") {
+        if rule["rule"] == "footprint" {
+            let taken = rule["reasons"].take();
+            reasons.extend(
+                taken
+                    .as_array()
+                    .expect("reasons")
+                    .iter()
+                    .map(|reason| reason.as_str().expect("a reason").to_owned()),
+            );
+        }
+    }
+    (verdict, reasons)
+}
+
+/// Whether two verdicts differ only in footprint reasons that both say the footprint is not JSON.
+fn same_but_footprint_reasons(python: &[u8], rust: &[u8]) -> bool {
+    let (python_verdict, python_reasons) = split_footprint_reasons(python);
+    let (rust_verdict, rust_reasons) = split_footprint_reasons(rust);
+    python_verdict == rust_verdict
+        && python_reasons.len() == rust_reasons.len()
+        && python_reasons
+            .iter()
+            .zip(&rust_reasons)
+            .all(|(p, r)| same_footprint_reason(p, r))
+}
+
+/// Whether two floor stdouts differ only in a `footprint` line's reason that both say the
+/// footprint is not JSON.
 fn same_but_footprint_reason(python: &str, rust: &str) -> bool {
     let footprint = "hit     footprint: ";
     python.lines().count() == rust.lines().count()
-        && python
-            .lines()
-            .zip(rust.lines())
-            .all(|(p, r)| p == r || (p.starts_with(footprint) && r.starts_with(footprint)))
+        && python.lines().zip(rust.lines()).all(|(p, r)| {
+            p == r
+                || matches!(
+                    (p.strip_prefix(footprint), r.strip_prefix(footprint)),
+                    (Some(p), Some(r)) if same_footprint_reason(p, r)
+                )
+        })
+}
+
+/// A call with no `yq` on `PATH` where Python exits 2 and Rust gives a verdict: accepted only
+/// when Python's stderr is its one `cannot run yq` line and Rust's is what a verdict prints.
+fn yq_missing(
+    tool: &str,
+    python: &Side<'_>,
+    rust: &Side<'_>,
+    file: &str,
+    python_prefix: &str,
+) -> Result<Option<Difference>, String> {
+    let python_err = python.text("stderr");
+    let cannot_run = format!("{python_prefix}cannot run yq: ");
+    if !(python_err.starts_with(&cannot_run)
+        && python_err.ends_with('\n')
+        && python_err.lines().count() == 1)
+    {
+        return Err(format!("no yq, and Python's stderr is {python_err:?}"));
+    }
+    if rust.file_bytes(file).is_none() {
+        return Err(format!("no yq, and Rust wrote no {file}"));
+    }
+    let rust_err = rust.text("stderr");
+    let expected = match tool {
+        "floor" => rust_err.is_empty(),
+        _ => rust_err.starts_with("decision: ") && rust_err.lines().count() == 1,
+    };
+    if !expected {
+        return Err(format!("no yq, and Rust's stderr is {rust_err:?}"));
+    }
+    Ok(Some(Difference::YqMissing))
 }
 
 /// What is wrong with one recorded call, or the difference it shows; `Ok(None)` when equal.
@@ -149,6 +219,11 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
     };
     if python.left() || rust.left() {
         return Err("a temporary or a store is left".to_owned());
+    }
+    for (name, side) in [("Python", &python), ("Rust", &rust)] {
+        if side.value["repository_changed"] != false {
+            return Err(format!("{name} changed the job repository"));
+        }
     }
     let (file, python_prefix, rust_prefix, python_usage, rust_usage) = match tool {
         "floor" => (
@@ -167,12 +242,8 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
         ),
     };
 
-    if line["yq"] == false
-        && python.exit() == 2
-        && matches!(rust.exit(), 0 | 1)
-        && rust.file_bytes(file).is_some()
-    {
-        return Ok(Some(Difference::YqMissing));
+    if line["yq"] == false && python.exit() == 2 && matches!(rust.exit(), 0 | 1) {
+        return yq_missing(tool, &python, &rust, file, python_prefix);
     }
     if line["check"] == "check_object_store"
         && tool == "floor"
@@ -192,10 +263,7 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
             continue;
         }
         match (python.file_bytes(name), rust.file_bytes(name)) {
-            (Some(p), Some(r))
-                if name == "floor.json"
-                    && without_footprint_reasons(&p) == without_footprint_reasons(&r) =>
-            {
+            (Some(p), Some(r)) if name == "floor.json" && same_but_footprint_reasons(&p, &r) => {
                 difference = Some(Difference::FootprintReasons);
             }
             _ => return Err(format!("{name} differs")),
@@ -478,10 +546,26 @@ fn runs_no_yq_and_no_python() {
     );
 }
 
+/// The git subcommand and its arguments in a line of the logging wrapper, `GIT_DIR` and the
+/// global options before it left out.
+fn git_command(line: &str) -> Vec<&str> {
+    let words: Vec<&str> = line.split(' ').collect();
+    let mut i = 1;
+    while i < words.len() {
+        match words[i] {
+            "-c" => i += 2,
+            word if word.starts_with("--") => i += 1,
+            _ => break,
+        }
+    }
+    words[i.min(words.len())..].to_vec()
+}
+
 /// Stands in for the self-test's `object store: the store is made in TMPDIR, and the base,
 /// config and history are read through it` and its `no store is left` checks: git is run with
 /// `GIT_DIR` at a store in a `msw-floor-objects-` directory of TMPDIR, which is empty again after
-/// a clean run and after an exit 2 run.
+/// a clean run and after an exit 2 run. Every content read and fetch runs in the store; on the job
+/// repository git runs only `rev-parse`, `config --list -z` and `hash-object` without `-w`.
 #[test]
 fn the_store_is_fresh_in_tmpdir_and_removed() {
     let sandbox = Sandbox::new();
@@ -510,6 +594,19 @@ fn the_store_is_fresh_in_tmpdir_and_removed() {
     );
     let store = format!("{}/msw-floor-objects-", sandbox.tmp.display());
     let calls = fs::read_to_string(&log).expect("git ran through the wrapper");
+    for line in calls.lines() {
+        let (in_store, command) = (line.starts_with(&store), git_command(line));
+        match command.first().copied() {
+            Some("ls-tree" | "cat-file" | "log" | "diff" | "show" | "rev-list" | "fetch") => {
+                assert!(in_store, "a content read outside the store: {line}");
+            }
+            _ if in_store => {}
+            Some("rev-parse") => {}
+            Some("config") => assert_eq!(command, ["config", "--list", "-z"], "{line}"),
+            Some("hash-object") => assert!(!command.contains(&"-w"), "a write: {line}"),
+            _ => panic!("a git call on the job repository outside the allowlist: {line}"),
+        }
+    }
     assert!(
         calls
             .lines()

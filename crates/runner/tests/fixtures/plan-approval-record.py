@@ -20,13 +20,23 @@ left. The state is:
   log among them.
 
 A state the recorder cannot put back ends it with an error, never a pass.
-Every other call goes to the real `subprocess`. The self-test's main then
-runs as usual.
+
+The job repository, the git directory of the call's working directory (and
+the one `GIT_DIR` names, when set), is never put back: its HEAD, refs,
+packed-refs, config, shallow, info/grafts, index and the names under objects
+are compared before and after each side, and a side that changes them
+fails that call.
+
+Every other call goes to the real `subprocess`. A `run`, `call`,
+`check_call`, `check_output` or `Popen` that names FLOOR or DECISION in a
+shape the recorder does not reproduce ends it with an error, so no call is
+skipped unseen. The self-test's main then runs as usual.
 
 Writes one JSON line per call to OUTPUT: the enclosing `check_*` function,
 a sequence number, the tool, the argv after the script, whether `yq` is on
 the call's PATH, and for each side the exit code, stdout and stderr in hex,
-the two JSON files and the temporaries and stores left after it. Then a
+the two JSON files, the temporaries and stores left after it and whether it
+changed the job repository. Then a
 final line with the number of calls and the self-test's failure count.
 Standard library only.
 """
@@ -87,6 +97,56 @@ def snapshot(cwd: Path, tmpdir: Path) -> dict:
     for entry in sorted(parent.iterdir()):
         if entry.is_file() and not entry.is_symlink():
             state["parent"][entry.name] = entry.read_bytes()
+    return state
+
+
+REPOSITORY_FILES = ("HEAD", "config", "shallow", "info/grafts", "index", "packed-refs")
+
+
+def git_dirs(cwd: Path, tmpdir: Path, env: dict) -> list:
+    """The job repository's git directory, found from cwd up to the sandbox, and GIT_DIR's."""
+    dirs = []
+    bound = tmpdir.parent.resolve()
+    here = cwd.resolve()
+    while True:
+        dot = here / ".git"
+        if dot.is_dir():
+            dirs.append(dot)
+            break
+        if dot.is_file():
+            text = dot.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir: "):
+                raise RecorderError(f"{dot} is not a gitdir file")
+            dirs.append((here / text[len("gitdir: "):]).resolve())
+            break
+        if here == bound or here.parent == here or bound not in here.parents:
+            break
+        here = here.parent
+    if env.get("GIT_DIR"):
+        named = Path(env["GIT_DIR"])
+        if not named.is_absolute():
+            named = cwd / named
+        if named.resolve() not in [d.resolve() for d in dirs]:
+            dirs.append(named)
+    return dirs
+
+
+def repository_state(dirs: list) -> dict:
+    """The parts of each git directory a read-only tool must leave as they are."""
+    state = {}
+    for gitdir in dirs:
+        entry = {}
+        for name in REPOSITORY_FILES:
+            path = gitdir / name
+            entry[name] = path.read_bytes() if path.is_file() else None
+        for tree in ("refs", "objects"):
+            root = gitdir / tree
+            names = sorted(str(p.relative_to(root)) for p in root.rglob("*")) if root.is_dir() else []
+            if tree == "refs":
+                entry[tree] = {name: (root / name).read_bytes() for name in names if (root / name).is_file()}
+            else:
+                entry[tree] = names
+        state[str(gitdir)] = entry
     return state
 
 
@@ -203,6 +263,15 @@ class Recorder:
         proc = self.real.run(argv, cwd=cwd, env=env, stdin=self.real.DEVNULL, capture_output=True)
         return proc.returncode, proc.stdout, proc.stderr
 
+    def names_a_tool(self, argv) -> bool:
+        scripts = (str(self.module.FLOOR), str(self.module.DECISION))
+        if isinstance(argv, (str, bytes, os.PathLike)):
+            text = os.fsdecode(argv)
+            return any(script in text for script in scripts)
+        if isinstance(argv, (list, tuple)):
+            return any(os.fsdecode(arg) in scripts for arg in argv if isinstance(arg, (str, bytes, os.PathLike)))
+        return False
+
     def call(self, tool: str, argv, kwargs: dict):
         unknown = set(kwargs) - SUPPORTED
         if unknown or not kwargs.get("capture_output"):
@@ -212,17 +281,27 @@ class Recorder:
         tmpdir = Path(env["TMPDIR"])
         args = [str(arg) for arg in argv[2:]]
 
+        dirs = git_dirs(cwd, tmpdir, env)
+        repository = repository_state(dirs)
         before = snapshot(cwd, tmpdir)
         python = self.side([sys.executable, str(argv[1]), *args], cwd, env)
         python_state = snapshot(cwd, tmpdir)
+        python_changed = repository_state(dirs) != repository
         restore(cwd, tmpdir, before)
         rust = self.side([self.binary, "tool", SUBCOMMANDS[tool], *args], cwd, env)
         rust_state = snapshot(cwd, tmpdir)
+        rust_changed = repository_state(dirs) != repository
         restore(cwd, tmpdir, python_state)
 
-        def shown(result, state):
+        def shown(result, state, changed):
             code, out, err = result
-            return {"exit": code, "stdout": out.hex(), "stderr": err.hex(), **side_state(before, state)}
+            return {
+                "exit": code,
+                "stdout": out.hex(),
+                "stderr": err.hex(),
+                "repository_changed": changed,
+                **side_state(before, state),
+            }
 
         self.lines.append(
             {
@@ -231,8 +310,8 @@ class Recorder:
                 "tool": tool,
                 "argv": args,
                 "yq": shutil.which("yq", path=env.get("PATH", "")) is not None,
-                "python": shown(python, python_state),
-                "rust": shown(rust, rust_state),
+                "python": shown(python, python_state, python_changed),
+                "rust": shown(rust, rust_state, rust_changed),
             }
         )
         code, out, err = python
@@ -250,11 +329,32 @@ class Shim:
     def __getattr__(self, name):
         return getattr(subprocess, name)
 
+    def _unseen(self, how: str, argv) -> None:
+        if self._recorder.names_a_tool(argv):
+            raise RecorderError(f"a {how} of floor.py or decision.py the recorder does not reproduce: {argv!r}")
+
     def run(self, argv, *args, **kwargs):
         tool = self._recorder.tool_of(argv)
         if tool is None or args:
+            self._unseen("run", argv)
             return subprocess.run(argv, *args, **kwargs)
         return self._recorder.call(tool, argv, kwargs)
+
+    def call(self, argv, *args, **kwargs):
+        self._unseen("call", argv)
+        return subprocess.call(argv, *args, **kwargs)
+
+    def check_call(self, argv, *args, **kwargs):
+        self._unseen("check_call", argv)
+        return subprocess.check_call(argv, *args, **kwargs)
+
+    def check_output(self, argv, *args, **kwargs):
+        self._unseen("check_output", argv)
+        return subprocess.check_output(argv, *args, **kwargs)
+
+    def Popen(self, argv, *args, **kwargs):  # noqa: N802 - subprocess's own name
+        self._unseen("Popen", argv)
+        return subprocess.Popen(argv, *args, **kwargs)
 
 
 def main(argv: list) -> int:
