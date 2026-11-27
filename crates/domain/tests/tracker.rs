@@ -4,7 +4,7 @@ use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     Artifacts, Assignments, CodeOwners, Collaborators, CommentEdits, Comments, Dependency,
     Direction, Fields, Issue, Issues, LinkKind, Links, Login, Merges, PullLinks, Reactions,
-    Reviews, Statuses, Tracker, TrackerBase,
+    Reviews, Statuses, Tracker, TrackerBase, is_bot,
 };
 
 // Checked at compile time: any type with every capability is a `Tracker`, and a `Tracker` has
@@ -83,6 +83,7 @@ fn issue_carries_sub_issue_and_blocked_by_totals() {
         labels: vec!["mintswarm".into()],
         issue_type: None,
         author: Login("someone".into()),
+        author_is_bot: true,
         url: "https://example.com/owner/name/issues/5".into(),
         sub_issues: 3,
         blocked_by: 1,
@@ -93,6 +94,44 @@ fn issue_carries_sub_issue_and_blocked_by_totals() {
     let back: Issue = serde_json::from_value(json).unwrap();
     assert_eq!(back, issue);
     assert_eq!((back.sub_issues, back.blocked_by), (3, 1));
+}
+
+#[test]
+fn an_issue_without_the_bot_flag_reads_as_no_bot() {
+    let mut json = serde_json::to_value(Issue {
+        number: IssueNumber(5),
+        title: "Title".into(),
+        body: String::new(),
+        state: "open".into(),
+        labels: Vec::new(),
+        issue_type: None,
+        author: Login("someone".into()),
+        author_is_bot: true,
+        url: "https://example.com/owner/name/issues/5".into(),
+        sub_issues: 0,
+        blocked_by: 0,
+    })
+    .unwrap();
+    json.as_object_mut().unwrap().remove("author_is_bot");
+    let back: Issue = serde_json::from_value(json).unwrap();
+    assert!(!back.author_is_bot);
+}
+
+#[test]
+fn is_bot_reads_the_type_and_the_login_suffix() {
+    for (login, user_type, bot) in [
+        ("x[bot]", None, true),
+        ("x[BOT]", None, true),
+        ("x[bot]", Some("User"), true),
+        ("plain", Some("Bot"), true),
+        ("other[bot]", Some("User"), true),
+        ("plain", Some("User"), false),
+        ("plain", None, false),
+        ("bot", None, false),
+        ("x[bot]y", None, false),
+    ] {
+        assert_eq!(is_bot(login, user_type), bot, "{login} {user_type:?}");
+    }
 }
 
 #[test]

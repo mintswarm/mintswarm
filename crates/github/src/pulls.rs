@@ -16,7 +16,7 @@ use mintswarm_domain::vcs::BranchName;
 
 use crate::reads::{
     GitHubReads, GraphQlReply, MAX_PAGES, PER_PAGE, ReadError, graphql_reply, login_at, opt_str_at,
-    str_at, text_at, u64_at, unexpected,
+    str_at, text_at, u64_at, unexpected, user_is_bot,
 };
 use crate::rest::{GRAPHQL_PATH, Reply, path_segment};
 use crate::secret::Token;
@@ -304,18 +304,9 @@ impl GitHubReads {
     }
 }
 
-/// Whether the user object `user` is a bot: of type `Bot`, or with a login ending in `[bot]`.
-fn is_bot(user: &Value) -> bool {
-    user.get("type").and_then(Value::as_str) == Some("Bot")
-        || user
-            .get("login")
-            .and_then(Value::as_str)
-            .is_some_and(|login| login.ends_with("[bot]"))
-}
-
 /// Whether the author at `key` is a bot; a missing author is not.
 fn author_is_bot(body: &Value, key: &str) -> bool {
-    body.get(key).is_some_and(is_bot)
+    body.get(key).is_some_and(user_is_bot)
 }
 
 fn map_pull(body: &Value, endpoint: &str) -> Result<PullDetail, ReadError> {

@@ -25,7 +25,7 @@ use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::retry::{Exhausted, RetryPolicy};
 use mintswarm_domain::tracker::{
     Artifact, ArtifactSummary, Comment, CommentMark, Cursor, Dependency, Direction, Issue,
-    IssueRead, IssueType, Link, LinkKind, Login, RepoRole,
+    IssueRead, IssueType, Link, LinkKind, Login, ParentIssue, RepoRole, is_bot,
 };
 
 use crate::etag::{ETAG_CACHE_LIMIT, EtagCache};
@@ -421,10 +421,10 @@ impl GitHubReads {
     ) -> Result<Vec<Link>, ReadError> {
         let path = self.issue_path(issue.0);
         let mut links = Vec::new();
-        if let Some(parent) = self.read_parent(token, issue).await? {
+        if let Some((parent, endpoint)) = self.parent_json(token, issue).await? {
             links.push(Link {
                 kind: LinkKind::Parent,
-                number: parent.0,
+                number: u64_at(&parent, "number", &endpoint)?,
             });
         }
         let subs_path = format!("{path}/sub_issues");
@@ -437,19 +437,48 @@ impl GitHubReads {
         Ok(links)
     }
 
-    /// `issue`'s parent issue, or `None` for a top-level issue, which GitHub answers with a 404.
+    /// `issue`'s parent issue and its author, or `None` for a top-level issue, which GitHub
+    /// answers with a 404.
+    ///
+    /// A parent whose `user` is missing or not an object, or whose `login` is not a string, has
+    /// no author: [`ParentIssue::author`] is `None`, which is no error. A missing `number` is
+    /// [`ReadError::Unexpected`].
     pub async fn read_parent(
         &self,
         token: &Token,
         issue: IssueNumber,
-    ) -> Result<Option<IssueNumber>, ReadError> {
+    ) -> Result<Option<ParentIssue>, ReadError> {
+        let Some((parent, endpoint)) = self.parent_json(token, issue).await? else {
+            return Ok(None);
+        };
+        let number = IssueNumber(u64_at(&parent, "number", &endpoint)?);
+        let user = parent.get("user").filter(|user| user.is_object());
+        let login = user
+            .and_then(|user| user.get("login"))
+            .and_then(Value::as_str);
+        let (author, author_is_bot) = match (user, login) {
+            (Some(user), Some(login)) => (
+                Some(Login(login.to_owned())),
+                is_bot(login, user.get("type").and_then(Value::as_str)),
+            ),
+            _ => (None, false),
+        };
+        Ok(Some(ParentIssue {
+            number,
+            author,
+            author_is_bot,
+        }))
+    }
+
+    /// The `/parent` answer for `issue` with its endpoint, or `None` on a 404.
+    async fn parent_json(
+        &self,
+        token: &Token,
+        issue: IssueNumber,
+    ) -> Result<Option<(Arc<Value>, String)>, ReadError> {
         let path = format!("{}/parent", self.issue_path(issue.0));
         match self.get(token, &path).await {
-            Ok(parent) => Ok(Some(IssueNumber(u64_at(
-                &parent,
-                "number",
-                &format!("GET {path}"),
-            )?))),
+            Ok(parent) => Ok(Some((parent, format!("GET {path}")))),
             Err(ReadError::NotFound { .. }) => Ok(None),
             Err(error) => Err(error),
         }
@@ -565,6 +594,7 @@ impl GitHubReads {
             labels,
             issue_type,
             author: login_at(body, "user", endpoint)?,
+            author_is_bot: body.get("user").is_some_and(user_is_bot),
             url: str_at(body, "html_url", endpoint)?,
             sub_issues: summary_total_at(body, "sub_issues_summary", "total", endpoint)?,
             blocked_by: summary_total_at(
@@ -848,6 +878,16 @@ fn summary_total_at(
         None | Some(Value::Null) => Ok(0),
         Some(object) => u64_at(object, total, endpoint),
     }
+}
+
+/// Whether the user object `user` is a bot, as [`is_bot`] decides from its `login` and `type`.
+pub(crate) fn user_is_bot(user: &Value) -> bool {
+    is_bot(
+        user.get("login")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        user.get("type").and_then(Value::as_str),
+    )
 }
 
 /// The `login` of the user object at `key`.

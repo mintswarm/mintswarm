@@ -1177,6 +1177,7 @@ dependencies = [
  "mintswarm-domain",
  "mintswarm-github",
  "mintswarm-proto",
+ "mintswarm-rules",
  "rustix",
  "serde_json",
  "tempfile",

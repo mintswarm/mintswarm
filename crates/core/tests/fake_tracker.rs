@@ -12,9 +12,9 @@ use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     Artifact, ChangedFile, CheckRun, CheckState, CheckSuite, CodeOwners, Collaborators,
     CombinedStatus, Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue,
-    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, PullDetail,
-    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
-    Statuses, SubItem,
+    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, ParentIssue,
+    PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
+    Reviews, Statuses, SubItem,
 };
 use mintswarm_domain::vcs::{BranchName, RepoPath};
 use mintswarm_github::{NOTE_MARKER, Token};
@@ -32,6 +32,7 @@ fn issue(number: u64) -> Issue {
         labels: vec!["mintswarm".into()],
         issue_type: Some(IssueType::Implementation),
         author: Login("maintainer".into()),
+        author_is_bot: false,
         url: format!("https://github.com/acme/widgets/issues/{number}"),
         sub_issues: 0,
         blocked_by: 0,
@@ -458,6 +459,18 @@ async fn the_parent_agrees_with_the_links() {
             },
         ],
     );
+    // A parent link to an issue that is not seeded is the fake's not-found error.
+    assert_eq!(
+        fake.read_parent(ISSUE).await,
+        Err(FakeTrackerError::NoSuchIssue {
+            issue: IssueNumber(3)
+        })
+    );
+    fake.add_issue(Issue {
+        author: Login("helper".into()),
+        author_is_bot: true,
+        ..issue(3)
+    });
     let parent = fake
         .read_links(ISSUE)
         .await
@@ -466,7 +479,14 @@ async fn the_parent_agrees_with_the_links() {
         .find(|link| link.kind == LinkKind::Parent)
         .map(|link| IssueNumber(link.number));
     assert_eq!(parent, Some(IssueNumber(3)));
-    assert_eq!(fake.read_parent(ISSUE).await, Ok(parent));
+    assert_eq!(
+        fake.read_parent(ISSUE).await,
+        Ok(Some(ParentIssue {
+            number: IssueNumber(3),
+            author: Some(Login("helper".into())),
+            author_is_bot: true,
+        }))
+    );
 }
 
 const PR: PrNumber = PrNumber(400);

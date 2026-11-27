@@ -23,10 +23,13 @@
 //!   session and user text in them.
 //! - [`command`]: the approve, reject and help commands a comment gives, the hints for near
 //!   misses, and the digest an approval package binds.
+//! - [`approver`]: the tracker issue's owner up its parent chain, whether a sender is its
+//!   approver, and whether a pull request's approvals cover its CODEOWNERS approval groups.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
 
+pub mod approver;
 pub mod binding;
 pub mod command;
 pub mod exit;
