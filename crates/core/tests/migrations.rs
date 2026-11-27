@@ -179,6 +179,7 @@ fn a_migration_with_its_down_gives_no_warning() {
     assert_eq!(migration.version, "20260101000000");
     assert_eq!(migration.name, "a");
     assert_eq!(migration.up, up);
+    assert!(!migration.no_transaction);
     assert_eq!(
         migration.down,
         Some(Down {
@@ -240,7 +241,6 @@ fn keys_not_implemented_yet_are_refused_on_an_up_file() {
         ("pile-hash", "-- migrate: pile-hash abc"),
         ("pile-commit", "-- migrate: pile-commit abc"),
         ("declared-difference", "-- migrate: declared-difference x"),
-        ("no-transaction", "-- migrate: no-transaction"),
     ] {
         let file = path("20260101000000_a.up.sql");
         let text = format!("-- A table.\n{line}\nCREATE TABLE a ();\n");
@@ -253,6 +253,17 @@ fn keys_not_implemented_yet_are_refused_on_an_up_file() {
             "{key}"
         );
     }
+}
+
+#[test]
+fn an_up_file_may_run_outside_a_transaction() {
+    let file = path("20260101000000_a_idx.up.sql");
+    let text = "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY a_idx ON a (id);\n";
+    let report = check(&[(&file, text)]).expect("the tree is valid");
+    let [migration] = report.migrations.as_slice() else {
+        panic!("one migration: {:?}", report.migrations);
+    };
+    assert!(migration.no_transaction);
 }
 
 #[test]
