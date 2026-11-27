@@ -73,13 +73,25 @@ pub enum FakeWrite {
 }
 
 /// A scripted answer to the next merge of a pull request, in place of the one its state gives.
+///
+/// Each carries its effect on the pull request's state, so a read-back after the merge agrees
+/// with its answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FakeMerge {
-    /// The merge answers with this outcome; the pull request's state is left as it is.
-    Outcome(MergeOutcome),
-    /// The merge fails with [`FakeTrackerError::MergeLost`]: its fate is unknown, and `landed`
-    /// is what [`Merges::may_have_landed`] says of it.
+    /// The merge answers [`MergeOutcome::Merged`] with this merge commit, and the pull request
+    /// is merged and closed with it.
+    Merged(Merged),
+    /// The merge answers [`MergeOutcome::HeadMoved`], and the pull request's head moves to
+    /// `head`, as a push racing the merge would.
+    HeadMoved { head: RevId },
+    /// The merge answers [`MergeOutcome::NotMergeable`]; the pull request is left as it is.
+    NotMergeable,
+    /// The merge fails with [`FakeTrackerError::MergeLost`]: its fate is unknown, `landed` is
+    /// what [`Merges::may_have_landed`] says of it, and the pull request is left as it is.
     Lost { landed: bool },
+    /// The merge fails with [`FakeTrackerError::MergeLost`], may have landed, and did: the pull
+    /// request is merged and closed with this merge commit.
+    LostButMerged(Merged),
 }
 
 /// Why a fake tracker call failed.
@@ -214,23 +226,45 @@ impl State {
         Ok(lists.get(pr).cloned().unwrap_or_default())
     }
 
-    /// The answer to a merge with no script: head moved, not mergeable, or merged.
+    /// The answer to a merge of `pr` at `sha`: its script if one is queued, and otherwise its
+    /// state, not mergeable first, then head moved, else merged.
     fn merge(&mut self, pr: &PrNumber, sha: &RevId) -> Result<MergeOutcome, FakeTrackerError> {
+        let script = self
+            .merges
+            .get_mut(pr)
+            .filter(|queue| !queue.is_empty())
+            .map(|queue| queue.remove(0));
         let pull = self
             .pulls
             .get_mut(pr)
             .ok_or_else(|| FakeTrackerError::NoSuchPull { pr: pr.clone() })?;
-        if pull.head != *sha {
-            return Ok(MergeOutcome::HeadMoved);
+        match script {
+            Some(FakeMerge::Merged(merged)) => {
+                mark_merged(pull, &merged.sha);
+                Ok(MergeOutcome::Merged(merged))
+            }
+            Some(FakeMerge::HeadMoved { head }) => {
+                pull.head = head;
+                Ok(MergeOutcome::HeadMoved)
+            }
+            Some(FakeMerge::NotMergeable) => Ok(MergeOutcome::NotMergeable),
+            Some(FakeMerge::Lost { landed }) => Err(FakeTrackerError::MergeLost { landed }),
+            Some(FakeMerge::LostButMerged(merged)) => {
+                mark_merged(pull, &merged.sha);
+                Err(FakeTrackerError::MergeLost { landed: true })
+            }
+            None => {
+                if pull.merged || pull.state != "open" || pull.mergeable == Some(false) {
+                    return Ok(MergeOutcome::NotMergeable);
+                }
+                if pull.head != *sha {
+                    return Ok(MergeOutcome::HeadMoved);
+                }
+                let commit = RevId(format!("{:040x}", pr.0));
+                mark_merged(pull, &commit);
+                Ok(MergeOutcome::Merged(Merged { sha: commit }))
+            }
         }
-        if pull.merged {
-            return Ok(MergeOutcome::NotMergeable);
-        }
-        let commit = RevId(format!("{:040x}", pr.0));
-        pull.merged = true;
-        pull.state = "closed".into();
-        pull.merge_commit = Some(commit.clone());
-        Ok(MergeOutcome::Merged(Merged { sha: commit }))
     }
 
     fn dependencies(&mut self, direction: Direction) -> &mut HashMap<IssueNumber, Vec<Dependency>> {
@@ -885,10 +919,17 @@ impl CodeOwners for FakeTracker {
 impl Merges for FakeTracker {
     type MergeToken = Token;
 
-    /// Records the call, then answers the pull request's next script if one is queued, and
-    /// otherwise its state: a `sha` that is not the current head is [`MergeOutcome::HeadMoved`],
-    /// a merged pull request [`MergeOutcome::NotMergeable`], and any other is merged and closed
-    /// with the merge commit `format!("{:040x}", pr.0)`.
+    /// Records the call, then answers the pull request's next script if one is queued, applying
+    /// its effect on the pull request's state (see [`FakeMerge`]), and otherwise its state, in
+    /// this order, as GitHub refuses (405) a pull request that cannot be merged whatever the
+    /// `sha`:
+    ///
+    /// 1. a pull request that is merged, not `open`, or seeded with `mergeable: Some(false)` is
+    ///    [`MergeOutcome::NotMergeable`];
+    /// 2. a `sha` that is not the current head is [`MergeOutcome::HeadMoved`];
+    /// 3. any other is merged and closed with the merge commit `format!("{:040x}", pr.0)`.
+    ///
+    /// A pull request that was not seeded is [`FakeTrackerError::NoSuchPull`], scripted or not.
     async fn merge(
         &self,
         token: &Token,
@@ -903,21 +944,19 @@ impl Merges for FakeTracker {
             title,
             token: token.clone(),
         });
-        let script = state
-            .merges
-            .get_mut(&pr)
-            .filter(|queue| !queue.is_empty())
-            .map(|queue| queue.remove(0));
-        match script {
-            Some(FakeMerge::Outcome(outcome)) => Ok(outcome),
-            Some(FakeMerge::Lost { landed }) => Err(FakeTrackerError::MergeLost { landed }),
-            None => state.merge(&pr, &sha),
-        }
+        state.merge(&pr, &sha)
     }
 
     fn may_have_landed(error: &FakeTrackerError) -> bool {
         matches!(error, FakeTrackerError::MergeLost { landed: true })
     }
+}
+
+/// Marks `pull` merged and closed with the merge commit `commit`.
+fn mark_merged(pull: &mut PullDetail, commit: &RevId) {
+    pull.merged = true;
+    pull.state = "closed".into();
+    pull.merge_commit = Some(commit.clone());
 }
 
 /// Whether `sha` is a full commit id, 40 or 64 lower-case hex digits, as `mintswarm-github`

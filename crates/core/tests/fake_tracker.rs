@@ -729,7 +729,7 @@ async fn a_head_moved_between_check_and_merge_is_head_moved() {
 #[tokio::test]
 async fn a_scripted_refusal_is_not_mergeable() {
     let fake = with_pull();
-    fake.script_merge(&PR, FakeMerge::Outcome(MergeOutcome::NotMergeable));
+    fake.script_merge(&PR, FakeMerge::NotMergeable);
     let head = RevId(HEAD.into());
     assert_eq!(
         fake.merge(&merge_token(), PR, head.clone(), "Title".into())
@@ -760,6 +760,147 @@ async fn a_lost_merge_says_whether_it_may_have_landed() {
     assert_eq!(landed, [true, false]);
     assert!(!FakeTracker::may_have_landed(
         &FakeTrackerError::NoSuchPull { pr: PR }
+    ));
+}
+
+#[tokio::test]
+async fn scripted_merges_carry_their_effect_on_the_pull_request() {
+    let fake = with_pull();
+    let head = RevId(HEAD.into());
+    let moved = RevId(MOVED.into());
+    let commit = RevId("c".repeat(40));
+    // A scripted head moved moves the head.
+    fake.script_merge(
+        &PR,
+        FakeMerge::HeadMoved {
+            head: moved.clone(),
+        },
+    );
+    assert_eq!(
+        fake.merge(&merge_token(), PR, head.clone(), "Title".into())
+            .await,
+        Ok(MergeOutcome::HeadMoved)
+    );
+    let pull = fake.read_pull(PR).await.unwrap();
+    assert_eq!((pull.head, pull.merged), (moved.clone(), false));
+    // A scripted refusal leaves the pull request as it is.
+    fake.script_merge(&PR, FakeMerge::NotMergeable);
+    assert_eq!(
+        fake.merge(&merge_token(), PR, moved.clone(), "Title".into())
+            .await,
+        Ok(MergeOutcome::NotMergeable)
+    );
+    let pull = fake.read_pull(PR).await.unwrap();
+    assert_eq!(
+        (pull.head, pull.merged, pull.state.as_str()),
+        (moved.clone(), false, "open")
+    );
+    // A lost merge that did not land leaves it as it is too.
+    fake.script_merge(&PR, FakeMerge::Lost { landed: true });
+    let error = fake
+        .merge(&merge_token(), PR, moved.clone(), "Title".into())
+        .await
+        .unwrap_err();
+    assert!(FakeTracker::may_have_landed(&error));
+    let pull = fake.read_pull(PR).await.unwrap();
+    assert_eq!((pull.merged, pull.merge_commit), (false, None));
+    // A lost merge that landed after all is merged on read-back.
+    fake.script_merge(
+        &PR,
+        FakeMerge::LostButMerged(Merged {
+            sha: commit.clone(),
+        }),
+    );
+    let error = fake
+        .merge(&merge_token(), PR, moved.clone(), "Title".into())
+        .await
+        .unwrap_err();
+    assert!(FakeTracker::may_have_landed(&error));
+    let pull = fake.read_pull(PR).await.unwrap();
+    assert_eq!(
+        (pull.merged, pull.state.as_str(), pull.merge_commit),
+        (true, "closed", Some(commit.clone()))
+    );
+    // A scripted merge is merged on read-back, with its commit.
+    let fake = with_pull();
+    fake.script_merge(
+        &PR,
+        FakeMerge::Merged(Merged {
+            sha: commit.clone(),
+        }),
+    );
+    assert_eq!(
+        fake.merge(&merge_token(), PR, head, "Title".into()).await,
+        Ok(MergeOutcome::Merged(Merged {
+            sha: commit.clone()
+        }))
+    );
+    let pull = fake.read_pull(PR).await.unwrap();
+    assert_eq!(
+        (pull.merged, pull.state.as_str(), pull.merge_commit),
+        (true, "closed", Some(commit))
+    );
+}
+
+#[tokio::test]
+async fn a_scripted_merge_of_an_unknown_pull_request_is_no_such_pull() {
+    let fake = with_pull();
+    let other = PrNumber(401);
+    fake.script_merge(&other, FakeMerge::NotMergeable);
+    assert_eq!(
+        fake.merge(
+            &merge_token(),
+            other.clone(),
+            RevId(HEAD.into()),
+            "Title".into()
+        )
+        .await,
+        Err(FakeTrackerError::NoSuchPull { pr: other })
+    );
+}
+
+#[tokio::test]
+async fn an_unmergeable_pull_request_is_not_mergeable_before_its_head_is_checked() {
+    let head = RevId(HEAD.into());
+    let moved = RevId(MOVED.into());
+    let unmergeable = [
+        PullDetail {
+            merged: true,
+            state: "closed".into(),
+            merge_commit: Some(RevId("c".repeat(40))),
+            ..pull()
+        },
+        PullDetail {
+            state: "closed".into(),
+            ..pull()
+        },
+        PullDetail {
+            mergeable: Some(false),
+            ..pull()
+        },
+    ];
+    for seeded in unmergeable {
+        for sha in [&head, &moved] {
+            let fake = fake();
+            fake.add_pull(seeded.clone());
+            assert_eq!(
+                fake.merge(&merge_token(), PR, sha.clone(), "Title".into())
+                    .await,
+                Ok(MergeOutcome::NotMergeable),
+                "{seeded:?} at {sha:?}"
+            );
+            assert_eq!(fake.pull(&PR), Some(seeded.clone()));
+        }
+    }
+    // Mergeability still being worked out does not refuse it.
+    let fake = fake();
+    fake.add_pull(PullDetail {
+        mergeable: None,
+        ..pull()
+    });
+    assert!(matches!(
+        fake.merge(&merge_token(), PR, head, "Title".into()).await,
+        Ok(MergeOutcome::Merged(_))
     ));
 }
 
