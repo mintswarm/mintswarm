@@ -161,7 +161,7 @@ fn triggered(changes: &[(u64, BlockerChangeKind)]) -> Cause {
     }
 }
 
-fn entry(cause: Cause, fan_out: Option<BlockerChangeKind>) -> Entry {
+fn entry(cause: Cause, fan_out: bool) -> Entry {
     let mut entry = Entry::of(cause);
     entry.fan_out = fan_out;
     entry
@@ -169,16 +169,16 @@ fn entry(cause: Cause, fan_out: Option<BlockerChangeKind>) -> Entry {
 
 #[test]
 fn issue_events_reduce_to_the_issue_marked_for_fan_out() {
-    let closed = Some(BlockerChangeKind::Closed);
-    let reopened = Some(BlockerChangeKind::Reopened);
+    // The change the fan-out gives comes from the issue's state at fan-out time, not the action.
+    let marked = true;
     let cases: Vec<(WatchEvent, Vec<(IssueNumber, Entry)>)> = vec![
         (
             issues_event("closed", 3),
-            vec![(IssueNumber(3), entry(triggered(&[]), closed))],
+            vec![(IssueNumber(3), entry(triggered(&[]), marked))],
         ),
         (
             issues_event("reopened", 3),
-            vec![(IssueNumber(3), entry(triggered(&[]), reopened))],
+            vec![(IssueNumber(3), entry(triggered(&[]), marked))],
         ),
         (issues_event("labeled", 3), vec![]),
         (
@@ -189,7 +189,7 @@ fn issue_events_reduce_to_the_issue_marked_for_fan_out() {
                 side("MintSwarm/MintSwarm", 3),
                 None,
             ),
-            vec![(IssueNumber(3), entry(triggered(&[]), closed))],
+            vec![(IssueNumber(3), entry(triggered(&[]), marked))],
         ),
         (
             webhook_event("issues", "closed", ItemKind::Issue, side(OTHER, 3), None),
@@ -258,34 +258,37 @@ fn dependency_events_reduce_to_the_blocked_issue() {
             link("blocking_removed", side(REPO, 6), side(REPO, 3)),
             Some(removed),
         ),
-        // A blocker in another repository still blocks an issue here.
-        (
-            link("blocked_by_added", side(REPO, 6), side(OTHER, 3)),
-            Some(added),
-        ),
         // A blocked issue in another repository is not this plane's.
         (link("blocking_added", side(OTHER, 6), side(REPO, 3)), None),
         (link("something_else", side(REPO, 6), side(REPO, 3)), None),
     ];
     for (event, change) in cases {
         let expected: Vec<(IssueNumber, Entry)> = change
-            .map(|change| (IssueNumber(6), entry(triggered(&[(3, change)]), None)))
+            .map(|change| (IssueNumber(6), entry(triggered(&[(3, change)]), false)))
             .into_iter()
             .collect();
+        assert_eq!(reduce(&event, REPO), expected, "{event:?}");
+    }
+
+    // A blocker in another repository still queues the issue here, but names no change: the
+    // cause holds only numbers of this repository, so `#3` would name the wrong issue.
+    for action in ["blocked_by_added", "blocked_by_removed"] {
+        let event = link(action, side(REPO, 6), side(OTHER, 3));
+        let expected = vec![(IssueNumber(6), entry(triggered(&[]), false))];
         assert_eq!(reduce(&event, REPO), expected, "{event:?}");
     }
 }
 
 #[test]
 fn a_merge_removes_duplicate_changes() {
-    let mut ours = entry(triggered(&[(3, BlockerChangeKind::Added)]), None);
+    let mut ours = entry(triggered(&[(3, BlockerChangeKind::Added)]), false);
     ours.repeat = true;
     let mut theirs = entry(
         triggered(&[
             (3, BlockerChangeKind::Added),
             (4, BlockerChangeKind::Removed),
         ]),
-        Some(BlockerChangeKind::Closed),
+        true,
     );
     theirs.requeued = true;
     ours.merge(theirs);
@@ -296,15 +299,38 @@ fn a_merge_removes_duplicate_changes() {
             (4, BlockerChangeKind::Removed)
         ])
     );
-    assert_eq!(ours.fan_out, Some(BlockerChangeKind::Closed));
+    assert!(ours.fan_out);
     assert!(!ours.repeat);
     assert!(ours.requeued);
 
     let mut sweep = Entry::of(Cause::Sweep);
     sweep.merge(Entry::of(Cause::Sweep));
     assert_eq!(sweep.cause, Cause::Sweep);
-    sweep.merge(entry(triggered(&[]), None));
+    sweep.merge(entry(triggered(&[]), false));
     assert_eq!(sweep.cause, triggered(&[]));
+    assert!(!sweep.repeat);
+}
+
+#[test]
+fn a_repeat_merged_with_a_sweep_stays_a_repeat() {
+    let repeat = || {
+        let mut entry = entry(triggered(&[]), false);
+        entry.repeat = true;
+        entry
+    };
+    for (mut ours, theirs) in [
+        (Entry::of(Cause::Sweep), repeat()),
+        (repeat(), Entry::of(Cause::Sweep)),
+    ] {
+        ours.merge(theirs);
+        assert_eq!(ours.cause, triggered(&[]));
+        assert!(ours.repeat);
+    }
+
+    // A fresh trigger still absorbs the repeat.
+    let mut ours = repeat();
+    ours.merge(entry(triggered(&[(3, BlockerChangeKind::Added)]), false));
+    assert!(!ours.repeat);
 }
 
 /// A tracker every call of which is counted and then never answers.

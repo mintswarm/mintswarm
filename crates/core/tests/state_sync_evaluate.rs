@@ -313,8 +313,14 @@ async fn the_two_deliveries_of_one_link_report_once() {
 async fn close_then_reopen_out_of_order_follows_the_facts() {
     for split in [false, true] {
         let fake = tracker();
-        // The issue was closed and reopened; the reopen arrives first.
+        // The issue was closed and reopened; the reopen arrives first. It blocks active `#6`.
         seed(&fake, 8, true, DONE, &[], 0);
+        seed(&fake, 6, true, PLANNING, &[(8, true)], 0);
+        fake.set_dependencies(
+            &IssueNumber(8),
+            Direction::Blocking,
+            vec![dependency(6, true)],
+        );
         let mut plane = plane(fake, StatusMode::Off);
         plane.sync.on_delivery(&reopened(8));
         if split {
@@ -336,7 +342,51 @@ async fn close_then_reopen_out_of_order_follows_the_facts() {
                 .as_deref(),
             Some(QUEUED)
         );
+
+        // The note on `#6` gives the change the facts show: `#8` is open, so it was reopened.
+        let notes = posts(&writes, 6);
+        assert_eq!(notes.len(), 1, "split {split}");
+        assert!(
+            notes[0].contains("Blockers changed: #8 reopened."),
+            "split {split}: {}",
+            notes[0]
+        );
+        assert!(notes[0].contains("open=#8 "), "split {split}: {}", notes[0]);
     }
+}
+
+#[tokio::test]
+async fn a_blocker_in_another_repository_names_no_change() {
+    let fake = tracker();
+    seed(&fake, 6, true, PLANNING, &[(3, true)], 0);
+    let other = Dependency {
+        repository: "someone/else".to_owned(),
+        number: IssueNumber(3),
+        open: true,
+    };
+    fake.set_dependencies(
+        &IssueNumber(6),
+        Direction::BlockedBy,
+        vec![dependency(3, true), other],
+    );
+    fake.add_issue(issue(6, true, 2, 0));
+    let mut plane = plane(fake, StatusMode::Off);
+    let mut link = linked("blocked_by", 6, 3);
+    if let Some(watch_event::Body::GithubWebhook(webhook)) = &mut link.body
+        && let Some(dependency) = &mut webhook.dependency
+        && let Some(blocking) = &mut dependency.blocking
+    {
+        blocking.repository = "someone/else".to_owned();
+    }
+    plane.sync.on_delivery(&link);
+    plane.worker.drain().await;
+
+    // The issue is evaluated from its fresh blockers, but no `#3` change is reported.
+    let lines = plane.lines.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["causes"], serde_json::json!([]));
+    assert_eq!(lines[0]["outcome"], "unchanged");
+    assert!(plane.fake.writes().is_empty());
 }
 
 #[tokio::test]

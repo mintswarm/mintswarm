@@ -27,7 +27,7 @@ use super::trigger;
 /// How long after a triggered evaluation the issue is evaluated once more.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
-/// Where each evaluation's JSON line goes.
+/// Where each evaluation's JSON line goes; by default a `tracing` event of target `state_sync`.
 pub type Sink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// One queued issue's reasons to be evaluated.
@@ -36,8 +36,9 @@ pub struct Entry {
     /// Why the issue is evaluated.
     pub cause: Cause,
     /// Set when the issue itself was closed or reopened: the worker first queues the issues it
-    /// blocks, each with this change of its blocker.
-    pub fan_out: Option<BlockerChangeKind>,
+    /// blocks, each with the issue's close or reopen as its blocker change, as the issue's
+    /// state read at fan-out time gives it.
+    pub fan_out: bool,
     /// Whether this is the settle repeat of a triggered evaluation, which is never repeated.
     pub repeat: bool,
     /// Whether the entry was already queued again after a value that kept moving.
@@ -54,7 +55,7 @@ impl Entry {
     pub fn of(cause: Cause) -> Self {
         Self {
             cause,
-            fan_out: None,
+            fan_out: false,
             repeat: false,
             requeued: false,
         }
@@ -63,9 +64,12 @@ impl Entry {
     /// Absorbs `other` into this entry.
     ///
     /// Blocker changes are a set union, kept in arrival order. A triggered cause absorbs a
-    /// sweep. A fan-out mark survives, the newer one winning. A non-repeat absorbs a repeat,
-    /// and `requeued` is set when either is.
+    /// sweep. A fan-out mark survives. The merged entry is a repeat when either side is one and
+    /// neither is a triggered non-repeat, so a repeat absorbed by a sweep stays a repeat, and
+    /// `requeued` is set when either is.
     pub fn merge(&mut self, other: Entry) {
+        let fresh = |entry: &Entry| matches!(entry.cause, Cause::Triggered { .. }) && !entry.repeat;
+        let repeat = (self.repeat || other.repeat) && !fresh(self) && !fresh(&other);
         self.cause = match (
             std::mem::replace(&mut self.cause, Cause::Sweep),
             other.cause,
@@ -91,8 +95,8 @@ impl Entry {
                 }
             }
         };
-        self.fan_out = other.fan_out.or(self.fan_out);
-        self.repeat = self.repeat && other.repeat;
+        self.fan_out = self.fan_out || other.fan_out;
+        self.repeat = repeat;
         self.requeued = self.requeued || other.requeued;
     }
 }
@@ -174,7 +178,7 @@ impl StateSync {
             settings,
             shared,
             settle: VecDeque::new(),
-            sink: Arc::new(|line: &str| eprintln!("{line}")),
+            sink: Arc::new(|line: &str| tracing::info!(target: "state_sync", "{line}")),
         };
         (handle, worker)
     }
@@ -201,7 +205,7 @@ pub struct Worker<T> {
     settings: Settings,
     shared: Arc<Shared>,
     /// The settle repeats, by deadline, each with the fan-out mark it keeps.
-    settle: VecDeque<(Instant, IssueNumber, Option<BlockerChangeKind>)>,
+    settle: VecDeque<(Instant, IssueNumber, bool)>,
     sink: Sink,
 }
 
@@ -272,9 +276,10 @@ where
 
     /// Fans out, evaluates and logs one entry, then queues its requeue or settle repeat.
     async fn process(&mut self, issue: IssueNumber, entry: Entry) {
-        let fan_out = match entry.fan_out {
-            None => None,
-            Some(change) => Some(self.fan_out(&issue, change).await),
+        let fan_out = if entry.fan_out {
+            Some(self.fan_out(&issue).await)
+        } else {
+            None
         };
         let mut evaluation =
             evaluate(&*self.tracker, &self.settings, issue.clone(), &entry.cause).await;
@@ -290,10 +295,7 @@ where
         (self.sink)(&evaluation.line.to_string());
 
         // A failed fan-out keeps its mark, so the repeat reads the blocked issues again.
-        let keep_mark = match fan_out {
-            Some(Err(_)) => entry.fan_out,
-            _ => None,
-        };
+        let keep_mark = matches!(fan_out, Some(Err(_)));
         if evaluation.outcome == Outcome::Deferred {
             if !entry.requeued {
                 let mut again = Entry::of(entry.cause);
@@ -310,9 +312,20 @@ where
         }
     }
 
-    /// Queues every issue `issue` blocks in the same repository, with `change` of `issue` as
-    /// its cause.
-    async fn fan_out(&self, issue: &IssueNumber, change: BlockerChangeKind) -> Result<(), String> {
+    /// Queues every issue `issue` blocks in the same repository, with the close or reopen of
+    /// `issue` as its cause: `Reopened` when the issue reads open now, `Closed` otherwise, so
+    /// deliveries out of order give the change the facts show.
+    async fn fan_out(&self, issue: &IssueNumber) -> Result<(), String> {
+        let read = self
+            .tracker
+            .read_issue(issue.clone(), None)
+            .await
+            .map_err(|error| error.to_string())?;
+        let change = if read.issue.state.eq_ignore_ascii_case("open") {
+            BlockerChangeKind::Reopened
+        } else {
+            BlockerChangeKind::Closed
+        };
         let blocked = self
             .tracker
             .read_dependencies(issue.clone(), Direction::Blocking)

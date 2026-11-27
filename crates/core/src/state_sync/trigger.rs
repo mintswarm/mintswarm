@@ -2,8 +2,10 @@
 //!
 //! The reduction is pure: it reads only the event, never the tracker. A close or reopen of an
 //! issue gives that issue, marked for fan-out, so the worker later reads the issues it blocks.
-//! A dependency change gives the blocked issue, with the blocker and the change as its cause.
-//! Only issues in the plane's own repository are kept.
+//! A dependency change gives the blocked issue, with the blocker and the change as its cause;
+//! a blocker in another repository is not named in the cause, which holds only issue numbers of
+//! this repository, so the issue is evaluated without one. Only issues in the plane's own
+//! repository are kept.
 
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_proto::watch::v1;
@@ -19,7 +21,8 @@ use crate::watch::WEBHOOK_KIND;
 ///   fan-out, with a triggered cause that carries no blocker change.
 /// - An `issue_dependencies` event with `blocked_by_added`, `blocked_by_removed`,
 ///   `blocking_added` or `blocking_removed` gives the blocked issue, with the blocking issue
-///   added or removed as its cause.
+///   added or removed as its cause. A blocking issue in another repository gives the blocked
+///   issue with no blocker change, so its blockers still come from the fresh read.
 pub fn reduce(event: &v1::WatchEvent, repository: &str) -> Vec<(IssueNumber, Entry)> {
     if event.kind != WEBHOOK_KIND {
         return Vec::new();
@@ -42,11 +45,9 @@ fn issue_event(
     action: &str,
     repository: &str,
 ) -> Option<(IssueNumber, Entry)> {
-    let change = match action {
-        "closed" => BlockerChangeKind::Closed,
-        "reopened" => BlockerChangeKind::Reopened,
-        _ => return None,
-    };
+    if action != "closed" && action != "reopened" {
+        return None;
+    }
     let subject = event.subject.as_ref()?;
     if subject.item_kind() != v1::ItemKind::Issue
         || subject.number == 0
@@ -55,7 +56,7 @@ fn issue_event(
         return None;
     }
     let mut entry = Entry::triggered(Vec::new());
-    entry.fan_out = Some(change);
+    entry.fan_out = true;
     Some((IssueNumber(subject.number), entry))
 }
 
@@ -75,9 +76,14 @@ fn dependency_event(webhook: &v1::GitHubWebhook, repository: &str) -> Option<(Is
     {
         return None;
     }
-    let entry = Entry::triggered(vec![BlockerChange {
-        blocker: IssueNumber(blocking.number),
-        change,
-    }]);
+    let changes = if blocking.repository.eq_ignore_ascii_case(repository) {
+        vec![BlockerChange {
+            blocker: IssueNumber(blocking.number),
+            change,
+        }]
+    } else {
+        Vec::new()
+    };
+    let entry = Entry::triggered(changes);
     Some((IssueNumber(blocked.number), entry))
 }
