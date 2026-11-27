@@ -8,6 +8,10 @@
 //! `decision:` line to stderr and the comment, when there is one, to stdout. The arguments,
 //! files, stdout and exit codes follow `decision.py`; an unusable run's stderr is one
 //! `plan-decision: ` line in Rust's wording, and it runs no `yq` and no Python.
+//!
+//! Intended differences from `decision.py`, besides those of [`super::plan_args`]: an `--issue`
+//! past `u64::MAX`, which matches `[1-9][0-9]*` and which Python's `int()` takes, is refused, exit
+//! 2 with `--issue must be a positive decimal integer: <value>`.
 
 use std::ffi::OsString;
 use std::io::{ErrorKind, Write};
@@ -198,5 +202,53 @@ fn band_name(band: Band) -> &'static str {
         Band::NeedsReview => "needs-review",
         Band::Uncertain => "uncertain",
         Band::Blocked => "blocked",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_issue_past_u64_is_refused() {
+        let cwd = tempfile::tempdir().expect("a working directory");
+        let issue = "99999999999999999999";
+        let argv: Vec<OsString> = [
+            "--issue",
+            issue,
+            "--components",
+            "runner",
+            "--plan",
+            "plan.md",
+            "--issue-document",
+            "issue.md",
+            "--analysis",
+            "analysis.md",
+            "--assessment",
+            "assessment.md",
+            "--assessment-artifact",
+            "https://example.invalid/a",
+            "--base",
+            "HEAD",
+            "--harness",
+            "claude",
+            "--model",
+            "sonnet",
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect();
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let outcome = run(&argv, cwd.path(), &mut stdout, &mut stderr);
+        let unusable = outcome.expect_err("the issue is refused");
+        assert_eq!(
+            unusable.message(),
+            format!("--issue must be a positive decimal integer: '{issue}'")
+        );
+        assert_eq!(
+            String::from_utf8(stderr).expect("UTF-8"),
+            format!("plan-decision: --issue must be a positive decimal integer: '{issue}'\n")
+        );
+        assert!(stdout.is_empty());
     }
 }

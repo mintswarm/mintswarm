@@ -3,6 +3,11 @@
 //! no unknown flag, empty value or value that is a flag name; every required flag given; a
 //! `--base` that does not start with `-`; and, where the tool asks for it, an `--issue` that is a
 //! positive decimal integer. The messages are the scripts', with the tool's usage line.
+//!
+//! One intended difference from `parse_args`: an argument that is not UTF-8 is refused, exit 2
+//! with `arguments must be UTF-8; <usage>`, where Python on POSIX takes it through
+//! surrogateescape and opens the path. The values are kept as `str`, as every reader of them
+//! takes text.
 
 use std::ffi::OsString;
 
