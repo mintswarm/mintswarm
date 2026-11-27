@@ -51,7 +51,7 @@ impl fmt::Display for Name {
 /// An object a statement narrows or creates.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Object {
-    /// A table, view, materialised view or sequence.
+    /// A table, foreign table, view, materialised view or sequence.
     Relation(Name),
     /// A column of a relation.
     Column(Name, String),
@@ -59,7 +59,7 @@ pub enum Object {
     Constraint(Name, String),
     /// A type or a domain.
     Type(Name),
-    /// A function or procedure, by name only: overloads are not told apart.
+    /// A function, procedure or aggregate, by name only: overloads are not told apart.
     Function(Name),
     /// A schema.
     Schema(String),
@@ -194,17 +194,26 @@ fn class(cursor: &mut Cursor<'_>) -> Option<Class> {
         || cursor.eat("view")
         || cursor.eat("sequence")
         || cursor.eat_all(&["materialized", "view"])
+        || cursor.eat_all(&["foreign", "table"])
     {
         Some(Class::Relation)
     } else if cursor.eat("type") || cursor.eat("domain") {
         Some(Class::Type)
-    } else if cursor.eat("function") || cursor.eat("procedure") {
+    } else if eat_function(cursor) {
         Some(Class::Function)
     } else if cursor.eat("schema") {
         Some(Class::Schema)
     } else {
         None
     }
+}
+
+/// Moves past `FUNCTION`, `PROCEDURE`, `ROUTINE` or `AGGREGATE`, the keywords of the classes
+/// Postgres keeps as functions.
+fn eat_function(cursor: &mut Cursor<'_>) -> bool {
+    ["function", "procedure", "routine", "aggregate"]
+        .iter()
+        .any(|word| cursor.eat(word))
 }
 
 /// Reads the object a `DROP` or `CREATE` of `class` names, skipping a function's arguments.
@@ -235,10 +244,10 @@ fn read_drop(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     }
 }
 
-/// `ALTER TABLE`, `VIEW`, `MATERIALIZED VIEW`, `SEQUENCE`, `TYPE`, `DOMAIN`, `FUNCTION`,
-/// `PROCEDURE` or `SCHEMA`; other alters give nothing.
+/// `ALTER TABLE`, `FOREIGN TABLE`, `VIEW`, `MATERIALIZED VIEW`, `SEQUENCE`, `TYPE`, `DOMAIN`,
+/// `FUNCTION`, `PROCEDURE`, `ROUTINE`, `AGGREGATE` or `SCHEMA`; other alters give nothing.
 fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
-    if cursor.eat("table") {
+    if cursor.eat("table") || cursor.eat_all(&["foreign", "table"]) {
         cursor.eat_all(&["if", "exists"]);
         cursor.eat("only");
         let Some(table) = cursor.name() else {
@@ -267,7 +276,7 @@ fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
         if let Some(name) = cursor.name() {
             domain_action(&name, cursor, reading);
         }
-    } else if cursor.eat("function") || cursor.eat("procedure") {
+    } else if eat_function(cursor) {
         let Some(name) = cursor.name() else {
             return;
         };
@@ -367,14 +376,18 @@ fn add_action(table: &Name, cursor: &mut Cursor<'_>, reading: &mut Reading) {
     let mut default = false;
     let mut depth = 0usize;
     let rest = cursor.rest();
+    let word_at = |at: usize| match rest.get(at) {
+        Some(Token::Word(word)) => Some(word.as_str()),
+        _ => None,
+    };
     for (at, token) in rest.iter().enumerate() {
         match token {
             Token::Symbol('(') => depth += 1,
             Token::Symbol(')') => depth = depth.saturating_sub(1),
             Token::Word(word) if depth == 0 => match word.as_str() {
-                "not" if matches!(rest.get(at + 1), Some(Token::Word(next)) if next == "null") => {
-                    not_null = true;
-                }
+                "not" if word_at(at + 1) == Some("null") => not_null = true,
+                // `SET DEFAULT` is a foreign key's referential action, not a column default.
+                "default" if at > 0 && word_at(at - 1) == Some("set") => {}
                 "default" | "generated" => default = true,
                 "unique" | "primary" => {
                     reading.narrows(Narrowing::UniqueConstraint, Object::Relation(table.clone()));
