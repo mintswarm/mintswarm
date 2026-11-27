@@ -193,7 +193,7 @@ pub async fn apply(config: &Config, tree: &[(&str, &[u8])]) -> Result<Outcome, A
         .map(ApplyWarning::Tree)
         .collect();
 
-    let (client, connection) = config
+    let (mut client, connection) = config
         .connect(NoTls)
         .await
         .map_err(|source| ApplyError::Connect { source })?;
@@ -208,7 +208,7 @@ pub async fn apply(config: &Config, tree: &[(&str, &[u8])]) -> Result<Outcome, A
     {
         Err(source) => Err(ApplyError::Lock { source }),
         Ok(_) => {
-            let (run, unlockable) = locked(&client, &report, tree, &mut warnings).await;
+            let (run, unlockable) = locked(&mut client, &report, tree, &mut warnings).await;
             let unlock = if unlockable {
                 Some(unlock(&client).await)
             } else {
@@ -256,12 +256,12 @@ async fn unlock(client: &Client) -> Result<(), ApplyError> {
 /// session can still release the lock: not after a failed `ROLLBACK`, which may leave the
 /// transaction open.
 async fn locked(
-    client: &Client,
+    client: &mut Client,
     report: &Report,
     tree: &[(&str, &[u8])],
     warnings: &mut Vec<ApplyWarning>,
 ) -> (Result<Vec<Applied>, ApplyError>, bool) {
-    let pending = match plan(client, report, tree, warnings).await {
+    let pending = match prepare(client, report, tree, warnings).await {
         Ok(pending) => pending,
         Err(error) => return (Err(error), true),
     };
@@ -284,10 +284,10 @@ async fn locked(
     (Ok(applied), true)
 }
 
-/// Creates the ledger if it is missing, compares the tree with it and runs the interim rule
+/// Creates the ledger if it is missing, plans the tree against it and runs the interim rule
 /// over the pending files. Gives the pending migrations with their bytes, in version order.
-async fn plan<'a>(
-    client: &Client,
+async fn prepare<'a>(
+    client: &mut Client,
     report: &'a Report,
     tree: &[(&'a str, &'a [u8])],
     warnings: &mut Vec<ApplyWarning>,
@@ -298,14 +298,13 @@ async fn plan<'a>(
     let rows = ledger::read(client)
         .await
         .map_err(|source| ApplyError::Ledger { source })?;
-    let comparison =
-        ledger::compare(report, tree, &rows).map_err(|drifts| ApplyError::Drift { drifts })?;
-    warnings.extend(comparison.orphans.iter().map(|row| ApplyWarning::Orphan {
-        schema: row.schema.clone(),
-        version: row.version.clone(),
-        name: row.name.clone(),
+    let plan = ledger::plan(report, tree, &rows).map_err(|drifts| ApplyError::Drift { drifts })?;
+    warnings.extend(plan.orphans.into_iter().map(|row| ApplyWarning::Orphan {
+        schema: row.schema,
+        version: row.version,
+        name: row.name,
     }));
-    let pending: Vec<(&Migration, &[u8])> = comparison
+    let pending: Vec<(&Migration, &[u8])> = plan
         .pending
         .into_iter()
         .map(|migration| {
