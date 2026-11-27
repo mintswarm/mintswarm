@@ -32,7 +32,7 @@ use mintswarm_domain::tracker::{
     Statuses, SubItem, TrackerBase,
 };
 use mintswarm_domain::vcs::RepoPath;
-use mintswarm_github::{NOTE_MARKER, Token};
+use mintswarm_github::{NOTE_MARKER, Token, is_commit_id};
 
 use crate::tracker::github::note_key;
 
@@ -893,7 +893,8 @@ impl Reviews for FakeTracker {
 
 impl CodeOwners for FakeTracker {
     /// The first of [`CODEOWNERS_PATHS`] seeded at `rev`, as the GitHub tracker reads them; a
-    /// `rev` that is not a full commit id is [`FakeTrackerError::InvalidRev`].
+    /// `rev` that is not a full commit id, by [`is_commit_id`] as the GitHub tracker checks it,
+    /// is [`FakeTrackerError::InvalidRev`].
     async fn read_codeowners(&self, rev: RevId) -> Result<Option<CodeOwnersFile>, Self::Error> {
         if !is_commit_id(&rev.0) {
             return Err(FakeTrackerError::InvalidRev { rev });
@@ -957,13 +958,4 @@ fn mark_merged(pull: &mut PullDetail, commit: &RevId) {
     pull.merged = true;
     pull.state = "closed".into();
     pull.merge_commit = Some(commit.clone());
-}
-
-/// Whether `sha` is a full commit id, 40 or 64 lower-case hex digits, as `mintswarm-github`
-/// checks it.
-fn is_commit_id(sha: &str) -> bool {
-    matches!(sha.len(), 40 | 64)
-        && sha
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }

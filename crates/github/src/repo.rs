@@ -168,7 +168,7 @@ fn encode_segments(text: &str) -> String {
 }
 
 /// Whether `sha` is a full commit id: 40 or 64 lowercase hexadecimal characters.
-pub(crate) fn is_commit_id(sha: &str) -> bool {
+pub fn is_commit_id(sha: &str) -> bool {
     matches!(sha.len(), 40 | 64)
         && sha
             .bytes()
