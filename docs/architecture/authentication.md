@@ -56,7 +56,7 @@ Each enum's zero value, `<PREFIX>_UNSPECIFIED`, means not set and is never sent.
 
 `AuthService` serves the CLI and the console MCP over gRPC. A session is presented as `authorization: Bearer <token>`. Every RPC may return `UNAVAILABLE` when the server is shutting down or its database is unreachable. Every RPC except `ListProviders`, `BeginLogin`, `PollDeviceLogin` and `CompleteLogin` returns `UNAUTHENTICATED` for an unknown, expired, revoked or no longer admitted session (§8.1).
 
-Only the RPCs that return no `Secret` and start no browser flow carry a `google.api.http` annotation, for the HTTP transcoder; the others are gRPC only. Browsers start flows at the edge (§7.1), so `BeginLogin`, `CompleteLogin` and `BeginLink` refuse a `client_kind` of `web` or unspecified.
+Only these six RPCs carry a `google.api.http` annotation: `ListProviders`, `GetSession`, `ListSessions`, `RevokeSession`, `Unlink` and `GetLink`; the others have none. `BeginLogin`, `CompleteLogin` and `BeginLink` refuse a `client_kind` of `web` or unspecified (§7.1).
 
 | RPC | Request → reply | HTTP | Errors besides `UNAVAILABLE` and `UNAUTHENTICATED` |
 | --- | --- | --- | --- |
@@ -81,5 +81,5 @@ The CLI and the console MCP link through the `device` case of `BeginLink` (B4). 
 - `DeviceChallenge { user_code, verification_url, interval, expires_at, handle }`: `handle` is a `Secret`, held by the client that polls with it.
 - `LoopbackRedirect { code, state }`: what the browser brought back to the client's loopback address; `code` is a `Secret`.
 - `SessionGrant { session_id, token, expires_at, idle_limit }`: the session token as a `Secret`, returned once, with its absolute expiry and idle limit. `PollDeviceLogin` and `CompleteLogin` return it.
-- `Session { id, provider, client_kind, host, created_at, last_seen_at, expires_at, idle_limit, interactive, current }`: `host` is the requesting host the login requests name, `interactive` is false for token-provider sessions, and `current` marks the caller's own session.
+- `Session { id, provider, client_kind, host, created_at, last_seen_at, expires_at, idle_limit, interactive, current }`: `host` is the requesting host that the login named, recorded for every login kind, `interactive` is false for token-provider sessions, and `current` marks the caller's own session.
 - `Link { state, login, github_user_id }`: a GitHub link's state and login, never its tokens.

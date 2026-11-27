@@ -202,7 +202,8 @@ message Session {
   string provider = 2;
   // The client kind it serves.
   ClientKind client_kind = 3;
-  // The requesting host, for device-flow sessions.
+  // The requesting host that the login named, recorded for every login
+  // kind.
   string host = 4;
   // When it was created.
   google.protobuf.Timestamp created_at = 5;
