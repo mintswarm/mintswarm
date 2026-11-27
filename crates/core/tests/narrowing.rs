@@ -897,6 +897,20 @@ fn naming_set_config_or_pg_settings_is_refused() {
             "{text}"
         );
     }
+    for text in [
+        "SELECT U&\"set\\005fconfig\"('standard_conforming_strings','off',false); SELECT '\\'; SELECT $$'; DROP TABLE jobs; SELECT $$",
+        "SET U&\"standard\\005fconforming\\005fstrings\" TO off",
+        "UPDATE U&\"pg\\005Fsettings\" SET setting = 'off'",
+        "UPDATE U&\"pg!005Fsettings\" /* c */ UESCAPE '!' SET setting = 'off'",
+    ] {
+        assert_eq!(
+            lex_error(&format!("SELECT 1;\n{text};")),
+            LexError::UnicodeEscapes { line: 2 },
+            "{text}"
+        );
+    }
+    let plain = statements("SELECT U&\"a\" FROM t; SELECT U&\"b\" uescaped");
+    assert_eq!(plain[1].tokens[1], Token::Quoted("b".to_owned()));
 }
 
 #[test]
@@ -907,6 +921,10 @@ fn a_select_with_any_into_is_ddl() {
         "WITH a AS (SELECT 1) SELECT 1 AS merge INTO t FROM a",
         "WITH a AS (SELECT 1) SELECT (1) insert INTO t FROM a",
         "WITH a AS (SELECT x insert INTO t FROM u) SELECT 1",
+        "WITH RECURSIVE a(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET o SELECT count(*) insert INTO newt FROM a",
+        "WITH RECURSIVE a(n) AS (SELECT 1) SEARCH DEPTH FIRST BY n SET o SELECT (n) merge INTO newt FROM a",
+        "WITH RECURSIVE a(insert) AS (SELECT 1) CYCLE insert SET c USING p SELECT DISTINCT ON (insert) insert INTO newt FROM a",
+        "WITH RECURSIVE a(n) AS (SELECT 1) CYCLE n SET c USING p INSERT INTO t SELECT n FROM a",
     ] {
         assert_eq!(classify(&one(text)), Kind::Ddl, "{text}");
     }
