@@ -6,7 +6,8 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use mintswarm_core::testing::watch_log as spec;
-use mintswarm_core::watch::{MemoryWatchLog, Retention, WatchLog};
+use mintswarm_core::watch::{AppendOutcome, MemoryWatchLog, Retention, WatchLog};
+use mintswarm_proto::watch::v1::WatchEvent;
 
 async fn memory() -> MemoryWatchLog {
     MemoryWatchLog::new()
@@ -62,6 +63,26 @@ async fn empty_store_has_no_head_or_oldest() {
     spec::empty_store_has_no_head_or_oldest(memory).await;
 }
 
+#[tokio::test]
+async fn prune_removes_an_id_prefix_when_at_falls() {
+    spec::prune_removes_an_id_prefix_when_at_falls(memory).await;
+}
+
+#[tokio::test]
+async fn a_prune_that_removes_nothing_leaves_pruned_through_unset() {
+    spec::a_prune_that_removes_nothing_leaves_pruned_through_unset(memory).await;
+}
+
+#[tokio::test]
+async fn a_prune_that_removes_nothing_keeps_pruned_through() {
+    spec::a_prune_that_removes_nothing_keeps_pruned_through(memory).await;
+}
+
+#[tokio::test]
+async fn emptied_store_expires_with_no_pruned_before() {
+    spec::emptied_store_expires_with_no_pruned_before(memory).await;
+}
+
 #[test]
 fn the_epoch_is_a_fixed_uuid_v7_per_store() {
     let store = MemoryWatchLog::new();
@@ -71,13 +92,22 @@ fn the_epoch_is_a_fixed_uuid_v7_per_store() {
 }
 
 #[tokio::test]
-async fn a_prune_that_removes_nothing_leaves_pruned_through_unset() {
+async fn a_future_dropped_unpolled_changes_nothing() {
     let store = MemoryWatchLog::new();
-    let retention = Retention::new(Duration::from_secs(3600), 10).expect("valid bounds");
-    let pruned = store
-        .prune(&retention, UNIX_EPOCH + Duration::from_secs(1_800_000_000))
+    let at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    drop(store.append(WatchEvent::default(), Vec::new(), None, at));
+    assert_eq!(store.head().await.expect("head"), None);
+
+    let id = match store
+        .append(WatchEvent::default(), Vec::new(), None, at)
         .await
-        .expect("prune");
-    assert_eq!(pruned.removed, 0);
-    assert_eq!(pruned.pruned_through, None);
+        .expect("append")
+    {
+        AppendOutcome::Appended(id) => id,
+        AppendOutcome::Duplicate => panic!("an append without a delivery is a duplicate"),
+    };
+    let retention = Retention::new(Duration::from_secs(3600), 1).expect("valid bounds");
+    drop(store.prune(&retention, at + Duration::from_secs(7200)));
+    let head = store.head().await.expect("head").expect("a stored event");
+    assert_eq!(head.id(), id);
 }

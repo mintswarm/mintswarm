@@ -13,6 +13,10 @@
 //! - [`read_after_filters_before_the_limit_in_id_order`]
 //! - [`pruned_delivery_is_stored_anew`]
 //! - [`empty_store_has_no_head_or_oldest`]
+//! - [`prune_removes_an_id_prefix_when_at_falls`]
+//! - [`a_prune_that_removes_nothing_leaves_pruned_through_unset`]
+//! - [`a_prune_that_removes_nothing_keeps_pruned_through`]
+//! - [`emptied_store_expires_with_no_pruned_before`]
 //!
 //! Every `at` is a whole second, so a backend that keeps microseconds compares exactly.
 
@@ -413,5 +417,121 @@ where
             removed: 0,
             pruned_through: None,
         }
+    );
+}
+
+/// A prune removes an id-ordered prefix up to the newest event that breaks a bound, even when
+/// `at` does not rise with id: of events at 30, 120 and 30 minutes old, pruned with bounds of
+/// 1 hour and 10 events, the first two go and the third stays.
+pub async fn prune_removes_an_id_prefix_when_at_falls<S, F, Fut>(make: F)
+where
+    S: WatchLog,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = S>,
+{
+    let store = make().await;
+    let all = append_at(
+        &store,
+        &[minutes_ago(30), minutes_ago(120), minutes_ago(30)],
+    )
+    .await;
+    assert_eq!(
+        prune(&store, HOUR, 10).await,
+        Pruned {
+            removed: 2,
+            pruned_through: Some(all[1]),
+        }
+    );
+    assert_eq!(ids(&read_all(&store, None).await), all[2..]);
+    let page = read_all(&store, Some(cursor(&store, all[0]))).await;
+    assert_eq!(
+        page.gap,
+        Some(Gap::Expired {
+            pruned_before: Some(minutes_ago(30)),
+        })
+    );
+    assert_eq!(ids(&page), all[2..]);
+}
+
+/// A prune that removes nothing from a store never pruned leaves `pruned_through` unset.
+pub async fn a_prune_that_removes_nothing_leaves_pruned_through_unset<S, F, Fut>(make: F)
+where
+    S: WatchLog,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = S>,
+{
+    let store = make().await;
+    let all = append_at(&store, &[minutes_ago(2), minutes_ago(1)]).await;
+    assert_eq!(
+        prune(&store, HOUR, 10).await,
+        Pruned {
+            removed: 0,
+            pruned_through: None,
+        }
+    );
+    assert_eq!(ids(&read_all(&store, None).await), all);
+}
+
+/// A prune that removes nothing after one that removed events keeps `pruned_through`, and a
+/// cursor below it is still expired.
+pub async fn a_prune_that_removes_nothing_keeps_pruned_through<S, F, Fut>(make: F)
+where
+    S: WatchLog,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = S>,
+{
+    let (store, all) = pruned_six(make).await;
+    assert_eq!(
+        prune(&store, HOUR, 3).await,
+        Pruned {
+            removed: 0,
+            pruned_through: Some(all[2]),
+        }
+    );
+    let page = read_all(&store, Some(cursor(&store, all[0]))).await;
+    assert_eq!(
+        page.gap,
+        Some(Gap::Expired {
+            pruned_before: Some(minutes_ago(30)),
+        })
+    );
+    assert_eq!(ids(&page), all[3..]);
+    let page = read_all(&store, Some(cursor(&store, all[2]))).await;
+    assert_eq!(page.gap, None);
+    assert_eq!(ids(&page), all[3..]);
+}
+
+/// An age prune that removes every event sets `pruned_through` to the last of them; a cursor
+/// below it is then expired with no `pruned_before`, and one at it reads nothing with no gap.
+pub async fn emptied_store_expires_with_no_pruned_before<S, F, Fut>(make: F)
+where
+    S: WatchLog,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = S>,
+{
+    let store = make().await;
+    let all = append_at(&store, &[minutes_ago(120), minutes_ago(90)]).await;
+    assert_eq!(
+        prune(&store, HOUR, 10).await,
+        Pruned {
+            removed: 2,
+            pruned_through: Some(all[1]),
+        }
+    );
+    assert_eq!(store.head().await.expect("head"), None);
+    assert_eq!(store.oldest().await.expect("oldest"), None);
+    let page = read_all(&store, Some(cursor(&store, all[0]))).await;
+    assert_eq!(
+        page,
+        Page {
+            events: Vec::new(),
+            gap: Some(Gap::Expired {
+                pruned_before: None,
+            }),
+        }
+    );
+    assert_eq!(
+        read_all(&store, Some(cursor(&store, all[1]))).await,
+        Page::default()
     );
 }
