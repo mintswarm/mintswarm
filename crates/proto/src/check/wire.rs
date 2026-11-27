@@ -103,7 +103,9 @@ fn connect_request(at: &At<'_>, m: &ConnectRequest) -> Checked {
         Body::Heartbeat(heartbeat) => {
             let at = at.child("body.heartbeat");
             at.required::<RunnerState>("state", heartbeat.state)?;
-            held_attempts(&at, "held", &heartbeat.held)
+            at.present("load", &heartbeat.load)?;
+            held_attempts(&at, "held", &heartbeat.held)?;
+            at.sha256("capabilities_digest", &heartbeat.capabilities_digest)
         }
         Body::Events(batch) => {
             let at = at.child("body.events");
@@ -238,6 +240,7 @@ fn runner_event(at: &At<'_>, m: &RunnerEvent) -> Checked {
         Body::Artefact(artefact) => {
             let at = at.child("body.artefact");
             at.text("name", &artefact.name)?;
+            at.non_zero("revision", artefact.revision.into())?;
             at.sha256("sha256", &artefact.sha256)
         }
         Body::Receipt(receipt) => {
@@ -347,6 +350,7 @@ fn connect_response(at: &At<'_>, m: &ConnectResponse) -> Checked {
         }
         Body::NeedBlobs(need) => {
             let at = at.child("body.need_blobs");
+            at.non_zero("seq", need.seq)?;
             at.non_empty("sha256", &need.sha256)?;
             at.sha256_each("sha256", &need.sha256)
         }
@@ -405,11 +409,7 @@ fn directive(at: &At<'_>, m: &Directive) -> Checked {
             at.non_zero("lease_epoch", deliver.lease_epoch)?;
             at.text("message", &deliver.message)
         }
-        Kind::Drain(drain) => {
-            at.child("kind.drain")
-                .present("deadline", &drain.deadline)?;
-            Ok(())
-        }
-        Kind::Upgrade(_) => Ok(()),
+        // A drain's deadline is optional: "if at all".
+        Kind::Drain(_) | Kind::Upgrade(_) => Ok(()),
     }
 }

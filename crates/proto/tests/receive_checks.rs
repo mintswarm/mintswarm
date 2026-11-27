@@ -261,12 +261,7 @@ fn every_event() -> Vec<RunnerEvent> {
             sha256: sha(),
             size: 1,
         })),
-        job_event(runner_event::Body::Artefact(ArtefactPut {
-            name: "plan".to_owned(),
-            revision: 1,
-            sha256: sha(),
-            size: 1,
-        })),
+        job_event(runner_event::Body::Artefact(artefact_put())),
         runner_level(runner_event::Body::Receipt(DirectiveReceipt {
             directive_id: "d1".to_owned(),
             disposition: DirectiveDisposition::AppliedInSession.into(),
@@ -274,6 +269,28 @@ fn every_event() -> Vec<RunnerEvent> {
         })),
         job_event(runner_event::Body::StageResult(stage_result())),
     ]
+}
+
+fn heartbeat() -> Heartbeat {
+    Heartbeat {
+        state: RunnerState::Online.into(),
+        workers_free: 1,
+        workers_total: 1,
+        load: Some(LoadSummary::default()),
+        throttled_until: None,
+        held: vec![held()],
+        last_seq: 0,
+        capabilities_digest: sha(),
+    }
+}
+
+fn artefact_put() -> ArtefactPut {
+    ArtefactPut {
+        name: "plan".to_owned(),
+        revision: 1,
+        sha256: sha(),
+        size: 1,
+    }
 }
 
 fn every_request() -> Vec<ConnectRequest> {
@@ -286,16 +303,7 @@ fn every_request() -> Vec<ConnectRequest> {
         request(connect_request::Body::CancelClaim(CancelClaim {
             request_id: "r1".to_owned(),
         })),
-        request(connect_request::Body::Heartbeat(Heartbeat {
-            state: RunnerState::Online.into(),
-            workers_free: 1,
-            workers_total: 1,
-            load: None,
-            throttled_until: None,
-            held: vec![held()],
-            last_seq: 0,
-            capabilities_digest: String::new(),
-        })),
+        request(connect_request::Body::Heartbeat(heartbeat())),
         events(every_event()),
         request(connect_request::Body::Reauthenticate(Reauthenticate {
             access_token: secret("token"),
@@ -505,14 +513,23 @@ fn a_missing_required_field_is_missing() {
         "body.hello.repository",
         Rule::Missing,
     );
-    let mut d = cancel();
-    d.kind = Some(directive::Kind::Drain(directive::Drain { deadline: None }));
     refused(
-        response(connect_response::Body::Directive(d)).receive(),
-        RESPONSE,
-        "body.directive.kind.drain.deadline",
+        request(connect_request::Body::Heartbeat(Heartbeat {
+            load: None,
+            ..heartbeat()
+        }))
+        .receive(),
+        REQUEST,
+        "body.heartbeat.load",
         Rule::Missing,
     );
+}
+
+#[test]
+fn a_drain_without_a_deadline_is_accepted() {
+    let mut d = cancel();
+    d.kind = Some(directive::Kind::Drain(directive::Drain { deadline: None }));
+    accepted(response(connect_response::Body::Directive(d)));
 }
 
 #[test]
@@ -691,13 +708,23 @@ fn a_malformed_sha256_is_malformed() {
         refused(
             PutBlobRequest {
                 part: Some(put_blob_request::Part::Header(PutBlobHeader {
-                    sha256: bad,
+                    sha256: bad.clone(),
                     ..put_blob_header()
                 })),
             }
             .receive(),
             "mintswarm.runner.v1.PutBlobRequest",
             "part.header.sha256",
+            Rule::MalformedSha256,
+        );
+        refused(
+            request(connect_request::Body::Heartbeat(Heartbeat {
+                capabilities_digest: bad,
+                ..heartbeat()
+            }))
+            .receive(),
+            REQUEST,
+            "body.heartbeat.capabilities_digest",
             Rule::MalformedSha256,
         );
     }
@@ -721,6 +748,26 @@ fn a_zero_seq_or_lease_epoch_is_zero() {
         events(vec![event]).receive(),
         REQUEST,
         "body.events.events[0].seq",
+        Rule::Zero,
+    );
+    refused(
+        response(connect_response::Body::NeedBlobs(NeedBlobs {
+            seq: 0,
+            sha256: vec![sha()],
+        }))
+        .receive(),
+        RESPONSE,
+        "body.need_blobs.seq",
+        Rule::Zero,
+    );
+    refused(
+        events(vec![job_event(runner_event::Body::Artefact(ArtefactPut {
+            revision: 0,
+            ..artefact_put()
+        }))])
+        .receive(),
+        REQUEST,
+        "body.events.events[0].body.artefact.revision",
         Rule::Zero,
     );
 }
