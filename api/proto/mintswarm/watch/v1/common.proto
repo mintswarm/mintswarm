@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package mintswarm.watch.v1;
+
+// An issue or pull request, by repository and number.
+message ItemRef {
+  // The repository, `owner/name`.
+  string repository = 1;
+  // The issue or pull request number.
+  uint64 number = 2;
+}

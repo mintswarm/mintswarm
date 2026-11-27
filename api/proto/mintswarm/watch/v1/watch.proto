@@ -4,6 +4,7 @@ package mintswarm.watch.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "mintswarm/watch/v1/common.proto";
 import "mintswarm/watch/v1/github.proto";
 
 // The watch: a push protocol over the server's event log.
@@ -223,14 +224,6 @@ message WatchFilter {
   repeated string include_opt_in = 8;
   // Phase 2: whether to send dropped events, for debugging.
   bool include_dropped = 9;
-}
-
-// An issue or pull request, by repository and number.
-message ItemRef {
-  // The repository, `owner/name`.
-  string repository = 1;
-  // The issue or pull request number.
-  uint64 number = 2;
 }
 
 // Matches an event that has a party with this login in one of these roles.

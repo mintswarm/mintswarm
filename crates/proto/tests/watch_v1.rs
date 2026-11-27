@@ -1,7 +1,7 @@
 //! The `mintswarm.watch.v1` code: its messages carry the design's fields, the
 //! tonic client and server are exported, a `WatchEvent` round-trips through
 //! prost with a known or an unknown body, and the protos' comments state the
-//! cursor and id rules.
+//! cursor and id rules and the issue dependency's shape.
 
 #![cfg(test)]
 
@@ -9,15 +9,16 @@ use std::collections::HashMap;
 
 use mintswarm_proto::watch::v1::{
     Actor, ActorClass, ActorType, AttributeMatch, Forwarding, GapReason, GetServerInfoRequest,
-    GetServerInfoResponse, GitHubWebhook, ItemKind, ItemRef, ListWatchEventsRequest,
-    ListWatchEventsResponse, Mark, MarkKind, Party, PartyMatch, Retention, StartAt, Subject,
-    SubscribeRequest, SubscribeResponse, UntrustedText, Verdict, WatchEvent, WatchFilter,
-    subscribe_request, watch_event, watch_service_client, watch_service_server,
+    GetServerInfoResponse, GitHubWebhook, IssueDependency, ItemKind, ItemRef,
+    ListWatchEventsRequest, ListWatchEventsResponse, Mark, MarkKind, Party, PartyMatch, Retention,
+    StartAt, Subject, SubscribeRequest, SubscribeResponse, UntrustedText, Verdict, WatchEvent,
+    WatchFilter, subscribe_request, watch_event, watch_service_client, watch_service_server,
 };
 use prost::Message;
 
 const WATCH: &str = include_str!("../../../api/proto/mintswarm/watch/v1/watch.proto");
 const GITHUB: &str = include_str!("../../../api/proto/mintswarm/watch/v1/github.proto");
+const COMMON: &str = include_str!("../../../api/proto/mintswarm/watch/v1/common.proto");
 
 fn untrusted(text: &str) -> UntrustedText {
     UntrustedText {
@@ -79,6 +80,16 @@ fn github_webhook() -> GitHubWebhook {
         body: Some(untrusted("Looks good.")),
         detail: HashMap::from([("label".to_owned(), untrusted("mintswarm"))]),
         payload: b"{\"action\":\"created\"}".to_vec(),
+        dependency: Some(IssueDependency {
+            blocked: Some(ItemRef {
+                repository: "mintswarm/mintswarm".to_owned(),
+                number: 520,
+            }),
+            blocking: Some(ItemRef {
+                repository: "mintswarm/other".to_owned(),
+                number: 490,
+            }),
+        }),
     }
 }
 
@@ -151,6 +162,15 @@ fn watch_event_with_a_github_body_round_trips() {
     );
     let back = WatchEvent::decode(bytes.as_slice()).expect("decodes");
     assert_eq!(back, event);
+    let Some(watch_event::Body::GithubWebhook(webhook)) = back.body else {
+        panic!("the body is a GitHub webhook");
+    };
+    let dependency = webhook.dependency.expect("the dependency survives");
+    assert_eq!(dependency.blocked.expect("blocked").number, 520);
+    assert_eq!(
+        dependency.blocking.expect("blocking").repository,
+        "mintswarm/other"
+    );
 }
 
 #[test]
@@ -170,6 +190,7 @@ fn github_webhook_has_exactly_the_design_fields() {
         body,
         detail,
         payload,
+        dependency,
     } = github_webhook();
     let _: String = delivery;
     let _: String = event;
@@ -177,6 +198,56 @@ fn github_webhook_has_exactly_the_design_fields() {
     let _: Option<UntrustedText> = body;
     let _: HashMap<String, UntrustedText> = detail;
     let _: Vec<u8> = payload;
+    let _: Option<IssueDependency> = dependency;
+}
+
+#[test]
+fn issue_dependency_has_only_the_two_sides() {
+    let IssueDependency { blocked, blocking } = IssueDependency::default();
+    let _: Option<ItemRef> = blocked;
+    let _: Option<ItemRef> = blocking;
+}
+
+#[test]
+fn no_blocker_counts_in_the_package() {
+    for src in [WATCH, GITHUB, COMMON] {
+        for token in src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(
+                !matches!(
+                    token,
+                    "total_blocked_by" | "total_blocking" | "issue_dependencies_summary"
+                ),
+                "a proto of the package mentions `{token}`"
+            );
+        }
+    }
+    let fields = block(GITHUB, "message IssueDependency {")
+        .lines()
+        .filter(|l| l.trim_end().ends_with(';') && !l.trim_start().starts_with("//"))
+        .count();
+    assert_eq!(fields, 2, "IssueDependency has exactly two fields");
+}
+
+#[test]
+fn issue_dependency_is_documented() {
+    let webhook = block(GITHUB, "message GitHubWebhook {");
+    let field = leading_comment(webhook, "IssueDependency dependency = 7;");
+    for phrase in [
+        "`issue_dependencies`",
+        "`blocked_by_added`",
+        "`blocked_by_removed`",
+        "`blocking_added`",
+        "`blocking_removed`",
+    ] {
+        assert_says(&field, phrase);
+    }
+    let dependency = block(GITHUB, "message IssueDependency {");
+    for side in ["ItemRef blocked = 1;", "ItemRef blocking = 2;"] {
+        assert_says(
+            &leading_comment(dependency, side),
+            "unset when the payload omits it",
+        );
+    }
 }
 
 #[test]
@@ -440,7 +511,7 @@ fn clamped_limits_are_documented() {
 
 #[test]
 fn no_seq_in_the_package() {
-    for src in [WATCH, GITHUB] {
+    for src in [WATCH, GITHUB, COMMON] {
         assert!(
             !src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .any(|token| token == "seq"),
@@ -451,16 +522,25 @@ fn no_seq_in_the_package() {
 
 #[test]
 fn one_way_import() {
-    assert!(
-        !GITHUB.lines().any(|l| l.starts_with("import")),
-        "github.proto imports nothing"
+    let imports = |src: &'static str| -> Vec<&'static str> {
+        src.lines().filter(|l| l.starts_with("import")).collect()
+    };
+    assert!(imports(COMMON).is_empty(), "common.proto imports nothing");
+    assert_eq!(
+        imports(GITHUB),
+        ["import \"mintswarm/watch/v1/common.proto\";"],
+        "github.proto imports only common.proto"
     );
-    assert!(
-        WATCH
-            .lines()
-            .any(|l| l == "import \"mintswarm/watch/v1/github.proto\";"),
-        "watch.proto imports github.proto"
-    );
-    assert!(GITHUB.contains("message UntrustedText {"));
-    assert!(!WATCH.contains("message UntrustedText {"));
+    let watch = imports(WATCH);
+    for file in ["common", "github"] {
+        assert!(
+            watch.contains(&format!("import \"mintswarm/watch/v1/{file}.proto\";").as_str()),
+            "watch.proto imports {file}.proto"
+        );
+    }
+    let defines = |src: &str, message: &str| src.contains(&format!("message {message} {{"));
+    assert!(defines(COMMON, "ItemRef"));
+    assert!(!defines(WATCH, "ItemRef") && !defines(GITHUB, "ItemRef"));
+    assert!(defines(GITHUB, "UntrustedText"));
+    assert!(!defines(WATCH, "UntrustedText") && !defines(COMMON, "UntrustedText"));
 }
