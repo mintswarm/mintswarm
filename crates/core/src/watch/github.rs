@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use mintswarm_config::Trust;
-use mintswarm_domain::tracker::Login;
+use mintswarm_domain::tracker::{Login, is_bot};
 use mintswarm_proto::watch::v1;
 use serde_json::{Map, Value};
 
@@ -201,8 +201,8 @@ fn text_at(value: Option<&Value>) -> Option<&str> {
     value?.as_str()
 }
 
-/// The sender as an actor: its login and id, BOT for a `Bot` type or a `[bot]` login, and its
-/// class.
+/// The sender as an actor: its login and id, BOT when [`is_bot`] holds (a `Bot` type, or a
+/// `[bot]` login in any case), and its class.
 fn actor(sender: Option<&Value>, senders: &Senders) -> v1::Actor {
     let login = sender
         .and_then(|s| text_at(s.get("login")))
@@ -212,8 +212,7 @@ fn actor(sender: Option<&Value>, senders: &Senders) -> v1::Actor {
         Some(Value::String(s)) => s.clone(),
         _ => String::new(),
     };
-    let bot =
-        sender.and_then(|s| text_at(s.get("type"))) == Some("Bot") || login.ends_with("[bot]");
+    let bot = is_bot(login, sender.and_then(|s| text_at(s.get("type"))));
     v1::Actor {
         login: login.to_owned(),
         id,

@@ -27,9 +27,9 @@ use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     Artifact, ChangedFile, CheckRun, CheckSuite, CodeOwners, Collaborators, CombinedStatus,
     Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
-    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, PullDetail,
-    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
-    Statuses, SubItem, TrackerBase,
+    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, ParentIssue,
+    PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
+    Reviews, Statuses, SubItem, TrackerBase,
 };
 use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{NOTE_MARKER, Token, is_commit_id};
@@ -764,15 +764,25 @@ impl Collaborators for FakeTracker {
             .unwrap_or(RepoRole::NoAccess))
     }
 
-    /// The issue's seeded [`LinkKind::Parent`] link, so it agrees with [`Links::read_links`].
-    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<IssueNumber>, Self::Error> {
+    /// The issue's seeded [`LinkKind::Parent`] link, so it agrees with [`Links::read_links`],
+    /// with the seeded parent issue's author and bot flag. A parent link to an issue that is
+    /// not seeded is [`FakeTrackerError::NoSuchIssue`].
+    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
         let state = self.state();
         state.issue(&issue)?;
-        Ok(state.links.get(&issue).and_then(|links| {
+        let Some(number) = state.links.get(&issue).and_then(|links| {
             links
                 .iter()
                 .find(|link| link.kind == LinkKind::Parent)
                 .map(|link| IssueNumber(link.number))
+        }) else {
+            return Ok(None);
+        };
+        let (parent, _) = state.issue(&number)?;
+        Ok(Some(ParentIssue {
+            number,
+            author: Some(parent.author.clone()),
+            author_is_bot: parent.author_is_bot,
         }))
     }
 }

@@ -17,8 +17,8 @@ use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError}
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     CodeOwners, Collaborators, CommentEdits, Comments, Cursor, Fields, IssueType, Issues, Links,
-    Login, MergeOutcome, Merged, Merges, Reactions, RepoRole, RequestedReviewers, ReviewThread,
-    Reviews, Statuses, SubItem,
+    Login, MergeOutcome, Merged, Merges, ParentIssue, Reactions, RepoRole, RequestedReviewers,
+    ReviewThread, Reviews, Statuses, SubItem,
 };
 use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{
@@ -693,13 +693,18 @@ async fn reads_an_issue_parent() {
     responder.reply(404, PARENT_NONE);
     responder.reply(
         200,
-        r#"{"id": 3000548, "number": 548, "title": "The parent"}"#,
+        r#"{"id": 3000548, "number": 548, "title": "The parent",
+            "user": {"login": "maintainer", "type": "User"}}"#,
     );
     let tracker = tracker(&responder);
     assert_eq!(tracker.read_parent(ISSUE).await.unwrap(), None);
     assert_eq!(
         tracker.read_parent(ISSUE).await.unwrap(),
-        Some(IssueNumber(548))
+        Some(ParentIssue {
+            number: IssueNumber(548),
+            author: Some(Login("maintainer".into())),
+            author_is_bot: false,
+        })
     );
     let requests = responder.requests();
     assert_eq!(requests.len(), 2);
