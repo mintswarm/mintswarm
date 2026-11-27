@@ -408,6 +408,46 @@ async fn empty_store_echoes_after() {
 }
 
 #[tokio::test]
+async fn empty_store_with_foreign_cursor_clears_next_cursor() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let elsewhere = MemoryWatchLog::new();
+    let foreign = cursor(&elsewhere, Uuid::now_v7());
+    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+
+    let page = list_ok(&mut client, list(&foreign, 0)).await;
+    let gap = page.gap.clone().expect("a gap mark");
+    assert_eq!(gap.gap_reason(), GapReason::StoreChanged);
+    assert!(page.events.is_empty());
+    assert_eq!(page.next_cursor, "");
+    assert_eq!(page.head_cursor, "");
+
+    let next = list_ok(&mut client, list(&page.next_cursor, 0)).await;
+    assert_eq!(next.gap, None);
+}
+
+#[tokio::test]
+async fn emptied_store_with_expired_cursor_clears_next_cursor() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let stored = append_webhooks(&*store, 2).await;
+    let short = Retention::new(Duration::from_secs(1), 1).expect("valid");
+    let later = SystemTime::now() + Duration::from_secs(3600);
+    let pruned = store.prune(&short, later).await.expect("prune");
+    assert_eq!(pruned.removed, 2);
+    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+
+    let page = list_ok(&mut client, list(&cursor(&*store, stored[0]), 0)).await;
+    let gap = page.gap.clone().expect("a gap mark");
+    assert_eq!(gap.gap_reason(), GapReason::CursorExpired);
+    assert_eq!(gap.pruned_before, None);
+    assert!(page.events.is_empty());
+    assert_eq!(page.next_cursor, "");
+    assert_eq!(page.head_cursor, "");
+
+    let next = list_ok(&mut client, list(&page.next_cursor, 0)).await;
+    assert_eq!(next.gap, None);
+}
+
+#[tokio::test]
 async fn racing_append_that_matches_moves_both_cursors_to_it() {
     let store = Arc::new(Hooked::new());
     let first = append(&*store, webhook()).await;

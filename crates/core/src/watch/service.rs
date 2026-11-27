@@ -144,7 +144,13 @@ impl<S: WatchLog + 'static> v1::watch_service_server::WatchService for WatchServ
         } else {
             later(last, head)
         };
-        let next_cursor = next.map_or(request.after, |cursor| cursor.to_string());
+        // With no event and no head, the next page starts where this one did: after the same
+        // cursor, or, past a gap, from the oldest event, so the gap is not reported again.
+        let next_cursor = match next {
+            Some(cursor) => cursor.to_string(),
+            None if page.gap.is_some() => String::new(),
+            None => request.after,
+        };
         let head_cursor = later(head, last)
             .map(|cursor| cursor.to_string())
             .unwrap_or_default();
