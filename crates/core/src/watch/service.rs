@@ -1,5 +1,5 @@
-//! [`WatchService`], the unary RPCs of `mintswarm.watch.v1.WatchService` over a [`WatchLog`],
-//! the limits they apply, and [`prune_periodically`], the task that keeps the log within its
+//! [`WatchService`], the RPCs of `mintswarm.watch.v1.WatchService` over a [`WatchLog`], the
+//! limits they apply, and [`prune_periodically`], the task that keeps the log within its
 //! [`Retention`] (design 5.6, 5.7, B20, A23).
 
 use std::sync::Arc;
@@ -8,11 +8,17 @@ use std::time::{Duration, SystemTime};
 use mintswarm_proto::prost_types::Timestamp;
 use mintswarm_proto::watch::v1::{
     self, GapReason, GetServerInfoRequest, GetServerInfoResponse, ListWatchEventsRequest,
-    ListWatchEventsResponse, Mark, MarkKind, SubscribeRequest, SubscribeResponse, WatchEvent,
+    ListWatchEventsResponse, Mark, MarkKind, StartAt, SubscribeRequest, SubscribeResponse,
+    WatchEvent, subscribe_request,
 };
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 use tokio::time::MissedTickBehavior;
 use tonic::{Request, Response, Status};
 
+use super::subscribe::{
+    self, Outbound, SUBSCRIBE_CHANNEL_CAPACITY, SUBSCRIBE_STREAMS_MAX, Start, Subscription,
+    heartbeat_period,
+};
 use super::{Cursor, Filter, Gap, Retention, WEBHOOK_KIND, WatchLog};
 
 /// The most events one `ListWatchEvents` page returns; a larger `limit` is capped to it
@@ -30,34 +36,49 @@ pub const PRUNE_INTERVAL: Duration = Duration::from_secs(600);
 /// value, attribute, party role or mark kind added (watch.proto, the minor-version rule).
 pub const PROTOCOL_MINOR: u32 = 0;
 
-/// The watch service's unary RPCs, `ListWatchEvents` and `GetServerInfo`, over the store `S`
-/// with the retention bounds it reports. `Subscribe` answers UNIMPLEMENTED for now.
+/// The watch service's RPCs, `Subscribe`, `ListWatchEvents` and `GetServerInfo`, over the store
+/// `S` with the retention bounds it reports. At most [`SUBSCRIBE_STREAMS_MAX`] `Subscribe`
+/// streams are open at once.
 #[derive(Debug)]
 pub struct WatchService<S> {
     store: Arc<S>,
     retention: Retention,
+    head: watch::Receiver<Option<Cursor>>,
+    streams: Arc<Semaphore>,
 }
 
 impl<S> WatchService<S> {
-    /// The service over `store`, reporting `retention`.
-    pub fn new(store: Arc<S>, retention: Retention) -> Self {
-        Self { store, retention }
+    /// The service over `store`, reporting `retention`, with `head` the cursor of the newest
+    /// stored event.
+    ///
+    /// - Ingest advances `head` after each committed append; a caught-up `Subscribe` stream
+    ///   reads the log again on each change.
+    /// - Dropping `head`'s sender ends every idle stream at once with UNAVAILABLE.
+    /// - A stream stalled on a client that reads nothing ends within
+    ///   [`SUBSCRIBE_UNREAD_TIMEOUT`](super::SUBSCRIBE_UNREAD_TIMEOUT), also with UNAVAILABLE.
+    pub fn new(store: Arc<S>, retention: Retention, head: watch::Receiver<Option<Cursor>>) -> Self {
+        Self {
+            store,
+            retention,
+            head,
+            streams: Arc::new(Semaphore::new(SUBSCRIBE_STREAMS_MAX)),
+        }
     }
 }
 
 /// A store failure as the client sees it: the database is unreachable, so it retries.
-fn unavailable(error: impl std::error::Error) -> Status {
+pub(super) fn unavailable(error: impl std::error::Error) -> Status {
     Status::unavailable(format!("the watch store failed: {error}"))
 }
 
 /// The cursor of an event the store returned.
-fn event_cursor(event: &WatchEvent) -> Result<Cursor, Status> {
+pub(super) fn event_cursor(event: &WatchEvent) -> Result<Cursor, Status> {
     Cursor::parse(&event.cursor)
         .map_err(|error| Status::internal(format!("the store returned a bad cursor: {error}")))
 }
 
 /// The later of `a` and `b` by id; either may be absent.
-fn later(a: Option<Cursor>, b: Option<Cursor>) -> Option<Cursor> {
+pub(super) fn later(a: Option<Cursor>, b: Option<Cursor>) -> Option<Cursor> {
     match (a, b) {
         (Some(a), Some(b)) => Some(if b.id() > a.id() { b } else { a }),
         (a, b) => a.or(b),
@@ -65,7 +86,7 @@ fn later(a: Option<Cursor>, b: Option<Cursor>) -> Option<Cursor> {
 }
 
 /// The page's `GAP` mark for `gap`.
-fn gap_mark(gap: Gap) -> Mark {
+pub(super) fn gap_mark(gap: Gap) -> Mark {
     let (reason, pruned_before) = match gap {
         Gap::StoreChanged => (GapReason::StoreChanged, None),
         Gap::Expired { pruned_before } => {
@@ -111,9 +132,41 @@ impl<S: WatchLog + 'static> v1::watch_service_server::WatchService for WatchServ
 
     async fn subscribe(
         &self,
-        _: Request<SubscribeRequest>,
+        request: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
-        Err(Status::unimplemented("Subscribe is not served yet"))
+        let request = request.into_inner();
+        let filter = Filter::new(request.filter.unwrap_or_default())?;
+        // An empty `after` and an unknown `start_at` read as unset, which is `START_AT_NOW`.
+        let start = match request.start {
+            Some(subscribe_request::Start::After(after)) if !after.is_empty() => {
+                Start::After(Cursor::parse(&after)?)
+            }
+            Some(subscribe_request::Start::StartAt(value))
+                if StartAt::try_from(value) == Ok(StartAt::Oldest) =>
+            {
+                Start::Oldest
+            }
+            _ => Start::Now,
+        };
+        let period = heartbeat_period(request.heartbeat_seconds);
+        let permit = Arc::clone(&self.streams).try_acquire_owned().map_err(|_| {
+            Status::resource_exhausted(format!(
+                "the server already has {SUBSCRIBE_STREAMS_MAX} open streams"
+            ))
+        })?;
+
+        let (tx, messages) = mpsc::channel(SUBSCRIBE_CHANNEL_CAPACITY);
+        let (status_tx, status) = oneshot::channel();
+        let subscription = Subscription {
+            store: Arc::clone(&self.store),
+            filter,
+            start,
+            include_payload: request.include_payload,
+            period,
+            head: self.head.clone(),
+        };
+        tokio::spawn(subscribe::run(subscription, tx, status_tx, permit));
+        Ok(Response::new(Box::pin(Outbound::new(messages, status))))
     }
 
     async fn list_watch_events(

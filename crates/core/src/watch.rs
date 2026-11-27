@@ -18,8 +18,10 @@
 //! `pruned_through` is an exact boundary. The raw payload is kept apart from the event, read
 //! back only on request and pruned with it.
 //!
-//! [`WatchService`] serves `ListWatchEvents` and `GetServerInfo` over a store, and
-//! [`prune_periodically`] keeps the store within its [`Retention`] on a schedule.
+//! [`WatchService`] serves `Subscribe`, `ListWatchEvents` and `GetServerInfo` over a store.
+//! `Subscribe` streams wake on a head watch, a `tokio::sync::watch` of the newest stored
+//! event's cursor that ingest advances after each committed append. [`prune_periodically`]
+//! keeps the store within its [`Retention`] on a schedule.
 
 use std::fmt;
 use std::time::Duration;
@@ -33,6 +35,7 @@ mod github;
 mod memory;
 mod service;
 mod store;
+mod subscribe;
 
 pub use filter::Filter;
 pub use github::{BODY_LIMIT, Normalised, Senders, WEBHOOK_KIND, normalise, untrusted};
@@ -42,6 +45,10 @@ pub use service::{
     prune_periodically,
 };
 pub use store::{AppendOutcome, Gap, Page, Pruned, WatchLog};
+pub use subscribe::{
+    HEARTBEAT_DEFAULT_SECONDS, HEARTBEAT_MIN_SECONDS, SUBSCRIBE_STREAMS_MAX,
+    SUBSCRIBE_UNREAD_TIMEOUT,
+};
 
 /// A watch request or value that breaks the shared rules.
 #[derive(Debug, thiserror::Error)]
