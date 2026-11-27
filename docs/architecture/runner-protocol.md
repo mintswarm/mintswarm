@@ -149,7 +149,7 @@ The plane drops a fenced event whose fence is stale. A stale fence does not fail
 
 ## Receive checks
 
-`mintswarm_proto::check` holds one check for every `runner/v1` message that a runner or the plane receives, and for the stage result block (design D15). `Receive::receive` returns a message that keeps every rule of its type unchanged. No receiver in the plane or the runner calls the checks yet; wiring them in at each receiving edge is a later issue.
+`mintswarm_proto::check` holds one check for every `runner/v1` message that a runner or the plane receives, and for the stage result block (design D15). `Receive::receive` returns the message unchanged when it keeps every rule of its type, and a typed error otherwise. No receiver in the plane or the runner calls the checks yet; wiring them in at each receiving edge is a later issue.
 
 - A refused message gives a `ReceiveError` that names the message, the dotted path of the field and the `Rule` it breaks:
   - `Missing`: a required message, `oneof` case, string, bytes or list is absent or empty;
@@ -160,8 +160,8 @@ The plane drops a fenced event whose fence is stale. A stale fence does not fail
   - `Zero`: a number that counts from one, such as `seq`, `lease_epoch` or a revision, is zero;
   - `PartialFence`: a `RunnerEvent` sets some of its fence fields but not all;
   - `Question`: a `StageResult` question, or its status, breaks the stage contract.
-- The wire checks return the first violation. Each one reports to its caller a message on which the stream is closed (design §5.3 rule 6). The `StageResult` check returns every violation at once.
-- `NoBody` is the exception: prost decodes a body case added by a newer peer as no body, so the check reports an envelope that the caller ignores and counts rather than closing the stream (design §5.3 rule 5).
+- The wire checks return the first violation; a receiver closes the stream on a refused message (design §5.3 rule 6). The `StageResult` check returns every violation at once.
+- `NoBody` is the exception: prost decodes a body case added by a newer peer as no body, so a receiver ignores and counts such an envelope rather than closing the stream (design §5.3 rule 5).
 - An `AttemptOutcome` keeps an `AttemptOutcomeKind` it does not know as its raw value, and `effective_kind` reads it as `failed` (design §10).
 - The default instance of every checked message is refused, except `StatBlobsResponse`: an empty list means the plane holds every blob.
 
