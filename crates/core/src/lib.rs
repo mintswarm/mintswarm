@@ -2,5 +2,6 @@
 //! adapters that the server binary wires together.
 
 pub mod migrations;
+pub mod state_sync;
 pub mod testing;
 pub mod tracker;
