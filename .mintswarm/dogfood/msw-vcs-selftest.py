@@ -791,8 +791,8 @@ def main() -> int:
         problems = skip_under_rust(name, "diff_options_equal_landing_floor", "crates/runner/src/exec/git/tests/read.rs")
     else:
         problems = check_diff_options()
-        ran += 1
     if problems or not RUST:
+        ran += 1  # a skip whose Rust test is missing counts as a failed check
         print(f"{'FAIL' if problems else 'ok  '} {name}")
     for problem in problems:
         print(f"    {problem}")
