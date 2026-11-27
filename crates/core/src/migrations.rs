@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 
 use mintswarm_domain::time::civil_from_days;
 
-pub use apply::{Applied, ApplyError, ApplyWarning, MIGRATION_LOCK_KEY, Outcome, apply};
+pub use apply::{
+    Applied, ApplyError, ApplyWarning, MIGRATION_LOCK_KEY, Outcome, OutsideFailure, apply,
+};
 pub use ledger::{
     Drift, LEDGER_SCHEMA, LEDGER_TABLE, LedgerRow, Plan, PlanError, plan, plan_database, recorded,
 };
