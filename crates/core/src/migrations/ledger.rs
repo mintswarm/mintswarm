@@ -185,7 +185,7 @@ pub enum PlanError {
 }
 
 /// Each item on a line of its own.
-fn lines<T: fmt::Display>(items: &[T]) -> String {
+pub(super) fn lines<T: fmt::Display>(items: &[T]) -> String {
     items.iter().map(|item| format!("\n{item}")).collect()
 }
 

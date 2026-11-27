@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use tokio_postgres::{Client, Config, NoTls};
 
-use super::ledger::{self, Drift, KIND_MIGRATION};
+use super::ledger::{self, Drift, KIND_MIGRATION, lines};
 use super::narrowing::{self, Notice, Refusal};
 use super::sql::{self, Token};
 use super::tree::{Migration, Report, TreeError, Warning, validate};
@@ -234,11 +234,6 @@ impl fmt::Display for OutsideFailure {
     }
 }
 
-/// Each item on a line of its own.
-fn lines<T: fmt::Display>(items: &[T]) -> String {
-    items.iter().map(|item| format!("\n{item}")).collect()
-}
-
 /// Applies the tree, given as `(path relative to the tree root, bytes)` pairs, to the database
 /// `config` names.
 ///
@@ -419,7 +414,7 @@ async fn prepare<'a>(
     Ok(pending)
 }
 
-/// Creates each pending file's schema when it is missing, just before the first `BEGIN`.
+/// Creates each pending file's schema when it is missing, before the first file runs.
 async fn create_schemas(
     client: &Client,
     pending: &[(&Migration, &[u8])],
