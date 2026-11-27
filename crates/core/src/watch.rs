@@ -17,6 +17,9 @@
 //! expired, and any other resumes after its id. A prune removes an id-ordered prefix, so
 //! `pruned_through` is an exact boundary. The raw payload is kept apart from the event, read
 //! back only on request and pruned with it.
+//!
+//! [`WatchService`] serves `ListWatchEvents` and `GetServerInfo` over a store, and
+//! [`prune_periodically`] keeps the store within its [`Retention`] on a schedule.
 
 use std::fmt;
 use std::time::Duration;
@@ -28,11 +31,16 @@ use uuid::{Uuid, Variant};
 mod filter;
 mod github;
 mod memory;
+mod service;
 mod store;
 
 pub use filter::Filter;
 pub use github::{BODY_LIMIT, Normalised, Senders, WEBHOOK_KIND, normalise, untrusted};
 pub use memory::MemoryWatchLog;
+pub use service::{
+    LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, PROTOCOL_MINOR, PRUNE_INTERVAL, WatchService,
+    prune_periodically,
+};
 pub use store::{AppendOutcome, Gap, Page, Pruned, WatchLog};
 
 /// A watch request or value that breaks the shared rules.
