@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the web/ workspace's dependencies from its lockfile. Run by the typescript-* gates.
+# Install the web/ workspace's dependencies from its lockfile. Run by the proto-lint and typescript-* gates.
 #
 #   web-install.sh
 #

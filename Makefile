@@ -16,7 +16,7 @@ required-versions:
 	rust=$$(pin rust-toolchain.toml toml '.toolchain.channel' Rust); \
 	nextest=$$(pin $$gates yaml '.jobs[].steps[] | select(.name == "cargo-nextest") | .env.VERSION' cargo-nextest); \
 	yqv=$$(pin $$gates yaml '.env.YQ_VERSION' yq); \
-	buf=$$(pin $$gates yaml '.env.BUF_VERSION' buf); \
+	buf=$$(pin web/package.json json '.devDependencies."@bufbuild/buf"' buf); \
 	black=$$(pin pyproject.toml toml '.tool.black.required-version' black); \
 	node=$$(pin web/.node-version yaml '.' Node); \
 	pnpm=$$(pin web/package.json json '.packageManager | select(test("^pnpm@")) | sub("^pnpm@"; "") | sub("\+.*$$"; "")' pnpm); \
@@ -24,7 +24,7 @@ required-versions:
 	  Rust "$$rust" rust-toolchain.toml \
 	  cargo-nextest "$$nextest" $$gates \
 	  yq "$$yqv" $$gates \
-	  buf "$$buf" $$gates \
+	  buf "$$buf" web/package.json \
 	  black "$$black" pyproject.toml \
 	  Node "$$node" web/.node-version \
 	  pnpm "$$pnpm" web/package.json
