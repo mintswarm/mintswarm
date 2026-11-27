@@ -4,7 +4,7 @@ package mintswarm.runner.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
-import "mintswarm/runner/v1/common.proto";
+import "mintswarm/common/v1/secret.proto";
 import "mintswarm/runner/v1/events.proto";
 import "mintswarm/runner/v1/steps.proto";
 
@@ -531,7 +531,7 @@ message NeedBlobs {
 // Presents a refreshed access token on the stream (design §9.4).
 message Reauthenticate {
   // The new access token.
-  Secret access_token = 1;
+  mintswarm.common.v1.Secret access_token = 1;
 }
 
 // Accepts a refreshed access token (design §9.4).

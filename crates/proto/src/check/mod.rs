@@ -20,7 +20,8 @@ use std::fmt;
 
 use prost::Name;
 
-use crate::runner::v1::{AttemptOutcome, AttemptOutcomeKind, Secret};
+use crate::common::v1::Secret;
+use crate::runner::v1::{AttemptOutcome, AttemptOutcomeKind};
 
 mod stage;
 mod wire;

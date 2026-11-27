@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use mintswarm_proto::check::{Receive, ReceiveError, Rule};
+use mintswarm_proto::common::v1::Secret;
 use mintswarm_proto::prost_types::{Duration, Timestamp};
 use mintswarm_proto::runner::v1::{
     Ack, ArtefactPut, AttemptOutcome, AttemptOutcomeKind, AttemptStartFailed,
@@ -18,10 +19,10 @@ use mintswarm_proto::runner::v1::{
     HelloRejected, HelloRejectionStatus, HelloRepository, HostMetrics, LeaseState, LoadSummary,
     NeedBlobs, NoWork, PlaneAttemptState, PlaneHeldAttempt, ProbeResult, Progress, PutBlobHeader,
     PutBlobRequest, PutBlobResponse, Reauthenticate, Reauthenticated, RecordPut, RegisterRequest,
-    RegisterResponse, Repository, Resend, RunnerEvent, RunnerMode, RunnerState, Secret,
-    SessionLimits, SessionTimings, StageResult, StageStatus, StatBlobsRequest, StatBlobsResponse,
-    StepKind, Usage, Warning, connect_request, connect_response, directive, get_blob_response,
-    hello_ack, lease_state, probe_result, progress, put_blob_request, runner_event,
+    RegisterResponse, Repository, Resend, RunnerEvent, RunnerMode, RunnerState, SessionLimits,
+    SessionTimings, StageResult, StageStatus, StatBlobsRequest, StatBlobsResponse, StepKind, Usage,
+    Warning, connect_request, connect_response, directive, get_blob_response, hello_ack,
+    lease_state, probe_result, progress, put_blob_request, runner_event,
 };
 
 const REQUEST: &str = "mintswarm.runner.v1.ConnectRequest";
