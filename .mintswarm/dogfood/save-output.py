@@ -317,14 +317,15 @@ def find_result(lines: list, after: int) -> tuple:
     fence = RESULT_FENCE.fullmatch(lines[i])
     if not fence:
         raise ReplyError(
-            f"line {i + 1}: text between the document block and the result block: {lines[i].strip()!r}", "rule 6"
+            f"line {i + 1}: text between the document block and the result block: {rust_debug(lines[i].strip())}",
+            "rule 6",
         )
     if not RESULT_OPENER.fullmatch(lines[i]):
         tag = fence.group(1).strip()
-        found = f"tagged {tag!r}" if tag else "untagged"
+        found = f"tagged {rust_debug(tag)}" if tag else "untagged"
         raise ReplyError(f"line {i + 1}: the result block's fence is {found}; it must be ```yaml", "Result block")
     if i + 1 == len(lines) or not lines[i + 1].startswith("msw-result:"):
-        found = repr(lines[i + 1]) if i + 1 < len(lines) else "nothing"
+        found = rust_debug(lines[i + 1]) if i + 1 < len(lines) else "nothing"
         raise ReplyError(
             f"line {i + 2}: the result block's first line is {found}; it must be 'msw-result:'", "Result block"
         )
@@ -481,7 +482,7 @@ def read_scalar(raw: str) -> tuple:
         if unpaired(value):
             return None, "holds an unpaired surrogate"
         if not TAIL.fullmatch(raw[i + 1 :]):
-            return None, f"text after the closing quote: {raw[i + 1 :].strip()!r}"
+            return None, f"text after the closing quote: {rust_debug(raw[i + 1 :].strip())}"
         return ("string", value), ""
     if raw.startswith("'"):
         return None, "single-quoted values are not supported; use double quotes"
@@ -502,7 +503,7 @@ def read_outputs(raw: str) -> tuple:
     if not raw.startswith("[") or end < 0:
         return None, "outputs must be a flow list on one line, such as [.mintswarm/job/outputs/plan.md]"
     if not TAIL.fullmatch(raw[end + 1 :]):
-        return None, f"text after outputs' closing ]: {raw[end + 1 :].strip()!r}"
+        return None, f"text after outputs' closing ]: {rust_debug(raw[end + 1 :].strip())}"
     inner = raw[1:end].strip(" \t")
     if not inner:
         return [], ""
@@ -514,7 +515,7 @@ def read_outputs(raw: str) -> tuple:
         kind, value = resolve_plain(item)
         if problem or kind != "string":
             reason = problem or (f"reads as {value}" if kind == "other" else "is empty or null")
-            return None, f"outputs item {item!r} is not a plain string: {reason}"
+            return None, f"outputs item {rust_debug(item)} is not a plain string: {reason}"
         paths.append(value)
     return paths, ""
 
@@ -564,8 +565,11 @@ def read_questions(block: list, k: int, raw: str, first: int) -> tuple:
     if error is not None:
         if not text[error.pos :].strip():
             return None, stop, [f"line {first + k}: the questions array is not closed by ]"]
-        at = first + k + text.count("\n", 0, error.pos)
-        return None, stop, [f"line {at}: the questions array is not valid JSON: {error.msg}"]
+        return (
+            None,
+            stop,
+            [f"line {first + k}: the questions array is not valid JSON; write it as a JSON array of question objects"],
+        )
     violations = []
     last = text.count("\n", 0, close - 1)
     for j in range(1, last + 1):
@@ -574,10 +578,14 @@ def read_questions(block: list, k: int, raw: str, first: int) -> tuple:
             violations.append(f"line {first + k + j}: {problem}")
     tail = text[close:].split("\n")
     if not TAIL.fullmatch(tail[0]):
-        violations.append(f"line {first + k + last}: text after the questions array's closing ]: {tail[0].strip()!r}")
+        violations.append(
+            f"line {first + k + last}: text after the questions array's closing ]: {rust_debug(tail[0].strip())}"
+        )
     for j, line in enumerate(tail[1:], start=last + 1):
         if line.strip() and not line.strip().startswith("#"):
-            violations.append(f"line {first + k + j}: text after the questions array's closing ]: {line.strip()!r}")
+            violations.append(
+                f"line {first + k + j}: text after the questions array's closing ]: {rust_debug(line.strip())}"
+            )
     return value, stop, violations
 
 
@@ -763,7 +771,7 @@ def parse_result(block: list, first: int) -> tuple:
             continue
         m = KEY_LINE.fullmatch(line)
         if not m:
-            violations.append(f"line {here}: expected a key indented by two spaces, found {line.strip()!r}")
+            violations.append(f"line {here}: expected a key indented by two spaces, found {rust_debug(line.strip())}")
             k += 1
             continue
         key, raw = m.group(1), m.group(2) or ""

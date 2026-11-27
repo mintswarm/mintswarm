@@ -294,7 +294,7 @@ class SaveOutput(Harness):
         reply = broken(REPLY, "```yaml\nmsw-result:\n", "```msw-result\n")
         path = self.transcript(record("msg_1", handback(reply)))
         proc = self.run_script(str(path), str(self.out))
-        self.assert_rejected(proc, "Result block", "tagged 'msw-result'", message="assistant message 1 of 1 (msg_1)")
+        self.assert_rejected(proc, "Result block", 'tagged "msw-result"', message="assistant message 1 of 1 (msg_1)")
 
     # Further cases.
 
@@ -302,7 +302,7 @@ class SaveOutput(Harness):
         reply = broken(REPLY, "```yaml\nmsw-result:\n  status: complete\n", "```yaml\nstatus: complete\n")
         path = self.transcript(record("msg_1", handback(reply)))
         proc = self.run_script(str(path), str(self.out))
-        self.assert_rejected(proc, "Result block", "'status: complete'", "'msw-result:'")
+        self.assert_rejected(proc, "Result block", '"status: complete"', "'msw-result:'")
 
     def test_document_never_closed(self):
         reply = "````markdown\n" + DOCUMENT + "\n" + RESULT
@@ -370,11 +370,11 @@ class SaveOutput(Harness):
             (
                 "rule 6",
                 broken(REPLY, "````\n\n```yaml\nmsw", "````\n\nStatus below.\n\n```yaml\nmsw"),
-                "'Status below.'",
+                '"Status below."',
             ),
             ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```\nmsw-result:"), "untagged"),
-            ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```msw-result"), "tagged 'msw-result'"),
-            ("Result block", broken(REPLY, "msw-result:\n", "result:\n"), "'result:'"),
+            ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```msw-result"), 'tagged "msw-result"'),
+            ("Result block", broken(REPLY, "msw-result:\n", "result:\n"), '"result:"'),
             ("Result block", REPLY.rsplit("```", 1)[0], "result block is never closed"),
         ]
         for rule, reply, fragment in cases:
@@ -725,12 +725,15 @@ class Questions(Harness):
             (
                 "text after ]",
                 [line + " extra" if line == "    ]" else line for line in lines],
-                [f"line {at['    ]']}: text after the questions array's closing ]: 'extra'"],
+                [f"line {at['    ]']}: text after the questions array's closing ]: \"extra\""],
             ),
             (
                 "malformed array",
                 [line.replace('"q1", ', '"q1" ') for line in lines],
-                [f"line {at['    ]'] - 1}: the questions array is not valid JSON: Expecting ',' delimiter"],
+                [
+                    f"line {at['  questions: [']}: the questions array is not valid JSON; "
+                    "write it as a JSON array of question objects"
+                ],
             ),
             (
                 "unclosed array",
