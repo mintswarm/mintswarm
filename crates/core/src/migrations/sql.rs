@@ -4,7 +4,8 @@
 //! The lexer removes comments, blanks string literals and leaves dollar-quoted bodies unread,
 //! so nothing inside them is ever seen as SQL. It splits only on a `;` outside all of these, and
 //! fails closed on text it cannot split safely: a `;` inside parentheses, a `BEGIN ATOMIC` body,
-//! and any mention of `standard_conforming_strings`, since the lexer assumes it is on. Whitespace
+//! and any mention of `standard_conforming_strings`, `set_config` or `pg_settings`, since the
+//! lexer assumes the setting is on. Whitespace
 //! and identifier characters are Postgres's own classes. This file uses `std` only.
 
 use std::error::Error;
@@ -75,8 +76,8 @@ pub enum LexError {
         /// The line of the `;`.
         line: usize,
     },
-    /// A mention of `standard_conforming_strings`, whose change would make plain literals read
-    /// differently from how the lexer reads them.
+    /// A mention of `standard_conforming_strings`, `set_config` or `pg_settings`, through which
+    /// the setting could change and plain literals read differently from how the lexer reads them.
     StandardConformingStrings {
         /// The line of the mention.
         line: usize,
@@ -123,7 +124,7 @@ impl fmt::Display for LexError {
             ),
             Self::StandardConformingStrings { line } => write!(
                 f,
-                "line {line}: standard_conforming_strings must stay on, so a migration does not name it"
+                "line {line}: standard_conforming_strings must stay on, so a migration names neither it, set_config nor pg_settings"
             ),
         }
     }
@@ -139,8 +140,9 @@ pub enum Kind {
     /// `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, `SELECT`, `WITH`, `DO` or `CALL`, except a
     /// `SELECT` or `WITH` that creates a table with `INTO`.
     Data,
-    /// `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`, or `CREATE SCHEMA` with a grant or revoke
-    /// among its elements.
+    /// `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`, `CREATE SCHEMA` with a grant or revoke
+    /// among its elements, any `CREATE ROLE`, `USER` or `GROUP` (a user mapping included), and
+    /// `ALTER GROUP … ADD|DROP USER`.
     GrantOrRevoke,
 }
 
@@ -152,28 +154,51 @@ const DATA: &[&str] = &[
 /// Classifies a statement by its leading keywords. Data and grants are closed lists, so anything
 /// else, an unknown keyword included, is DDL.
 ///
-/// A `SELECT` or `WITH` with any `into` that does not follow `insert` or `merge` is DDL, since
-/// `SELECT … INTO` creates a table. A `CREATE SCHEMA` with any `grant` or `revoke` word is a grant:
-/// both words are reserved, so they cannot be unquoted names.
+/// A `SELECT` with any `into` is DDL, since `SELECT … INTO` creates a table. So is a `WITH` with an
+/// `into` other than in an `insert into` or `merge into` that starts a CTE body, directly after its
+/// `(`, or the main statement: the first word at depth 0 after a `)` that can start one. A
+/// `CREATE SCHEMA` with any `grant` or `revoke` word is a grant: both words are reserved, so they
+/// cannot be unquoted names.
 pub fn classify(statement: &Statement) -> Kind {
-    let word = |at: usize| match statement.tokens.get(at) {
+    let tokens = &statement.tokens;
+    let word = |at: usize| match tokens.get(at) {
         Some(Token::Word(word)) => Some(word.as_str()),
         _ => None,
     };
     let any = |found: &dyn Fn(usize, &str) -> bool| {
-        (0..statement.tokens.len()).any(|at| word(at).is_some_and(|next| found(at, next)))
+        (0..tokens.len()).any(|at| word(at).is_some_and(|next| found(at, next)))
+    };
+    let mut depth = 0usize;
+    let main = (0..tokens.len()).find(|&at| {
+        match tokens[at] {
+            Token::Symbol('(') => depth += 1,
+            Token::Symbol(')') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        depth == 0
+            && at > 0
+            && tokens[at - 1] == Token::Symbol(')')
+            && matches!(word(at), Some(first) if DATA.contains(&first) || first == "values")
+    });
+    let exempt = |at: usize| {
+        at >= 2
+            && matches!(word(at - 1), Some("insert" | "merge"))
+            && (tokens[at - 2] == Token::Symbol('(') || main == Some(at - 1))
     };
     match word(0) {
-        Some("select" | "with")
-            if any(&|at, next| {
-                next == "into" && !(at > 0 && matches!(word(at - 1), Some("insert" | "merge")))
-            }) =>
-        {
-            Kind::Ddl
-        }
+        Some("select") if any(&|_, next| next == "into") => Kind::Ddl,
+        Some("with") if any(&|at, next| next == "into" && !exempt(at)) => Kind::Ddl,
         Some(first) if DATA.contains(&first) => Kind::Data,
         Some("create")
             if word(1) == Some("schema") && any(&|_, next| matches!(next, "grant" | "revoke")) =>
+        {
+            Kind::GrantOrRevoke
+        }
+        Some("create") if matches!(word(1), Some("role" | "user" | "group")) => Kind::GrantOrRevoke,
+        Some("alter")
+            if word(1) == Some("group")
+                && matches!(word(3), Some("add" | "drop"))
+                && word(4) == Some("user") =>
         {
             Kind::GrantOrRevoke
         }
@@ -230,7 +255,7 @@ struct Building {
 
 impl Building {
     /// Adds a token, refusing `begin` directly followed by `atomic`, and any word or quoted
-    /// identifier `standard_conforming_strings`, in any case.
+    /// identifier `standard_conforming_strings`, `set_config` or `pg_settings`, in any case.
     fn push(&mut self, token: Token, raw: &str, line: usize, gap: bool) -> Result<(), LexError> {
         if matches!(&token, Token::Word(word) if word == "atomic")
             && matches!(self.tokens.last(), Some(Token::Word(word)) if word == "begin")
@@ -238,7 +263,9 @@ impl Building {
             return Err(LexError::AtomicBody { line });
         }
         if matches!(&token, Token::Word(word) | Token::Quoted(word)
-            if word.eq_ignore_ascii_case("standard_conforming_strings"))
+            if ["standard_conforming_strings", "set_config", "pg_settings"]
+                .iter()
+                .any(|name| word.eq_ignore_ascii_case(name)))
         {
             return Err(LexError::StandardConformingStrings { line });
         }
@@ -380,8 +407,13 @@ impl Lexer {
             }
             ('$', _, _) => self.dollar(line),
             (first, _, _) if is_word_start(first) => {
+                // A number ends before `$`, as Postgres's own lexer ends it; an identifier does not.
+                let dollar = !first.is_ascii_digit();
                 let mut word = String::new();
-                while let Some(next) = self.peek(0).filter(|next| is_word_char(*next)) {
+                while let Some(next) = self
+                    .peek(0)
+                    .filter(|next| is_word_start(*next) || (dollar && *next == '$'))
+                {
                     word.push(next.to_ascii_lowercase());
                     self.bump();
                 }
@@ -479,11 +511,6 @@ fn is_ident_letter(next: char) -> bool {
 /// number is a word too.
 fn is_word_start(next: char) -> bool {
     is_ident_letter(next) || next.is_ascii_digit()
-}
-
-/// Whether a character continues an unquoted word: an identifier letter, a digit or `$`.
-fn is_word_char(next: char) -> bool {
-    is_word_start(next) || next == '$'
 }
 
 /// Whether a character continues a dollar-quote tag after its first: an identifier letter or a
