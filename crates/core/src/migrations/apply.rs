@@ -215,6 +215,13 @@ pub async fn apply(config: &Config, tree: &[(&str, &[u8])]) -> Result<Outcome, A
             };
             match (run, unlock) {
                 (Ok(_), Some(Err(error))) => Err(error),
+                (Err(error), Some(Err(unlock))) => {
+                    tracing::warn!(
+                        error = %unlock,
+                        "after a failed migration run the lock could not be released; it goes with the session"
+                    );
+                    Err(error)
+                }
                 (run, _) => run,
             }
         }
