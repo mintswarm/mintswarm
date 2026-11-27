@@ -11,6 +11,9 @@
 //! the container backend listens on a loopback port and requires a password generated for the
 //! instance.
 //!
+//! [`migrated_database`] creates a database and applies a migration tree to it through
+//! [`migrations::apply`](crate::migrations::apply), the path production uses.
+//!
 //! When the test process ends, normally or killed, a watchdog child stops the server and
 //! deletes its directory, or removes the container.
 //!
@@ -40,6 +43,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::OnceCell;
+
+use crate::migrations::{self, Outcome};
 use tokio_postgres::{Client, Config, NoTls};
 
 pub use discovery::Backend;
@@ -138,6 +143,18 @@ pub async fn database() -> Result<TestDatabase, PgHarnessError> {
     let mut config = instance.config.clone();
     config.dbname(&name);
     Ok(TestDatabase { name, config })
+}
+
+/// Creates a new database as [`database`] does and applies `tree`, given as `(path relative to
+/// the tree root, bytes)` pairs, to it through [`migrations::apply`].
+pub async fn migrated_database(
+    tree: &[(&str, &[u8])],
+) -> Result<(TestDatabase, Outcome), PgHarnessError> {
+    let db = database().await?;
+    let outcome = migrations::apply(db.config(), tree)
+        .await
+        .map_err(|source| PgHarnessError::Migrate { source })?;
+    Ok((db, outcome))
 }
 
 /// The process's instance, started on the first call and ready for connections.
