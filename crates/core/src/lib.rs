@@ -4,3 +4,4 @@
 pub mod migrations;
 pub mod testing;
 pub mod tracker;
+pub mod watch;
