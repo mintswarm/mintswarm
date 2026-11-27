@@ -227,7 +227,6 @@ fn actions_load_into_the_table() {
             "{action:?}"
         );
     }
-    assert_eq!(config.actions(), &ActionTable::from_fn(repository_row));
 }
 
 #[test]

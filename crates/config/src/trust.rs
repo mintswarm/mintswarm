@@ -167,13 +167,6 @@ pub struct ActionTable {
 }
 
 impl ActionTable {
-    /// A table whose row for each action is `row(action)`.
-    pub fn from_fn(row: impl FnMut(Action) -> ActionTrust) -> Self {
-        ActionTable {
-            rows: Action::ALL.map(row),
-        }
-    }
-
     /// `action`'s row.
     pub fn get(&self, action: Action) -> &ActionTrust {
         &self.rows[action as usize]
