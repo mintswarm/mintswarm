@@ -1062,3 +1062,28 @@ fn forms_that_could_hide_a_narrowing_are_refused() {
     let catalog = one("UPDATE pg_attribute SET attnotnull = true");
     assert_eq!(classify(&catalog), Kind::Ddl);
 }
+
+#[test]
+fn catalog_writes_and_temporary_names_in_any_form_are_refused() {
+    for text in [
+        "EXPLAIN ANALYZE UPDATE pg_attribute SET attnotnull = true WHERE attname = 'email'",
+        "EXPLAIN (ANALYZE) DELETE FROM pg_constraint WHERE conname = 'x'",
+        "PREPARE p AS UPDATE pg_attribute SET attnotnull = true; EXECUTE p",
+        "CREATE RULE r AS ON INSERT TO t DO ALSO UPDATE pg_attribute SET attnotnull = true; INSERT INTO t VALUES (1)",
+        "CREATE VIEW v AS SELECT * FROM pg_attribute; UPDATE v SET attnotnull = true WHERE attname = 'email'",
+        "CREATE TABLE pg_temp.t (id int); CREATE VIEW v AS SELECT * FROM t; ALTER VIEW mintswarm.v RENAME TO w",
+        "SELECT 1 AS id INTO TEMP t; CREATE VIEW v AS SELECT * FROM t; ALTER VIEW mintswarm.v RENAME TO w",
+        "CREATE TABLE \"pg_temp\".t (id int); CREATE VIEW v AS SELECT * FROM t; ALTER VIEW mintswarm.v RENAME TO w",
+    ] {
+        assert!(!check(&[(FIRST, text)]).is_accepted(), "{text}");
+    }
+    let explain = one("EXPLAIN ANALYZE UPDATE pg_attribute SET attnotnull = true");
+    assert_eq!(classify(&explain), Kind::Ddl);
+    for text in [
+        "CREATE EXTENSION pg_trgm",
+        "CREATE EXTENSION IF NOT EXISTS pg_stat_statements; SELECT * FROM pg_class",
+        "CREATE VIEW v AS SELECT 1; ALTER VIEW v RENAME TO w",
+    ] {
+        assert!(check(&[(FIRST, text)]).is_accepted(), "{text}");
+    }
+}
