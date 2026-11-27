@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-test for the msw-vcs shim, run by the msw-vcs-selftest gate.
+"""Self-test for the msw-vcs shim, run by the msw-vcs-selftest and msw-vcs-selftest-rust gates.
 
     msw-vcs-selftest.py
 
@@ -11,6 +11,14 @@ with. Commit and object ids are written as `{=name}` placeholders, filled in
 from the fixture once it is built. The cases are data, so the msw-vcs tool
 can replay them unchanged. One further check, which only the shim has,
 compares its diff options with the landing floor's DIFF_OPTIONS.
+
+MSW_IMPL picks the implementation under test. Unset or empty, the cases run
+the shim; `rust`, they run `$MSW_RUST_BIN tool msw-vcs`, the mintswarm-runner
+binary, whose path is resolved against the starting directory. Any other
+value, or `rust` without an executable MSW_RUST_BIN, exits 2 before any case
+runs. Under Rust the diff options check, which reads the shim's source, is
+skipped: it prints the Rust test that covers it, and fails unless that
+`#[test]` fn exists in the file it names.
 
 The fixture's history, with F the merge base:
 
@@ -36,6 +44,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
 TOOL = HERE / "msw-vcs"
 FLOOR = HERE / "landing" / "floor.py"
 GITLINK_ID = "0123456789abcdef0123456789abcdef01234567"
@@ -48,6 +57,31 @@ USAGE = (
     " | msw-vcs diff [--numstat | --name-only | --raw] (REV REV | --job) [-- PATH...]"
     " | msw-vcs show REV[:PATH]"
 )
+
+
+def usage_error(message):
+    print(f"msw-vcs-selftest: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve_command():
+    """The argv prefix that runs the msw-vcs tool, chosen by MSW_IMPL and MSW_RUST_BIN."""
+    impl = os.environ.get("MSW_IMPL", "")
+    if impl == "":
+        return [sys.executable, str(TOOL)]
+    if impl != "rust":
+        usage_error(f"MSW_IMPL must be unset, empty or rust, not {impl!r}")
+    binary = os.environ.get("MSW_RUST_BIN", "")
+    if binary == "":
+        usage_error("MSW_IMPL=rust needs MSW_RUST_BIN, the path of the mintswarm-runner binary")
+    path = Path(binary).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        usage_error(f"MSW_RUST_BIN is not an executable file: {path}")
+    return [str(path), "tool", "msw-vcs"]
+
+
+RUST = os.environ.get("MSW_IMPL", "") == "rust"
+COMMAND = resolve_command()
 
 
 def run(argv, cwd, env, data=None) -> bytes:
@@ -206,7 +240,7 @@ class Fixture:
             target.write_text(self.fill(vcs_json), encoding="utf-8")
         env = dict(self.env, PYTHONDONTWRITEBYTECODE="1")
         proc = subprocess.run(
-            [sys.executable, str(TOOL), *[os.fsencode(self.fill(arg)) for arg in argv]],
+            [*COMMAND, *[os.fsencode(self.fill(arg)) for arg in argv]],
             cwd=self.repo,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -737,10 +771,29 @@ def check_diff_options() -> list:
     return [] if floor == shim else [f"the shim's DIFF_OPTIONS {shim} differ from the landing floor's {floor}"]
 
 
+def skip_under_rust(check: str, test: str, path: str) -> list:
+    """Under Rust, skip a check of the shim; the problems are empty unless `test` is no `#[test]` fn in `path`."""
+    try:
+        text = (ROOT / path).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    if not re.search(r"#\[test\]\s+fn " + re.escape(test) + r"\(", text):
+        return [f"no #[test] fn {test} in {path}"]
+    print(f"skip {check}: under Rust, {test} in {path} covers it")
+    return []
+
+
 def main() -> int:
     failed = 0
-    problems = check_diff_options()
-    print(f"{'FAIL' if problems else 'ok  '} diff options equal the landing floor's")
+    ran = 0
+    name = "diff options equal the landing floor's"
+    if RUST:
+        problems = skip_under_rust(name, "diff_options_equal_landing_floor", "crates/runner/src/exec/git/tests/read.rs")
+    else:
+        problems = check_diff_options()
+        ran += 1
+    if problems or not RUST:
+        print(f"{'FAIL' if problems else 'ok  '} {name}")
     for problem in problems:
         print(f"    {problem}")
     failed += bool(problems)
@@ -766,7 +819,7 @@ def main() -> int:
             for problem in problems:
                 print(f"    {problem}")
             failed += bool(problems)
-    total = len(CASES) + 1
+    total = len(CASES) + ran
     print(f"{total - failed} of {total} passed")
     return 1 if failed else 0
 
