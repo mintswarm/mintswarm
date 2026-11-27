@@ -2,12 +2,19 @@
 //! values and statuses, seeded by the test, with every accepted write recorded in order.
 //!
 //! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`],
-//! [`Links`], [`Fields`], [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`] and
-//! [`Collaborators`]), and refuses what it does: an option the role's map does not list, a
-//! status the repository does not have, a comment without a note key, and the operations the
-//! GitHub tracker does not support yet. A test may also make it refuse a comment's reactions and
-//! edits, or an artifact's updates, as GitHub refuses a change the installation may not make. It
-//! does not model labels, so a labels-mode role never reads as a conflict.
+//! [`Links`], [`Fields`], [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`],
+//! [`Collaborators`], [`Reviews`], [`CodeOwners`] and [`Merges`]), and refuses what it does: an
+//! option the role's map does not list, a status the repository does not have, a comment without
+//! a note key, a CODEOWNERS read at a revision that is not a full commit id, and the operations
+//! the GitHub tracker does not support yet. A test may also make it refuse a comment's reactions
+//! and edits, or an artifact's updates, as GitHub refuses a change the installation may not make.
+//! It does not model labels, so a labels-mode role never reads as a conflict.
+//!
+//! Pull requests carry their reviews, review threads, requested reviewers and changed files, and
+//! commits their checks, statuses and files, all seeded by the test. Each pull request has a
+//! current head, which [`FakeTracker::move_head`] moves, so a test can move it between a check
+//! and a merge. A merge is answered from the pull request's state, or from a script the test
+//! queued with [`FakeTracker::script_merge`], and every merge call is recorded with its token.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
@@ -15,13 +22,17 @@ use std::sync::{Mutex, MutexGuard};
 use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
-use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile};
+use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
-    Fields, Issue, IssueRead, IssueType, Issues, Link, LinkKind, Links, Login, Reactions, RepoRole,
+    Artifact, ChangedFile, CheckRun, CheckSuite, CodeOwners, Collaborators, CombinedStatus,
+    Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
+    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, PullDetail,
+    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
     Statuses, SubItem, TrackerBase,
 };
-use mintswarm_github::NOTE_MARKER;
+use mintswarm_domain::vcs::RepoPath;
+use mintswarm_github::{NOTE_MARKER, Token};
 
 use crate::tracker::github::note_key;
 
@@ -51,6 +62,24 @@ pub enum FakeWrite {
         number: u64,
         body: String,
     },
+    /// [`Merges::merge`], recorded on every call whatever its outcome, with the token it was
+    /// given. The token's `Debug` is redacted.
+    Merge {
+        pr: PrNumber,
+        sha: RevId,
+        title: String,
+        token: Token,
+    },
+}
+
+/// A scripted answer to the next merge of a pull request, in place of the one its state gives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FakeMerge {
+    /// The merge answers with this outcome; the pull request's state is left as it is.
+    Outcome(MergeOutcome),
+    /// The merge fails with [`FakeTrackerError::MergeLost`]: its fate is unknown, and `landed`
+    /// is what [`Merges::may_have_landed`] says of it.
+    Lost { landed: bool },
 }
 
 /// Why a fake tracker call failed.
@@ -77,6 +106,15 @@ pub enum FakeTrackerError {
     /// The test made the comment or artifact refuse changes; nothing was written.
     #[error("the change was refused")]
     Refused,
+    /// No pull request of this number was seeded.
+    #[error("no pull request #{0}", pr.0)]
+    NoSuchPull { pr: PrNumber },
+    /// The revision is not a full commit id; nothing was read.
+    #[error("{rev:?} is not a full commit id", rev = rev.0)]
+    InvalidRev { rev: RevId },
+    /// A scripted merge whose fate is unknown; `landed` says whether it may have landed.
+    #[error("the merge's fate is unknown")]
+    MergeLost { landed: bool },
     /// The GitHub tracker does not support the operation yet, so neither does the fake.
     #[error("the fake tracker does not support {operation}")]
     Unsupported { operation: &'static str },
@@ -100,6 +138,20 @@ struct State {
     roles: HashMap<Login, RepoRole>,
     refused_comments: HashSet<u64>,
     refused_artifacts: HashSet<(IssueNumber, u64)>,
+    /// The pull requests; each one's `head` is its current head.
+    pulls: HashMap<PrNumber, PullDetail>,
+    reviews: HashMap<PrNumber, Vec<Review>>,
+    review_comments: HashMap<PrNumber, Vec<ReviewComment>>,
+    review_threads: HashMap<PrNumber, Vec<ReviewThread>>,
+    requested_reviewers: HashMap<PrNumber, RequestedReviewers>,
+    changed_files: HashMap<PrNumber, Vec<ChangedFile>>,
+    check_runs: HashMap<RevId, Vec<CheckRun>>,
+    check_suites: HashMap<RevId, Vec<CheckSuite>>,
+    commit_statuses: HashMap<RevId, CombinedStatus>,
+    /// The repository's file texts, by commit and path.
+    files: HashMap<(RevId, String), String>,
+    /// The scripted merges of each pull request, answered first to last.
+    merges: HashMap<PrNumber, Vec<FakeMerge>>,
     now: String,
     next_comment: u64,
     writes: Vec<FakeWrite>,
@@ -145,6 +197,42 @@ impl State {
         Ok(comment)
     }
 
+    /// The pull request, unless it is unknown.
+    fn pull(&self, pr: &PrNumber) -> Result<&PullDetail, FakeTrackerError> {
+        self.pulls
+            .get(pr)
+            .ok_or_else(|| FakeTrackerError::NoSuchPull { pr: pr.clone() })
+    }
+
+    /// A seeded per-PR list, after checking that the pull request is known.
+    fn pr_list<V: Clone>(
+        &self,
+        pr: &PrNumber,
+        lists: &HashMap<PrNumber, Vec<V>>,
+    ) -> Result<Vec<V>, FakeTrackerError> {
+        self.pull(pr)?;
+        Ok(lists.get(pr).cloned().unwrap_or_default())
+    }
+
+    /// The answer to a merge with no script: head moved, not mergeable, or merged.
+    fn merge(&mut self, pr: &PrNumber, sha: &RevId) -> Result<MergeOutcome, FakeTrackerError> {
+        let pull = self
+            .pulls
+            .get_mut(pr)
+            .ok_or_else(|| FakeTrackerError::NoSuchPull { pr: pr.clone() })?;
+        if pull.head != *sha {
+            return Ok(MergeOutcome::HeadMoved);
+        }
+        if pull.merged {
+            return Ok(MergeOutcome::NotMergeable);
+        }
+        let commit = RevId(format!("{:040x}", pr.0));
+        pull.merged = true;
+        pull.state = "closed".into();
+        pull.merge_commit = Some(commit.clone());
+        Ok(MergeOutcome::Merged(Merged { sha: commit }))
+    }
+
     fn dependencies(&mut self, direction: Direction) -> &mut HashMap<IssueNumber, Vec<Dependency>> {
         match direction {
             Direction::BlockedBy => &mut self.blocked_by,
@@ -180,6 +268,17 @@ impl FakeTracker {
                 roles: HashMap::new(),
                 refused_comments: HashSet::new(),
                 refused_artifacts: HashSet::new(),
+                pulls: HashMap::new(),
+                reviews: HashMap::new(),
+                review_comments: HashMap::new(),
+                review_threads: HashMap::new(),
+                requested_reviewers: HashMap::new(),
+                changed_files: HashMap::new(),
+                check_runs: HashMap::new(),
+                check_suites: HashMap::new(),
+                commit_statuses: HashMap::new(),
+                files: HashMap::new(),
+                merges: HashMap::new(),
                 now: START.to_owned(),
                 next_comment: 1,
                 writes: Vec::new(),
@@ -290,6 +389,89 @@ impl FakeTracker {
         self.state()
             .refused_artifacts
             .insert((issue.clone(), number));
+    }
+
+    /// Seeds `pull`, replacing any pull request of its number; its `head` becomes the pull
+    /// request's current head.
+    pub fn add_pull(&self, pull: PullDetail) {
+        self.state().pulls.insert(pull.number.clone(), pull);
+    }
+
+    /// Seeds `pr`'s reviews, replacing any.
+    pub fn set_reviews(&self, pr: &PrNumber, reviews: Vec<Review>) {
+        self.state().reviews.insert(pr.clone(), reviews);
+    }
+
+    /// Seeds `pr`'s review comments, replacing any.
+    pub fn set_review_comments(&self, pr: &PrNumber, comments: Vec<ReviewComment>) {
+        self.state().review_comments.insert(pr.clone(), comments);
+    }
+
+    /// Seeds `pr`'s review threads, replacing any.
+    pub fn set_review_threads(&self, pr: &PrNumber, threads: Vec<ReviewThread>) {
+        self.state().review_threads.insert(pr.clone(), threads);
+    }
+
+    /// Seeds the reviewers `pr`'s review is still requested from, replacing any.
+    pub fn set_requested_reviewers(&self, pr: &PrNumber, requested: RequestedReviewers) {
+        self.state()
+            .requested_reviewers
+            .insert(pr.clone(), requested);
+    }
+
+    /// Seeds the files `pr` changes, replacing any.
+    pub fn set_changed_files(&self, pr: &PrNumber, files: Vec<ChangedFile>) {
+        self.state().changed_files.insert(pr.clone(), files);
+    }
+
+    /// Seeds the check runs on commit `sha`, replacing any.
+    pub fn set_check_runs(&self, sha: &RevId, runs: Vec<CheckRun>) {
+        self.state().check_runs.insert(sha.clone(), runs);
+    }
+
+    /// Seeds the check suites on commit `sha`, replacing any.
+    pub fn set_check_suites(&self, sha: &RevId, suites: Vec<CheckSuite>) {
+        self.state().check_suites.insert(sha.clone(), suites);
+    }
+
+    /// Seeds the combined statuses on commit `sha`, replacing any.
+    pub fn set_statuses(&self, sha: &RevId, status: CombinedStatus) {
+        self.state().commit_statuses.insert(sha.clone(), status);
+    }
+
+    /// Seeds the text of the file at `path` in commit `rev`, replacing any.
+    pub fn put_file(&self, rev: &RevId, path: &str, text: &str) {
+        self.state()
+            .files
+            .insert((rev.clone(), path.to_owned()), text.to_owned());
+    }
+
+    /// Moves `pr`'s current head to `head`, as a push to its branch would.
+    ///
+    /// # Panics
+    ///
+    /// When `pr` was not seeded.
+    pub fn move_head(&self, pr: &PrNumber, head: RevId) {
+        let mut state = self.state();
+        let Some(pull) = state.pulls.get_mut(pr) else {
+            panic!("no pull request #{} was seeded", pr.0);
+        };
+        pull.head = head;
+    }
+
+    /// Queues `merge` as the answer to `pr`'s next unscripted merge call; scripts are answered
+    /// first to last.
+    pub fn script_merge(&self, pr: &PrNumber, merge: FakeMerge) {
+        self.state()
+            .merges
+            .entry(pr.clone())
+            .or_default()
+            .push(merge);
+    }
+
+    /// The pull request `pr` as seeded, moved or merged.
+    pub fn pull(&self, pr: &PrNumber) -> Option<PullDetail> {
+        self.state().pulls.get(pr).cloned()
     }
 
     /// The RFC 3339 time stamped on comments posted or edited from now on.
@@ -607,4 +789,142 @@ impl Fields for FakeTracker {
         });
         Ok(())
     }
+}
+
+impl Reviews for FakeTracker {
+    async fn read_pull(&self, pr: PrNumber) -> Result<PullDetail, Self::Error> {
+        self.state().pull(&pr).cloned()
+    }
+
+    async fn read_reviews(&self, pr: PrNumber) -> Result<Vec<Review>, Self::Error> {
+        let state = self.state();
+        state.pr_list(&pr, &state.reviews)
+    }
+
+    async fn read_review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, Self::Error> {
+        let state = self.state();
+        state.pr_list(&pr, &state.review_comments)
+    }
+
+    async fn read_review_threads(&self, pr: PrNumber) -> Result<Vec<ReviewThread>, Self::Error> {
+        let state = self.state();
+        state.pr_list(&pr, &state.review_threads)
+    }
+
+    async fn read_requested_reviewers(
+        &self,
+        pr: PrNumber,
+    ) -> Result<RequestedReviewers, Self::Error> {
+        let state = self.state();
+        state.pull(&pr)?;
+        Ok(state
+            .requested_reviewers
+            .get(&pr)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn read_check_runs(&self, sha: RevId) -> Result<Vec<CheckRun>, Self::Error> {
+        Ok(self
+            .state()
+            .check_runs
+            .get(&sha)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn read_check_suites(&self, sha: RevId) -> Result<Vec<CheckSuite>, Self::Error> {
+        Ok(self
+            .state()
+            .check_suites
+            .get(&sha)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// The seeded statuses; a commit with none seeded is `pending` with no entries.
+    async fn read_statuses(&self, sha: RevId) -> Result<CombinedStatus, Self::Error> {
+        Ok(self
+            .state()
+            .commit_statuses
+            .get(&sha)
+            .cloned()
+            .unwrap_or_else(|| CombinedStatus {
+                state: "pending".into(),
+                total_count: 0,
+                statuses: Vec::new(),
+            }))
+    }
+}
+
+impl CodeOwners for FakeTracker {
+    /// The first of [`CODEOWNERS_PATHS`] seeded at `rev`, as the GitHub tracker reads them; a
+    /// `rev` that is not a full commit id is [`FakeTrackerError::InvalidRev`].
+    async fn read_codeowners(&self, rev: RevId) -> Result<Option<CodeOwnersFile>, Self::Error> {
+        if !is_commit_id(&rev.0) {
+            return Err(FakeTrackerError::InvalidRev { rev });
+        }
+        let state = self.state();
+        Ok(CODEOWNERS_PATHS.iter().find_map(|path| {
+            state
+                .files
+                .get(&(rev.clone(), (*path).to_owned()))
+                .map(|text| CodeOwnersFile {
+                    path: RepoPath(path.as_bytes().to_vec()),
+                    text: text.clone(),
+                })
+        }))
+    }
+
+    async fn read_changed_files(&self, pr: PrNumber) -> Result<Vec<ChangedFile>, Self::Error> {
+        let state = self.state();
+        state.pr_list(&pr, &state.changed_files)
+    }
+}
+
+impl Merges for FakeTracker {
+    type MergeToken = Token;
+
+    /// Records the call, then answers the pull request's next script if one is queued, and
+    /// otherwise its state: a `sha` that is not the current head is [`MergeOutcome::HeadMoved`],
+    /// a merged pull request [`MergeOutcome::NotMergeable`], and any other is merged and closed
+    /// with the merge commit `format!("{:040x}", pr.0)`.
+    async fn merge(
+        &self,
+        token: &Token,
+        pr: PrNumber,
+        sha: RevId,
+        title: String,
+    ) -> Result<MergeOutcome, Self::Error> {
+        let mut state = self.state();
+        state.writes.push(FakeWrite::Merge {
+            pr: pr.clone(),
+            sha: sha.clone(),
+            title,
+            token: token.clone(),
+        });
+        let script = state
+            .merges
+            .get_mut(&pr)
+            .filter(|queue| !queue.is_empty())
+            .map(|queue| queue.remove(0));
+        match script {
+            Some(FakeMerge::Outcome(outcome)) => Ok(outcome),
+            Some(FakeMerge::Lost { landed }) => Err(FakeTrackerError::MergeLost { landed }),
+            None => state.merge(&pr, &sha),
+        }
+    }
+
+    fn may_have_landed(error: &FakeTrackerError) -> bool {
+        matches!(error, FakeTrackerError::MergeLost { landed: true })
+    }
+}
+
+/// Whether `sha` is a full commit id, 40 or 64 lower-case hex digits, as `mintswarm-github`
+/// checks it.
+fn is_commit_id(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }

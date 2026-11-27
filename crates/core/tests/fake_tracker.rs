@@ -3,17 +3,21 @@
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
-use mintswarm_core::testing::tracker::{FakeTracker, FakeTrackerError, FakeWrite};
+use mintswarm_core::testing::tracker::{FakeMerge, FakeTracker, FakeTrackerError, FakeWrite};
 use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
-use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::hosting::CodeOwnersFile;
+use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
-    Fields, Issue, IssueType, Issues, Link, LinkKind, Links, Login, Reactions, RepoRole, Statuses,
-    SubItem,
+    Artifact, ChangedFile, CheckRun, CheckState, CheckSuite, CodeOwners, Collaborators,
+    CombinedStatus, Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue,
+    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, PullDetail,
+    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
+    Statuses, SubItem,
 };
-use mintswarm_github::NOTE_MARKER;
+use mintswarm_domain::vcs::{BranchName, RepoPath};
+use mintswarm_github::{NOTE_MARKER, Token};
 
 const BOT: &str = "mintswarm-dev[bot]";
 const ISSUE: IssueNumber = IssueNumber(7);
@@ -72,8 +76,20 @@ fn fake() -> FakeTracker {
 /// shown at compile time to implement the same traits.
 async fn drive<T>(tracker: &T) -> (FieldRead, Option<String>, Comment)
 where
-    T: Issues + Links + Fields + Statuses + Comments + Reactions + CommentEdits + Collaborators,
+    T: Issues
+        + Links
+        + Fields
+        + Statuses
+        + Comments
+        + Reactions
+        + CommentEdits
+        + Collaborators
+        + Reviews
+        + CodeOwners
+        + Merges<MergeToken = Token>,
 {
+    tracker.read_check_runs(RevId(HEAD.into())).await.unwrap();
+    tracker.read_codeowners(RevId(HEAD.into())).await.unwrap();
     tracker.read_issue(ISSUE, None).await.unwrap();
     tracker.read_parent(ISSUE).await.unwrap();
     tracker
@@ -451,4 +467,355 @@ async fn the_parent_agrees_with_the_links() {
         .map(|link| IssueNumber(link.number));
     assert_eq!(parent, Some(IssueNumber(3)));
     assert_eq!(fake.read_parent(ISSUE).await, Ok(parent));
+}
+
+const PR: PrNumber = PrNumber(400);
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+const MOVED: &str = "89abcdef0123456789abcdef0123456789abcdef";
+const MERGE_TOKEN: &str = "ghs_f4keM3rgeT0ken";
+
+fn pull() -> PullDetail {
+    PullDetail {
+        number: PR,
+        url: "https://github.com/acme/widgets/pull/400".into(),
+        title: "feat(domain): GitHub REST reads".into(),
+        state: "open".into(),
+        draft: false,
+        base: BranchName("master".into()),
+        branch: BranchName("mintswarm/180-rest-reads".into()),
+        head: RevId(HEAD.into()),
+        head_repo: Some("acme/widgets".into()),
+        labels: vec!["mintswarm".into()],
+        mergeable: Some(true),
+        mergeable_state: Some("clean".into()),
+        merged: false,
+        merge_commit: None,
+        changed_files: 1,
+    }
+}
+
+fn with_pull() -> FakeTracker {
+    let fake = fake();
+    fake.add_pull(pull());
+    fake
+}
+
+fn merge_token() -> Token {
+    Token::new(MERGE_TOKEN.to_owned(), u64::MAX)
+}
+
+#[tokio::test]
+async fn seeded_pr_reads_come_back() {
+    let fake = with_pull();
+    let head = RevId(HEAD.into());
+    let reviews = vec![Review {
+        id: 77,
+        author: Login("maintainer".into()),
+        state: "APPROVED".into(),
+        submitted_at: Some("2026-11-25T10:00:00Z".into()),
+        commit: Some(head.clone()),
+        url: String::new(),
+        author_is_bot: false,
+    }];
+    let comments = vec![ReviewComment {
+        id: 901,
+        review: Some(77),
+        author: Login("maintainer".into()),
+        author_is_bot: false,
+        body: "Nit.".into(),
+        created_at: "2026-11-25T10:05:00Z".into(),
+        updated_at: "2026-11-25T10:05:00Z".into(),
+        url: String::new(),
+    }];
+    let threads = vec![ReviewThread {
+        id: "PRRT_1".into(),
+        resolved: false,
+    }];
+    let requested = RequestedReviewers {
+        users: vec![Login("maintainer".into())],
+        teams: vec!["reviewers".into()],
+    };
+    let runs = vec![CheckRun {
+        id: 3001,
+        name: "rust-test".into(),
+        status: "completed".into(),
+        conclusion: Some("success".into()),
+        app: Some("github-actions".into()),
+        suite: Some(2001),
+    }];
+    let suites = vec![CheckSuite {
+        id: 2001,
+        app: Some("github-actions".into()),
+        status: Some("completed".into()),
+        conclusion: Some("success".into()),
+        latest_check_runs_count: 1,
+    }];
+    let status = CombinedStatus {
+        state: "success".into(),
+        total_count: 1,
+        statuses: vec![CheckState {
+            name: "mintswarm/gates".into(),
+            conclusion: Some("success".into()),
+            source: "status".into(),
+            app: None,
+        }],
+    };
+    let files = vec![ChangedFile {
+        path: "crates/github/src/pulls.rs".into(),
+        previous_path: None,
+        status: "modified".into(),
+    }];
+    fake.set_reviews(&PR, reviews.clone());
+    fake.set_review_comments(&PR, comments.clone());
+    fake.set_review_threads(&PR, threads.clone());
+    fake.set_requested_reviewers(&PR, requested.clone());
+    fake.set_check_runs(&head, runs.clone());
+    fake.set_check_suites(&head, suites.clone());
+    fake.set_statuses(&head, status.clone());
+    fake.set_changed_files(&PR, files.clone());
+    assert_eq!(fake.read_pull(PR).await, Ok(pull()));
+    assert_eq!(fake.read_reviews(PR).await, Ok(reviews));
+    assert_eq!(fake.read_review_comments(PR).await, Ok(comments));
+    assert_eq!(fake.read_review_threads(PR).await, Ok(threads));
+    assert_eq!(fake.read_requested_reviewers(PR).await, Ok(requested));
+    assert_eq!(fake.read_check_runs(head.clone()).await, Ok(runs));
+    assert_eq!(fake.read_check_suites(head.clone()).await, Ok(suites));
+    assert_eq!(fake.read_statuses(head).await, Ok(status));
+    assert_eq!(fake.read_changed_files(PR).await, Ok(files));
+    assert!(fake.writes().is_empty());
+}
+
+#[tokio::test]
+async fn unseeded_pr_reads_are_empty_or_no_such_pull() {
+    let fake = with_pull();
+    let other = RevId(MOVED.into());
+    assert_eq!(fake.read_reviews(PR).await, Ok(Vec::new()));
+    assert_eq!(
+        fake.read_requested_reviewers(PR).await,
+        Ok(RequestedReviewers::default())
+    );
+    assert_eq!(fake.read_check_runs(other.clone()).await, Ok(Vec::new()));
+    let status = fake.read_statuses(other).await.unwrap();
+    assert_eq!(
+        (
+            status.state.as_str(),
+            status.total_count,
+            status.statuses.len()
+        ),
+        ("pending", 0, 0)
+    );
+    let unknown = PrNumber(401);
+    let no_such = Err(FakeTrackerError::NoSuchPull {
+        pr: unknown.clone(),
+    });
+    assert_eq!(fake.read_pull(unknown.clone()).await.map(|_| ()), no_such);
+    assert_eq!(
+        fake.read_reviews(unknown.clone()).await.map(|_| ()),
+        no_such
+    );
+    assert_eq!(fake.read_changed_files(unknown).await.map(|_| ()), no_such);
+}
+
+#[tokio::test]
+async fn codeowners_is_the_first_seeded_of_three_paths_or_none() {
+    let fake = fake();
+    let head = RevId(HEAD.into());
+    assert_eq!(fake.read_codeowners(head.clone()).await, Ok(None));
+    fake.put_file(&head, "docs/CODEOWNERS", "* @acme/docs\n");
+    fake.put_file(&head, "CODEOWNERS", "* @acme/maintainers\n");
+    // Another commit's file and a path outside the three are not read.
+    fake.put_file(
+        &RevId(MOVED.into()),
+        ".github/CODEOWNERS",
+        "* @acme/other\n",
+    );
+    fake.put_file(&head, "src/CODEOWNERS", "* @acme/src\n");
+    assert_eq!(
+        fake.read_codeowners(head.clone()).await,
+        Ok(Some(CodeOwnersFile {
+            path: RepoPath(b"CODEOWNERS".to_vec()),
+            text: "* @acme/maintainers\n".into(),
+        }))
+    );
+    fake.put_file(&head, ".github/CODEOWNERS", "* @acme/github\n");
+    assert_eq!(
+        fake.read_codeowners(head)
+            .await
+            .unwrap()
+            .map(|file| file.path),
+        Some(RepoPath(b".github/CODEOWNERS".to_vec()))
+    );
+}
+
+#[tokio::test]
+async fn codeowners_at_a_moving_ref_is_refused() {
+    let fake = fake();
+    for rev in ["master", "0123456", &HEAD.to_uppercase()] {
+        fake.put_file(&RevId(rev.into()), "CODEOWNERS", "* @acme/maintainers\n");
+        assert_eq!(
+            fake.read_codeowners(RevId(rev.into())).await,
+            Err(FakeTrackerError::InvalidRev {
+                rev: RevId(rev.into())
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_merge_at_the_head_succeeds_and_is_recorded_with_its_token() {
+    let fake = with_pull();
+    let outcome = fake
+        .merge(
+            &merge_token(),
+            PR,
+            RevId(HEAD.into()),
+            "Title (#400)".into(),
+        )
+        .await;
+    let commit = RevId(format!("{:040x}", 400));
+    assert_eq!(
+        outcome,
+        Ok(MergeOutcome::Merged(Merged {
+            sha: commit.clone()
+        }))
+    );
+    let merged = fake.pull(&PR).unwrap();
+    assert!(merged.merged);
+    assert_eq!(merged.state, "closed");
+    assert_eq!(merged.merge_commit, Some(commit));
+    let writes = fake.writes();
+    assert_eq!(writes.len(), 1);
+    match &writes[0] {
+        FakeWrite::Merge {
+            pr,
+            sha,
+            title,
+            token,
+        } => {
+            assert_eq!(
+                (pr, sha, title.as_str()),
+                (&PR, &RevId(HEAD.into()), "Title (#400)")
+            );
+            assert!(
+                token.expose() == MERGE_TOKEN,
+                "the merge is not recorded with the token passed in"
+            );
+        }
+        other => panic!("not a merge: {other:?}"),
+    }
+    // A second merge of the merged pull request is refused.
+    assert_eq!(
+        fake.merge(&merge_token(), PR, RevId(HEAD.into()), "Title".into())
+            .await,
+        Ok(MergeOutcome::NotMergeable)
+    );
+}
+
+#[tokio::test]
+async fn a_head_moved_between_check_and_merge_is_head_moved() {
+    let fake = with_pull();
+    let checked = fake.read_pull(PR).await.unwrap().head;
+    fake.move_head(&PR, RevId(MOVED.into()));
+    assert_eq!(
+        fake.merge(&merge_token(), PR, checked, "Title".into())
+            .await,
+        Ok(MergeOutcome::HeadMoved)
+    );
+    let pull = fake.pull(&PR).unwrap();
+    assert!(!pull.merged);
+    assert_eq!(pull.head, RevId(MOVED.into()));
+}
+
+#[tokio::test]
+async fn a_scripted_refusal_is_not_mergeable() {
+    let fake = with_pull();
+    fake.script_merge(&PR, FakeMerge::Outcome(MergeOutcome::NotMergeable));
+    let head = RevId(HEAD.into());
+    assert_eq!(
+        fake.merge(&merge_token(), PR, head.clone(), "Title".into())
+            .await,
+        Ok(MergeOutcome::NotMergeable)
+    );
+    assert!(!fake.pull(&PR).unwrap().merged);
+    // The script is used up: the next merge is answered from the state.
+    assert!(matches!(
+        fake.merge(&merge_token(), PR, head, "Title".into()).await,
+        Ok(MergeOutcome::Merged(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_lost_merge_says_whether_it_may_have_landed() {
+    let fake = with_pull();
+    fake.script_merge(&PR, FakeMerge::Lost { landed: true });
+    fake.script_merge(&PR, FakeMerge::Lost { landed: false });
+    let mut landed = Vec::new();
+    for _ in 0..2 {
+        let error = fake
+            .merge(&merge_token(), PR, RevId(HEAD.into()), "Title".into())
+            .await
+            .unwrap_err();
+        landed.push(FakeTracker::may_have_landed(&error));
+    }
+    assert_eq!(landed, [true, false]);
+    assert!(!FakeTracker::may_have_landed(
+        &FakeTrackerError::NoSuchPull { pr: PR }
+    ));
+}
+
+#[tokio::test]
+async fn every_merge_call_is_recorded_whatever_its_outcome() {
+    let fake = with_pull();
+    fake.script_merge(&PR, FakeMerge::Lost { landed: true });
+    let head = RevId(HEAD.into());
+    let moved = RevId(MOVED.into());
+    let _ = fake
+        .merge(&merge_token(), PR, head.clone(), "Lost".into())
+        .await;
+    let _ = fake
+        .merge(&merge_token(), PR, moved.clone(), "Moved".into())
+        .await;
+    let _ = fake
+        .merge(
+            &merge_token(),
+            PrNumber(401),
+            head.clone(),
+            "Unknown".into(),
+        )
+        .await;
+    let _ = fake
+        .merge(&merge_token(), PR, head.clone(), "Merged".into())
+        .await;
+    let recorded: Vec<_> = fake
+        .writes()
+        .into_iter()
+        .map(|write| match write {
+            FakeWrite::Merge {
+                pr,
+                sha,
+                title,
+                token,
+            } => {
+                assert!(
+                    token.expose() == MERGE_TOKEN,
+                    "{title}: not the token passed in"
+                );
+                assert!(
+                    !format!("{token:?}").contains(MERGE_TOKEN),
+                    "the recorded token's Debug shows its value"
+                );
+                (pr, sha, title)
+            }
+            other => panic!("not a merge: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        [
+            (PR, head.clone(), "Lost".to_owned()),
+            (PR, moved, "Moved".to_owned()),
+            (PrNumber(401), head.clone(), "Unknown".to_owned()),
+            (PR, head, "Merged".to_owned()),
+        ]
+    );
 }
