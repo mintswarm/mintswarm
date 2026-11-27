@@ -2,10 +2,12 @@
 //! values and statuses, seeded by the test, with every accepted write recorded in order.
 //!
 //! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`],
-//! [`Links`], [`Fields`], [`Statuses`] and [`Comments`]), and refuses what it does: an option
-//! the role's map does not list, a status the repository does not have, a comment without a note
-//! key, and the operations the GitHub tracker does not support yet. It does not model labels, so
-//! a labels-mode role never reads as a conflict.
+//! [`Links`], [`Fields`], [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`] and
+//! [`Collaborators`]), and refuses what it does: an option the role's map does not list, a
+//! status the repository does not have, a comment without a note key, and the operations the
+//! GitHub tracker does not support yet. A test may also make it refuse a comment's reactions and
+//! edits, or an artifact's updates, as GitHub refuses a change the installation may not make. It
+//! does not model labels, so a labels-mode role never reads as a conflict.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
@@ -15,8 +17,9 @@ use mintswarm_domain::field::{
 };
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Comment, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead, IssueType, Issues,
-    Link, Links, Login, Statuses, SubItem, TrackerBase,
+    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
+    Fields, Issue, IssueRead, IssueType, Issues, Link, LinkKind, Links, Login, Reactions, RepoRole,
+    Statuses, SubItem, TrackerBase,
 };
 use mintswarm_github::NOTE_MARKER;
 
@@ -38,6 +41,16 @@ pub enum FakeWrite {
     SetStatus { issue: IssueNumber, status: String },
     /// [`Comments::post_comment`].
     PostComment { issue: IssueNumber, body: String },
+    /// [`Reactions::react_plus_one`], recorded on every call, a repeated one included.
+    React { comment: u64 },
+    /// [`CommentEdits::edit_comment`].
+    EditComment { comment: u64, body: String },
+    /// [`CommentEdits::update_artifact`].
+    UpdateArtifact {
+        issue: IssueNumber,
+        number: u64,
+        body: String,
+    },
 }
 
 /// Why a fake tracker call failed.
@@ -55,6 +68,15 @@ pub enum FakeTrackerError {
     /// The comment carries no note key; nothing was written.
     #[error("the note's body does not carry its marker and key lines")]
     Unmarked,
+    /// No seeded or posted comment has this id; nothing was written.
+    #[error("no comment {comment}")]
+    NoSuchComment { comment: u64 },
+    /// No artifact of this number was seeded on the issue; nothing was written.
+    #[error("no artifact {number} on issue #{0}", issue.0)]
+    NoSuchArtifact { issue: IssueNumber, number: u64 },
+    /// The test made the comment or artifact refuse changes; nothing was written.
+    #[error("the change was refused")]
+    Refused,
     /// The GitHub tracker does not support the operation yet, so neither does the fake.
     #[error("the fake tracker does not support {operation}")]
     Unsupported { operation: &'static str },
@@ -71,6 +93,13 @@ struct State {
     known_statuses: Option<Vec<String>>,
     unreadable: HashSet<IssueNumber>,
     field_errors: HashMap<IssueNumber, FieldError>,
+    /// The comments carrying the bot's `+1`.
+    reacted: HashSet<u64>,
+    artifacts: HashMap<(IssueNumber, u64), Artifact>,
+    /// The logins' roles; an unset login is [`RepoRole::NoAccess`].
+    roles: HashMap<Login, RepoRole>,
+    refused_comments: HashSet<u64>,
+    refused_artifacts: HashSet<(IssueNumber, u64)>,
     now: String,
     next_comment: u64,
     writes: Vec<FakeWrite>,
@@ -99,6 +128,21 @@ impl State {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
+    }
+
+    /// The comment `id` on any issue, unless it is unknown or refuses changes.
+    fn comment_mut(&mut self, id: u64) -> Result<&mut Comment, FakeTrackerError> {
+        let refused = self.refused_comments.contains(&id);
+        let comment = self
+            .issues
+            .values_mut()
+            .flat_map(|(_, comments)| comments.iter_mut())
+            .find(|comment| comment.id == id)
+            .ok_or(FakeTrackerError::NoSuchComment { comment: id })?;
+        if refused {
+            return Err(FakeTrackerError::Refused);
+        }
+        Ok(comment)
     }
 
     fn dependencies(&mut self, direction: Direction) -> &mut HashMap<IssueNumber, Vec<Dependency>> {
@@ -131,6 +175,11 @@ impl FakeTracker {
                 known_statuses: None,
                 unreadable: HashSet::new(),
                 field_errors: HashMap::new(),
+                reacted: HashSet::new(),
+                artifacts: HashMap::new(),
+                roles: HashMap::new(),
+                refused_comments: HashSet::new(),
+                refused_artifacts: HashSet::new(),
                 now: START.to_owned(),
                 next_comment: 1,
                 writes: Vec::new(),
@@ -217,7 +266,33 @@ impl FakeTracker {
         self.state().field_errors.insert(issue.clone(), error);
     }
 
-    /// The RFC 3339 time stamped on comments posted from now on.
+    /// Seeds the artifact numbered `number` on `issue`, replacing any.
+    pub fn add_artifact(&self, issue: &IssueNumber, number: u64, artifact: Artifact) {
+        self.state()
+            .artifacts
+            .insert((issue.clone(), number), artifact);
+    }
+
+    /// Seeds `login`'s role on the repository.
+    pub fn set_role(&self, login: Login, role: RepoRole) {
+        self.state().roles.insert(login, role);
+    }
+
+    /// Makes every reaction to and edit of the comment `id` fail with
+    /// [`FakeTrackerError::Refused`].
+    pub fn refuse_comment(&self, id: u64) {
+        self.state().refused_comments.insert(id);
+    }
+
+    /// Makes every update of the artifact numbered `number` on `issue` fail with
+    /// [`FakeTrackerError::Refused`].
+    pub fn refuse_artifact(&self, issue: &IssueNumber, number: u64) {
+        self.state()
+            .refused_artifacts
+            .insert((issue.clone(), number));
+    }
+
+    /// The RFC 3339 time stamped on comments posted or edited from now on.
     pub fn set_now(&self, now: &str) {
         self.state().now = now.to_owned();
     }
@@ -238,6 +313,19 @@ impl FakeTracker {
     /// `issue`'s status.
     pub fn status(&self, issue: &IssueNumber) -> Option<String> {
         self.state().statuses.get(issue).cloned()
+    }
+
+    /// The artifact numbered `number` on `issue`, as seeded or last updated.
+    pub fn artifact(&self, issue: &IssueNumber, number: u64) -> Option<Artifact> {
+        self.state()
+            .artifacts
+            .get(&(issue.clone(), number))
+            .cloned()
+    }
+
+    /// Whether the comment `id` carries the bot's `+1`.
+    pub fn reacted(&self, id: u64) -> bool {
+        self.state().reacted.contains(&id)
     }
 
     /// `issue`'s comments, seeded and posted, in order.
@@ -392,6 +480,84 @@ impl Comments for FakeTracker {
         }
         state.writes.push(FakeWrite::PostComment { issue, body });
         Ok(comment)
+    }
+}
+
+impl Reactions for FakeTracker {
+    /// Records the reaction on every call; the comment keeps one `+1` however often it is made.
+    async fn react_plus_one(&self, comment_id: u64) -> Result<(), Self::Error> {
+        let mut state = self.state();
+        state.comment_mut(comment_id)?;
+        state.reacted.insert(comment_id);
+        state.writes.push(FakeWrite::React {
+            comment: comment_id,
+        });
+        Ok(())
+    }
+}
+
+impl CommentEdits for FakeTracker {
+    /// Sets the comment's body and stamps its `updated_at` with the fake's current time.
+    async fn edit_comment(&self, comment_id: u64, body: String) -> Result<Comment, Self::Error> {
+        let mut state = self.state();
+        let now = state.now.clone();
+        let comment = state.comment_mut(comment_id)?;
+        comment.body.clone_from(&body);
+        comment.updated_at = now;
+        let edited = comment.clone();
+        state.writes.push(FakeWrite::EditComment {
+            comment: comment_id,
+            body,
+        });
+        Ok(edited)
+    }
+
+    async fn update_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+        body: String,
+    ) -> Result<Artifact, Self::Error> {
+        let mut state = self.state();
+        let key = (issue.clone(), number);
+        let refused = state.refused_artifacts.contains(&key);
+        let Some(artifact) = state.artifacts.get_mut(&key) else {
+            return Err(FakeTrackerError::NoSuchArtifact { issue, number });
+        };
+        if refused {
+            return Err(FakeTrackerError::Refused);
+        }
+        artifact.body.clone_from(&body);
+        let updated = artifact.clone();
+        state.writes.push(FakeWrite::UpdateArtifact {
+            issue,
+            number,
+            body,
+        });
+        Ok(updated)
+    }
+}
+
+impl Collaborators for FakeTracker {
+    async fn read_permission(&self, login: Login) -> Result<RepoRole, Self::Error> {
+        Ok(self
+            .state()
+            .roles
+            .get(&login)
+            .copied()
+            .unwrap_or(RepoRole::NoAccess))
+    }
+
+    /// The issue's seeded [`LinkKind::Parent`] link, so it agrees with [`Links::read_links`].
+    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<IssueNumber>, Self::Error> {
+        let state = self.state();
+        state.issue(&issue)?;
+        Ok(state.links.get(&issue).and_then(|links| {
+            links
+                .iter()
+                .find(|link| link.kind == LinkKind::Parent)
+                .map(|link| IssueNumber(link.number))
+        }))
     }
 }
 

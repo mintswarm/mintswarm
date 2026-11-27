@@ -9,8 +9,9 @@ use mintswarm_domain::field::{
 };
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Comment, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueType, Issues, Link,
-    LinkKind, Links, Login, Statuses, SubItem,
+    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
+    Fields, Issue, IssueType, Issues, Link, LinkKind, Links, Login, Reactions, RepoRole, Statuses,
+    SubItem,
 };
 use mintswarm_github::NOTE_MARKER;
 
@@ -71,9 +72,14 @@ fn fake() -> FakeTracker {
 /// shown at compile time to implement the same traits.
 async fn drive<T>(tracker: &T) -> (FieldRead, Option<String>, Comment)
 where
-    T: Issues + Links + Fields + Statuses + Comments,
+    T: Issues + Links + Fields + Statuses + Comments + Reactions + CommentEdits + Collaborators,
 {
     tracker.read_issue(ISSUE, None).await.unwrap();
+    tracker.read_parent(ISSUE).await.unwrap();
+    tracker
+        .read_permission(Login("maintainer".into()))
+        .await
+        .unwrap();
     tracker.read_links(ISSUE).await.unwrap();
     tracker
         .read_dependencies(ISSUE, Direction::BlockedBy)
@@ -310,4 +316,139 @@ async fn unsupported_operations_are_refused() {
         .map(|operation| FakeTrackerError::Unsupported { operation })
     );
     assert!(fake.writes().is_empty());
+}
+
+fn artifact(body: &str) -> Artifact {
+    Artifact {
+        name: "Plan".into(),
+        body: body.into(),
+    }
+}
+
+/// The fake with comment 1 and artifact 1 seeded on the issue.
+fn editable() -> FakeTracker {
+    let fake = fake();
+    fake.add_comment(&ISSUE, comment(1, "2026-11-20T08:00:00Z"));
+    fake.add_artifact(&ISSUE, 1, artifact("Version 1."));
+    fake
+}
+
+#[tokio::test]
+async fn reactions_and_edits_are_recorded_in_order() {
+    let fake = editable();
+    fake.set_now("2026-11-26T12:00:00Z");
+    fake.react_plus_one(1).await.unwrap();
+    fake.react_plus_one(1).await.unwrap();
+    let edited = fake.edit_comment(1, "Edited.".into()).await.unwrap();
+    let updated = fake
+        .update_artifact(ISSUE, 1, "Version 2.".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        fake.writes(),
+        [
+            FakeWrite::React { comment: 1 },
+            FakeWrite::React { comment: 1 },
+            FakeWrite::EditComment {
+                comment: 1,
+                body: "Edited.".into(),
+            },
+            FakeWrite::UpdateArtifact {
+                issue: ISSUE,
+                number: 1,
+                body: "Version 2.".into(),
+            },
+        ]
+    );
+    assert!(fake.reacted(1));
+    assert_eq!(edited.body, "Edited.");
+    assert_eq!(edited.created_at, "2026-11-20T08:00:00Z");
+    assert_eq!(edited.updated_at, "2026-11-26T12:00:00Z");
+    assert_eq!(fake.comments(&ISSUE), [edited]);
+    assert_eq!(updated, artifact("Version 2."));
+    assert_eq!(fake.artifact(&ISSUE, 1), Some(updated));
+}
+
+#[tokio::test]
+async fn refused_reactions_and_edits_are_not_recorded() {
+    let fake = editable();
+    fake.refuse_comment(1);
+    fake.refuse_artifact(&ISSUE, 1);
+    assert_eq!(fake.react_plus_one(1).await, Err(FakeTrackerError::Refused));
+    assert_eq!(
+        fake.edit_comment(1, "Edited.".into()).await,
+        Err(FakeTrackerError::Refused)
+    );
+    assert_eq!(
+        fake.update_artifact(ISSUE, 1, "Version 2.".into()).await,
+        Err(FakeTrackerError::Refused)
+    );
+    assert!(fake.writes().is_empty());
+    assert!(!fake.reacted(1));
+    assert_eq!(fake.comments(&ISSUE), [comment(1, "2026-11-20T08:00:00Z")]);
+    assert_eq!(fake.artifact(&ISSUE, 1), Some(artifact("Version 1.")));
+}
+
+#[tokio::test]
+async fn unknown_comments_and_artifacts_are_not_found() {
+    let fake = editable();
+    assert_eq!(
+        fake.react_plus_one(99).await,
+        Err(FakeTrackerError::NoSuchComment { comment: 99 })
+    );
+    assert_eq!(
+        fake.edit_comment(99, "Edited.".into()).await,
+        Err(FakeTrackerError::NoSuchComment { comment: 99 })
+    );
+    assert_eq!(
+        fake.update_artifact(ISSUE, 2, "Version 2.".into()).await,
+        Err(FakeTrackerError::NoSuchArtifact {
+            issue: ISSUE,
+            number: 2
+        })
+    );
+    assert!(fake.writes().is_empty());
+    assert!(!fake.reacted(99));
+}
+
+#[tokio::test]
+async fn permissions_are_the_seeded_roles() {
+    let fake = fake();
+    fake.set_role(Login("maintainer".into()), RepoRole::Admin);
+    assert_eq!(
+        fake.read_permission(Login("maintainer".into())).await,
+        Ok(RepoRole::Admin)
+    );
+    assert_eq!(
+        fake.read_permission(Login("stranger".into())).await,
+        Ok(RepoRole::NoAccess)
+    );
+}
+
+#[tokio::test]
+async fn the_parent_agrees_with_the_links() {
+    let fake = fake();
+    assert_eq!(fake.read_parent(ISSUE).await, Ok(None));
+    fake.set_links(
+        &ISSUE,
+        vec![
+            Link {
+                kind: LinkKind::SubItem,
+                number: 9,
+            },
+            Link {
+                kind: LinkKind::Parent,
+                number: 3,
+            },
+        ],
+    );
+    let parent = fake
+        .read_links(ISSUE)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|link| link.kind == LinkKind::Parent)
+        .map(|link| IssueNumber(link.number));
+    assert_eq!(parent, Some(IssueNumber(3)));
+    assert_eq!(fake.read_parent(ISSUE).await, Ok(parent));
 }
