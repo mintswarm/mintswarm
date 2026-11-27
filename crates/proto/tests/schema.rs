@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use common::full_stage_result;
 use mintswarm_proto::prost_types::field_descriptor_proto::{Label, Type};
 use mintswarm_proto::prost_types::{
-    DescriptorProto, FieldDescriptorProto, FileDescriptorProto, OneofDescriptorProto,
+    DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,
+    FileDescriptorProto, MessageOptions, OneofDescriptorProto,
 };
 use mintswarm_proto::runner::v1::{
     QuestionKind, QuestionReferenceKind, QuestionShape, StageStatus,
@@ -25,13 +26,12 @@ use prost_reflect::DescriptorPool;
 use serde_json::Value;
 
 /// The keywords the generated schema may use.
-const KEYWORDS: [&str; 6] = [
+const KEYWORDS: [&str; 5] = [
     "type",
     "enum",
     "properties",
     "additionalProperties",
     "items",
-    "minimum",
 ];
 
 /// The committed schema's path.
@@ -214,7 +214,6 @@ fn validate(value: &Value, schema: &Value, at: &str, problems: &mut Vec<String>)
         Some("array") => value.is_array(),
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
-        Some("integer") => value.is_i64() || value.is_u64(),
         other => {
             problems.push(format!("{at}: unknown type {other:?}"));
             return;
@@ -228,11 +227,6 @@ fn validate(value: &Value, schema: &Value, at: &str, problems: &mut Vec<String>)
         && !names.contains(value)
     {
         problems.push(format!("{at}: {value} is not in the enum"));
-    }
-    if let Some(minimum) = schema.get("minimum").and_then(Value::as_i64)
-        && value.as_i64().is_some_and(|number| number < minimum)
-    {
-        problems.push(format!("{at}: {value} is below {minimum}"));
     }
     if let Some(object) = value.as_object() {
         let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
@@ -283,6 +277,40 @@ fn an_unknown_key_fails_validation() {
     assert!(!problems(&nested, &schema).is_empty());
 }
 
+/// A change that breaks a fixture.
+type Mutation = fn(&mut Value);
+
+#[test]
+fn a_wrong_type_or_enum_name_fails_validation() {
+    let schema = generated_value();
+    let (_, fixture) = fixtures()
+        .into_iter()
+        .find(|(name, _)| name == "needs-input.json")
+        .expect("needs-input.json");
+    let mutations: [(&str, Mutation); 5] = [
+        ("a string for an array", |value| {
+            value["outputs"] = Value::from("x");
+        }),
+        ("an unknown enum name", |value| {
+            value["status"] = Value::from("STAGE_STATUS_DONE");
+        }),
+        ("an object for a string", |value| {
+            value["artefact"] = serde_json::json!({});
+        }),
+        ("a number for a string in an array", |value| {
+            value["outputs"][0] = Value::from(1);
+        }),
+        ("an unknown nested enum name", |value| {
+            value["questions"][0]["kind"] = Value::from("QUESTION_KIND_MAYBE");
+        }),
+    ];
+    for (name, mutate) in mutations {
+        let mut copy = fixture.clone();
+        mutate(&mut copy);
+        assert!(!problems(&copy, &schema).is_empty(), "{name}");
+    }
+}
+
 /// A field of `kind`, optionally of the named message type and in a oneof.
 fn field(
     name: &str,
@@ -317,6 +345,57 @@ fn message(name: &str, fields: Vec<FieldDescriptorProto>, oneofs: &[&str]) -> De
     }
 }
 
+/// A message with one map field `a` from string to string.
+fn map_message() -> DescriptorProto {
+    let mut a = field("a", Type::Message, Some(".test.v1.WithMap.AEntry"), None);
+    a.label = Some(Label::Repeated.into());
+    let mut value = field("value", Type::String, None, None);
+    value.number = Some(2);
+    let mut entry = message(
+        "AEntry",
+        vec![field("key", Type::String, None, None), value],
+        &[],
+    );
+    entry.options = Some(MessageOptions {
+        map_entry: Some(true),
+        ..MessageOptions::default()
+    });
+    let mut with_map = message("WithMap", vec![a], &[]);
+    with_map.nested_type = vec![entry];
+    with_map
+}
+
+/// An enum with a zero and a negative value.
+fn negative_enum() -> EnumDescriptorProto {
+    let value = |name: &str, number| EnumValueDescriptorProto {
+        name: Some(name.to_owned()),
+        number: Some(number),
+        ..EnumValueDescriptorProto::default()
+    };
+    EnumDescriptorProto {
+        name: Some("Signed".to_owned()),
+        value: vec![value("SIGNED_UNSPECIFIED", 0), value("SIGNED_NEGATIVE", -1)],
+        ..EnumDescriptorProto::default()
+    }
+}
+
+/// A minimal stand-in for `google/protobuf/timestamp.proto`.
+fn timestamp_file() -> FileDescriptorProto {
+    let mut nanos = field("nanos", Type::Int32, None, None);
+    nanos.number = Some(2);
+    FileDescriptorProto {
+        name: Some("google/protobuf/timestamp.proto".to_owned()),
+        package: Some("google.protobuf".to_owned()),
+        syntax: Some("proto3".to_owned()),
+        message_type: vec![message(
+            "Timestamp",
+            vec![field("seconds", Type::Int64, None, None), nanos],
+            &[],
+        )],
+        ..FileDescriptorProto::default()
+    }
+}
+
 /// The generator's result for the message `name` of a hand-made pool.
 fn generate(name: &str) -> Result<Value, Error> {
     let mut second = field("b", Type::Bool, None, Some(0));
@@ -327,8 +406,27 @@ fn generate(name: &str) -> Result<Value, Error> {
         name: Some("test/v1/kinds.proto".to_owned()),
         package: Some("test.v1".to_owned()),
         syntax: Some("proto3".to_owned()),
+        dependency: vec!["google/protobuf/timestamp.proto".to_owned()],
+        enum_type: vec![negative_enum()],
         message_type: vec![
+            message("WithInt32", vec![field("a", Type::Int32, None, None)], &[]),
+            message(
+                "WithUint32",
+                vec![field("a", Type::Uint32, None, None)],
+                &[],
+            ),
             message("WithInt64", vec![field("a", Type::Int64, None, None)], &[]),
+            message(
+                "WithUint64",
+                vec![field("a", Type::Uint64, None, None)],
+                &[],
+            ),
+            message("WithFloat", vec![field("a", Type::Float, None, None)], &[]),
+            message(
+                "WithDouble",
+                vec![field("a", Type::Double, None, None)],
+                &[],
+            ),
             message("WithBytes", vec![field("a", Type::Bytes, None, None)], &[]),
             message(
                 "WithOneof",
@@ -346,10 +444,28 @@ fn generate(name: &str) -> Result<Value, Error> {
                 &[],
             ),
             message("WithOptional", vec![optional], &["_a"]),
+            map_message(),
+            message(
+                "WithTimestamp",
+                vec![field(
+                    "a",
+                    Type::Message,
+                    Some(".google.protobuf.Timestamp"),
+                    None,
+                )],
+                &[],
+            ),
+            message(
+                "WithNegativeEnum",
+                vec![field("a", Type::Enum, Some(".test.v1.Signed"), None)],
+                &[],
+            ),
         ],
         ..FileDescriptorProto::default()
     };
     let mut pool = DescriptorPool::new();
+    pool.add_file_descriptor_proto(timestamp_file())
+        .expect("the timestamp file builds");
     pool.add_file_descriptor_proto(file)
         .expect("the test file builds");
     let descriptor = pool
@@ -360,11 +476,24 @@ fn generate(name: &str) -> Result<Value, Error> {
 
 #[test]
 fn unsupported_kinds_are_refused() {
-    for name in ["WithInt64", "WithBytes", "WithOneof"] {
-        assert!(
-            matches!(generate(name), Err(Error::UnsupportedKind { .. })),
-            "{name}"
-        );
+    let refused = [
+        ("WithInt32", "int32"),
+        ("WithUint32", "uint32"),
+        ("WithInt64", "int64"),
+        ("WithUint64", "uint64"),
+        ("WithFloat", "float"),
+        ("WithDouble", "double"),
+        ("WithBytes", "bytes"),
+        ("WithOneof", "oneof"),
+        ("WithMap", "map"),
+        ("WithTimestamp", "well-known type"),
+        ("WithNegativeEnum", "negative enum value"),
+    ];
+    for (name, expected) in refused {
+        match generate(name) {
+            Err(Error::UnsupportedKind { kind, .. }) => assert_eq!(kind, expected, "{name}"),
+            other => panic!("{name}: {other:?}"),
+        }
     }
     assert!(matches!(
         generate("Recursive"),

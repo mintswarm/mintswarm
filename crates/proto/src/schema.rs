@@ -5,16 +5,20 @@
 //! The walker reads every property and enum value from the descriptors, so
 //! nothing here names a field. It writes the proto3 JSON mapping's output
 //! shape and only a small keyword subset: `type`, `enum`, `properties`,
-//! `additionalProperties` (always `false`), `items` and `minimum`. Keys are
-//! the lowerCamel JSON names, enums list their value names without the zero
-//! value, a proto3 `optional` field is its plain type, and no message has a
-//! `required` list. Field kinds the subset cannot say exactly, such as maps,
-//! real oneofs, well-known types, 64-bit integers, floats and bytes, and
-//! recursive messages are refused with an [`Error`], so a proto change that
-//! needs more keywords fails generation instead of drifting.
+//! `additionalProperties` (always `false`) and `items`. Keys are the
+//! lowerCamel JSON names, sorted, enums list their value names without the
+//! zero value, a proto3 `optional` field is its plain type, and no message
+//! has a `required` list. Field kinds the subset cannot say exactly, such as
+//! maps, real oneofs, well-known types, integers of any width, floats and
+//! bytes, enums with negative values, and recursive messages are refused with
+//! an [`Error`], so a proto change that needs more keywords fails generation
+//! instead of drifting.
+
+use std::collections::BTreeMap;
 
 use prost::Name as _;
 use prost_reflect::{FieldDescriptor, Kind, MessageDescriptor};
+use serde::ser::{Serialize, SerializeMap as _, SerializeSeq as _, Serializer};
 use serde_json::{Map, Value, json};
 
 use crate::runner::v1::StageResult;
@@ -72,10 +76,37 @@ pub fn stage_result_schema() -> Result<String, Error> {
         .get_message_by_name(&name)
         .ok_or_else(|| Error::DescriptorsMissing(format!("no descriptor for {name}")))?;
     let schema = message_schema(&message)?;
-    let mut text = serde_json::to_string_pretty(&schema)
+    let mut text = serde_json::to_string_pretty(&Sorted(&schema))
         .map_err(|error| Error::DescriptorsMissing(error.to_string()))?;
     text.push('\n');
     Ok(text)
+}
+
+/// Serialises a [`Value`] with every object's keys sorted, whether or not
+/// serde_json's `preserve_order` feature is on somewhere in the build.
+struct Sorted<'a>(&'a Value);
+
+impl Serialize for Sorted<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Object(object) => {
+                let sorted: BTreeMap<&String, &Value> = object.iter().collect();
+                let mut map = serializer.serialize_map(Some(sorted.len()))?;
+                for (key, value) in sorted {
+                    map.serialize_entry(key, &Sorted(value))?;
+                }
+                map.end()
+            }
+            Value::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&Sorted(item))?;
+                }
+                seq.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
 }
 
 /// The schema of `message`'s proto3 JSON form, with nested messages inlined.
@@ -120,9 +151,10 @@ fn field_schema(field: &FieldDescriptor, stack: &mut Vec<String>) -> Result<Valu
     let single = match field.kind() {
         Kind::String => json!({ "type": "string" }),
         Kind::Bool => json!({ "type": "boolean" }),
-        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => json!({ "type": "integer" }),
-        Kind::Uint32 | Kind::Fixed32 => json!({ "type": "integer", "minimum": 0 }),
         Kind::Enum(descriptor) => {
+            if descriptor.values().any(|value| value.number() < 0) {
+                return Err(unsupported("negative enum value"));
+            }
             let names: Vec<String> = descriptor
                 .values()
                 .filter(|value| value.number() > 0)
@@ -136,6 +168,8 @@ fn field_schema(field: &FieldDescriptor, stack: &mut Vec<String>) -> Result<Valu
             }
             walk_message(&descriptor, stack)?
         }
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => return Err(unsupported("int32")),
+        Kind::Uint32 | Kind::Fixed32 => return Err(unsupported("uint32")),
         Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => return Err(unsupported("int64")),
         Kind::Uint64 | Kind::Fixed64 => return Err(unsupported("uint64")),
         Kind::Float => return Err(unsupported("float")),
