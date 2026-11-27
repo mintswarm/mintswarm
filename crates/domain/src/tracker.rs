@@ -39,6 +39,16 @@ pub enum RepoRole {
     NoAccess,
 }
 
+/// Whether a tracker user is a bot: its user type is `Bot`, or its login ends in `[bot]` in any
+/// ASCII case. `user_type` is the type the tracker reports, when the read gives one.
+pub fn is_bot(login: &str, user_type: Option<&str>) -> bool {
+    const SUFFIX: &str = "[bot]";
+    user_type == Some("Bot")
+        || (login.len() >= SUFFIX.len()
+            && login.is_char_boundary(login.len() - SUFFIX.len())
+            && login[login.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX))
+}
+
 impl RepoRole {
     /// Whether the role may push to the repository: admin, maintain and write.
     pub fn can_write(self) -> bool {
@@ -56,6 +66,9 @@ pub struct Issue {
     pub labels: Vec<String>,
     pub issue_type: Option<IssueType>,
     pub author: Login,
+    /// Whether the author is a bot, as [`is_bot`] decides from the author's login and type.
+    #[serde(default)]
+    pub author_is_bot: bool,
     pub url: String,
     /// The total from the issue's sub-issue summary.
     pub sub_issues: u64,
@@ -156,6 +169,18 @@ pub enum LinkKind {
 pub struct Link {
     pub kind: LinkKind,
     pub number: u64,
+}
+
+/// An issue's parent issue as [`Collaborators::read_parent`] reads it: its number and its
+/// author.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParentIssue {
+    pub number: IssueNumber,
+    /// The parent's author; `None` when the read named no user login, so the parent's author
+    /// is no person.
+    pub author: Option<Login>,
+    /// Whether the author is a bot, as [`is_bot`] decides; false when there is no author.
+    pub author_is_bot: bool,
 }
 
 /// Which way a dependency points from an issue.
@@ -354,11 +379,11 @@ pub trait Collaborators: TrackerBase {
         login: Login,
     ) -> impl Future<Output = Result<RepoRole, Self::Error>> + Send;
 
-    /// The issue's parent issue, or `None` when it has none.
+    /// The issue's parent issue with its author, or `None` when it has none.
     fn read_parent(
         &self,
         issue: IssueNumber,
-    ) -> impl Future<Output = Result<Option<IssueNumber>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<ParentIssue>, Self::Error>> + Send;
 }
 
 /// A role's field on an issue, design §4.6.

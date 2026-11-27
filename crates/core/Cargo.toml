@@ -20,8 +20,10 @@ mintswarm-config = { path = "../config" }
 mintswarm-domain = { path = "../domain" }
 mintswarm-github = { path = "../github" }
 mintswarm-proto = { path = "../proto" }
+mintswarm-rules = { path = "../rules" }
 rustix = { workspace = true, features = ["process"], optional = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }

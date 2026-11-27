@@ -45,6 +45,7 @@ fn issue(labels: &[&str], author: &str) -> Issue {
         labels: labels.iter().map(|label| (*label).to_owned()).collect(),
         issue_type: None,
         author: Login(author.to_owned()),
+        author_is_bot: false,
         url: "https://example.invalid/issues/1".to_owned(),
         sub_issues: 0,
         blocked_by: 0,

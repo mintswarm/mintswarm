@@ -29,9 +29,9 @@ use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     Artifact, ChangedFile, CheckRun, CheckSuite, CodeOwners, Collaborators, CombinedStatus,
     Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
-    IssueType, Issues, Link, Links, Login, MergeOutcome, Merges, PullDetail, Reactions, RepoRole,
-    RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews, Statuses, SubItem,
-    TrackerBase,
+    IssueType, Issues, Link, Links, Login, MergeOutcome, Merges, ParentIssue, PullDetail,
+    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
+    Statuses, SubItem, TrackerBase,
 };
 use mintswarm_github::{
     CommentClient, CommentError, FieldClient, FieldPass, GitHubFieldCatalogue, GitHubReads,
@@ -396,7 +396,7 @@ impl<T: InstallationTokens> Collaborators for GitHubTracker<T> {
         Ok(self.clients.reads.read_permission(&token, &login).await?)
     }
 
-    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<IssueNumber>, Self::Error> {
+    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
         let token = self.token().await?;
         Ok(self.clients.reads.read_parent(&token, issue).await?)
     }

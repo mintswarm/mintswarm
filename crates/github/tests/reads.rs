@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
     ArtifactSummary, CheckState, Comment, CommentMark, Cursor, Dependency, Direction, IssueType,
-    Link, LinkKind, Login, RepoRole,
+    Link, LinkKind, Login, ParentIssue, RepoRole,
 };
 use mintswarm_domain::vcs::BranchName;
 use mintswarm_github::{
@@ -553,6 +553,7 @@ async fn read_issue_maps_type_and_comments_since_cursor() {
     assert_eq!(read.issue.labels, ["mintswarm", "component:domain"]);
     assert_eq!(read.issue.issue_type, Some(IssueType::Implementation));
     assert_eq!(read.issue.author, Login("maintainer".into()));
+    assert!(!read.issue.author_is_bot);
     assert_eq!(read.issue.url, "https://github.com/acme/widgets/issues/180");
     assert_eq!(read.issue.sub_issues, 3);
     assert_eq!(read.issue.blocked_by, 2);
@@ -608,6 +609,25 @@ async fn missing_summaries_read_as_zero_and_a_summary_without_its_total_is_refus
 }
 
 #[tokio::test]
+async fn an_issue_author_is_a_bot_by_type_or_by_login() {
+    let responder = Responder::start().await;
+    let mut issue: serde_json::Value = serde_json::from_str(ISSUE_JSON).unwrap();
+    for user in [
+        serde_json::json!({ "login": "helper", "type": "Bot" }),
+        serde_json::json!({ "login": "relay[BOT]", "type": "User" }),
+    ] {
+        issue["user"] = user;
+        responder.reply(200, issue.to_string());
+        responder.reply(200, "[]");
+        let read = client(&responder)
+            .read_issue(&token(), ISSUE, None)
+            .await
+            .unwrap();
+        assert!(read.issue.author_is_bot, "{}", issue["user"]);
+    }
+}
+
+#[tokio::test]
 async fn labels_mode_takes_the_kind_from_the_first_matching_label() {
     let responder = Responder::start().await;
     let mut issue: serde_json::Value = serde_json::from_str(ISSUE_JSON).unwrap();
@@ -638,6 +658,7 @@ async fn labels_mode_takes_the_kind_from_the_first_matching_label() {
 #[tokio::test]
 async fn read_links_returns_parent_and_sub_issues() {
     let responder = Responder::start().await;
+    // The parent's answer names no user: the link needs only its number.
     responder.reply(200, r#"{"number":152,"title":"Runner design"}"#);
     responder.reply(200, r#"[{"number":181},{"number":182}]"#);
     responder.reply(404, r#"{"message":"Not Found"}"#);
@@ -788,6 +809,52 @@ async fn an_unrecognised_permission_is_unexpected() {
     assert_eq!(client.read_permission(&token(), &zmij()).await, expected);
 }
 
+/// The parent `ISSUE_JSON` reads as: filed by `maintainer`, a person.
+fn maintainers_parent() -> ParentIssue {
+    ParentIssue {
+        number: ISSUE,
+        author: Some(Login("maintainer".into())),
+        author_is_bot: false,
+    }
+}
+
+#[tokio::test]
+async fn a_parent_author_is_read_with_its_bot_flag_or_as_none() {
+    let responder = Responder::start().await;
+    responder.reply(
+        200,
+        r#"{"number":7,"user":{"login":"helper","type":"Bot"}}"#,
+    );
+    responder.reply(200, r#"{"number":7}"#);
+    responder.reply(200, r#"{"number":7,"user":null}"#);
+    responder.reply(200, r#"{"number":7,"user":{"login":42,"type":"User"}}"#);
+    responder.reply(200, r#"{"user":{"login":"erin","type":"User"}}"#);
+    let client = client(&responder);
+    assert_eq!(
+        client.read_parent(&token(), IssueNumber(593)).await,
+        Ok(Some(ParentIssue {
+            number: IssueNumber(7),
+            author: Some(Login("helper".into())),
+            author_is_bot: true,
+        }))
+    );
+    let no_author = Ok(Some(ParentIssue {
+        number: IssueNumber(7),
+        author: None,
+        author_is_bot: false,
+    }));
+    for _ in 0..3 {
+        assert_eq!(
+            client.read_parent(&token(), IssueNumber(593)).await,
+            no_author
+        );
+    }
+    assert!(matches!(
+        client.read_parent(&token(), IssueNumber(593)).await,
+        Err(ReadError::Unexpected { .. })
+    ));
+}
+
 #[tokio::test]
 async fn read_parent_returns_the_parent_or_none() {
     let responder = Responder::start().await;
@@ -796,7 +863,7 @@ async fn read_parent_returns_the_parent_or_none() {
     let client = client(&responder);
     assert_eq!(
         client.read_parent(&token(), IssueNumber(593)).await,
-        Ok(Some(ISSUE))
+        Ok(Some(maintainers_parent()))
     );
     assert_eq!(
         client.read_parent(&token(), IssueNumber(593)).await,
@@ -827,7 +894,7 @@ async fn read_permission_and_read_parent_are_retried() {
     );
     assert_eq!(
         client.read_parent(&token(), IssueNumber(593)).await,
-        Ok(Some(ISSUE))
+        Ok(Some(maintainers_parent()))
     );
     assert_eq!(
         paths(&responder.requests()),

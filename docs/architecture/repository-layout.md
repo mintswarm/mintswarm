@@ -131,6 +131,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
   - `github` ← `runner`
   - `github` ← `server`
   - `rules` ← `runner`
+  - `rules` ← `core`
   - `core` ← `server`
   - `core` ← `cli`
   - `runner` ← `server`
