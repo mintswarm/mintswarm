@@ -465,7 +465,7 @@
       },
       {
         "name": "proto-lint",
-        "command": "buf lint api/proto"
+        "command": "bash .mintswarm/dogfood/web-install.sh && ./web/node_modules/.bin/buf lint api/proto"
       },
       {
         "name": "dependencies-selftest",
