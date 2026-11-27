@@ -70,6 +70,12 @@ pub enum PgHarnessError {
         /// The client's error.
         source: tokio_postgres::Error,
     },
+    /// The migration tree could not be applied to the test database.
+    #[error("could not apply the migration tree to the test database")]
+    Migrate {
+        /// The run's error.
+        source: crate::migrations::ApplyError,
+    },
     /// A file or process operation failed.
     #[error("a file or process operation of the Postgres test harness failed")]
     Io {

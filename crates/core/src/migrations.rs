@@ -1,10 +1,15 @@
 //! The Postgres migration tree under `crates/core/migrations/`: its check, the list the build
-//! embeds, minting a new migration's version, the lexical reading of its SQL, and the interim
-//! narrowing rule.
+//! embeds, minting a new migration's version, the lexical reading of its SQL, the interim
+//! narrowing rule, and applying it to a database through a ledger under a session advisory
+//! lock.
 //!
 //! The directory is the only source of the tree. The build script checks it with [`validate`]
 //! and embeds each file's path and bytes, and [`embedded_tree`] runs the same check on them.
+//! [`apply`] takes a tree as a parameter, so tests apply trees of their own through the same
+//! path.
 
+mod apply;
+mod ledger;
 pub mod narrowing;
 pub mod sql;
 mod tree;
@@ -17,6 +22,8 @@ use std::path::{Path, PathBuf};
 
 use mintswarm_domain::time::civil_from_days;
 
+pub use apply::{Applied, ApplyError, ApplyWarning, MIGRATION_LOCK_KEY, Outcome, apply};
+pub use ledger::{Drift, LEDGER_SCHEMA, LEDGER_TABLE};
 pub use tree::{
     Down, Migration, Report, SCHEMA, TreeError, Warning, is_valid_name, is_valid_version,
     read_tree, validate,
