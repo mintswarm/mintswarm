@@ -81,6 +81,9 @@ MIB = 1024 * 1024
 CRATES_META_CAP = 32 * MIB
 NPM_META_CAP = 64 * MIB
 # An archive's peak memory is about ARCHIVE_CAP + TOTAL_CAP: the compressed body and one decompressed buffer.
+# The largest archives seen, @bufbuild/buf-*@1.75.0 from the npm registry: tarballs of 33,923,210 bytes
+# (darwin-x64), 33,969,156 (win32-x64) and 33,106,311 (linux-x64), against ARCHIVE_CAP of 67,108,864; the largest
+# dist.unpackedSize is 99,778,559 bytes (darwin-x64), against TOTAL_CAP of 134,217,728.
 ARCHIVE_CAP = 64 * MIB
 TOTAL_CAP = 128 * MIB
 MEMBER_CAP = 32 * MIB
