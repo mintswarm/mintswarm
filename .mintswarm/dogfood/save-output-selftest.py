@@ -47,12 +47,21 @@ Checks:
   block.yaml, wrapped in a reply, gives exactly its result.json, byte for
   byte.
 
+MSW_IMPL picks the implementation under test. Unset or empty, the checks run
+save-output.py; `rust`, they run `$MSW_RUST_BIN tool save-output`, the
+mintswarm-runner binary, whose path is resolved against the starting
+directory. Any other value, or `rust` without an executable MSW_RUST_BIN,
+exits 2 before any check runs. Under Rust the check that imports
+save-output.py as a module is skipped; the unit test of that name in
+crates/runner/src/tool/save_output.rs covers it.
+
 Prints one line per check and exits 0 only if every check passed.
 Standard library only.
 """
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -90,6 +99,37 @@ RECORD = {
     "pr_title": None,
 }
 FIXTURES = ROOT / "crates" / "domain" / "tests" / "fixtures" / "result-blocks"
+
+
+def usage_error(message):
+    print(f"save-output-selftest: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve_command():
+    """The argv prefix that runs the save-output tool, chosen by MSW_IMPL and MSW_RUST_BIN."""
+    impl = os.environ.get("MSW_IMPL", "")
+    if impl == "":
+        return [sys.executable, "-I", str(SCRIPT)]
+    if impl != "rust":
+        usage_error(f"MSW_IMPL must be unset, empty or rust, not {impl!r}")
+    binary = os.environ.get("MSW_RUST_BIN", "")
+    if binary == "":
+        usage_error("MSW_IMPL=rust needs MSW_RUST_BIN, the path of the mintswarm-runner binary")
+    path = Path(binary).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        usage_error(f"MSW_RUST_BIN is not an executable file: {path}")
+    return [str(path), "tool", "save-output"]
+
+
+RUST = os.environ.get("MSW_IMPL", "") == "rust"
+COMMAND = resolve_command()
+
+
+def tool_command():
+    """The argv prefix that runs the save-output tool under test."""
+    return list(COMMAND)
+
 
 # The document title each artefact's skeleton carries.
 TITLES = {
@@ -165,7 +205,7 @@ class Harness(unittest.TestCase):
 
     def run_script(self, *args):
         return subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), *args],
+            [*tool_command(), *args],
             cwd=self.dir,
             capture_output=True,
             text=True,
@@ -402,7 +442,7 @@ class Skeletons(unittest.TestCase):
             out = tmp / f"{stage}-{artefact}.md"
             reply.write_text("\n".join(body) + "\n", encoding="utf-8")
             proc = subprocess.run(
-                [sys.executable, "-I", str(SCRIPT), "--text", str(reply), str(out)],
+                [*tool_command(), "--text", str(reply), str(out)],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -706,6 +746,10 @@ class Questions(Harness):
         q = question(question="\x1c", why="\u200b")
         self.assert_accepted(block(q, status="needs_input"), record_of(q, status="needs_input"))
 
+    @unittest.skipIf(
+        RUST,
+        "imports save-output.py; under Rust, write_both_cleans_up_on_any_exception in crates/runner/src/tool/save_output.rs covers it",
+    )
     def test_write_both_cleans_up_on_any_exception(self):
         spec = importlib.util.spec_from_file_location("save_output", SCRIPT)
         module = importlib.util.module_from_spec(spec)
@@ -803,7 +847,7 @@ class Fixtures(unittest.TestCase):
                     reply.write_text(result_reply(*lines), encoding="utf-8")
                     out = Path(tmp) / case.name / "document.md"
                     proc = subprocess.run(
-                        [sys.executable, "-I", str(SCRIPT), "--text", str(reply), str(out)],
+                        [*tool_command(), "--text", str(reply), str(out)],
                         cwd=tmp,
                         capture_output=True,
                         text=True,
