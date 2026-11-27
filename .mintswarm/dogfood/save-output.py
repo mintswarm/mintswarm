@@ -90,9 +90,16 @@ order, every key present, null for an absent value and [] for an absent
 list. Both go through temporary files in the target directory, so either
 both are written or neither. Then prints the result block, which
 assistant message the document came from (transcript mode only) and the
-saved size. Exits 0 when saved, 1 when the reply does not follow the rules
+saved size. A closed stdout or stderr, or a failure to write either, is
+ignored. Exits 0 when saved, 1 when the reply does not follow the rules
 (nothing is written), 2 on a usage error or when INPUT cannot be read or
-OUTPUT cannot be written (nothing is left behind). Standard library only.
+OUTPUT cannot be written (nothing is left behind), or on an unexpected
+error. Read and write failures are reported in fixed phrases, those of
+`mintswarm-runner tool save-output`, and an unexpected error as
+`save-output: internal error: unexpected <class>`; no text of an operating
+system, decoder or other library error is printed. The phrases and the base
+error class come from errors.py beside this script, loaded by path.
+Standard library only.
 
 On exit 1, stderr names the message checked and the fault, then the rule
 it breaks, quoted verbatim from .mintswarm/stages.md. The dispatching
@@ -103,6 +110,7 @@ file. If the reply still fails, the stage is `failed`, with this script's
 message as the reason.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -110,6 +118,47 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
+
+
+def report(line: str) -> None:
+    """Print line on stderr; with no stderr, or one that cannot be written, say nothing."""
+    if sys.stderr is None:
+        return  # fd 2 was closed at start-up; print would fall back to stdout
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except OSError:
+        silence(sys.stderr)
+
+
+def silence(stream) -> None:
+    """Point stream's file descriptor at os.devnull, so that the flush at shutdown cannot report a
+    failed write. Does nothing for a stream that is None or has no descriptor."""
+    if stream is None:
+        return
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(fd, stream.fileno())
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        pass
+
+
+def load_errors():
+    """errors.py from this script's directory, loaded by path without writing bytecode."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to errors.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_dogfood_errors", Path(__file__).with_name("errors.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        report("save-output: cannot load errors.py")
+        sys.exit(2)
+    return module
+
+
+errors = load_errors()
 
 USAGE = "usage: save-output.py [--text] INPUT OUTPUT.md"
 STAGES = ".mintswarm/stages.md"
@@ -160,7 +209,9 @@ CONTENT_RULE = (
 )
 
 
-class ReplyError(Exception):
+class ReplyError(errors.DomainError):
+    """The reply does not follow a rule of .mintswarm/stages.md; exit 1."""
+
     def __init__(self, fault: str, rule: str, quote: str = ""):
         super().__init__(fault)
         self.fault = fault
@@ -169,6 +220,14 @@ class ReplyError(Exception):
 
     def explain(self) -> str:
         return f"{self.fault}\nbreaks {self.rule} of {STAGES}: {self.quote}"
+
+
+class InputError(errors.DomainError):
+    """INPUT cannot be read; exit 2."""
+
+
+class OutputError(errors.DomainError):
+    """OUTPUT or its record cannot be written; exit 2."""
 
 
 def message_text(content) -> list:
@@ -820,8 +879,11 @@ def parse_result(block: list, first: int) -> tuple:
     return outcome, violations
 
 
-def record_path(output: Path) -> Path:
-    """Where the result record goes: OUTPUT's `.md` suffix replaced, or `.result.json` appended."""
+def record_path(output: Path):
+    """Where the result record goes: OUTPUT's `.md` suffix replaced, or `.result.json` appended.
+    None when OUTPUT names no file, as `/`, `.` and `..` do."""
+    if output.name in ("", ".."):
+        return None
     stem = output.name[:-3] if output.name.endswith(".md") else output.name
     return output.with_name(stem + ".result.json")
 
@@ -864,12 +926,16 @@ def extract(text: str) -> tuple:
 
 
 def main(argv: list) -> int:
-    text_mode = bool(argv) and argv[0] == "--text"
-    args = argv[1:] if text_mode else argv
-    if len(args) != 2 or any(a.startswith("--") for a in args):
-        print(USAGE, file=sys.stderr)
+    """Run the tool; an exception it did not expect gives the fixed crash line and exit 2."""
+    try:
+        return run(argv)
+    except Exception as exc:
+        report(errors.crash_line("save-output", exc))
         return 2
-    source, output = args
+
+
+def read_reply(source: str, text_mode: bool) -> tuple:
+    """The reply text, the message it came from and whether it is an unfenced document."""
     where = None
     unfenced = False
     try:
@@ -885,9 +951,20 @@ def main(argv: list) -> int:
                 where = describe(messages, k)
                 unfenced = unfenced_document(text)
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"save-output: cannot read {source}: {exc}", file=sys.stderr)
+        raise InputError(f"cannot read {source}: {errors.read_phrase(exc)}") from exc
+    return text, where, unfenced
+
+
+def run(argv: list) -> int:
+    text_mode = bool(argv) and argv[0] == "--text"
+    args = argv[1:] if text_mode else argv
+    if len(args) != 2 or any(a.startswith("--") for a in args):
+        report(USAGE)
         return 2
+    source, output = args
+    where = None
     try:
+        text, where, unfenced = read_reply(source, text_mode)
         if not text or not text.strip():
             raise ReplyError("no reply text" if text_mode else "no assistant text in the transcript", "rule 1")
         if unfenced:
@@ -899,19 +976,34 @@ def main(argv: list) -> int:
         document, result, outcome = extract(text)
     except ReplyError as exc:
         prefix = f"{where}: " if where else ""
-        print(f"save-output: {prefix}{exc.explain()}", file=sys.stderr)
+        report(f"save-output: {prefix}{exc.explain()}")
         return 1
+    except InputError as exc:
+        report(f"save-output: {exc.message}")
+        return 2
     path = Path(output)
     record = json.dumps(outcome, indent=2, ensure_ascii=False) + "\n"
     try:
-        write_both([(path, document), (record_path(path), record)])
-    except (OSError, UnicodeEncodeError) as exc:
-        print(f"save-output: cannot write {output}: {exc}", file=sys.stderr)
+        saved = record_path(path)
+        if saved is None:
+            raise OutputError(f"cannot write {output}: it names no file")
+        try:
+            write_both([(path, document), (saved, record)])
+        except (OSError, UnicodeEncodeError) as exc:
+            raise OutputError(f"cannot write {output}: {errors.write_phrase(exc)}") from exc
+    except OutputError as exc:
+        report(f"save-output: {exc.message}")
         return 2
-    print(result.rstrip())
-    if where:
-        print(f"document from {where}")
-    print(f"saved {len(document)} characters to {output}")
+    try:
+        print(result.rstrip())
+        if where:
+            print(f"document from {where}")
+        print(f"saved {len(document)} characters to {output}")
+        if sys.stdout is not None:  # None when fd 1 was closed at start-up, and print a no-op
+            sys.stdout.flush()
+    except OSError:
+        # the files are saved; a stdout nobody reads changes nothing, as in the port
+        silence(sys.stdout)
     return 0
 
 

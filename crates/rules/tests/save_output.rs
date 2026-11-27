@@ -1,9 +1,10 @@
 //! Parity with `.mintswarm/dogfood/save-output.py`: every call its self-test makes, recorded live
 //! by `tests/fixtures/save-output-record.py`, reaches the same decision through
 //! `mintswarm_rules::output`. A saved reply gives the same document and record bytes; a rejected
-//! one breaks the same rule, by name and quoted text. In transcript mode the same message is
-//! selected. The fault's own detail is never compared: in `save-output.py` it carries Python's
-//! `repr` and its JSON decoder's messages, which change between Python versions.
+//! one prints exactly the same error output: the selected message, the fault in
+//! `mintswarm-rules`' words, the broken rule and its quoted text, with nothing on stdout. In
+//! transcript mode the same message is selected. Calls that exit 2 belong to the command line and
+//! are compared by the runner crate's tests.
 
 #![cfg(test)]
 
@@ -16,6 +17,13 @@ use serde_json::Value;
 
 /// The tests of the self-test that never run save-output.py.
 const UNRECORDED: &[&str] = &[
+    "ErrorModule.test_crash_line_for_an_unexpected_exception",
+    "ErrorModule.test_decode_position",
+    "ErrorModule.test_domain_error_and_crash_line",
+    "ErrorModule.test_no_exception_text_in_source",
+    "ErrorModule.test_read_phrase",
+    "ErrorModule.test_standard_library_only",
+    "ErrorModule.test_write_phrase",
     "Questions.test_write_both_cleans_up_on_any_exception",
     "Skeletons.test_stages_are_known",
 ];
@@ -103,6 +111,17 @@ fn replay(entry: &Value) -> Option<String> {
         }
         (Some(1), Err(fault)) => {
             let stderr = text(entry, "stderr");
+            let prefix = selected
+                .as_deref()
+                .map(|m| format!("{m}: "))
+                .unwrap_or_default();
+            let expected = format!("save-output: {prefix}{}\n", fault.explain());
+            if stderr != expected {
+                wrong.push(format!("stderr: {expected:?} != {stderr:?}"));
+            }
+            if !text(entry, "stdout").is_empty() {
+                wrong.push(format!("stdout: {:?} is not empty", text(entry, "stdout")));
+            }
             match broken_rule(stderr) {
                 Some(found) if found == (fault.rule, fault.quote) => {}
                 found => wrong.push(format!(
@@ -163,13 +182,12 @@ fn every_save_output_call_of_the_self_test_is_reproduced() {
         "self-test errors: {}",
         errored.join(", ")
     );
-    if !failed.is_empty() {
-        // the self-test pins some of Python's own messages; its calls are replayed all the same
-        eprintln!(
-            "self-test failures under this Python: {}",
-            failed.join(", ")
-        );
-    }
+    // the self-test pins no wording of Python's own, so a failure is a real difference
+    assert!(
+        failed.is_empty(),
+        "self-test failures: {}",
+        failed.join(", ")
+    );
 
     let mut mismatches = Vec::new();
     let (mut text_mode, mut transcript_mode, mut skipped) = (0, 0, 0);

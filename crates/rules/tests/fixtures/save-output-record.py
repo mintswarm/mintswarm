@@ -10,21 +10,22 @@ still exists:
 
 - `test`: the test, as `Class.method`;
 - `mode`: `text` (with `--text`) or `transcript`;
-- `input`: the input file's text, read with `newline=""`;
+- `input`: the input file's text, read with `newline=""`, or `null` when it cannot be read as
+  UTF-8 text (missing, a directory, unreadable or not UTF-8);
 - `output`: the output argument as passed;
 - `exit`, `stdout` and `stderr`: what the call gave;
 - `document` and `record`: the saved document and its `.result.json` record, read with
   `newline=""`, on exit 0; otherwise `null`.
 
 The last line is `{"unrecorded": [...], "failed": [...], "errored": [...]}`: the tests that made
-no save-output.py call, those whose assertions failed, and those that raised. A failing test does
-not fail the recording: some of the self-test's assertions pin Python's own messages, which change
-between Python versions, and its calls are recorded either way. An erroring test may stop before
-all its calls, so `tests/save_output.rs` fails on any test listed in `errored`. Reads `.mintswarm/dogfood/` without modifying it and writes only OUT
-and the self-test's own temporary directories.
+no save-output.py call, those whose assertions failed, and those that raised. A failing or
+erroring test does not fail the recording, and the calls it made are recorded; the parity tests
+fail on any test listed in `failed` or `errored`. Reads `.mintswarm/dogfood/` without modifying it
+and writes only OUT and the self-test's own temporary directories.
 
 `tests/save_output.rs` runs it into a temporary file and replays every entry through
-`mintswarm_rules::output`.
+`mintswarm_rules::output`; `crates/runner/tests/save_output.rs` replays them through
+`mintswarm-runner tool save-output`.
 """
 
 import importlib.util
@@ -53,7 +54,7 @@ def read_text(path: Path):
     try:
         with path.open(encoding="utf-8", newline="") as f:
             return f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
