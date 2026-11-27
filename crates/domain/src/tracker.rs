@@ -288,6 +288,78 @@ pub trait Assignments: TrackerBase {
     fn release(&self, issue: IssueNumber) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
+/// Reacting to comments.
+///
+/// It is not part of [`Tracker`]: only the plane reacts, so a [`Tracker`] bound alone does not
+/// give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::tracker::{Reactions, Tracker};
+///
+/// fn react<T: Tracker>(tracker: &T) {
+///     let _ = tracker.react_plus_one(1);
+/// }
+/// ```
+pub trait Reactions: TrackerBase {
+    /// Reacts `+1` to the comment `comment_id`. It is idempotent: a comment that already
+    /// carries the tracker's own `+1` keeps that one reaction, and the call succeeds.
+    fn react_plus_one(
+        &self,
+        comment_id: u64,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// Changing the body of an existing comment or artifact.
+///
+/// It is kept apart from [`Reactions`] and [`Collaborators`] so that a runner may implement it
+/// under the cross-App fallback, editing what its own App posted, without the other two.
+pub trait CommentEdits: TrackerBase {
+    /// Sets the body of the comment `comment_id` to `body`; returns the comment as the tracker
+    /// then holds it.
+    fn edit_comment(
+        &self,
+        comment_id: u64,
+        body: String,
+    ) -> impl Future<Output = Result<Comment, Self::Error>> + Send;
+
+    /// Sets the body of the artifact numbered `number` on `issue` (its per-issue number, as in
+    /// [`ArtifactSummary::number`]) to `body`, in place; returns the artifact as the tracker
+    /// then holds it.
+    fn update_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+        body: String,
+    ) -> impl Future<Output = Result<Artifact, Self::Error>> + Send;
+}
+
+/// Who may act on the repository, and which issue an issue belongs to.
+///
+/// It is not part of [`Tracker`]: only the plane reads them, so a [`Tracker`] bound alone does
+/// not give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::tracker::{Collaborators, Login, Tracker};
+///
+/// fn role<T: Tracker>(tracker: &T) {
+///     let _ = tracker.read_permission(Login("someone".into()));
+/// }
+/// ```
+pub trait Collaborators: TrackerBase {
+    /// `login`'s role on the repository; a login that is no collaborator, or no user, is
+    /// [`RepoRole::NoAccess`].
+    fn read_permission(
+        &self,
+        login: Login,
+    ) -> impl Future<Output = Result<RepoRole, Self::Error>> + Send;
+
+    /// The issue's parent issue, or `None` when it has none.
+    fn read_parent(
+        &self,
+        issue: IssueNumber,
+    ) -> impl Future<Output = Result<Option<IssueNumber>, Self::Error>> + Send;
+}
+
 /// A role's field on an issue, design §4.6.
 pub trait Fields: Send + Sync {
     /// The value of a role's field on an issue, design §4.6.
