@@ -83,6 +83,11 @@ async fn emptied_store_expires_with_no_pruned_before() {
     spec::emptied_store_expires_with_no_pruned_before(memory).await;
 }
 
+#[tokio::test]
+async fn append_after_an_emptying_prune_follows_pruned_through() {
+    spec::append_after_an_emptying_prune_follows_pruned_through(memory).await;
+}
+
 #[test]
 fn the_epoch_is_a_fixed_uuid_v7_per_store() {
     let store = MemoryWatchLog::new();

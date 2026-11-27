@@ -17,6 +17,7 @@
 //! - [`a_prune_that_removes_nothing_leaves_pruned_through_unset`]
 //! - [`a_prune_that_removes_nothing_keeps_pruned_through`]
 //! - [`emptied_store_expires_with_no_pruned_before`]
+//! - [`append_after_an_emptying_prune_follows_pruned_through`]
 //!
 //! Every `at` is a whole second, so a backend that keeps microseconds compares exactly.
 
@@ -534,4 +535,28 @@ where
         read_all(&store, Some(cursor(&store, all[1]))).await,
         Page::default()
     );
+}
+
+/// An event appended after a prune empties the store gets an id above `pruned_through`, so a
+/// read from a cursor at `pruned_through` returns it with no gap.
+pub async fn append_after_an_emptying_prune_follows_pruned_through<S, F, Fut>(make: F)
+where
+    S: WatchLog,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = S>,
+{
+    let store = make().await;
+    let all = append_at(&store, &[minutes_ago(120), minutes_ago(90)]).await;
+    let pruned = prune(&store, HOUR, 10).await;
+    assert_eq!(pruned.removed, 2);
+    let through = pruned
+        .pruned_through
+        .expect("an emptying prune sets `pruned_through`");
+    assert_eq!(through, all[1]);
+
+    let added = append(&store, webhook(), b"{}", None, minutes_ago(1)).await;
+    assert!(added > through);
+    let page = read_all(&store, Some(cursor(&store, through))).await;
+    assert_eq!(page.gap, None);
+    assert_eq!(ids(&page), [added]);
 }

@@ -68,7 +68,14 @@ impl MemoryWatchLog {
         if delivery.is_some() && state.entries.iter().any(|entry| entry.delivery == delivery) {
             return Ok(AppendOutcome::Duplicate);
         }
-        let id = next_id(state.entries.last().map(|entry| entry.id))?;
+        // Above every id ever assigned, stored or pruned, so a cursor at `pruned_through` never
+        // skips a later event, whatever the clock does after a prune empties the store.
+        let latest = state
+            .entries
+            .last()
+            .map(|entry| entry.id)
+            .max(state.pruned_through);
+        let id = next_id(latest)?;
         event.id = id.to_string();
         event.at = Some(Timestamp::from(at));
         event.cursor.clear();
