@@ -6,6 +6,14 @@
 //! its append lock. Byte order is id order, both in Rust (`Uuid`'s `Ord`) and in Postgres (a
 //! `uuid` column compares bytewise), so stores keep ids as native `uuid`, never as text. A
 //! cursor is `<store_epoch>.<id>`, both UUIDs.
+//!
+//! A store implements [`WatchLog`]; [`MemoryWatchLog`] is the in-memory one, and
+//! `mintswarm_core::testing::watch_log` holds the cases every store passes. A store resolves a
+//! read's cursor against its epoch and `pruned_through`, the id of the latest pruned event: a
+//! cursor of another epoch reads as the store changed, one strictly below `pruned_through` as
+//! expired, and any other resumes after its id. A prune removes an id-ordered prefix, so
+//! `pruned_through` is an exact boundary. The raw payload is kept apart from the event, read
+//! back only on request and pruned with it.
 
 use std::fmt;
 use std::time::Duration;
@@ -15,8 +23,12 @@ use mintswarm_proto::watch::v1;
 use uuid::{Uuid, Variant};
 
 mod filter;
+mod memory;
+mod store;
 
 pub use filter::Filter;
+pub use memory::MemoryWatchLog;
+pub use store::{AppendOutcome, Gap, Page, Pruned, WatchLog};
 
 /// A watch request or value that breaks the shared rules.
 #[derive(Debug, thiserror::Error)]
