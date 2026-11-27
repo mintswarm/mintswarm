@@ -1,9 +1,11 @@
-//! The runner reacts to nothing and reads no collaborators: no source in the runner crate
-//! implements [`Reactions`] or [`Collaborators`] for any type, its tracker included. It may
-//! implement [`CommentEdits`], under the cross-App fallback.
+//! The runner reacts to nothing, reads no collaborators and never merges: no source in the
+//! runner crate implements [`Reactions`], [`Collaborators`] or [`Merges`] for any type, its
+//! tracker included (design §13 P4). It may implement [`CommentEdits`], under the cross-App
+//! fallback.
 //!
 //! [`Reactions`]: mintswarm_domain::tracker::Reactions
 //! [`Collaborators`]: mintswarm_domain::tracker::Collaborators
+//! [`Merges`]: mintswarm_domain::tracker::Merges
 //! [`CommentEdits`]: mintswarm_domain::tracker::CommentEdits
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
@@ -11,9 +13,10 @@
 use std::path::{Path, PathBuf};
 
 /// Built from two halves so that this file does not contain them.
-const NEEDLES: [&str; 2] = [
+const NEEDLES: [&str; 3] = [
     concat!("Reactions", " for"),
     concat!("Collaborators", " for"),
+    concat!("Merges", " for"),
 ];
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -28,7 +31,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn the_runner_implements_neither_reactions_nor_collaborators() {
+fn the_runner_implements_none_of_reactions_collaborators_or_merges() {
     let runner = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runner");
     let mut paths = vec![runner.join("Cargo.toml")];
     files(&runner.join("src"), &mut paths);

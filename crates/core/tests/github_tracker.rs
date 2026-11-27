@@ -1,7 +1,7 @@
 //! The GitHub tracker against a scripted local server answering with JSON in the shapes of the
 //! `mintswarm-github` fixtures: field ids learned, reused, forgotten and deferred, and the other
-//! capabilities over their clients, the reactions, edits and permission reads replaying the
-//! recorded fixtures themselves.
+//! capabilities over their clients, the reactions, edits, permission reads and pull request
+//! reads and merges replaying the recorded fixtures themselves.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
@@ -13,15 +13,20 @@ use mintswarm_core::tracker::github::{
 use mintswarm_domain::field::{
     FieldError, FieldFinding, FieldRead, FieldRef, FieldSource, FieldValue,
 };
-use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError};
+use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Collaborators, CommentEdits, Comments, Cursor, Fields, IssueType, Issues, Links, Login,
-    Reactions, RepoRole, Statuses, SubItem,
+    CodeOwners, Collaborators, CommentEdits, Comments, Cursor, Fields, IssueType, Issues, Links,
+    Login, MergeOutcome, Merged, Merges, Reactions, RepoRole, RequestedReviewers, ReviewThread,
+    Reviews, Statuses, SubItem,
 };
+use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{
     Clock, CommentClient, CommentError, ContentLimiter, FieldClient, GitHubReads, IssueWrites,
-    Kinds, NOTE_MARKER, Permissions, RetryPolicy, StatusClient, Token, TokenError, WriteError,
+    Kinds, MergeClient, NOTE_MARKER, Permissions, RetryPolicy, StatusClient, Token, TokenError,
+    WriteError,
 };
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -91,18 +96,47 @@ const CREATED: &str = r#"{
   "created_at": "2026-11-26T12:00:02Z", "updated_at": "2026-11-26T12:00:02Z"
 }"#;
 
-/// A token source that hands out one fixed token.
-struct FixedTokens;
+/// The recorded pull request fixture of `mintswarm-github`, every reply under its own key.
+const PR_400: &str = include_str!("../../github/tests/fixtures/pulls/pr-400.json");
+const PR: PrNumber = PrNumber(400);
+const PULL_PATH: &str = "/repos/acme/widgets/pulls/400";
+/// Pull request 400's head in the fixture.
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+/// The token a merge's caller passes in, unlike the token source's [`TOKEN`].
+const MERGE_TOKEN: &str = "ghs_m3rgeT0kenV4lue";
+const NOT_FOUND: &str = r#"{"message":"Not Found","status":"404"}"#;
+
+/// The permission sets the token source was asked for, in order.
+type Asked = Arc<Mutex<Vec<Permissions>>>;
+
+/// A token source that hands out one fixed token and records each set of permissions asked
+/// for.
+struct FixedTokens {
+    asked: Asked,
+}
 
 impl InstallationTokens for FixedTokens {
     async fn token(
         &self,
         _owner: &str,
         _repo: &str,
-        _permissions: &Permissions,
+        permissions: &Permissions,
     ) -> Result<Token, TokenError> {
+        self.asked
+            .lock()
+            .expect("poisoned")
+            .push(permissions.clone());
         Ok(Token::new(TOKEN.to_owned(), u64::MAX))
     }
+}
+
+/// The recorded reply under `key` in [`PR_400`], as JSON text.
+fn recorded(key: &str) -> String {
+    let fixture: Value = serde_json::from_str(PR_400).unwrap();
+    fixture
+        .get(key)
+        .unwrap_or_else(|| panic!("no recorded reply {key}"))
+        .to_string()
 }
 
 /// A single attempt per request, so each request takes one scripted reply.
@@ -114,6 +148,11 @@ fn single_attempt() -> RetryPolicy {
 }
 
 fn tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
+    recording_tracker(responder).0
+}
+
+/// A tracker over `responder`, and what its token source was asked for.
+fn recording_tracker(responder: &Responder) -> (GitHubTracker<FixedTokens>, Asked) {
     let base = responder.base.as_str();
     let clock = Clock::system();
     let limiter = Arc::new(ContentLimiter::new(clock.clone()));
@@ -147,8 +186,18 @@ fn tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
         writes: IssueWrites::new(base, "acme", "widgets", limiter)
             .unwrap()
             .with_retry(single_attempt()),
+        merges: MergeClient::new(base, "acme", "widgets")
+            .unwrap()
+            .with_retry(single_attempt()),
     };
-    GitHubTracker::new(base, "acme", "widgets", FixedTokens, clients)
+    let asked = Asked::default();
+    let tokens = FixedTokens {
+        asked: Arc::clone(&asked),
+    };
+    (
+        GitHubTracker::new(base, "acme", "widgets", tokens, clients),
+        asked,
+    )
 }
 
 fn effort() -> FieldRef {
@@ -657,6 +706,346 @@ async fn reads_an_issue_parent() {
     for request in &requests {
         assert_sent(request, "GET", "/repos/acme/widgets/issues/7/parent");
     }
+}
+
+/// Asserts that every request is a GET sent with the token source's token, without printing it.
+fn assert_read_with_the_token(requests: &[Request]) {
+    let bearer = format!("Bearer {TOKEN}");
+    for request in requests {
+        let path = request.path.as_str();
+        assert!(
+            request.method == "GET" || path == "/graphql",
+            "{} {path}",
+            request.method
+        );
+        assert!(
+            request.header("authorization") == Some(bearer.as_str()),
+            "{path} is not sent with the token source's token"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reads_a_pull_its_reviews_and_requested_reviewers() {
+    let responder = Responder::start().await;
+    for key in ["pull", "reviews", "review_comments", "requested_reviewers"] {
+        responder.reply(200, recorded(key));
+    }
+    let tracker = tracker(&responder);
+    let pull = tracker.read_pull(PR).await.unwrap();
+    assert_eq!(pull.number, PR);
+    assert_eq!(pull.head, RevId(HEAD.into()));
+    assert_eq!(pull.mergeable_state.as_deref(), Some("blocked"));
+    let reviews = tracker.read_reviews(PR).await.unwrap();
+    let states: Vec<_> = reviews
+        .iter()
+        .map(|review| (review.id, review.state.as_str()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (77, "APPROVED"),
+            (78, "COMMENTED"),
+            (79, "CHANGES_REQUESTED")
+        ]
+    );
+    let comments = tracker.read_review_comments(PR).await.unwrap();
+    assert_eq!(comments[0].id, 901);
+    assert_eq!(comments.len(), 2);
+    assert_eq!(
+        tracker.read_requested_reviewers(PR).await.unwrap(),
+        RequestedReviewers {
+            users: vec![Login("maintainer".into())],
+            teams: vec!["reviewers".into()],
+        }
+    );
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [
+            format!("GET {PULL_PATH}"),
+            format!("GET {PULL_PATH}/reviews?per_page=100&page=1"),
+            format!("GET {PULL_PATH}/comments?per_page=100&page=1"),
+            format!("GET {PULL_PATH}/requested_reviewers"),
+        ]
+    );
+    assert_read_with_the_token(&requests);
+}
+
+#[tokio::test]
+async fn reads_review_threads_across_graphql_pages() {
+    let responder = Responder::start().await;
+    responder.reply(200, recorded("threads_page_1"));
+    responder.reply(200, recorded("threads_page_2"));
+    let threads = tracker(&responder).read_review_threads(PR).await.unwrap();
+    assert_eq!(
+        threads,
+        [
+            ReviewThread {
+                id: "PRRT_kwDOAbCdEs5AAAAB".into(),
+                resolved: true,
+            },
+            ReviewThread {
+                id: "PRRT_kwDOAbCdEs5AAAAC".into(),
+                resolved: false,
+            },
+            ReviewThread {
+                id: "PRRT_kwDOAbCdEs5AAAAD".into(),
+                resolved: true,
+            },
+        ]
+    );
+    let requests = responder.requests();
+    assert_eq!(summary(&requests), ["POST /graphql", "POST /graphql"]);
+    assert_read_with_the_token(&requests);
+}
+
+#[tokio::test]
+async fn reads_checks_and_statuses_at_a_commit() {
+    let responder = Responder::start().await;
+    for key in ["check_runs", "check_suites", "status"] {
+        responder.reply(200, recorded(key));
+    }
+    let tracker = tracker(&responder);
+    let sha = RevId(HEAD.into());
+    let runs = tracker.read_check_runs(sha.clone()).await.unwrap();
+    let suites = tracker.read_check_suites(sha.clone()).await.unwrap();
+    let status = tracker.read_statuses(sha).await.unwrap();
+    assert_eq!(
+        runs.iter()
+            .map(|run| (run.name.as_str(), run.conclusion.as_deref()))
+            .collect::<Vec<_>>(),
+        [("rust-test", Some("success")), ("rust-lint", None)]
+    );
+    assert_eq!(
+        suites.iter().map(|suite| suite.id).collect::<Vec<_>>(),
+        [2001, 2002]
+    );
+    assert_eq!(status.state, "failure");
+    assert_eq!(status.total_count, 2);
+    assert_eq!(status.statuses.len(), 2);
+    let commit = format!("/repos/acme/widgets/commits/{HEAD}");
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [
+            format!("GET {commit}/check-runs?filter=latest&per_page=100&page=1"),
+            format!("GET {commit}/check-suites?per_page=100&page=1"),
+            format!("GET {commit}/status?per_page=100&page=1"),
+        ]
+    );
+    assert_read_with_the_token(&requests);
+}
+
+#[tokio::test]
+async fn reads_changed_files() {
+    let responder = Responder::start().await;
+    responder.reply(200, recorded("files_page_1"));
+    let files = tracker(&responder).read_changed_files(PR).await.unwrap();
+    let got: Vec<_> = files
+        .iter()
+        .map(|file| (file.path.as_str(), file.status.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("crates/github/src/pulls.rs", "modified"),
+            ("crates/github/src/merges.rs", "added"),
+        ]
+    );
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [format!("GET {PULL_PATH}/files?per_page=100&page=1")]
+    );
+    assert_read_with_the_token(&requests);
+}
+
+#[tokio::test]
+async fn pr_reads_ask_for_the_read_permissions_only() {
+    let responder = Responder::start().await;
+    responder.reply(200, recorded("pull"));
+    responder.reply(200, recorded("files_page_1"));
+    for _ in CODEOWNERS_PATHS {
+        responder.reply(404, NOT_FOUND);
+    }
+    let (tracker, asked) = recording_tracker(&responder);
+    tracker.read_pull(PR).await.unwrap();
+    tracker.read_changed_files(PR).await.unwrap();
+    tracker.read_codeowners(RevId(HEAD.into())).await.unwrap();
+    let read = GitHubTracker::<FixedTokens>::read_permissions();
+    let asked = asked.lock().expect("poisoned").clone();
+    assert_eq!(asked, [read.clone(), read.clone(), read.clone()]);
+    // No write at all, so no `issues` write.
+    assert_ne!(read, GitHubTracker::<FixedTokens>::permissions());
+    assert!(!format!("{read:?}").contains("issues"), "{read:?}");
+    assert!(!format!("{read:?}").contains("Write"), "{read:?}");
+}
+
+/// The contents API's answer for a file `name` holding `* @acme/maintainers\n`, in the shape of
+/// `crates/github/tests/fixtures/repo/config-contents.json`.
+fn codeowners_contents(name: &str) -> String {
+    format!(
+        r#"{{"type":"file","encoding":"base64","size":20,"name":"{}","path":"{name}",
+  "content":"KiBAYWNtZS9tYWludGFpbmVycwo=\n",
+  "sha":"3f1c2a9e8b7d6c5f4e3a2b1c0d9e8f7a6b5c4d3e"}}"#,
+        name.rsplit('/').next().unwrap_or(name)
+    )
+}
+
+fn contents_path(file: &str) -> String {
+    format!("GET /repos/acme/widgets/contents/{file}?ref={HEAD}")
+}
+
+#[tokio::test]
+async fn codeowners_is_the_first_of_three_paths() {
+    let responder = Responder::start().await;
+    responder.reply(404, NOT_FOUND);
+    responder.reply(200, codeowners_contents("CODEOWNERS"));
+    let found = tracker(&responder)
+        .read_codeowners(RevId(HEAD.into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        found,
+        Some(CodeOwnersFile {
+            path: RepoPath(b"CODEOWNERS".to_vec()),
+            text: "* @acme/maintainers\n".into(),
+        })
+    );
+    let requests = responder.requests();
+    // `docs/CODEOWNERS` is never asked for.
+    assert_eq!(
+        summary(&requests),
+        [
+            contents_path(".github/CODEOWNERS"),
+            contents_path("CODEOWNERS")
+        ]
+    );
+    assert_read_with_the_token(&requests);
+}
+
+#[tokio::test]
+async fn no_codeowners_file_is_none() {
+    let responder = Responder::start().await;
+    for _ in CODEOWNERS_PATHS {
+        responder.reply(404, NOT_FOUND);
+    }
+    let found = tracker(&responder)
+        .read_codeowners(RevId(HEAD.into()))
+        .await
+        .unwrap();
+    assert_eq!(found, None);
+    let expected: Vec<_> = CODEOWNERS_PATHS.iter().map(|p| contents_path(p)).collect();
+    assert_eq!(summary(&responder.requests()), expected);
+}
+
+#[tokio::test]
+async fn codeowners_at_a_moving_ref_is_refused_before_any_request() {
+    let responder = Responder::start().await;
+    let error = tracker(&responder)
+        .read_codeowners(RevId("master".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            GitHubTrackerError::RepoRead(RepoReadError::InvalidRev)
+        ),
+        "{error:?}"
+    );
+    assert!(responder.requests().is_empty());
+}
+
+fn merge_token() -> Token {
+    Token::new(MERGE_TOKEN.to_owned(), u64::MAX)
+}
+
+#[tokio::test]
+async fn merges_with_the_given_token_and_mints_none() {
+    let responder = Responder::start().await;
+    responder.reply(200, recorded("merge_ok"));
+    let (tracker, asked) = recording_tracker(&responder);
+    let outcome = tracker
+        .merge(
+            &merge_token(),
+            PR,
+            RevId(HEAD.into()),
+            "feat(domain): GitHub REST reads (#400)".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        MergeOutcome::Merged(Merged {
+            sha: RevId("6dcb09b5b57875f334f61aebed695e2e4193db5e".into()),
+        })
+    );
+    let requests = responder.requests();
+    assert_eq!(summary(&requests), [format!("PUT {PULL_PATH}/merge")]);
+    let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(body["merge_method"], "squash");
+    assert_eq!(body["sha"], HEAD);
+    assert_eq!(
+        body["commit_title"],
+        "feat(domain): GitHub REST reads (#400)"
+    );
+    let authorization = requests[0].header("authorization");
+    assert!(
+        authorization == Some(format!("Bearer {MERGE_TOKEN}").as_str()),
+        "the merge is not sent with the token passed in"
+    );
+    assert!(
+        authorization != Some(format!("Bearer {TOKEN}").as_str()),
+        "the merge is sent with the token source's token"
+    );
+    assert!(
+        asked.lock().expect("poisoned").is_empty(),
+        "the merge asked the token source"
+    );
+}
+
+#[tokio::test]
+async fn a_moved_head_and_a_refusal_are_outcomes() {
+    let responder = Responder::start().await;
+    responder.reply(409, recorded("merge_head_moved"));
+    responder.reply(405, recorded("merge_not_mergeable"));
+    let tracker = tracker(&responder);
+    let mut outcomes = Vec::new();
+    for _ in 0..2 {
+        outcomes.push(
+            tracker
+                .merge(&merge_token(), PR, RevId(HEAD.into()), "Title".into())
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        outcomes,
+        [MergeOutcome::HeadMoved, MergeOutcome::NotMergeable]
+    );
+    assert_eq!(responder.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_merge_says_whether_it_may_have_landed() {
+    let responder = Responder::start().await;
+    responder.reply(502, r#"{"message":"Server Error"}"#);
+    responder.reply(404, NOT_FOUND);
+    let tracker = tracker(&responder);
+    let mut landed = Vec::new();
+    for _ in 0..2 {
+        let error = tracker
+            .merge(&merge_token(), PR, RevId(HEAD.into()), "Title".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, GitHubTrackerError::Merge(_)), "{error:?}");
+        landed.push(GitHubTracker::<FixedTokens>::may_have_landed(&error));
+    }
+    assert_eq!(landed, [true, false]);
+    assert!(!GitHubTracker::<FixedTokens>::may_have_landed(
+        &GitHubTrackerError::Unsupported { operation: "merge" }
+    ));
 }
 
 // The scripted responder, as in `crates/github/tests/support/mod.rs`.

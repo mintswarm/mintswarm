@@ -1,10 +1,12 @@
 //! The GitHub tracker: the capability traits the plane uses ([`Issues`], [`Links`], [`Fields`],
-//! [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`] and [`Collaborators`]) over the
-//! `mintswarm-github` clients, design §9.
+//! [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`], [`Collaborators`], [`Reviews`],
+//! [`CodeOwners`] and [`Merges`]) over the `mintswarm-github` clients, design §9.
 //!
-//! Every call asks its [`InstallationTokens`] for one installation token, writing issues and
-//! reading the repository's metadata, and opens a fresh pass of the client it uses, so each call
-//! reads GitHub again.
+//! Every issue call asks its [`InstallationTokens`] for one installation token, writing issues
+//! and reading the repository's metadata, and opens a fresh pass of the client it uses, so each
+//! call reads GitHub again. The pull request, check and CODEOWNERS reads ask instead for a
+//! read-only token, [`GitHubTracker::read_permissions`]. A merge asks for no token: it uses the
+//! one its caller passes in, and the tracker mints none.
 //!
 //! A field-mode role is configured by its name only (design §7, "Field ids"). The tracker keeps
 //! the ids it learned for the process, keyed by the field's name, and resolves an id it does not
@@ -22,16 +24,19 @@ use std::future::Future;
 use std::sync::{Mutex, MutexGuard};
 
 use mintswarm_domain::field::{FieldError, FieldFinding, FieldRead, FieldRef, FieldSource};
-use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::hosting::{CodeOwnersFile, RepoReadError};
+use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifact, Collaborators, Comment, CommentEdits, Comments, Cursor, Dependency, Direction,
-    Fields, Issue, IssueRead, IssueType, Issues, Link, Links, Login, Reactions, RepoRole, Statuses,
-    SubItem, TrackerBase,
+    Artifact, ChangedFile, CheckRun, CheckSuite, CodeOwners, Collaborators, CombinedStatus,
+    Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
+    IssueType, Issues, Link, Links, Login, MergeOutcome, Merges, PullDetail, Reactions, RepoRole,
+    RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews, Statuses, SubItem,
+    TrackerBase,
 };
 use mintswarm_github::{
     CommentClient, CommentError, FieldClient, FieldPass, GitHubFieldCatalogue, GitHubReads,
-    IssueWrites, NOTE_MARKER, Permissions, ReadError, STEER_MARKER, StatusClient, StatusError,
-    Token, TokenClient, TokenError, WriteError,
+    IssueWrites, MergeClient, MergeError, NOTE_MARKER, Permissions, ReadError, STEER_MARKER,
+    StatusClient, StatusError, Token, TokenClient, TokenError, WriteError,
 };
 
 /// The operator's step for a field whose id cannot be resolved, as the deferral log names it.
@@ -63,7 +68,8 @@ impl InstallationTokens for TokenClient {
 /// The `mintswarm-github` clients the tracker calls, each bound to the tracker's repository.
 #[derive(Debug)]
 pub struct GitHubClients {
-    /// Issues, their comments, links and dependencies.
+    /// Issues, their comments, links and dependencies; pull requests, their reviews and checks;
+    /// and the repository's files.
     pub reads: GitHubReads,
     /// Role fields and labels.
     pub fields: FieldClient,
@@ -75,6 +81,8 @@ pub struct GitHubClients {
     /// [`ContentLimiter`](mintswarm_github::ContentLimiter) of `comments`, so both count against
     /// one content budget.
     pub writes: IssueWrites,
+    /// Merges, each with the token its caller passes in.
+    pub merges: MergeClient,
 }
 
 /// Why a tracker call failed. Each client's error is kept as it is, so its rate-limit and
@@ -97,6 +105,13 @@ pub enum GitHubTrackerError {
     /// installation may not change the item.
     #[error(transparent)]
     Write(#[from] WriteError),
+    /// A CODEOWNERS read failed; [`RepoReadError::InvalidRev`] when the revision is not a full
+    /// commit id and nothing was sent.
+    #[error(transparent)]
+    RepoRead(#[from] RepoReadError),
+    /// A merge failed in a way that is no refusal; see [`Merges::may_have_landed`].
+    #[error(transparent)]
+    Merge(#[from] MergeError),
     /// The tracker does not support the operation yet; nothing was sent.
     #[error("the GitHub tracker does not support {operation}")]
     Unsupported {
@@ -138,9 +153,27 @@ impl<T: InstallationTokens> GitHubTracker<T> {
         Permissions::write(["issues"]).and(Permissions::read(["metadata"]))
     }
 
+    /// The permissions of the token the pull request, check and CODEOWNERS reads ask for: read
+    /// only.
+    pub fn read_permissions() -> Permissions {
+        Permissions::read([
+            "pull_requests",
+            "contents",
+            "checks",
+            "statuses",
+            "metadata",
+        ])
+    }
+
     async fn token(&self) -> Result<Token, TokenError> {
         self.tokens
             .token(&self.owner, &self.repo, &Self::permissions())
+            .await
+    }
+
+    async fn read_token(&self) -> Result<Token, TokenError> {
+        self.tokens
+            .token(&self.owner, &self.repo, &Self::read_permissions())
             .await
     }
 
@@ -366,6 +399,98 @@ impl<T: InstallationTokens> Collaborators for GitHubTracker<T> {
     async fn read_parent(&self, issue: IssueNumber) -> Result<Option<IssueNumber>, Self::Error> {
         let token = self.token().await?;
         Ok(self.clients.reads.read_parent(&token, issue).await?)
+    }
+}
+
+impl<T: InstallationTokens> Reviews for GitHubTracker<T> {
+    async fn read_pull(&self, pr: PrNumber) -> Result<PullDetail, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_pull(&token, pr).await?)
+    }
+
+    async fn read_reviews(&self, pr: PrNumber) -> Result<Vec<Review>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_reviews(&token, pr).await?)
+    }
+
+    async fn read_review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_review_comments(&token, pr).await?)
+    }
+
+    async fn read_review_threads(&self, pr: PrNumber) -> Result<Vec<ReviewThread>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_review_threads(&token, pr).await?)
+    }
+
+    async fn read_requested_reviewers(
+        &self,
+        pr: PrNumber,
+    ) -> Result<RequestedReviewers, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self
+            .clients
+            .reads
+            .read_requested_reviewers(&token, pr)
+            .await?)
+    }
+
+    async fn read_check_runs(&self, sha: RevId) -> Result<Vec<CheckRun>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_check_runs(&token, &sha).await?)
+    }
+
+    async fn read_check_suites(&self, sha: RevId) -> Result<Vec<CheckSuite>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_check_suites(&token, &sha).await?)
+    }
+
+    async fn read_statuses(&self, sha: RevId) -> Result<CombinedStatus, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_statuses(&token, &sha).await?)
+    }
+}
+
+impl<T: InstallationTokens> CodeOwners for GitHubTracker<T> {
+    async fn read_codeowners(&self, rev: RevId) -> Result<Option<CodeOwnersFile>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self
+            .clients
+            .reads
+            .repo_reads(&token)
+            .codeowners(&rev)
+            .await?)
+    }
+
+    async fn read_changed_files(&self, pr: PrNumber) -> Result<Vec<ChangedFile>, Self::Error> {
+        let token = self.read_token().await?;
+        Ok(self.clients.reads.read_changed_files(&token, pr).await?)
+    }
+}
+
+impl<T: InstallationTokens> Merges for GitHubTracker<T> {
+    type MergeToken = Token;
+
+    /// Merges with `token`, never asking the tracker's [`InstallationTokens`]. GitHub's 409 is
+    /// [`MergeOutcome::HeadMoved`] and its 405 [`MergeOutcome::NotMergeable`]; every other
+    /// failure is [`GitHubTrackerError::Merge`].
+    async fn merge(
+        &self,
+        token: &Token,
+        pr: PrNumber,
+        sha: RevId,
+        title: String,
+    ) -> Result<MergeOutcome, Self::Error> {
+        match self.clients.merges.merge(token, pr, &sha, &title).await {
+            Ok(merged) => Ok(MergeOutcome::Merged(merged)),
+            Err(MergeError::HeadMoved { .. }) => Ok(MergeOutcome::HeadMoved),
+            Err(MergeError::NotMergeable { .. }) => Ok(MergeOutcome::NotMergeable),
+            Err(error) => Err(GitHubTrackerError::Merge(error)),
+        }
+    }
+
+    fn may_have_landed(error: &GitHubTrackerError) -> bool {
+        matches!(error, GitHubTrackerError::Merge(error) if error.may_have_landed())
     }
 }
 

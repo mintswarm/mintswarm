@@ -64,7 +64,7 @@ pub use reads::{
     GitHubReads, IssueList, IssueQuery, IssueState, KindSource, Kinds, MAX_PAGES, NOTE_MARKER,
     PER_PAGE, ReadError, STEER_MARKER, comment_mark,
 };
-pub use repo::GitHubRepoReads;
+pub use repo::{GitHubRepoReads, is_commit_id};
 pub use rest::ClientError;
 pub use retry::SECONDARY_LIMIT_WAIT;
 pub use secret::{SecretBytes, Token};
