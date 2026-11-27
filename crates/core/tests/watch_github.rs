@@ -1,5 +1,6 @@
-//! The `github.webhook` normaliser on recorded deliveries, with personal data replaced, and the
-//! sender classifier on a loaded config.
+//! The `github.webhook` normaliser on recorded deliveries, with personal data replaced, and on
+//! values built in the test for inputs no recording has, such as the `_removed` dependency
+//! actions; and the sender classifier on a loaded config.
 
 #![cfg(test)]
 
@@ -11,7 +12,8 @@ use mintswarm_core::watch::{
 };
 use mintswarm_domain::tracker::Login;
 use mintswarm_proto::watch::v1::{
-    ActorClass, ActorType, GitHubWebhook, ItemKind, Party, WatchEvent, watch_event,
+    ActorClass, ActorType, GitHubWebhook, IssueDependency, ItemKind, ItemRef, Party, WatchEvent,
+    watch_event,
 };
 use serde_json::{Value, json};
 use tonic::Code;
@@ -372,6 +374,16 @@ fn summary_never_carries_untrusted_text() {
             "check_suite.completed",
             vec!["/check_suite/conclusion"],
         ),
+        (
+            "issue_dependencies",
+            "issue_dependencies.blocked_by_added",
+            vec!["/blocked_issue/title"],
+        ),
+        (
+            "issue_dependencies",
+            "issue_dependencies.blocking_added",
+            vec!["/blocking_issue/title"],
+        ),
     ];
     for (event, name, pointers) in cases {
         let payload = marked(json_of(&fixture(name)), &pointers);
@@ -400,6 +412,189 @@ fn summary_filters_unexpected_values() {
         out.summary,
         "github.webhook issue_comment.? owner/name#1 by ?"
     );
+}
+
+fn dependency(event: &WatchEvent) -> &IssueDependency {
+    webhook(event)
+        .dependency
+        .as_ref()
+        .expect("an issue dependency")
+}
+
+fn item_ref(payload: &Value, repository: &str, issue: &str) -> ItemRef {
+    ItemRef {
+        repository: str_at(payload, &format!("/{repository}/full_name")).to_owned(),
+        number: payload[issue]["number"].as_u64().expect("an issue number"),
+    }
+}
+
+/// Checks a recorded `issue_dependencies` delivery whose subject is the issue at `subject`:
+/// both sides, the subject, the author party, the attributes and the summary.
+fn assert_recorded_link(
+    action: &str,
+    subject_issue: &str,
+    blocked_repo: &str,
+    blocking_repo: &str,
+) {
+    let (out, payload) = recorded(
+        "issue_dependencies",
+        &format!("issue_dependencies.{action}"),
+    );
+    let event = &out.event;
+    assert_eq!(str_at(&payload, "/action"), action);
+    assert_eq!(
+        dependency(event),
+        &IssueDependency {
+            blocked: Some(item_ref(&payload, blocked_repo, "blocked_issue")),
+            blocking: Some(item_ref(&payload, blocking_repo, "blocking_issue")),
+        }
+    );
+
+    let subject = event.subject.as_ref().expect("a subject");
+    let number = payload[subject_issue]["number"].as_u64().unwrap();
+    assert_eq!(subject.item_kind(), ItemKind::Issue);
+    assert_eq!(
+        subject.repository,
+        str_at(&payload, "/repository/full_name")
+    );
+    assert_eq!(subject.number, number);
+    assert_eq!(
+        subject.url,
+        str_at(&payload, &format!("/{subject_issue}/html_url"))
+    );
+    assert_eq!(
+        subject.title.as_ref().expect("a title").text,
+        str_at(&payload, &format!("/{subject_issue}/title"))
+    );
+    assert_eq!(
+        roles(event, "author"),
+        [str_at(&payload, &format!("/{subject_issue}/user/login"))]
+    );
+
+    assert_eq!(event.attributes["event"], "issue_dependencies");
+    assert_eq!(event.attributes["action"], action);
+    assert_eq!(webhook(event).action, action);
+    assert!(webhook(event).body.is_none());
+    assert!(
+        event.summary.ends_with(&format!(
+            "#{number} by {}",
+            str_at(&payload, "/sender/login")
+        )),
+        "{}",
+        event.summary
+    );
+}
+
+#[test]
+fn blocked_by_added_names_both_sides() {
+    assert_recorded_link(
+        "blocked_by_added",
+        "blocked_issue",
+        "repository",
+        "blocking_issue_repo",
+    );
+}
+
+#[test]
+fn blocking_added_names_both_sides() {
+    assert_recorded_link(
+        "blocking_added",
+        "blocking_issue",
+        "blocked_issue_repo",
+        "repository",
+    );
+}
+
+#[test]
+fn removed_actions_map_like_added() {
+    for (added, removed) in [
+        ("blocked_by_added", "blocked_by_removed"),
+        ("blocking_added", "blocking_removed"),
+    ] {
+        let payload = json_of(&fixture(&format!("issue_dependencies.{added}")));
+        let mut changed = payload.clone();
+        changed["action"] = json!(removed);
+        let added_event = run_value("issue_dependencies", &payload).event;
+        let removed_event = run_value("issue_dependencies", &changed).event;
+        assert_eq!(dependency(&removed_event), dependency(&added_event));
+        assert_eq!(removed_event.subject, added_event.subject);
+        assert_eq!(removed_event.parties, added_event.parties);
+        assert_eq!(removed_event.attributes["action"], removed);
+        assert_eq!(webhook(&removed_event).action, removed);
+    }
+}
+
+#[test]
+fn cross_repository_link_names_both_repositories() {
+    let issue = |number: u64| json!({"number": number, "title": "An issue", "user": {"login": "contributor-1"}});
+    let payload = json!({
+        "action": "blocked_by_added",
+        "blocked_issue": issue(5),
+        "blocking_issue": issue(9),
+        "blocking_issue_repo": {"full_name": "other/repo"},
+        "repository": {"full_name": "owner/name"},
+        "sender": {"login": "contributor-1", "type": "User"},
+    });
+    let out = run_value("issue_dependencies", &payload).event;
+    let item = |repository: &str, number: u64| ItemRef {
+        repository: repository.to_owned(),
+        number,
+    };
+    assert_eq!(
+        dependency(&out),
+        &IssueDependency {
+            blocked: Some(item("owner/name", 5)),
+            blocking: Some(item("other/repo", 9)),
+        }
+    );
+    let subject = out.subject.as_ref().unwrap();
+    assert_eq!(
+        (subject.repository.as_str(), subject.number),
+        ("owner/name", 5)
+    );
+}
+
+#[test]
+fn one_sided_blocking_added_leaves_blocked_unset() {
+    let mut payload = json_of(&fixture("issue_dependencies.blocking_added"));
+    let object = payload.as_object_mut().unwrap();
+    for key in ["blocked_issue", "blocked_issue_id", "blocked_issue_repo"] {
+        assert!(object.remove(key).is_some(), "the recording has {key}");
+    }
+    let out = run_value("issue_dependencies", &payload).event;
+    let dependency = dependency(&out);
+    assert_eq!(dependency.blocked, None);
+    assert_eq!(
+        dependency.blocking,
+        Some(item_ref(&payload, "repository", "blocking_issue"))
+    );
+    assert_eq!(
+        out.subject.as_ref().unwrap().number,
+        payload["blocking_issue"]["number"].as_u64().unwrap()
+    );
+}
+
+#[test]
+fn other_events_have_no_dependency() {
+    for (event, name) in [
+        ("issue_comment", "issue_comment.created"),
+        ("issues", "issues.labeled"),
+        ("pull_request", "pull_request.assigned"),
+        ("pull_request", "pull_request.closed"),
+        (
+            "pull_request_review",
+            "pull_request_review.submitted.approved",
+        ),
+        (
+            "pull_request_review",
+            "pull_request_review.submitted.commented",
+        ),
+        ("check_suite", "check_suite.completed"),
+        ("push", "push"),
+    ] {
+        let (out, _) = recorded(event, name);
+        assert_eq!(webhook(&out.event).dependency, None, "{name}");
+    }
 }
 
 #[test]

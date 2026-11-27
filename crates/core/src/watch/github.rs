@@ -3,7 +3,9 @@
 //! [`normalise`] turns one verified GitHub delivery into a [`v1::WatchEvent`] whose body is a
 //! complete [`v1::GitHubWebhook`], and hands the raw body back beside it for the store. Every
 //! GitHub-written string travels as [`v1::UntrustedText`]; the summary is built only from
-//! structured fields. [`Senders`] says who the sender is.
+//! structured fields. An `issue_dependencies` delivery is about the issue in its `repository`,
+//! and its [`v1::IssueDependency`] names the blocked and the blocking issue with their
+//! repositories. [`Senders`] says who the sender is.
 
 use std::collections::HashMap;
 
@@ -107,7 +109,7 @@ pub fn normalise(
     let action = text_at(payload.get("action"))
         .unwrap_or_default()
         .to_owned();
-    let item = Item::of(payload);
+    let item = Item::of(event, &action, payload);
     let subject = v1::Subject {
         repository: payload
             .get("repository")
@@ -142,6 +144,7 @@ pub fn normalise(
             .map(untrusted),
         detail: detail(event, &action, payload),
         payload: Vec::new(),
+        dependency: dependency(event, payload),
     };
 
     let event = v1::WatchEvent {
@@ -170,16 +173,29 @@ struct Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    /// `pull_request`, else `issue`: a pull request for the first and for an issue that has a
-    /// `pull_request` key, otherwise an issue. With neither, no item and kind NONE.
-    fn of(payload: &'a Map<String, Value>) -> Self {
+    /// `pull_request`, else `issue`, else, for an `issue_dependencies` delivery, the issue on the
+    /// repository's side: `blocked_issue` for a `blocked_by_*` action and `blocking_issue` for a
+    /// `blocking_*` one. A pull request for `pull_request` and for an issue that has a
+    /// `pull_request` key, otherwise an issue. With none, no item and kind NONE.
+    fn of(event: &str, action: &str, payload: &'a Map<String, Value>) -> Self {
         if let Some(object) = payload.get("pull_request").and_then(Value::as_object) {
             return Self {
                 object: Some(object),
                 kind: v1::ItemKind::PullRequest,
             };
         }
-        match payload.get("issue").and_then(Value::as_object) {
+        let side = if payload.contains_key("issue") {
+            Some("issue")
+        } else if event != "issue_dependencies" {
+            None
+        } else if action.starts_with("blocked_by_") {
+            Some("blocked_issue")
+        } else if action.starts_with("blocking_") {
+            Some("blocking_issue")
+        } else {
+            None
+        };
+        match side.and_then(|key| payload.get(key)?.as_object()) {
             Some(object) => Self {
                 object: Some(object),
                 kind: if object.contains_key("pull_request") {
@@ -194,6 +210,29 @@ impl<'a> Item<'a> {
             },
         }
     }
+}
+
+/// For an `issue_dependencies` delivery, both sides of the link, each set only when the payload
+/// names its issue's number. A side's repository is its `<side>_repo` object's `full_name` when
+/// the payload has one, otherwise the delivery's `repository`.
+fn dependency(event: &str, payload: &Map<String, Value>) -> Option<v1::IssueDependency> {
+    if event != "issue_dependencies" {
+        return None;
+    }
+    let side = |issue: &str, repo: &str| {
+        let number = payload.get(issue)?.get("number")?.as_u64()?;
+        let repository = text_at(payload.get(repo).and_then(|r| r.get("full_name")))
+            .or_else(|| text_at(payload.get("repository").and_then(|r| r.get("full_name"))))
+            .unwrap_or_default();
+        Some(v1::ItemRef {
+            repository: repository.to_owned(),
+            number,
+        })
+    };
+    Some(v1::IssueDependency {
+        blocked: side("blocked_issue", "blocked_issue_repo"),
+        blocking: side("blocking_issue", "blocking_issue_repo"),
+    })
 }
 
 /// The string at `value`, when it is one.
