@@ -10,7 +10,7 @@ While a tool exists both as a Python script here and as a Rust command, the two 
 - Rust's wording is the reference. Where the two differ, the Python script takes the Rust text.
 - Once the tool's gate lands, its self-test runs against either implementation. Unset, it runs the Python script; with `MSW_IMPL=rust` and `MSW_RUST_BIN=<path of mintswarm-runner>`, it runs `<path> tool <name>`. Any other `MSW_IMPL`, or a `MSW_RUST_BIN` that is not an executable file, exits 2.
 - The gate is the self-test's gate name followed by `-rust` in `gates.run`, so one gate can serve two tools. It builds `mintswarm-runner` into `build/target` and runs the self-test with the switch on. Only tools whose gate is named in the table below have one.
-- Under the switch, a case or wording that only the Python has is skipped, and the self-test prints the Rust test that mirrors it: `skip <check>: under Rust, <test> in <path> covers it`. The self-test fails unless that `#[test]` fn exists in that file.
+- Under the switch, a case or wording that only the Python has is skipped, and the self-test prints the Rust test that mirrors it: `skip <check>: under Rust, <test> in <path> covers it`, or `skip <check>: under Rust, <test> and <test> in <path> cover it` when two tests in one file mirror it. The self-test fails unless each named `#[test]` fn exists in that file.
 - Once that gate passes, the session moves from the Python script to `mintswarm-runner tool <name>` (#410).
 
 Ported tools:
