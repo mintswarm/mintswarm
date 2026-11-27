@@ -1,0 +1,32 @@
+{
+  "issues": {
+    "71": { "user": { "login": "alice", "type": "User" } },
+    "72": { "user": { "login": "dave", "type": "User" } },
+    "73": { "user": { "login": "mintswarm-dev[bot]", "type": "Bot" }, "parent": 74 },
+    "74": { "user": { "login": "helper", "type": "Bot" }, "parent": 75 },
+    "75": { "user": { "login": "erin", "type": "User" } },
+    "76": { "user": { "login": "mintswarm-dev[bot]", "type": "Bot" } },
+    "77": { "user": { "login": "mintswarm-dev[bot]", "type": "Bot" }, "parent": 78 },
+    "78": { "user": { "login": "other[bot]", "type": "User" }, "parent": 77 },
+    "80": { "user": { "login": "mintswarm-dev[bot]", "type": "Bot" }, "parent": 81 },
+    "81": { "user": { "login": "not_a_login", "type": "User" } },
+    "82": { "user": { "login": "mintswarm-dev[bot]", "type": "Bot" }, "parent": 83 },
+    "83": { "user": null, "parent": 84 },
+    "84": { "user": { "login": "alice", "type": "User" } },
+    "85": { "user": { "login": "relay[bot]", "type": "User" }, "author_is_bot": false, "parent": 86 },
+    "86": { "user": { "login": "dave", "type": "User" } }
+  },
+  "cases": [
+    { "start": 71, "owner": "alice", "from": 71 },
+    { "start": 72, "owner": "dave", "from": 72 },
+    { "start": 73, "owner": "erin", "from": 75 },
+    { "start": 74, "owner": "erin", "from": 75 },
+    { "start": 75, "owner": "erin", "from": 75 },
+    { "start": 76, "error": "no_person_ancestor" },
+    { "start": 77, "error": "loop", "at": 77 },
+    { "start": 78, "error": "loop", "at": 78 },
+    { "start": 80, "error": "invalid_login", "from": 81 },
+    { "start": 82, "owner": "alice", "from": 84, "fake": false },
+    { "start": 85, "owner": "dave", "from": 86 }
+  ]
+}
