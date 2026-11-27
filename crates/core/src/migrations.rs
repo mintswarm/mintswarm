@@ -1,9 +1,11 @@
 //! The Postgres migration tree under `crates/core/migrations/`: its check, the list the build
-//! embeds, minting a new migration's version, and the lexical reading of its SQL.
+//! embeds, minting a new migration's version, the lexical reading of its SQL, and the interim
+//! narrowing rule.
 //!
 //! The directory is the only source of the tree. The build script checks it with [`validate`]
 //! and embeds each file's path and bytes, and [`embedded_tree`] runs the same check on them.
 
+pub mod narrowing;
 pub mod sql;
 mod tree;
 
