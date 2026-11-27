@@ -4,9 +4,9 @@
 //! The lexer removes comments, blanks string literals and leaves dollar-quoted bodies unread,
 //! so nothing inside them is ever seen as SQL. It splits only on a `;` outside all of these, and
 //! fails closed on text it cannot split safely: a `;` inside parentheses, a `BEGIN ATOMIC` body,
-//! and any mention of `standard_conforming_strings`, `set_config` or `pg_settings`, since the
-//! lexer assumes the setting is on. Whitespace
-//! and identifier characters are Postgres's own classes. This file uses `std` only.
+//! any mention of `standard_conforming_strings`, `set_config` or `pg_settings`, and a `SET`,
+//! `RESET` or `DISCARD` of all but a few settings, since the lexer assumes the session's defaults.
+//! Whitespace and identifier characters are Postgres's own classes. This file uses `std` only.
 
 use std::error::Error;
 use std::fmt;
@@ -76,10 +76,11 @@ pub enum LexError {
         /// The line of the `;`.
         line: usize,
     },
-    /// A mention of `standard_conforming_strings`, `set_config` or `pg_settings`, through which
-    /// the setting could change and plain literals read differently from how the lexer reads them.
-    StandardConformingStrings {
-        /// The line of the mention.
+    /// A `SET`, `RESET` or `DISCARD` of all but a few settings, or a mention of `set_config`,
+    /// `pg_settings` or `standard_conforming_strings`, which could make Postgres read text or names
+    /// differently from the lexer and the reader.
+    SessionSetting {
+        /// The line of the statement or the mention.
         line: usize,
     },
     /// A `U&"…"` identifier with a backslash or followed by `UESCAPE`, whose escapes the lexer
@@ -100,7 +101,7 @@ impl LexError {
             | Self::UnterminatedDollarQuote { line }
             | Self::AtomicBody { line }
             | Self::SemicolonInParentheses { line }
-            | Self::StandardConformingStrings { line }
+            | Self::SessionSetting { line }
             | Self::UnicodeEscapes { line } => *line,
         }
     }
@@ -129,9 +130,9 @@ impl fmt::Display for LexError {
                 f,
                 "line {line}: a `;` inside parentheses cannot be split lexically; use one statement per action"
             ),
-            Self::StandardConformingStrings { line } => write!(
+            Self::SessionSetting { line } => write!(
                 f,
-                "line {line}: standard_conforming_strings must stay on, so a migration names neither it, set_config nor pg_settings"
+                "line {line}: the session settings must stay as they are, so a migration sets only lock_timeout, statement_timeout or constraints, and names neither standard_conforming_strings, set_config nor pg_settings"
             ),
             Self::UnicodeEscapes { line } => write!(
                 f,
@@ -149,7 +150,7 @@ pub enum Kind {
     /// Anything that is neither data nor a grant: schema changes and unknown statements.
     Ddl,
     /// `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, `SELECT`, `WITH`, `DO` or `CALL`, except a
-    /// `SELECT` or `WITH` that creates a table with `INTO`.
+    /// `SELECT` or `WITH` that creates a table with `INTO`, and one that [`writes_catalog`].
     Data,
     /// `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`, `CREATE SCHEMA` with a grant or revoke
     /// among its elements, any `CREATE ROLE`, `USER` or `GROUP` (a user mapping included), and
@@ -162,6 +163,27 @@ const DATA: &[&str] = &[
     "insert", "update", "delete", "merge", "copy", "select", "with", "do", "call",
 ];
 
+/// The settings a migration may `SET` or `RESET`: none changes how text is read or where a name is.
+const HARMLESS_SETTINGS: &[&str] = &["lock_timeout", "statement_timeout", "constraints"];
+
+/// The word at `at`, if the token there is one.
+pub(super) fn word_at(tokens: &[Token], at: usize) -> Option<&str> {
+    match tokens.get(at) {
+        Some(Token::Word(word)) => Some(word.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether a statement may write a system catalog: an `INSERT`, `UPDATE`, `DELETE`, `MERGE`,
+/// `COPY` or `WITH` that names anything starting with `pg_`, `pg_catalog` included.
+pub fn writes_catalog(statement: &Statement) -> bool {
+    let writes = ["insert", "update", "delete", "merge", "copy", "with"];
+    word_at(&statement.tokens, 0).is_some_and(|first| writes.contains(&first))
+        && statement.tokens.iter().any(|token| {
+            matches!(token, Token::Word(name) | Token::Quoted(name) if name.starts_with("pg_"))
+        })
+}
+
 /// Classifies a statement by its leading keywords. Data and grants are closed lists, so anything
 /// else, an unknown keyword included, is DDL.
 ///
@@ -173,10 +195,7 @@ const DATA: &[&str] = &[
 /// cannot be unquoted names.
 pub fn classify(statement: &Statement) -> Kind {
     let tokens = &statement.tokens;
-    let word = |at: usize| match tokens.get(at) {
-        Some(Token::Word(word)) => Some(word.as_str()),
-        _ => None,
-    };
+    let word = |at: usize| word_at(tokens, at);
     let any = |found: &dyn Fn(usize, &str) -> bool| {
         (0..tokens.len()).any(|at| word(at).is_some_and(|next| found(at, next)))
     };
@@ -209,7 +228,7 @@ pub fn classify(statement: &Statement) -> Kind {
     match word(0) {
         Some("select") if any(&|_, next| next == "into") => Kind::Ddl,
         Some("with") if any(&|at, next| next == "into" && !exempt(at)) => Kind::Ddl,
-        Some(first) if DATA.contains(&first) => Kind::Data,
+        Some(first) if DATA.contains(&first) && !writes_catalog(statement) => Kind::Data,
         Some("create")
             if word(1) == Some("schema") && any(&|_, next| matches!(next, "grant" | "revoke")) =>
         {
@@ -232,7 +251,8 @@ pub fn classify(statement: &Statement) -> Kind {
 }
 
 /// Splits a file's text into its statements, in order. Empty statements are dropped, and text
-/// after the last `;` is a statement.
+/// after the last `;` is a statement. A `SET`, `RESET` or `DISCARD` statement of a setting not in
+/// [`HARMLESS_SETTINGS`] is refused; a function's `SET` clause is no statement of its own.
 pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
     let mut lexer = Lexer {
         chars: text.chars().collect(),
@@ -261,7 +281,15 @@ pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
         current.push(token, &raw, line, gap)?;
     }
     current.finish(&mut statements);
-    Ok(statements)
+    let changes = |statement: &&Statement| {
+        let word = |at: usize| word_at(&statement.tokens, at).unwrap_or_default();
+        let target = word(1 + usize::from(matches!(word(1), "session" | "local")));
+        matches!(word(0), "set" | "reset" | "discard") && !HARMLESS_SETTINGS.contains(&target)
+    };
+    match statements.iter().find(changes) {
+        Some(set) => Err(LexError::SessionSetting { line: set.line }),
+        None => Ok(statements),
+    }
 }
 
 /// The statement being read.
@@ -288,7 +316,7 @@ impl Building {
                 .iter()
                 .any(|name| word.eq_ignore_ascii_case(name)))
         {
-            return Err(LexError::StandardConformingStrings { line });
+            return Err(LexError::SessionSetting { line });
         }
         match token {
             Token::Symbol('(') => self.depth += 1,
@@ -335,10 +363,10 @@ impl Lexer {
         self.chars.get(self.at + ahead).copied()
     }
 
-    /// Moves past one character, counting a newline.
+    /// Moves past one character, counting a line end: `\n`, or a `\r` not followed by one.
     fn bump(&mut self) -> Option<char> {
         let next = self.peek(0)?;
-        if next == '\n' {
+        if next == '\n' || (next == '\r' && self.peek(1) != Some('\n')) {
             self.line += 1;
         }
         self.at += 1;
@@ -351,7 +379,8 @@ impl Lexer {
         }
     }
 
-    /// Skips whitespace and comments, and says whether there were any.
+    /// Skips whitespace and comments, a line comment ending at `\n` or `\r` as in Postgres, and
+    /// says whether there were any.
     fn skip_gap(&mut self) -> Result<bool, LexError> {
         let mut gap = false;
         loop {
@@ -360,7 +389,10 @@ impl Lexer {
                     self.bump();
                 }
                 (Some('-'), Some('-')) => {
-                    while self.peek(0).is_some_and(|next| next != '\n') {
+                    while self
+                        .peek(0)
+                        .is_some_and(|next| next != '\n' && next != '\r')
+                    {
                         self.bump();
                     }
                 }

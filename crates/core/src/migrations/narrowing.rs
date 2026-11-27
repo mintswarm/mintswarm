@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::SCHEMA;
-use super::sql::{LexError, Statement, Token, split};
+use super::sql::{LexError, Statement, Token, split, word_at, writes_catalog};
 
 /// A schema-qualified name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,9 +65,9 @@ pub enum Object {
     Schema(String),
     /// An extension, whose drop or move reaches its functions and types.
     Extension(String),
-    /// The objects a `DROP OWNED`, or a `CASCADE` drop of a class not read here, drops without
-    /// naming them, by the statement's leading words. Nothing creates it, so its narrowing is
-    /// always refused.
+    /// The objects a `DROP OWNED`, a `CASCADE` drop of a class not read here, or a write to a
+    /// system catalog reaches without naming them, by the statement's leading words. Nothing
+    /// creates it, so its narrowing is always refused.
     Dependants(String),
 }
 
@@ -81,7 +81,7 @@ impl fmt::Display for Object {
             Self::Function(name) => write!(f, "function {name}"),
             Self::Schema(name) => write!(f, "schema {name}"),
             Self::Extension(name) => write!(f, "extension {name}"),
-            Self::Dependants(drop) => write!(f, "the objects {drop} drops"),
+            Self::Dependants(drop) => write!(f, "the objects {drop} reaches"),
         }
     }
 }
@@ -111,6 +111,9 @@ pub enum Narrowing {
     EnumValueRename,
     /// An added, dropped, altered or renamed attribute of a composite type.
     AttributeChange,
+    /// A change not read here, so taken as narrowing: a write to a system catalog, or an added
+    /// table constraint of an unknown kind, such as a table-level `NOT NULL`.
+    Unread,
 }
 
 impl fmt::Display for Narrowing {
@@ -127,6 +130,7 @@ impl fmt::Display for Narrowing {
             Self::DomainConstraint => "domain constraint",
             Self::EnumValueRename => "enum value rename",
             Self::AttributeChange => "attribute change",
+            Self::Unread => "change not read lexically",
         })
     }
 }
@@ -159,6 +163,8 @@ pub struct Reading {
     pub advisories: Vec<(Advisory, Object)>,
     /// Each object the statement creates.
     pub creates: Vec<Object>,
+    /// Whether it is a temporary create, which creates nothing here but can shadow any name.
+    pub temporary: bool,
 }
 
 impl Reading {
@@ -172,12 +178,15 @@ impl Reading {
     }
 }
 
-/// Reads one statement. Data statements, grants, comments and forms off the procedure's list
-/// give nothing.
+/// Reads one statement. Data statements other than a write to a system catalog, grants, comments
+/// and forms off the procedure's list give nothing.
 pub fn read(statement: &Statement) -> Reading {
     let mut reading = Reading::default();
     let mut cursor = Cursor::new(&statement.tokens);
-    if cursor.eat("drop") {
+    if writes_catalog(statement) {
+        let first = cursor.ident().unwrap_or_default().to_uppercase();
+        reading.narrows(Narrowing::Unread, Object::Dependants(first));
+    } else if cursor.eat("drop") {
         read_drop(&mut cursor, &mut reading);
     } else if cursor.eat("alter") {
         read_alter(&mut cursor, &mut reading);
@@ -262,9 +271,9 @@ fn read_drop(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     }
 }
 
-/// `ALTER TABLE`, `FOREIGN TABLE`, `VIEW`, `MATERIALIZED VIEW`, `SEQUENCE`, `TYPE`, `DOMAIN`,
-/// `FUNCTION`, `PROCEDURE`, `ROUTINE`, `AGGREGATE`, `EXTENSION` or `SCHEMA`; other alters give
-/// nothing.
+/// `ALTER TABLE`, `FOREIGN TABLE`, `VIEW`, `MATERIALIZED VIEW`, `SEQUENCE`, `INDEX` (whose
+/// `RENAME` Postgres applies to any relation), `TYPE`, `DOMAIN`, `FUNCTION`, `PROCEDURE`,
+/// `ROUTINE`, `AGGREGATE`, `EXTENSION` or `SCHEMA`; other alters give nothing.
 fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     if cursor.eat("table") || cursor.eat_all(&["foreign", "table"]) {
         cursor.eat_all(&["if", "exists"]);
@@ -278,6 +287,7 @@ fn read_alter(cursor: &mut Cursor<'_>, reading: &mut Reading) {
         }
     } else if cursor.eat("view")
         || cursor.eat("sequence")
+        || cursor.eat("index")
         || cursor.eat_all(&["materialized", "view"])
     {
         cursor.eat_all(&["if", "exists"]);
@@ -372,8 +382,8 @@ fn rename_or_move(relation: &Name, cursor: &mut Cursor<'_>, reading: &mut Readin
     }
 }
 
-/// The keywords that start a table constraint.
-const CONSTRAINT_STARTS: &[&str] = &["unique", "primary", "exclude", "check", "foreign"];
+/// The keywords that start a table constraint, a table-level `NOT NULL` included.
+const CONSTRAINT_STARTS: &[&str] = &["unique", "primary", "exclude", "check", "foreign", "not"];
 
 /// `ALTER TABLE … ADD`, after `ADD`: a table constraint or a column.
 fn add_action(table: &Name, cursor: &mut Cursor<'_>, reading: &mut Reading) {
@@ -400,18 +410,16 @@ fn add_action(table: &Name, cursor: &mut Cursor<'_>, reading: &mut Reading) {
     let mut default = false;
     let mut depth = 0usize;
     let rest = cursor.rest();
-    let word_at = |at: usize| match rest.get(at) {
-        Some(Token::Word(word)) => Some(word.as_str()),
-        _ => None,
-    };
+    let word_at = |at: usize| word_at(rest, at);
     for (at, token) in rest.iter().enumerate() {
         match token {
             Token::Symbol('(') => depth += 1,
             Token::Symbol(')') => depth = depth.saturating_sub(1),
             Token::Word(word) if depth == 0 => match word.as_str() {
                 "not" if word_at(at + 1) == Some("null") => not_null = true,
-                // `SET DEFAULT` is a foreign key's referential action, not a column default.
-                "default" if at > 0 && word_at(at - 1) == Some("set") => {}
+                // `SET DEFAULT`, a referential action, and `DEFAULT NULL` are no column default.
+                "default" if word_at(at.wrapping_sub(1)) == Some("set") => {}
+                "default" if word_at(at + 1) == Some("null") => {}
                 "default" | "generated" => default = true,
                 "unique" | "primary" => {
                     reading.narrows(Narrowing::UniqueConstraint, Object::Relation(table.clone()));
@@ -440,6 +448,8 @@ fn table_constraint(table: &Name, cursor: &mut Cursor<'_>, reading: &mut Reading
         reading.advises(Advisory::Check, table);
     } else if cursor.is("foreign") {
         reading.advises(Advisory::ForeignKey, table);
+    } else {
+        reading.narrows(Narrowing::Unread, Object::Relation(table.clone()));
     }
 }
 
@@ -488,30 +498,33 @@ const CREATE_MODIFIERS: &[&str] = &[
     "recursive",
 ];
 
-/// `CREATE [UNIQUE] INDEX`, or a create of a relation, type, function or schema.
+/// `CREATE [UNIQUE] INDEX`, whose named index is a created relation in its table's schema, or a
+/// create of a relation, type, function or schema. A temporary create creates nothing here.
 fn read_create(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     let or_replace = cursor.eat_all(&["or", "replace"]);
     let unique = cursor.eat("unique");
     if cursor.eat("index") {
-        if !unique {
-            return;
-        }
         cursor.eat("concurrently");
-        cursor.eat_all(&["if", "not", "exists"]);
-        if !cursor.eat("on") && (cursor.ident().is_none() || !cursor.eat("on")) {
-            return;
-        }
+        let if_not_exists = cursor.eat_all(&["if", "not", "exists"]);
+        let index = (!cursor.eat("on")).then(|| cursor.ident()).flatten();
+        cursor.eat("on");
         cursor.eat("only");
-        if let Some(table) = cursor.name() {
+        let Some(table) = cursor.name() else {
+            return;
+        };
+        if let Some(index) = index.filter(|_| !if_not_exists) {
+            let index = Name::new(&table.schema, &index);
+            reading.creates.push(Object::Relation(index));
+        }
+        if unique {
             reading.narrows(Narrowing::UniqueIndex, Object::Relation(table));
         }
         return;
     }
-    if unique {
-        return;
+    while let Some(word) = CREATE_MODIFIERS.iter().find(|word| cursor.eat(word)) {
+        reading.temporary |= word.starts_with("temp");
     }
-    while CREATE_MODIFIERS.iter().any(|word| cursor.eat(word)) {}
-    let Some(class) = class(cursor) else {
+    let Some(class) = class(cursor).filter(|_| !unique) else {
         return;
     };
     let if_not_exists = cursor.eat_all(&["if", "not", "exists"]);
@@ -521,6 +534,7 @@ fn read_create(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     if let Some(object) = target(cursor, class)
         && !or_replace
         && !if_not_exists
+        && !reading.temporary
     {
         reading.creates.push(object);
     }
@@ -742,10 +756,11 @@ impl Verdict {
 ///
 /// A narrowing is exempt when its object, or for a column or constraint the table or type that
 /// holds it, is created by an earlier statement of the list. A file that cannot be split is
-/// refused, and creates nothing for later files.
+/// refused, and creates nothing for later files. After a temporary create, nothing more counts as
+/// created, since an unqualified name, an index's or a view's included, may then be temporary.
 pub fn check(files: &[(&str, &str)]) -> Verdict {
     let mut verdict = Verdict::default();
-    let mut created = BTreeSet::new();
+    let (mut created, mut shadowed) = (BTreeSet::new(), false);
     for (file, text) in files {
         let statements = match split(text) {
             Ok(statements) => statements,
@@ -781,7 +796,10 @@ pub fn check(files: &[(&str, &str)]) -> Verdict {
                     });
                 }
             }
-            created.extend(reading.creates);
+            shadowed |= reading.temporary;
+            if !shadowed {
+                created.extend(reading.creates);
+            }
         }
     }
     verdict
