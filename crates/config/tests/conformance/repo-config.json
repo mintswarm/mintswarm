@@ -408,6 +408,10 @@
         "command": "python3 .mintswarm/dogfood/save-output-selftest.py"
       },
       {
+        "name": "save-output-selftest-rust",
+        "command": "cargo build --locked -p mintswarm-runner && MSW_IMPL=rust MSW_RUST_BIN=build/target/debug/mintswarm-runner python3 .mintswarm/dogfood/save-output-selftest.py"
+      },
+      {
         "name": "msw-vcs-selftest",
         "command": "python3 .mintswarm/dogfood/msw-vcs-selftest.py"
       },

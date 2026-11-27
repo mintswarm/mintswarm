@@ -1,0 +1,132 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "artefact": {
+      "type": "string"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "outputs": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "prTitle": {
+      "type": "string"
+    },
+    "questions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "QUESTION_KIND_MUST_DECIDE",
+              "QUESTION_KIND_RECOMMENDED",
+              "QUESTION_KIND_ASSUMPTION"
+            ],
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "consequence": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tradeOff": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "question": {
+            "type": "string"
+          },
+          "recommendation": {
+            "additionalProperties": false,
+            "properties": {
+              "answer": {
+                "type": "string"
+              },
+              "choice": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "references": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "QUESTION_REFERENCE_KIND_FILE",
+                    "QUESTION_REFERENCE_KIND_ARTEFACT",
+                    "QUESTION_REFERENCE_KIND_TICKET",
+                    "QUESTION_REFERENCE_KIND_DESIGN",
+                    "QUESTION_REFERENCE_KIND_ANSWER",
+                    "QUESTION_REFERENCE_KIND_URL"
+                  ],
+                  "type": "string"
+                },
+                "lines": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "shape": {
+            "enum": [
+              "QUESTION_SHAPE_ONE",
+              "QUESTION_SHAPE_SEVERAL",
+              "QUESTION_SHAPE_YES_NO",
+              "QUESTION_SHAPE_OPEN"
+            ],
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "STAGE_STATUS_COMPLETE",
+        "STAGE_STATUS_NEEDS_INPUT",
+        "STAGE_STATUS_FAILED"
+      ],
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
