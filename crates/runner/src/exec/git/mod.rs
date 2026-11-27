@@ -1,6 +1,6 @@
 //! The git VCS adapter, design §8: the trusted bare store, the neutral git environment, fetch,
 //! the read operations and commit records, read-only snapshots and the plan floor's input
-//! bundle, on the git command-line tool.
+//! bundle, and the plan floor's fresh object store, on the git command-line tool.
 //!
 //! Every git command runs through [`GitStore`]'s command builder, which applies the neutral
 //! environment; nothing else in this module starts git.
@@ -10,6 +10,7 @@ mod commits;
 mod diff;
 mod env;
 mod fetch;
+mod fresh_store;
 mod read;
 mod retry;
 mod snapshot;
@@ -30,6 +31,7 @@ use mintswarm_domain::vcs::{
 
 pub use bundle::{BundleError, Documents, plan_floor_bundle};
 pub use diff::{DIFF_OPTIONS, PATCH_OPTIONS, PINNED_OPTIONS};
+pub use fresh_store::{FreshStore, FreshStoreError, STORE_PREFIX};
 pub use retry::{FetchFailure, UnrecognisedFailure};
 pub use snapshot::{Snapshots, snapshots_path};
 pub use store::{Checkout, GIT_REQUIREMENT, store_path};

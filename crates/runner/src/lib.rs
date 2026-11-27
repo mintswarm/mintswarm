@@ -5,7 +5,8 @@
 //! per-attempt tool directory that serves `msw-vcs` to a stage, `exec::tools`, the stage
 //! definitions rendered from the trusted store, `harness::render`, and the ported dogfood tools
 //! behind `mintswarm-runner tool <name>`: [`tool::save_output`], the port of `save-output.py`,
-//! and [`tool::msw_vcs`], the port of the `msw-vcs` shim.
+//! [`tool::msw_vcs`], the port of the `msw-vcs` shim, and [`tool::plan_floor`] and
+//! [`tool::plan_decision`], the ports of `plan-approval/floor.py` and `decision.py`.
 
 /// What stays on the runner whoever owns the job loop.
 pub mod exec {

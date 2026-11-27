@@ -204,7 +204,7 @@ impl GitStore {
     }
 
     /// The first setting that makes the store a partial clone, as `landing/floor.py` reads them.
-    fn promisor_key(&self) -> Result<Option<String>, GitError> {
+    pub(super) fn promisor_key(&self) -> Result<Option<String>, GitError> {
         let out = self.git(["config", "--list", "-z"])?;
         for entry in out.split(|&byte| byte == 0) {
             let entry = String::from_utf8_lossy(entry);
@@ -243,8 +243,8 @@ impl GitStore {
         self.retry = policy;
     }
 
-    /// Allow `file://` remotes: the test-only remote.
-    #[cfg(test)]
+    /// Allow `file://` remotes: the tests' remote, and the job repository a [`super::FreshStore`]
+    /// fetches from.
     pub(crate) fn allow_file_remote(&mut self) {
         self.allow_file = true;
     }
