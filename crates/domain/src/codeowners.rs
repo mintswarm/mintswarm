@@ -22,7 +22,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tracker::Login;
+use crate::tracker::{self, Login};
 
 /// A team, `@org/slug`, stored in lower case.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -328,7 +328,7 @@ fn is_login(s: &str) -> bool {
 fn is_bot_login(s: &str) -> bool {
     s.len() > 5
         && s.is_char_boundary(s.len() - 5)
-        && s[s.len() - 5..].eq_ignore_ascii_case("[bot]")
+        && tracker::is_bot(s, None)
         && is_login(&s[..s.len() - 5])
 }
 
