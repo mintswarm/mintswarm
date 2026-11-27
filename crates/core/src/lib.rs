@@ -4,6 +4,7 @@
 pub mod approvals;
 pub mod migrations;
 pub mod state_sync;
+pub mod steward;
 pub mod testing;
 pub mod tracker;
 pub mod watch;
