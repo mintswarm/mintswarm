@@ -76,6 +76,22 @@ pub mod watch {
     }
 }
 
+/// The `mintswarm.auth.v1` package.
+pub mod auth {
+    /// Version 1 of the authentication contract (design #634, §13): the
+    /// availability types, `ActionAvailability` with `ActionKind`,
+    /// `AvailabilityState` and `AvailabilityReason` (`availability.proto`);
+    /// and `AuthService`, its messages, `ClientKind` and `LinkState`
+    /// (`auth.proto`), with the generated tonic client and server. Its
+    /// secrets are `common::v1::Secret`.
+    ///
+    /// Like every client in this crate, the client has no `connect(dst)`
+    /// constructor: build one with `AuthServiceClient::new(channel)`.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.auth.v1");
+    }
+}
+
 /// The receive checks: each received `runner/v1` message, and a stage's
 /// `StageResult`, is accepted or refused with a typed error naming the
 /// message, the field and the rule.

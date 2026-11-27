@@ -1,0 +1,400 @@
+syntax = "proto3";
+
+package mintswarm.auth.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "mintswarm/common/v1/secret.proto";
+
+// Logging in to the control plane, its sessions, and the GitHub link
+// (design #634, §6 to §8 and §13), for the CLI and the console MCP over
+// gRPC.
+//
+// Adding RPCs, fields or enum values is a minor change. A breaking change
+// gets a `v2/` package beside this one.
+//
+// Only the RPCs that return no `Secret` and start no browser flow carry a
+// `google.api.http` annotation, so that the transcoder serves them over HTTP
+// (S2): `ListProviders`, `GetSession`, `ListSessions`, `RevokeSession`,
+// `Unlink` and `GetLink`. The others are gRPC only.
+//
+// A session is presented as `authorization: Bearer <token>`. Every RPC except
+// `ListProviders` and the login RPCs (`BeginLogin`, `PollDeviceLogin` and
+// `CompleteLogin`) returns `UNAUTHENTICATED` for an unknown, expired, revoked
+// or no longer admitted session (§8.1). Every RPC returns `UNAVAILABLE` when
+// the server is shutting down or its database is unreachable.
+service AuthService {
+  // Lists the login providers the plane offers. Needs no session.
+  //
+  // Errors: `UNAVAILABLE` only.
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse) {
+    option (google.api.http) = {get: "/v1/auth/providers"};
+  }
+
+  // Starts a login with a provider: a redirect to open in a browser, a
+  // device challenge, or a sign that credentials are expected.
+  //
+  // Errors: `INVALID_ARGUMENT` for an unknown provider, or for a
+  // `client_kind` of `web` or unspecified, since browsers start flows at the
+  // edge (§7.1).
+  rpc BeginLogin(BeginLoginRequest) returns (BeginLoginResponse);
+
+  // Polls a device-flow login with its handle: pending, or the session.
+  //
+  // Errors: `NOT_FOUND` for an unknown or expired handle;
+  // `PERMISSION_DENIED` when the person denied the authorisation or failed
+  // admission (§6).
+  rpc PollDeviceLogin(PollDeviceLoginRequest) returns (PollDeviceLoginResponse);
+
+  // Completes a login with a provider's credentials: a static token, or the
+  // loopback redirect of a redirect login.
+  //
+  // Errors: `INVALID_ARGUMENT` for an unknown provider, the wrong
+  // credentials case, or a `client_kind` of `web` or unspecified (§7.1);
+  // `UNAUTHENTICATED` for refused credentials; `PERMISSION_DENIED` for a
+  // failed admission (§6).
+  rpc CompleteLogin(CompleteLoginRequest) returns (CompleteLoginResponse);
+
+  // Returns the caller's session.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse) {
+    option (google.api.http) = {get: "/v1/auth/session"};
+  }
+
+  // Lists the caller's own sessions (§8.1).
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {get: "/v1/auth/sessions"};
+  }
+
+  // Revokes one of the caller's own sessions (§8.1).
+  //
+  // Errors: `NOT_FOUND` for an unknown session, or one that is not the
+  // caller's own.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse) {
+    option (google.api.http) = {post: "/v1/auth/sessions/{session_id}/revoke"};
+  }
+
+  // Ends the caller's session.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Starts linking the caller's identity to a GitHub account (§7.1): a
+  // redirect to open in a browser, or a device challenge. The CLI and the
+  // console MCP link through the `device` case (B4); the `redirect` case
+  // mirrors the login loopback form.
+  //
+  // Errors: `INVALID_ARGUMENT` for a `client_kind` of `web` or unspecified,
+  // since browsers start flows at the edge (§7.1); `FAILED_PRECONDITION`
+  // for a non-interactive session (§6).
+  rpc BeginLink(BeginLinkRequest) returns (BeginLinkResponse);
+
+  // Polls a device-flow link with its handle: pending, or the link.
+  //
+  // Errors: `NOT_FOUND` for an unknown or expired handle;
+  // `PERMISSION_DENIED` when the person denied the authorisation, or when
+  // the GitHub user id differs from the existing link's (§7.3);
+  // `ALREADY_EXISTS` when the GitHub account is linked to another identity
+  // (§7.1).
+  rpc PollDeviceLink(PollDeviceLinkRequest) returns (PollDeviceLinkResponse);
+
+  // Completes a link with the loopback redirect, for the `redirect` case of
+  // `BeginLink`; it mirrors the login loopback form.
+  //
+  // Errors: `PERMISSION_DENIED`, `ALREADY_EXISTS` and `FAILED_PRECONDITION`
+  // as for `PollDeviceLink` and `BeginLink`.
+  rpc CompleteLink(CompleteLinkRequest) returns (CompleteLinkResponse);
+
+  // Drops the caller's GitHub link (§7.1).
+  rpc Unlink(UnlinkRequest) returns (UnlinkResponse) {
+    option (google.api.http) = {delete: "/v1/auth/link"};
+  }
+
+  // Returns the caller's GitHub link: its state and login, never its tokens.
+  rpc GetLink(GetLinkRequest) returns (GetLinkResponse) {
+    option (google.api.http) = {get: "/v1/auth/link"};
+  }
+}
+
+// The kind of client a session serves (§5).
+enum ClientKind {
+  // Not set; never sent.
+  CLIENT_KIND_UNSPECIFIED = 0;
+  // The web UI, which signs in through the HTTP edge.
+  CLIENT_KIND_WEB = 1;
+  // The command-line client.
+  CLIENT_KIND_CLI = 2;
+  // The console MCP server.
+  CLIENT_KIND_CONSOLE_MCP = 3;
+}
+
+// The state of a GitHub link (§5).
+enum LinkState {
+  // Not set; never sent.
+  LINK_STATE_UNSPECIFIED = 0;
+  // The link works.
+  LINK_STATE_ACTIVE = 1;
+  // A refresh was refused, or a user-token call got a 401 (§8.3); the
+  // person links again.
+  LINK_STATE_REFRESH_FAILED = 2;
+  // GitHub revoked the authorisation (§8.4).
+  LINK_STATE_REVOKED = 3;
+}
+
+// A login provider the plane offers (§6).
+message Provider {
+  // The provider id, such as `github` or `oidc`.
+  string id = 1;
+  // The name to show.
+  string display_name = 2;
+}
+
+// A URL for the client to open in a browser, which returns to the client's
+// loopback address.
+message Redirect {
+  // The URL to open.
+  string url = 1;
+}
+
+// A device-flow challenge (§7.1).
+message DeviceChallenge {
+  // The code the person enters at the verification URL.
+  string user_code = 1;
+  // Where the person enters the code.
+  string verification_url = 2;
+  // How long the client waits between polls.
+  google.protobuf.Duration interval = 3;
+  // When the challenge expires.
+  google.protobuf.Timestamp expires_at = 4;
+  // The flow handle the client polls with, held by that client only.
+  mintswarm.common.v1.Secret handle = 5;
+}
+
+// The provider expects credentials, sent with `CompleteLogin`.
+message CredentialsExpected {}
+
+// The device flow is not finished yet; poll again after the interval.
+message DevicePending {}
+
+// What the browser brought back to the client's loopback address.
+message LoopbackRedirect {
+  // The single-use authorisation code.
+  mintswarm.common.v1.Secret code = 1;
+  // The `state` the redirect carried.
+  string state = 2;
+}
+
+// A new session: its token, returned once, and its limits (§8.1).
+message SessionGrant {
+  // The session's id.
+  string session_id = 1;
+  // The session token, sent as `authorization: Bearer <token>`.
+  mintswarm.common.v1.Secret token = 2;
+  // The session's absolute expiry.
+  google.protobuf.Timestamp expires_at = 3;
+  // How long the session may stay unused before it ends.
+  google.protobuf.Duration idle_limit = 4;
+}
+
+// A session, as its owner sees it (§5, §8.1).
+message Session {
+  // The session's id.
+  string id = 1;
+  // The provider id it logged in with.
+  string provider = 2;
+  // The client kind it serves.
+  ClientKind client_kind = 3;
+  // The requesting host, for device-flow sessions.
+  string host = 4;
+  // When it was created.
+  google.protobuf.Timestamp created_at = 5;
+  // When it was last used.
+  google.protobuf.Timestamp last_seen_at = 6;
+  // Its absolute expiry.
+  google.protobuf.Timestamp expires_at = 7;
+  // How long it may stay unused before it ends.
+  google.protobuf.Duration idle_limit = 8;
+  // False for token-provider sessions (§6).
+  bool interactive = 9;
+  // Whether it is the caller's own session.
+  bool current = 10;
+}
+
+// A GitHub link: its state and login, never its tokens (§5, §13).
+message Link {
+  // The link's state.
+  LinkState state = 1;
+  // The GitHub login.
+  string login = 2;
+  // The GitHub user id.
+  int64 github_user_id = 3;
+}
+
+// The `ListProviders` request.
+message ListProvidersRequest {}
+
+// The `ListProviders` response.
+message ListProvidersResponse {
+  // The providers the plane offers.
+  repeated Provider providers = 1;
+}
+
+// The `BeginLogin` request.
+message BeginLoginRequest {
+  // The provider id.
+  string provider = 1;
+  // The client kind the session serves: `cli` or `console_mcp`.
+  ClientKind client_kind = 2;
+  // The requesting host's name, shown in the device-flow description and
+  // the session list.
+  string host = 3;
+}
+
+// The `BeginLogin` response.
+message BeginLoginResponse {
+  // How the login continues.
+  oneof start {
+    // Open the URL in a browser, then call `CompleteLogin` with the
+    // loopback redirect.
+    Redirect redirect = 1;
+    // Show the challenge, then poll `PollDeviceLogin` with its handle.
+    DeviceChallenge device = 2;
+    // Call `CompleteLogin` with a token.
+    CredentialsExpected credentials = 3;
+  }
+}
+
+// The `PollDeviceLogin` request.
+message PollDeviceLoginRequest {
+  // The challenge's handle.
+  mintswarm.common.v1.Secret handle = 1;
+}
+
+// The `PollDeviceLogin` response.
+message PollDeviceLoginResponse {
+  // The flow's result so far.
+  oneof result {
+    // Not finished yet.
+    DevicePending pending = 1;
+    // The new session.
+    SessionGrant session = 2;
+  }
+}
+
+// The `CompleteLogin` request.
+message CompleteLoginRequest {
+  // The provider id.
+  string provider = 1;
+  // The client kind the session serves: `cli` or `console_mcp`.
+  ClientKind client_kind = 2;
+  // The requesting host's name.
+  string host = 3;
+  // The credentials, in the case the provider expects.
+  oneof credentials {
+    // A static token, for the `token` provider.
+    mintswarm.common.v1.Secret token = 4;
+    // The loopback redirect of a redirect login.
+    LoopbackRedirect redirect = 5;
+  }
+}
+
+// The `CompleteLogin` response.
+message CompleteLoginResponse {
+  // The new session.
+  SessionGrant session = 1;
+}
+
+// The `GetSession` request.
+message GetSessionRequest {}
+
+// The `GetSession` response.
+message GetSessionResponse {
+  // The caller's session.
+  Session session = 1;
+}
+
+// The `ListSessions` request.
+message ListSessionsRequest {}
+
+// The `ListSessions` response.
+message ListSessionsResponse {
+  // The caller's own sessions.
+  repeated Session sessions = 1;
+}
+
+// The `RevokeSession` request.
+message RevokeSessionRequest {
+  // The id of the session to revoke.
+  string session_id = 1;
+}
+
+// The `RevokeSession` response.
+message RevokeSessionResponse {}
+
+// The `Logout` request.
+message LogoutRequest {}
+
+// The `Logout` response.
+message LogoutResponse {}
+
+// The `BeginLink` request.
+message BeginLinkRequest {
+  // The caller's client kind: `cli` or `console_mcp`.
+  ClientKind client_kind = 1;
+  // The requesting host's name.
+  string host = 2;
+}
+
+// The `BeginLink` response.
+message BeginLinkResponse {
+  // How the link continues.
+  oneof start {
+    // Open the URL in a browser, then call `CompleteLink` with the loopback
+    // redirect.
+    Redirect redirect = 1;
+    // Show the challenge, then poll `PollDeviceLink` with its handle.
+    DeviceChallenge device = 2;
+  }
+}
+
+// The `PollDeviceLink` request.
+message PollDeviceLinkRequest {
+  // The challenge's handle.
+  mintswarm.common.v1.Secret handle = 1;
+}
+
+// The `PollDeviceLink` response.
+message PollDeviceLinkResponse {
+  // The flow's result so far.
+  oneof result {
+    // Not finished yet.
+    DevicePending pending = 1;
+    // The new link.
+    Link link = 2;
+  }
+}
+
+// The `CompleteLink` request.
+message CompleteLinkRequest {
+  // The loopback redirect of the `redirect` case of `BeginLink`.
+  LoopbackRedirect redirect = 1;
+}
+
+// The `CompleteLink` response.
+message CompleteLinkResponse {
+  // The new link.
+  Link link = 1;
+}
+
+// The `Unlink` request.
+message UnlinkRequest {}
+
+// The `Unlink` response.
+message UnlinkResponse {}
+
+// The `GetLink` request.
+message GetLinkRequest {}
+
+// The `GetLink` response.
+message GetLinkResponse {
+  // The caller's link; unset when there is none.
+  Link link = 1;
+}
