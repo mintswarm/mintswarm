@@ -19,8 +19,9 @@ Checks:
   ignored; a broken final reply after a good earlier one, whose fault is
   reported; a final message that is an unfenced document after a good
   earlier draft, which is rejected rather than replaced by the draft; a
-  CRLF reply, saved unchanged; a stdout on a closed pipe, which still saves
-  and exits 0 with nothing on stderr. Successes name the assistant
+  CRLF reply, saved unchanged; a stdout on a closed pipe, or fd 1 closed,
+  which still saves and exits 0 with nothing on stderr; fd 2 closed, which
+  keeps every exit code and leaves stdout as it was. Successes name the assistant
   message used (K of M) and save exactly the document; failures exit 1,
   name the message checked, and write no file; a rejected reply whose
   OUTPUT names no file still exits 1;
@@ -402,6 +403,40 @@ class SaveOutput(Harness):
         self.assertEqual((proc.returncode, stderr), (0, b""), "a closed stdout changed the result")
         self.assertEqual(self.saved(), DOCUMENT)
         self.assertTrue(self.out.with_name("review.result.json").is_file())
+
+    def unsaved(self):
+        for path in (self.out, self.out.with_name("review.result.json")):
+            if path.exists():
+                path.unlink()
+
+    def run_closed(self, args, fd, **streams):
+        """Run the tool with file descriptor fd closed in the child; returns (exit, stdout, stderr)."""
+        proc = subprocess.Popen([*tool_command(), *args], cwd=self.dir, preexec_fn=lambda: os.close(fd), **streams)
+        out, err = proc.communicate()
+        return proc.returncode, out, err
+
+    def test_closed_standard_streams(self):
+        path = self.reply_file(REPLY)
+        self.assert_saved(self.run_script("--text", str(path), str(self.out)))
+        saved = ["--text", str(path), str(self.out)]
+        rejected = ["--text", str(self.reply_file(SUMMARY + "\n", "rejected.txt")), str(self.out)]
+        missing = ["--text", "missing", str(self.out)]
+        with self.subTest(case="fd 1 closed, saved"):
+            self.unsaved()
+            self.assertEqual(self.run_closed(saved, 1, stderr=subprocess.PIPE), (0, None, b""))
+            self.assertEqual(self.saved(), DOCUMENT)
+            self.assertTrue(self.out.with_name("review.result.json").is_file())
+        with self.subTest(case="fd 2 closed, saved"):
+            self.unsaved()
+            code, out, _ = self.run_closed(saved, 2, stdout=subprocess.PIPE)
+            self.assertEqual(code, 0)
+            self.assertIn(f"saved {len(DOCUMENT)} characters to {self.out}".encode(), out)
+            self.assertEqual(self.saved(), DOCUMENT)
+        for name, args, exit in (("rejected", rejected, 1), ("unreadable", missing, 2)):
+            with self.subTest(case=f"fd 2 closed, {name}"):
+                self.unsaved()
+                self.assertEqual(self.run_closed(args, 2, stdout=subprocess.PIPE), (exit, b"", None))
+                self.assertFalse(self.out.exists(), "a file was written for a refused run")
 
     def test_record_without_id_is_own_message(self):
         path = self.transcript(record(None, text(REPLY)), record(None, text(SUMMARY)))

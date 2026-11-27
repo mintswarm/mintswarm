@@ -90,7 +90,8 @@ order, every key present, null for an absent value and [] for an absent
 list. Both go through temporary files in the target directory, so either
 both are written or neither. Then prints the result block, which
 assistant message the document came from (transcript mode only) and the
-saved size; a failure to write stdout is ignored. Exits 0 when saved, 1 when the reply does not follow the rules
+saved size. A closed stdout or stderr, or a failure to write either, is
+ignored. Exits 0 when saved, 1 when the reply does not follow the rules
 (nothing is written), 2 on a usage error or when INPUT cannot be read or
 OUTPUT cannot be written (nothing is left behind), or on an unexpected
 error. Read and write failures are reported in fixed phrases, those of
@@ -119,6 +120,31 @@ import unicodedata
 from pathlib import Path
 
 
+def report(line: str) -> None:
+    """Print line on stderr; with no stderr, or one that cannot be written, say nothing."""
+    if sys.stderr is None:
+        return  # fd 2 was closed at start-up; print would fall back to stdout
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except OSError:
+        silence(sys.stderr)
+
+
+def silence(stream) -> None:
+    """Point stream's file descriptor at os.devnull, so that the flush at shutdown cannot report a
+    failed write. Does nothing for a stream that is None or has no descriptor."""
+    if stream is None:
+        return
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(fd, stream.fileno())
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        pass
+
+
 def load_errors():
     """errors.py from this script's directory, loaded by path without writing bytecode."""
     sys.dont_write_bytecode = True  # leave no __pycache__ next to errors.py
@@ -127,7 +153,7 @@ def load_errors():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     except Exception:
-        print("save-output: cannot load errors.py", file=sys.stderr)
+        report("save-output: cannot load errors.py")
         sys.exit(2)
     return module
 
@@ -904,7 +930,7 @@ def main(argv: list) -> int:
     try:
         return run(argv)
     except Exception as exc:
-        print(errors.crash_line("save-output", exc), file=sys.stderr)
+        report(errors.crash_line("save-output", exc))
         return 2
 
 
@@ -933,7 +959,7 @@ def run(argv: list) -> int:
     text_mode = bool(argv) and argv[0] == "--text"
     args = argv[1:] if text_mode else argv
     if len(args) != 2 or any(a.startswith("--") for a in args):
-        print(USAGE, file=sys.stderr)
+        report(USAGE)
         return 2
     source, output = args
     where = None
@@ -950,10 +976,10 @@ def run(argv: list) -> int:
         document, result, outcome = extract(text)
     except ReplyError as exc:
         prefix = f"{where}: " if where else ""
-        print(f"save-output: {prefix}{exc.explain()}", file=sys.stderr)
+        report(f"save-output: {prefix}{exc.explain()}")
         return 1
     except InputError as exc:
-        print(f"save-output: {exc.message}", file=sys.stderr)
+        report(f"save-output: {exc.message}")
         return 2
     path = Path(output)
     record = json.dumps(outcome, indent=2, ensure_ascii=False) + "\n"
@@ -966,30 +992,19 @@ def run(argv: list) -> int:
         except (OSError, UnicodeEncodeError) as exc:
             raise OutputError(f"cannot write {output}: {errors.write_phrase(exc)}") from exc
     except OutputError as exc:
-        print(f"save-output: {exc.message}", file=sys.stderr)
+        report(f"save-output: {exc.message}")
         return 2
     try:
         print(result.rstrip())
         if where:
             print(f"document from {where}")
         print(f"saved {len(document)} characters to {output}")
-        sys.stdout.flush()
+        if sys.stdout is not None:  # None when fd 1 was closed at start-up, and print a no-op
+            sys.stdout.flush()
     except OSError:
         # the files are saved; a stdout nobody reads changes nothing, as in the port
-        silence_stdout()
+        silence(sys.stdout)
     return 0
-
-
-def silence_stdout() -> None:
-    """Point stdout at os.devnull, so that the flush at shutdown cannot report a failed write."""
-    try:
-        fd = os.open(os.devnull, os.O_WRONLY)
-        try:
-            os.dup2(fd, sys.stdout.fileno())
-        finally:
-            os.close(fd)
-    except (OSError, ValueError):
-        pass
 
 
 if __name__ == "__main__":
