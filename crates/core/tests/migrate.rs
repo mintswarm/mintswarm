@@ -1,13 +1,15 @@
-//! The migration runner against real databases: the ledger, the checks before any write, one
-//! transaction per file, and the session lock. Runs only with `--features pg-tests` and a local
-//! Postgres or container image.
+//! The migration runner against real databases: the ledger, the checks before any write, each
+//! file in its own transaction or, with the no-transaction header, outside one, the session
+//! lock, and the read-only plan. Runs only with `--features pg-tests` and a local Postgres or
+//! container image.
 
 #![cfg(all(test, feature = "pg-tests"))]
 
 use std::time::Duration;
 
 use mintswarm_core::migrations::{
-    ApplyError, ApplyWarning, Drift, LEDGER_SCHEMA, LEDGER_TABLE, MIGRATION_LOCK_KEY, apply,
+    ApplyError, ApplyWarning, Drift, LEDGER_SCHEMA, LEDGER_TABLE, MIGRATION_LOCK_KEY,
+    OutsideFailure, apply, plan, plan_database, recorded, validate,
 };
 use mintswarm_core::testing::pg;
 use tokio_postgres::{Client, Config, NoTls};
@@ -80,6 +82,48 @@ async fn exists(client: &Client, relation: &str) -> bool {
         .get(0)
 }
 
+/// Whether a schema exists.
+async fn schema_exists(client: &Client, schema: &str) -> bool {
+    client
+        .query_one("SELECT to_regnamespace($1) IS NOT NULL", &[&schema])
+        .await
+        .expect("the catalogue is readable")
+        .get(0)
+}
+
+/// Whether an index exists and is valid, by a name `to_regclass` reads.
+async fn index_is_valid(client: &Client, index: &str) -> bool {
+    client
+        .query_opt(
+            "SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)",
+            &[&index],
+        )
+        .await
+        .expect("the catalogue is readable")
+        .is_some_and(|row| row.get(0))
+}
+
+/// The pending up files of a plan.
+fn pending_files(plan: &mintswarm_core::migrations::Plan<'_>) -> Vec<String> {
+    plan.pending
+        .iter()
+        .map(|migration| migration.up.clone())
+        .collect()
+}
+
+/// Adds a trigger to the ledger that runs `body` before each insert.
+async fn ledger_trigger(client: &Client, body: &str) {
+    client
+        .batch_execute(&format!(
+            "CREATE FUNCTION public.ledger_trigger() RETURNS trigger LANGUAGE plpgsql AS \
+             $body$ BEGIN {body} RETURN NEW; END $body$;
+             CREATE TRIGGER ledger_trigger BEFORE INSERT ON {LEDGER_SCHEMA}.{LEDGER_TABLE} \
+             FOR EACH ROW EXECUTE FUNCTION public.ledger_trigger();"
+        ))
+        .await
+        .expect("the trigger is created");
+}
+
 /// Whether a fresh session can take the migration lock; it releases it again at once.
 async fn lock_is_free(config: &Config) -> bool {
     let probe = connect(config).await;
@@ -100,6 +144,10 @@ async fn lock_is_free(config: &Config) -> bool {
 const V1: &str = "20260101000000";
 const V2: &str = "20260102000000";
 const V3: &str = "20260103000000";
+const V4: &str = "20260104000000";
+
+/// The header that runs a file outside a transaction.
+const NO_TRANSACTION: &str = "-- migrate: no-transaction\n";
 
 #[tokio::test]
 async fn a_second_run_applies_nothing_and_keeps_the_ledger() {
@@ -524,4 +572,256 @@ async fn a_failure_before_the_files_own_commit_gets_no_ledger_row() {
     assert!(versions(&client).await.is_empty());
     assert!(!exists(&client, "mintswarm.a").await);
     assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn the_database_plan_lists_the_pending_files_and_writes_nothing() {
+    let db = pg::database().await.unwrap();
+    let files = [
+        (up(V1, "a"), "CREATE TABLE a (id int);"),
+        (up(V2, "b"), "CREATE TABLE b (id int);"),
+        (up(V3, "c"), "CREATE TABLE c (id int);"),
+    ];
+    apply(db.config(), &tree(&files[..1])).await.unwrap();
+
+    let mut client = connect(db.config()).await;
+    let before = ledger(&client).await;
+    let head = tree(&files);
+    let report = validate(&head).unwrap();
+    let plan = plan_database(&mut client, &report, &head).await.unwrap();
+    assert_eq!(
+        pending_files(&plan),
+        [files[1].0.clone(), files[2].0.clone()]
+    );
+    assert!(plan.orphans.is_empty());
+    assert_eq!(ledger(&client).await, before);
+}
+
+#[tokio::test]
+async fn the_plan_of_a_never_migrated_database_creates_nothing() {
+    let db = pg::database().await.unwrap();
+    let files = [
+        (up(V1, "a"), "CREATE TABLE a (id int);"),
+        (up(V2, "b"), "CREATE TABLE b (id int);"),
+    ];
+    let mut client = connect(db.config()).await;
+    let head = tree(&files);
+    let report = validate(&head).unwrap();
+    let plan = plan_database(&mut client, &report, &head).await.unwrap();
+    assert_eq!(
+        pending_files(&plan),
+        [files[0].0.clone(), files[1].0.clone()]
+    );
+    assert!(!schema_exists(&client, LEDGER_SCHEMA).await);
+}
+
+#[tokio::test]
+async fn the_plan_of_a_migrated_database_is_empty() {
+    let db = pg::database().await.unwrap();
+    let files = [
+        (up(V1, "a"), "CREATE TABLE a (id int);"),
+        (up(V2, "b"), "CREATE TABLE b (id int);"),
+    ];
+    let head = tree(&files);
+    apply(db.config(), &head).await.unwrap();
+
+    let mut client = connect(db.config()).await;
+    let report = validate(&head).unwrap();
+    let plan = plan_database(&mut client, &report, &head).await.unwrap();
+    assert!(plan.pending.is_empty());
+    assert!(plan.orphans.is_empty());
+}
+
+#[tokio::test]
+async fn the_plan_is_what_apply_runs() {
+    let db = pg::database().await.unwrap();
+    let files = [
+        (up(V1, "a"), "CREATE TABLE a (id int);"),
+        (up(V2, "b"), "CREATE TABLE b (id int);"),
+        (up(V3, "c"), "CREATE TABLE c (id int);"),
+        (up(V4, "d"), "CREATE TABLE d (id int);"),
+    ];
+    let base_files = [files[0].clone(), files[2].clone()];
+    let base = tree(&base_files);
+    let head = tree(&files);
+    apply(db.config(), &base).await.unwrap();
+
+    let base_report = validate(&base).unwrap();
+    let report = validate(&head).unwrap();
+    let plan = plan(&report, &head, &recorded(&base_report, &base)).unwrap();
+    let outcome = apply(db.config(), &head).await.unwrap();
+    let applied: Vec<String> = outcome.applied.iter().map(|a| a.file.clone()).collect();
+    assert_eq!(applied, pending_files(&plan));
+    assert_eq!(applied, [files[1].0.clone(), files[3].0.clone()]);
+}
+
+#[tokio::test]
+async fn a_no_transaction_file_runs_outside_a_transaction_and_gets_its_row() {
+    let db = pg::database().await.unwrap();
+    let index = format!(
+        "{NO_TRANSACTION}CREATE TABLE t (id int);\nCREATE INDEX CONCURRENTLY t_idx ON t (id);\n"
+    );
+    let files = [
+        (up(V1, "index"), index.as_str()),
+        (up(V2, "after"), "CREATE TABLE after_index (id int);"),
+    ];
+    let outcome = apply(db.config(), &tree(&files)).await.unwrap();
+    assert_eq!(outcome.applied.len(), 2);
+
+    let client = connect(db.config()).await;
+    assert_eq!(versions(&client).await, [V1, V2]);
+    assert!(index_is_valid(&client, "mintswarm.t_idx").await);
+    assert!(exists(&client, "mintswarm.after_index").await);
+    assert!(!exists(&client, "public.after_index").await);
+}
+
+#[tokio::test]
+async fn concurrent_runs_over_a_concurrent_index_both_succeed() {
+    let db = pg::database().await.unwrap();
+    let index = format!("{NO_TRANSACTION}CREATE INDEX CONCURRENTLY t_idx ON t (id);\n");
+    let files = [
+        (
+            up(V1, "table"),
+            "CREATE TABLE t (id int); SELECT pg_sleep(0.3);",
+        ),
+        (up(V2, "index"), index.as_str()),
+    ];
+    let files = tree(&files);
+    let (one, two) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(apply(db.config(), &files), apply(db.config(), &files))
+    })
+    .await
+    .expect("the two runs do not deadlock");
+    let (one, two) = (one.unwrap(), two.unwrap());
+    let mut applied: Vec<String> = one
+        .applied
+        .iter()
+        .chain(&two.applied)
+        .map(|a| a.version.clone())
+        .collect();
+    applied.sort();
+    assert_eq!(applied, [V1, V2]);
+
+    let client = connect(db.config()).await;
+    assert_eq!(versions(&client).await, [V1, V2]);
+    assert!(index_is_valid(&client, "mintswarm.t_idx").await);
+}
+
+#[tokio::test]
+async fn a_failing_no_transaction_file_may_be_partly_applied_and_gets_no_row() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "fails");
+    let text = format!("{NO_TRANSACTION}CREATE TABLE u (id int);\nSELECT 1/0;\n");
+    let error = apply(db.config(), &tree(&[(file.clone(), text.as_str())]))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("may have been applied"),
+        "{error}"
+    );
+    let ApplyError::OutsideTransaction {
+        file: named,
+        reason: OutsideFailure::Statement { .. },
+        ..
+    } = error
+    else {
+        panic!("expected a failed statement outside a transaction, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(exists(&client, "mintswarm.u").await);
+    assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn a_no_transaction_file_with_transaction_control_is_refused() {
+    let db = pg::database().await.unwrap();
+    let file = up(V1, "controls");
+    let text = format!("{NO_TRANSACTION}BEGIN; CREATE TABLE v (id int); COMMIT;\n");
+    let error = apply(db.config(), &tree(&[(file.clone(), text.as_str())]))
+        .await
+        .unwrap_err();
+    assert!(
+        !error.to_string().contains("may have been applied"),
+        "{error}"
+    );
+    let ApplyError::OutsideTransaction {
+        file: named,
+        reason: OutsideFailure::TransactionControl,
+        ..
+    } = error
+    else {
+        panic!("expected refused transaction control, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    let client = connect(db.config()).await;
+    assert!(versions(&client).await.is_empty());
+    assert!(!exists(&client, "mintswarm.v").await);
+    assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn a_refused_ledger_row_after_a_no_transaction_file_is_reported_as_applied_without_row() {
+    let db = pg::database().await.unwrap();
+    let first = (up(V1, "first"), "CREATE TABLE first (id int);");
+    apply(db.config(), &tree(std::slice::from_ref(&first)))
+        .await
+        .unwrap();
+    let client = connect(db.config()).await;
+    ledger_trigger(&client, "RAISE EXCEPTION 'refused';").await;
+
+    let text = format!("{NO_TRANSACTION}CREATE TABLE w (id int);\n");
+    let files = [first, (up(V2, "w"), text.as_str())];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    assert!(
+        !error.to_string().contains("may have been applied"),
+        "{error}"
+    );
+    assert!(
+        matches!(
+            error,
+            ApplyError::OutsideTransaction {
+                reason: OutsideFailure::Record,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+
+    assert_eq!(versions(&client).await, [V1]);
+    assert!(exists(&client, "mintswarm.w").await);
+    assert!(lock_is_free(db.config()).await);
+}
+
+#[tokio::test]
+async fn a_lost_ledger_reply_after_a_no_transaction_file_is_an_unknown_outcome() {
+    let db = pg::database().await.unwrap();
+    let first = (up(V1, "first"), "CREATE TABLE first (id int);");
+    apply(db.config(), &tree(std::slice::from_ref(&first)))
+        .await
+        .unwrap();
+    let client = connect(db.config()).await;
+    ledger_trigger(
+        &client,
+        "PERFORM pg_terminate_backend(pg_backend_pid()); PERFORM pg_sleep(1);",
+    )
+    .await;
+
+    let file = up(V2, "w");
+    let text = format!("{NO_TRANSACTION}CREATE TABLE w (id int);\n");
+    let files = [first, (file.clone(), text.as_str())];
+    let error = apply(db.config(), &tree(&files)).await.unwrap_err();
+    assert!(
+        !matches!(error, ApplyError::OutsideTransaction { .. }),
+        "{error:?}"
+    );
+    let ApplyError::OutcomeUnknown { file: named, .. } = error else {
+        panic!("expected an unknown outcome, got {error:?}");
+    };
+    assert_eq!(named, file);
+
+    assert_eq!(versions(&client).await, [V1]);
 }
