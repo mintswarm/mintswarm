@@ -185,7 +185,8 @@ fn table_matches_design_rows() {
     pin_named_cases();
 }
 
-/// The cases the analysis names.
+/// Pins named cases of design §4: B2, B10, B14 and B15, a reopened `done` parent
+/// and a trigger without blocker changes.
 fn pin_named_cases() {
     // A closed `none` issue becomes `done` (B2).
     assert_eq!(
