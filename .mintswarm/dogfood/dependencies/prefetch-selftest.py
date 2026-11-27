@@ -52,6 +52,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zlib
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -719,6 +720,24 @@ def gzip_tail(box: Box):
         T.check(f"F3 {label}: the reason names it", "after its gzip stream" in record.get("reason", ""), str(record))
 
 
+def stream_ends(box: Box):
+    member = ("package/package.json", b'{"name": "rp"}')
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        info = tarfile.TarInfo(member[0])
+        info.size = len(member[1])
+        tar.addfile(info, io.BytesIO(member[1]))
+    packer = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+    trailing = packer.compress(buffer.getvalue() + b"TRAILING-GARBAGE") + packer.flush()
+    for label, raw, reason in (
+        ("a truncated gzip stream", tgz([member])[:-8], "truncated"),
+        ("data after the tar end", trailing, "after its end"),
+    ):
+        record, _ = one_npm(box, raw=raw)
+        T.check(f"F3 {label}: failed", record.get("status") == "failed", str(record))
+        T.check(f"F3 {label}: the reason names it", reason in record.get("reason", ""), str(record))
+
+
 def build_code(box: Box):
     files = {
         "Cargo.toml": CARGO + b"[lib]\nproc-macro = true\n",
@@ -1026,6 +1045,7 @@ def main() -> int:
             proc_macro_forms,
             case_folding,
             gzip_tail,
+            stream_ends,
             build_code,
             fooled_scan,
             no_crash,
