@@ -1,5 +1,5 @@
-//! `WatchService` over `MemoryWatchLog` through an in-process gRPC transport, and the pruning
-//! task under paused tokio time.
+//! `WatchService` over `MemoryWatchLog` through an in-process gRPC transport, its `Subscribe`
+//! streams and the pruning task under paused tokio time.
 
 #![cfg(test)]
 
@@ -8,22 +8,25 @@ use std::time::{Duration, SystemTime};
 
 use hyper_util::rt::TokioIo;
 use mintswarm_core::watch::{
-    AppendOutcome, Cursor, Filter, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, MemoryWatchLog,
-    PROTOCOL_MINOR, PRUNE_INTERVAL, Page, Pruned, Retention, WEBHOOK_KIND, WatchError, WatchLog,
-    WatchService, prune_periodically,
+    AppendOutcome, Cursor, Filter, HEARTBEAT_DEFAULT_SECONDS, HEARTBEAT_MIN_SECONDS,
+    LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, MemoryWatchLog, PROTOCOL_MINOR, PRUNE_INTERVAL, Page,
+    Pruned, Retention, SUBSCRIBE_STREAMS_MAX, SUBSCRIBE_UNREAD_TIMEOUT, WEBHOOK_KIND, WatchError,
+    WatchLog, WatchService, prune_periodically,
 };
 use mintswarm_proto::prost_types::Timestamp;
+use mintswarm_proto::watch::v1::watch_event::Body;
 use mintswarm_proto::watch::v1::watch_service_client::WatchServiceClient;
 use mintswarm_proto::watch::v1::watch_service_server::WatchServiceServer;
 use mintswarm_proto::watch::v1::{
-    GapReason, GetServerInfoRequest, ListWatchEventsRequest, ListWatchEventsResponse, MarkKind,
-    SubscribeRequest, WatchEvent, WatchFilter,
+    GapReason, GetServerInfoRequest, GitHubWebhook, ListWatchEventsRequest,
+    ListWatchEventsResponse, Mark, MarkKind, StartAt, SubscribeRequest, SubscribeResponse,
+    WatchEvent, WatchFilter, subscribe_request, subscribe_response,
 };
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::Code;
+use tokio::sync::{mpsc, watch};
+use tokio::time::{Instant, sleep, timeout};
 use tonic::codegen::tokio_stream;
 use tonic::transport::{Channel, Endpoint, Server, Uri};
+use tonic::{Code, Streaming};
 use uuid::Uuid;
 
 /// Serves `service` over an in-memory duplex pipe and returns a client connected to it.
@@ -46,6 +49,12 @@ async fn client<S: WatchLog + 'static>(service: WatchService<S>) -> WatchService
         .await
         .expect("connect");
     WatchServiceClient::new(channel)
+}
+
+/// A head watch that never changes, for tests that do not subscribe. Its sender is dropped,
+/// which a `Subscribe` stream reads as shutdown.
+fn no_head() -> watch::Receiver<Option<Cursor>> {
+    watch::channel(None).1
 }
 
 /// Retention that keeps every event the tests append.
@@ -137,11 +146,147 @@ async fn list_ok(
         .into_inner()
 }
 
-/// A [`MemoryWatchLog`] with two hooks: an event that `read_after` appends once before it
-/// reads, and a channel on which `prune` reports when it ran and what it removed.
+/// Appends `event` to `store`, then advances `head` to the store's head, as ingest does.
+async fn append_and_wake<S: WatchLog>(
+    store: &S,
+    head: &watch::Sender<Option<Cursor>>,
+    event: WatchEvent,
+) -> Uuid {
+    let id = append(store, event).await;
+    head.send_replace(store.head().await.expect("head"));
+    id
+}
+
+/// A `github.webhook` event with a `GitHubWebhook` body, and `payload` its raw body.
+async fn append_payload_webhook<S: WatchLog>(store: &S, payload: Vec<u8>) -> Uuid {
+    let event = WatchEvent {
+        body: Some(Body::GithubWebhook(GitHubWebhook {
+            event: "issues".to_owned(),
+            ..GitHubWebhook::default()
+        })),
+        ..webhook()
+    };
+    match store
+        .append(event, payload, None, SystemTime::now())
+        .await
+        .expect("append")
+    {
+        AppendOutcome::Appended(id) => id,
+        AppendOutcome::Duplicate => panic!("an append without a delivery is a duplicate"),
+    }
+}
+
+/// Serves `store` with a head watch at its current head; returns the client and the watch's
+/// sender, which the test keeps alive while it subscribes.
+async fn subscribed<S: WatchLog + 'static>(
+    store: &Arc<S>,
+) -> (WatchServiceClient<Channel>, watch::Sender<Option<Cursor>>) {
+    let (head_tx, head) = watch::channel(store.head().await.expect("head"));
+    let client = client(WatchService::new(Arc::clone(store), retention(), head)).await;
+    (client, head_tx)
+}
+
+/// A `Subscribe` request for webhooks starting at `start`.
+fn subscribe_request(start: subscribe_request::Start) -> SubscribeRequest {
+    SubscribeRequest {
+        filter: Some(webhooks()),
+        start: Some(start),
+        heartbeat_seconds: 0,
+        include_payload: false,
+    }
+}
+
+/// A `Subscribe` request for webhooks after `cursor`.
+fn after(cursor: &str) -> SubscribeRequest {
+    subscribe_request(subscribe_request::Start::After(cursor.to_owned()))
+}
+
+/// A `Subscribe` request for webhooks starting at `at`.
+fn starting(at: StartAt) -> SubscribeRequest {
+    subscribe_request(subscribe_request::Start::StartAt(at.into()))
+}
+
+/// Opens a stream, panicking on an error.
+async fn subscribe_ok(
+    client: &mut WatchServiceClient<Channel>,
+    request: SubscribeRequest,
+) -> Streaming<SubscribeResponse> {
+    client
+        .subscribe(request)
+        .await
+        .expect("subscribe")
+        .into_inner()
+}
+
+/// The stream's next message, panicking on an error or the end of the stream.
+async fn next(stream: &mut Streaming<SubscribeResponse>) -> subscribe_response::Message {
+    stream
+        .message()
+        .await
+        .expect("a message, not an error")
+        .expect("the stream is open")
+        .message
+        .expect("an event or a mark")
+}
+
+/// The event of `message`, panicking on a mark.
+fn event(message: subscribe_response::Message) -> WatchEvent {
+    match message {
+        subscribe_response::Message::Event(event) => event,
+        subscribe_response::Message::Mark(mark) => panic!("an event, not the mark {mark:?}"),
+    }
+}
+
+/// The id of the event `message`.
+fn event_id(message: subscribe_response::Message) -> Uuid {
+    Uuid::parse_str(&event(message).id).expect("a UUID id")
+}
+
+/// The mark of `message`, panicking on an event.
+fn mark(message: subscribe_response::Message) -> Mark {
+    match message {
+        subscribe_response::Message::Mark(mark) => mark,
+        subscribe_response::Message::Event(event) => panic!("a mark, not the event {event:?}"),
+    }
+}
+
+/// The mark of `message`, which must be of `kind`.
+fn mark_of(kind: MarkKind, message: subscribe_response::Message) -> Mark {
+    let mark = mark(message);
+    assert_eq!(mark.kind(), kind, "{mark:?}");
+    mark
+}
+
+/// The status a stream ends with, after its remaining events; returns the status and how many
+/// events came first.
+async fn drain_to_status(stream: &mut Streaming<SubscribeResponse>) -> (tonic::Status, usize) {
+    let mut events = 0;
+    loop {
+        match stream.message().await {
+            Ok(Some(_)) => events += 1,
+            Ok(None) => panic!("the stream ended without a status"),
+            Err(status) => return (status, events),
+        }
+    }
+}
+
+/// The head cursor of `store`, as a string.
+async fn head_cursor<S: WatchLog>(store: &S) -> String {
+    store
+        .head()
+        .await
+        .expect("head")
+        .map(|cursor| cursor.to_string())
+        .unwrap_or_default()
+}
+
+/// A [`MemoryWatchLog`] with three hooks: an event that `read_after` appends once before it
+/// reads; an event that `read_after` appends once after it reads, advancing a head watch as
+/// ingest does; and a channel on which `prune` reports when it ran and what it removed.
 struct Hooked {
     inner: MemoryWatchLog,
     append_on_read: Mutex<Option<WatchEvent>>,
+    wake_after_read: Mutex<Option<(WatchEvent, watch::Sender<Option<Cursor>>)>>,
     prunes: Option<mpsc::UnboundedSender<(Instant, Pruned)>>,
 }
 
@@ -150,6 +295,7 @@ impl Hooked {
         Self {
             inner: MemoryWatchLog::new(),
             append_on_read: Mutex::new(None),
+            wake_after_read: Mutex::new(None),
             prunes: None,
         }
     }
@@ -187,9 +333,19 @@ impl WatchLog for Hooked {
         if let Some(event) = racing {
             append(&self.inner, event).await;
         }
-        self.inner
+        let page = self
+            .inner
             .read_after(after, filter, limit, include_payload)
-            .await
+            .await?;
+        let waking = self
+            .wake_after_read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((event, head)) = waking {
+            append_and_wake(&self.inner, &head, event).await;
+        }
+        Ok(page)
     }
 
     async fn head(&self) -> Result<Option<Cursor>, WatchError> {
@@ -229,7 +385,12 @@ async fn pruned_to_one() -> (Arc<MemoryWatchLog>, Vec<Uuid>, Pruned) {
 async fn limit_above_max_is_capped_with_next_cursor() {
     let store = Arc::new(MemoryWatchLog::new());
     let stored = append_webhooks(&*store, 600).await;
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let first = list_ok(&mut client, list("", 1000)).await;
     assert_eq!(ids(&first), stored[..500]);
@@ -243,7 +404,12 @@ async fn limit_above_max_is_capped_with_next_cursor() {
 async fn zero_limit_uses_the_default() {
     let store = Arc::new(MemoryWatchLog::new());
     append_webhooks(&*store, 150).await;
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list("", 0)).await;
     assert_eq!(page.events.len(), 100);
@@ -255,7 +421,12 @@ async fn cursor_of_another_epoch_gets_store_changed() {
     let stored = append_webhooks(&*store, 2).await;
     let elsewhere = MemoryWatchLog::new();
     let foreign = cursor(&elsewhere, append(&elsewhere, webhook()).await);
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&foreign, 0)).await;
     let gap = page.gap.clone().expect("a gap mark");
@@ -267,7 +438,12 @@ async fn cursor_of_another_epoch_gets_store_changed() {
 #[tokio::test]
 async fn cursor_below_pruned_through_gets_cursor_expired() {
     let (store, stored, _) = pruned_to_one().await;
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&cursor(&*store, stored[0]), 0)).await;
     let gap = page.gap.clone().expect("a gap mark");
@@ -284,7 +460,12 @@ async fn cursor_at_pruned_through_resumes_without_gap() {
     let (store, stored, pruned) = pruned_to_one().await;
     let through = pruned.pruned_through.expect("a prune removed events");
     assert_eq!(through, stored[1]);
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&cursor(&*store, through), 0)).await;
     assert_eq!(page.gap, None);
@@ -294,7 +475,7 @@ async fn cursor_at_pruned_through_resumes_without_gap() {
 #[tokio::test]
 async fn empty_kinds_is_invalid_argument() {
     let store = Arc::new(MemoryWatchLog::new());
-    let mut client = client(WatchService::new(store, retention())).await;
+    let mut client = client(WatchService::new(store, retention(), no_head())).await;
     let request = ListWatchEventsRequest {
         filter: Some(WatchFilter::default()),
         ..list("", 0)
@@ -310,7 +491,7 @@ async fn empty_kinds_is_invalid_argument() {
 #[tokio::test]
 async fn missing_filter_is_invalid_argument() {
     let store = Arc::new(MemoryWatchLog::new());
-    let mut client = client(WatchService::new(store, retention())).await;
+    let mut client = client(WatchService::new(store, retention(), no_head())).await;
     let request = ListWatchEventsRequest {
         filter: None,
         ..list("", 0)
@@ -326,7 +507,7 @@ async fn missing_filter_is_invalid_argument() {
 #[tokio::test]
 async fn malformed_cursor_is_invalid_argument() {
     let store = Arc::new(MemoryWatchLog::new());
-    let mut client = client(WatchService::new(store, retention())).await;
+    let mut client = client(WatchService::new(store, retention(), no_head())).await;
 
     let status = client
         .list_watch_events(list("not-a-cursor", 0))
@@ -339,7 +520,12 @@ async fn malformed_cursor_is_invalid_argument() {
 async fn server_info_reports_epoch_retention_and_oldest_cursor() {
     let store = Arc::new(MemoryWatchLog::new());
     let bounds = Retention::new(Duration::from_secs(3 * 24 * 3600), 250).expect("valid");
-    let mut client = client(WatchService::new(Arc::clone(&store), bounds.clone())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        bounds.clone(),
+        no_head(),
+    ))
+    .await;
 
     let empty = client
         .get_server_info(GetServerInfoRequest {})
@@ -371,23 +557,16 @@ async fn server_info_reports_epoch_retention_and_oldest_cursor() {
 }
 
 #[tokio::test]
-async fn subscribe_is_unimplemented() {
-    let store = Arc::new(MemoryWatchLog::new());
-    let mut client = client(WatchService::new(store, retention())).await;
-
-    let status = client
-        .subscribe(SubscribeRequest::default())
-        .await
-        .expect_err("not served");
-    assert_eq!(status.code(), Code::Unimplemented);
-}
-
-#[tokio::test]
 async fn excluded_events_give_an_empty_page_at_the_head() {
     let store = Arc::new(MemoryWatchLog::new());
     append(&*store, plane_event()).await;
     let last = append(&*store, plane_event()).await;
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list("", 0)).await;
     assert!(page.events.is_empty());
@@ -399,7 +578,12 @@ async fn excluded_events_give_an_empty_page_at_the_head() {
 async fn empty_store_echoes_after() {
     let store = Arc::new(MemoryWatchLog::new());
     let after = cursor(&*store, Uuid::now_v7());
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&after, 0)).await;
     assert!(page.events.is_empty());
@@ -412,7 +596,12 @@ async fn empty_store_with_foreign_cursor_clears_next_cursor() {
     let store = Arc::new(MemoryWatchLog::new());
     let elsewhere = MemoryWatchLog::new();
     let foreign = cursor(&elsewhere, Uuid::now_v7());
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&foreign, 0)).await;
     let gap = page.gap.clone().expect("a gap mark");
@@ -433,7 +622,12 @@ async fn emptied_store_with_expired_cursor_clears_next_cursor() {
     let later = SystemTime::now() + Duration::from_secs(3600);
     let pruned = store.prune(&short, later).await.expect("prune");
     assert_eq!(pruned.removed, 2);
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&cursor(&*store, stored[0]), 0)).await;
     let gap = page.gap.clone().expect("a gap mark");
@@ -452,7 +646,12 @@ async fn racing_append_that_matches_moves_both_cursors_to_it() {
     let store = Arc::new(Hooked::new());
     let first = append(&*store, webhook()).await;
     *store.append_on_read.lock().expect("unpoisoned") = Some(webhook());
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&cursor(&*store, first), 0)).await;
     let racing = ids(&page);
@@ -466,7 +665,12 @@ async fn racing_append_that_is_excluded_keeps_both_cursors_at_the_earlier_head()
     let store = Arc::new(Hooked::new());
     let first = append(&*store, webhook()).await;
     *store.append_on_read.lock().expect("unpoisoned") = Some(plane_event());
-    let mut client = client(WatchService::new(Arc::clone(&store), retention())).await;
+    let mut client = client(WatchService::new(
+        Arc::clone(&store),
+        retention(),
+        no_head(),
+    ))
+    .await;
 
     let page = list_ok(&mut client, list(&cursor(&*store, first), 0)).await;
     assert!(page.events.is_empty());
@@ -497,14 +701,14 @@ async fn prunes_at_start_and_every_ten_minutes() {
     assert_eq!(second.removed, 2);
 }
 
-#[test]
-fn limit_constants_match_watch_proto() {
+/// The comment above the first line of watch.proto for which `declares` holds, as one line.
+fn proto_comment_above(declares: impl Fn(&str) -> bool, what: &str) -> String {
     let proto = include_str!("../../../api/proto/mintswarm/watch/v1/watch.proto");
     let lines: Vec<&str> = proto.lines().collect();
     let field = lines
         .iter()
-        .position(|line| line.trim() == "uint32 limit = 3;")
-        .expect("watch.proto declares `uint32 limit = 3;`");
+        .position(|line| declares(line.trim()))
+        .unwrap_or_else(|| panic!("watch.proto declares {what}"));
     let mut comment: Vec<&str> = lines[..field]
         .iter()
         .rev()
@@ -513,7 +717,12 @@ fn limit_constants_match_watch_proto() {
         .map(|line| line.trim_start_matches("//").trim())
         .collect();
     comment.reverse();
-    let comment = comment.join(" ");
+    comment.join(" ")
+}
+
+#[test]
+fn limit_constants_match_watch_proto() {
+    let comment = proto_comment_above(|line| line == "uint32 limit = 3;", "`uint32 limit = 3;`");
 
     for stated in [
         format!("at most {LIST_LIMIT_MAX}"),
@@ -525,4 +734,423 @@ fn limit_constants_match_watch_proto() {
             "the `limit` comment `{comment}` does not state `{stated}`"
         );
     }
+}
+
+#[test]
+fn subscribe_limit_constants_match_watch_proto() {
+    let rpc = proto_comment_above(
+        |line| line.starts_with("rpc Subscribe("),
+        "`rpc Subscribe(`",
+    );
+    let heartbeat = proto_comment_above(
+        |line| line == "uint32 heartbeat_seconds = 4;",
+        "`uint32 heartbeat_seconds = 4;`",
+    );
+    let seconds = SUBSCRIBE_UNREAD_TIMEOUT.as_secs();
+    assert_eq!(seconds % 60, 0, "the unread timeout is whole minutes");
+    assert_eq!(SUBSCRIBE_UNREAD_TIMEOUT.subsec_nanos(), 0);
+
+    for (comment, stated) in [
+        (
+            &rpc,
+            format!("already has {SUBSCRIBE_STREAMS_MAX} open streams"),
+        ),
+        (&rpc, format!("for {} minutes", seconds / 60)),
+        (
+            &heartbeat,
+            format!(
+                "zero means the default of {HEARTBEAT_DEFAULT_SECONDS}; at least {HEARTBEAT_MIN_SECONDS}"
+            ),
+        ),
+        (
+            &heartbeat,
+            format!(
+                "a value from 1 to {} is raised to {HEARTBEAT_MIN_SECONDS}",
+                HEARTBEAT_MIN_SECONDS - 1
+            ),
+        ),
+    ] {
+        assert!(
+            comment.contains(&stated),
+            "the comment `{comment}` does not state `{stated}`"
+        );
+    }
+}
+
+#[tokio::test]
+async fn subscribe_after_cursor_streams_later_events_then_caught_up_then_live() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let mut stored = Vec::new();
+    for _ in 0..150 {
+        stored.push(append(&*store, webhook()).await);
+        append(&*store, plane_event()).await;
+    }
+    let (mut client, head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, after(&cursor(&*store, stored[9]))).await;
+    for &id in &stored[10..] {
+        assert_eq!(event_id(next(&mut stream).await), id);
+    }
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, head_cursor(&*store).await);
+
+    let live = append_and_wake(&*store, &head, webhook()).await;
+    assert_eq!(event_id(next(&mut stream).await), live);
+}
+
+#[tokio::test(start_paused = true)]
+async fn heartbeat_marks_an_idle_stream_and_low_values_are_raised_to_five() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let last = append(&*store, webhook()).await;
+    let (mut client, _head) = subscribed(&store).await;
+
+    let request = SubscribeRequest {
+        heartbeat_seconds: 5,
+        ..starting(StartAt::Now)
+    };
+    let mut stream = subscribe_ok(&mut client, request).await;
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, cursor(&*store, last));
+    let beat = timeout(Duration::from_secs(6), next(&mut stream))
+        .await
+        .expect("a heartbeat within 6 s");
+    assert_eq!(
+        mark_of(MarkKind::Heartbeat, beat).cursor,
+        cursor(&*store, last)
+    );
+
+    let request = SubscribeRequest {
+        heartbeat_seconds: 2,
+        ..starting(StartAt::Now)
+    };
+    let mut raised = subscribe_ok(&mut client, request).await;
+    mark_of(MarkKind::CaughtUp, next(&mut raised).await);
+    let start = Instant::now();
+    assert!(
+        timeout(Duration::from_millis(4900), next(&mut raised))
+            .await
+            .is_err(),
+        "no heartbeat before 5 s"
+    );
+    let beat = timeout(Duration::from_millis(1100), next(&mut raised))
+        .await
+        .expect("a heartbeat by 6 s");
+    mark_of(MarkKind::Heartbeat, beat);
+    let elapsed = start.elapsed();
+    assert!(elapsed >= Duration::from_secs(5), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn heartbeat_is_not_postponed_by_wakes_that_send_nothing() {
+    let store = Arc::new(MemoryWatchLog::new());
+    append(&*store, webhook()).await;
+    let (mut client, head) = subscribed(&store).await;
+    let request = SubscribeRequest {
+        heartbeat_seconds: 5,
+        ..starting(StartAt::Now)
+    };
+    let mut stream = subscribe_ok(&mut client, request).await;
+    mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    let start = Instant::now();
+
+    let waker = {
+        let store = Arc::clone(&store);
+        let head = head.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(3)).await;
+                append_and_wake(&*store, &head, plane_event()).await;
+            }
+        })
+    };
+    let beat = timeout(Duration::from_secs(6), next(&mut stream))
+        .await
+        .expect("a heartbeat within 6 s");
+    let elapsed = start.elapsed();
+    let beat = mark_of(MarkKind::Heartbeat, beat);
+    assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+    assert_eq!(beat.cursor, head_cursor(&*store).await);
+    waker.abort();
+}
+
+#[tokio::test]
+async fn foreign_epoch_subscribe_gets_store_changed_then_oldest() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let stored = append_webhooks(&*store, 2).await;
+    let elsewhere = MemoryWatchLog::new();
+    let foreign = cursor(&elsewhere, append(&elsewhere, webhook()).await);
+    let (mut client, _head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, after(&foreign)).await;
+    let gap = mark_of(MarkKind::Gap, next(&mut stream).await);
+    assert_eq!(gap.gap_reason(), GapReason::StoreChanged);
+    for &id in &stored {
+        assert_eq!(event_id(next(&mut stream).await), id);
+    }
+    mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+}
+
+#[tokio::test]
+async fn expired_cursor_subscribe_gets_cursor_expired_then_oldest() {
+    let (store, stored, _) = pruned_to_one().await;
+    let (mut client, _head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, after(&cursor(&*store, stored[0]))).await;
+    let gap = mark_of(MarkKind::Gap, next(&mut stream).await);
+    assert_eq!(gap.gap_reason(), GapReason::CursorExpired);
+    let oldest = event(next(&mut stream).await);
+    assert_eq!(oldest.id, stored[2].to_string());
+    assert!(oldest.at.is_some());
+    assert_eq!(gap.pruned_before, oldest.at);
+    mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+}
+
+#[tokio::test]
+async fn cursor_at_pruned_through_subscribes_without_gap() {
+    let (store, stored, pruned) = pruned_to_one().await;
+    let through = pruned.pruned_through.expect("a prune removed events");
+    let (mut client, _head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, after(&cursor(&*store, through))).await;
+    assert_eq!(event_id(next(&mut stream).await), stored[2]);
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, cursor(&*store, stored[2]));
+}
+
+#[tokio::test]
+async fn prune_past_an_idle_stream_sends_cursor_expired_before_its_next_event() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let first = append(&*store, webhook()).await;
+    let (mut client, head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, starting(StartAt::Oldest)).await;
+    assert_eq!(event_id(next(&mut stream).await), first);
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, cursor(&*store, first));
+
+    let added = append_webhooks(&*store, 3).await;
+    let keep_one = Retention::new(Duration::from_secs(7 * 24 * 3600), 1).expect("valid");
+    let pruned = store
+        .prune(&keep_one, SystemTime::now())
+        .await
+        .expect("prune");
+    assert_eq!(pruned.pruned_through, Some(added[1]));
+    head.send_replace(store.head().await.expect("head"));
+
+    let gap = mark_of(MarkKind::Gap, next(&mut stream).await);
+    assert_eq!(gap.gap_reason(), GapReason::CursorExpired);
+    let kept = event(next(&mut stream).await);
+    assert_eq!(kept.id, added[2].to_string());
+    assert!(kept.at.is_some());
+    assert_eq!(gap.pruned_before, kept.at);
+}
+
+#[tokio::test]
+async fn subscribe_rejects_empty_kinds_and_bad_cursor_as_invalid_argument() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, _head) = subscribed(&store).await;
+
+    let empty_kinds = SubscribeRequest {
+        filter: Some(WatchFilter::default()),
+        ..starting(StartAt::Now)
+    };
+    let status = client.subscribe(empty_kinds).await.expect_err("refused");
+    assert_eq!(status.code(), Code::InvalidArgument);
+
+    let status = client
+        .subscribe(after("not-a-cursor"))
+        .await
+        .expect_err("refused");
+    assert_eq!(status.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn sixty_fifth_stream_is_resource_exhausted() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, _head) = subscribed(&store).await;
+
+    let mut open = Vec::new();
+    for _ in 0..SUBSCRIBE_STREAMS_MAX {
+        open.push(subscribe_ok(&mut client, starting(StartAt::Now)).await);
+    }
+    let status = client
+        .subscribe(starting(StartAt::Now))
+        .await
+        .expect_err("refused");
+    assert_eq!(status.code(), Code::ResourceExhausted);
+}
+
+/// How many large events the stall tests store: far more than the transport buffers and the
+/// stream's channel hold together.
+const STALL_EVENTS: usize = 200;
+
+/// Stores [`STALL_EVENTS`] webhooks with 64 KiB payloads, opens one stream fewer than the
+/// limit that only carries small marks, then a stream of the payloads that the client never
+/// reads. Returns the streams, the stalled one last.
+async fn stalled(
+    store: &Arc<MemoryWatchLog>,
+    client: &mut WatchServiceClient<Channel>,
+) -> (
+    Vec<Streaming<SubscribeResponse>>,
+    Streaming<SubscribeResponse>,
+) {
+    for _ in 0..STALL_EVENTS {
+        append_payload_webhook(&**store, vec![b'x'; 64 << 10]).await;
+    }
+    let mut idle = Vec::new();
+    for _ in 1..SUBSCRIBE_STREAMS_MAX {
+        idle.push(subscribe_ok(client, starting(StartAt::Now)).await);
+    }
+    let request = SubscribeRequest {
+        include_payload: true,
+        ..starting(StartAt::Oldest)
+    };
+    let stalled = subscribe_ok(client, request).await;
+    (idle, stalled)
+}
+
+#[tokio::test(start_paused = true)]
+async fn unread_stream_closes_unavailable_after_ten_minutes_and_frees_its_slot() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, _head) = subscribed(&store).await;
+    let (_idle, mut stalled) = stalled(&store, &mut client).await;
+
+    sleep(SUBSCRIBE_UNREAD_TIMEOUT + Duration::from_secs(1)).await;
+    let _fresh = subscribe_ok(&mut client, starting(StartAt::Now)).await;
+
+    let (status, events) = drain_to_status(&mut stalled).await;
+    assert_eq!(status.code(), Code::Unavailable);
+    assert!(events < STALL_EVENTS, "{events} events");
+}
+
+#[tokio::test(start_paused = true)]
+async fn append_completes_while_a_client_reads_nothing() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, head) = subscribed(&store).await;
+    let (_idle, _stalled) = stalled(&store, &mut client).await;
+    sleep(Duration::from_secs(1)).await;
+
+    timeout(
+        Duration::from_secs(1),
+        append_and_wake(&*store, &head, webhook()),
+    )
+    .await
+    .expect("the append completes");
+    let status = client
+        .subscribe(starting(StartAt::Now))
+        .await
+        .expect_err("the stalled stream holds its slot");
+    assert_eq!(status.code(), Code::ResourceExhausted);
+}
+
+#[tokio::test]
+async fn include_payload_fills_the_raw_body_and_its_absence_leaves_it_empty() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let raw = br#"{"action":"opened"}"#.to_vec();
+    append_payload_webhook(&*store, raw.clone()).await;
+    let (mut client, _head) = subscribed(&store).await;
+
+    for (include_payload, expected) in [(true, raw), (false, Vec::new())] {
+        let request = SubscribeRequest {
+            include_payload,
+            ..starting(StartAt::Oldest)
+        };
+        let mut stream = subscribe_ok(&mut client, request).await;
+        let Some(Body::GithubWebhook(body)) = event(next(&mut stream).await).body else {
+            panic!("a GitHubWebhook body");
+        };
+        assert_eq!(body.payload, expected, "include_payload {include_payload}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn start_at_now_sends_one_caught_up_then_only_live_events() {
+    let store = Arc::new(MemoryWatchLog::new());
+    append(&*store, webhook()).await;
+    let (mut client, head) = subscribed(&store).await;
+    let request = SubscribeRequest {
+        heartbeat_seconds: 5,
+        ..starting(StartAt::Now)
+    };
+
+    let mut stream = subscribe_ok(&mut client, request).await;
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, head_cursor(&*store).await);
+    let live = append_and_wake(&*store, &head, webhook()).await;
+    assert_eq!(event_id(next(&mut stream).await), live);
+    let beat = timeout(Duration::from_secs(6), next(&mut stream))
+        .await
+        .expect("a mark within 6 s");
+    assert_eq!(
+        mark_of(MarkKind::Heartbeat, beat).cursor,
+        cursor(&*store, live)
+    );
+}
+
+#[tokio::test]
+async fn start_at_oldest_streams_from_the_oldest_event() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let stored = append_webhooks(&*store, 3).await;
+    let (mut client, _head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, starting(StartAt::Oldest)).await;
+    for &id in &stored {
+        assert_eq!(event_id(next(&mut stream).await), id);
+    }
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, cursor(&*store, stored[2]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnected_idle_stream_frees_its_slot() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, _head) = subscribed(&store).await;
+    let mut open = Vec::new();
+    for _ in 0..SUBSCRIBE_STREAMS_MAX {
+        open.push(subscribe_ok(&mut client, starting(StartAt::Now)).await);
+    }
+
+    drop(open.pop());
+    for _ in 0..100 {
+        match client.subscribe(starting(StartAt::Now)).await {
+            Ok(_stream) => return,
+            Err(status) => assert_eq!(status.code(), Code::ResourceExhausted),
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the dropped stream's slot was not freed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn append_racing_the_wait_is_delivered_without_another_wake() {
+    let store = Arc::new(Hooked::new());
+    let first = append(&*store, webhook()).await;
+    let (mut client, head) = subscribed(&store).await;
+    *store.wake_after_read.lock().expect("unpoisoned") = Some((webhook(), head.clone()));
+    let request = SubscribeRequest {
+        heartbeat_seconds: 30,
+        ..after(&cursor(&*store, first))
+    };
+
+    let mut stream = subscribe_ok(&mut client, request).await;
+    let caught_up = mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    assert_eq!(caught_up.cursor, cursor(&*store, first));
+    let racing = timeout(Duration::from_secs(1), next(&mut stream))
+        .await
+        .expect("the racing event within 1 s");
+    assert_eq!(event(racing).cursor, head_cursor(&*store).await);
+}
+
+#[tokio::test]
+async fn dropped_head_sender_ends_idle_streams_unavailable() {
+    let store = Arc::new(MemoryWatchLog::new());
+    let (mut client, head) = subscribed(&store).await;
+
+    let mut stream = subscribe_ok(&mut client, starting(StartAt::Now)).await;
+    mark_of(MarkKind::CaughtUp, next(&mut stream).await);
+    drop(head);
+    let (status, events) = drain_to_status(&mut stream).await;
+    assert_eq!(status.code(), Code::Unavailable);
+    assert_eq!(events, 0);
 }
