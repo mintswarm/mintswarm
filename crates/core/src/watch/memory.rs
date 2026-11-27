@@ -1,6 +1,8 @@
 //! [`MemoryWatchLog`], the in-memory [`WatchLog`] the service's and server's tests use.
+//!
+//! Each method does its work when its future is first polled, as a database store does, so a
+//! future dropped unpolled changes nothing. The lock is taken and released within that poll.
 
-use std::future::{Future, ready};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
@@ -166,43 +168,39 @@ impl Default for MemoryWatchLog {
 impl WatchLog for MemoryWatchLog {
     type Error = WatchError;
 
-    fn append(
+    async fn append(
         &self,
         event: WatchEvent,
         payload: Vec<u8>,
         delivery: Option<String>,
         at: SystemTime,
-    ) -> impl Future<Output = Result<AppendOutcome, WatchError>> + Send {
-        ready(self.append_now(event, payload, delivery, at))
+    ) -> Result<AppendOutcome, WatchError> {
+        self.append_now(event, payload, delivery, at)
     }
 
     fn epoch(&self) -> Uuid {
         self.epoch
     }
 
-    fn read_after(
+    async fn read_after(
         &self,
         after: Option<Cursor>,
         filter: &Filter,
         limit: usize,
         include_payload: bool,
-    ) -> impl Future<Output = Result<Page, WatchError>> + Send {
-        ready(self.read_now(after, filter, limit, include_payload))
+    ) -> Result<Page, WatchError> {
+        self.read_now(after, filter, limit, include_payload)
     }
 
-    fn head(&self) -> impl Future<Output = Result<Option<Cursor>, WatchError>> + Send {
-        ready(self.end_cursor(true))
+    async fn head(&self) -> Result<Option<Cursor>, WatchError> {
+        self.end_cursor(true)
     }
 
-    fn oldest(&self) -> impl Future<Output = Result<Option<Cursor>, WatchError>> + Send {
-        ready(self.end_cursor(false))
+    async fn oldest(&self) -> Result<Option<Cursor>, WatchError> {
+        self.end_cursor(false)
     }
 
-    fn prune(
-        &self,
-        retention: &Retention,
-        now: SystemTime,
-    ) -> impl Future<Output = Result<Pruned, WatchError>> + Send {
-        ready(Ok(self.prune_now(retention, now)))
+    async fn prune(&self, retention: &Retention, now: SystemTime) -> Result<Pruned, WatchError> {
+        Ok(self.prune_now(retention, now))
     }
 }
