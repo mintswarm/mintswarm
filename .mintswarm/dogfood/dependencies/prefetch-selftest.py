@@ -18,7 +18,10 @@ sockets, the response cap); other sources refused with no request; hash
 mismatches and missing hashes; unsafe archives (absolute, `..`, symlink,
 hard link, FIFO, gzip bomb, member count, outside the top directory,
 oversized selected file); proc-macro through `crate-type`; members equal
-only under case or Unicode folding; data after the gzip stream; build and
+only under case or Unicode folding; data after the gzip stream, a truncated
+gzip stream and data after the tar end; a gzip stream read over several
+slices, valid, a bomb, truncated, and ending on a slice boundary with
+trailing bytes; build and
 install code that names files not copied, or that the scan cannot
 follow (`partial`); errors of any kind
 and non-regular members as `failed`, never a crash; the member cap on
@@ -738,6 +741,34 @@ def stream_ends(box: Box):
         T.check(f"F3 {label}: the reason names it", reason in record.get("reason", ""), str(record))
 
 
+def noise(size: int) -> bytes:
+    """size bytes that do not compress, the same on every run."""
+    blocks = (hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(size // 32 + 1))
+    return b"".join(blocks)[:size]
+
+
+def slices(box: Box):
+    small = {"MIB": 64}
+    json_member = ("package/package.json", b'{"name": "rp"}')
+    valid = tgz([json_member, ("package/blob", noise(2000))])
+    record, _ = one_npm(box, raw=valid, caps=small)
+    T.check("slices: a valid stream over several slices is fetched", record.get("status") == "fetched", str(record))
+    bomb = tgz([json_member, ("package/zeros", b"\0" * 200000)])
+    boundary = next(
+        archive
+        for archive in (tgz([json_member, ("package/blob", noise(2000 + n))]) for n in range(4096))
+        if len(archive) % small["MIB"] == 0
+    )
+    for label, raw, caps, reason in (
+        ("a gzip bomb", bomb, {"TOTAL_CAP": 100000}, "decompressed"),
+        ("a truncated stream", valid[:-8], {}, "truncated"),
+        ("a stream ending on a slice boundary, then more", boundary + b"TRAILING", {}, "after its gzip stream"),
+    ):
+        record, _ = one_npm(box, raw=raw, caps=dict(small, **caps))
+        T.check(f"slices: {label}: failed", record.get("status") == "failed", str(record))
+        T.check(f"slices: {label}: the reason names it", reason in record.get("reason", ""), str(record))
+
+
 def build_code(box: Box):
     files = {
         "Cargo.toml": CARGO + b"[lib]\nproc-macro = true\n",
@@ -1046,6 +1077,7 @@ def main() -> int:
             case_folding,
             gzip_tail,
             stream_ends,
+            slices,
             build_code,
             fooled_scan,
             no_crash,
