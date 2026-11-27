@@ -165,7 +165,7 @@ msw-result:
   status: complete          # or failed (an input is missing or empty); never needs_input
   artefact: assessment
   outputs: [.mintswarm/job/outputs/assessment.md]
-  questions: []
+  questions: []             # always [] here: this stage asks no questions (the form other stages use is the example in .mintswarm/stages.md, "Result block")
   reason: ""
 ```
 `````
