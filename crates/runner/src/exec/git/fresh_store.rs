@@ -140,7 +140,7 @@ impl FreshStore {
         let mut store = GitStore::create(&temporary.path().join("objects.git"), git)
             .map_err(FreshStoreError::Store)?;
         // Only this private store fetches over file://, from the job repository alone.
-        store.allow_file = true;
+        store.allow_file_remote();
 
         let mut args: Vec<&str> = FETCH_OPTIONS.to_vec();
         args.extend([UPLOAD_PACK, url.as_str(), id.as_str()]);

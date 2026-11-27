@@ -243,8 +243,8 @@ impl GitStore {
         self.retry = policy;
     }
 
-    /// Allow `file://` remotes: the test-only remote.
-    #[cfg(test)]
+    /// Allow `file://` remotes: the tests' remote, and the job repository a [`super::FreshStore`]
+    /// fetches from.
     pub(crate) fn allow_file_remote(&mut self) {
         self.allow_file = true;
     }

@@ -93,9 +93,7 @@ fn main() -> ExitCode {
         }
         Command::Tool(Tool::MswVcs { .. }) => {
             // as for save-output: the arguments after `tool msw-vcs`, exactly as given
-            let argv: Vec<OsString> = std::env::args_os().skip(3).collect();
-            // an unreadable working directory is then not in a repository, as for the shim
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let (argv, cwd) = operands_and_cwd();
             let code = msw_vcs::run(
                 &argv,
                 &cwd,
