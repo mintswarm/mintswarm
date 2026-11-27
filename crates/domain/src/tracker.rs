@@ -681,11 +681,12 @@ pub trait CodeOwners: TrackerBase {
 /// (design §13 P4), so a [`Tracker`] bound alone does not give it.
 ///
 /// ```compile_fail
-/// use mintswarm_domain::ids::{PrNumber, RevId};
 /// use mintswarm_domain::tracker::{Merges, Tracker};
 ///
-/// fn merge<T: Tracker>(tracker: &T, token: &u8) {
-///     let _ = tracker.merge(token, PrNumber(1), RevId("0".repeat(40)), String::new());
+/// fn merges<M: Merges>() {}
+///
+/// fn tracker<T: Tracker>() {
+///     merges::<T>();
 /// }
 /// ```
 pub trait Merges: TrackerBase {
