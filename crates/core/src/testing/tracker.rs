@@ -8,7 +8,9 @@
 //! a note key, a CODEOWNERS read at a revision that is not a full commit id, and the operations
 //! the GitHub tracker does not support yet. A test may also make it refuse a comment's reactions
 //! and edits, or an artifact's updates, as GitHub refuses a change the installation may not make.
-//! It does not model labels, so a labels-mode role never reads as a conflict.
+//! It does not model labels, so a labels-mode role never reads as a conflict. A test may
+//! script a role's value to change between reads with [`FakeTracker::script_field_changes`], as
+//! a session writing between the plane's read and write would.
 //!
 //! Pull requests carry their reviews, review threads, requested reviewers and changed files, and
 //! commits their checks, statuses and files, all seeded by the test. Each pull request has a
@@ -16,7 +18,7 @@
 //! and a merge. A merge is answered from the pull request's state, or from a script the test
 //! queued with [`FakeTracker::script_merge`], and every merge call is recorded with its token.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
 use mintswarm_domain::field::{
@@ -143,6 +145,8 @@ struct State {
     known_statuses: Option<Vec<String>>,
     unreadable: HashSet<IssueNumber>,
     field_errors: HashMap<IssueNumber, FieldError>,
+    /// The scripted value changes, applied one after each read of the field; `None` clears.
+    field_changes: HashMap<(IssueNumber, FieldSource), VecDeque<Option<String>>>,
     /// The comments carrying the bot's `+1`.
     reacted: HashSet<u64>,
     artifacts: HashMap<(IssueNumber, u64), Artifact>,
@@ -297,6 +301,7 @@ impl FakeTracker {
                 known_statuses: None,
                 unreadable: HashSet::new(),
                 field_errors: HashMap::new(),
+                field_changes: HashMap::new(),
                 reacted: HashSet::new(),
                 artifacts: HashMap::new(),
                 roles: HashMap::new(),
@@ -397,6 +402,22 @@ impl FakeTracker {
     /// Makes every field read and write of `issue` fail with `error`.
     pub fn fail_fields(&self, issue: &IssueNumber, error: FieldError) {
         self.state().field_errors.insert(issue.clone(), error);
+    }
+
+    /// Queues `changes` to a role's field on `issue`: each later read of the field answers from
+    /// the value it holds, then applies the next queued change, `None` clearing the field. The
+    /// changes are not recorded as writes.
+    pub fn script_field_changes(
+        &self,
+        issue: &IssueNumber,
+        field: FieldSource,
+        changes: Vec<Option<String>>,
+    ) {
+        self.state()
+            .field_changes
+            .entry((issue.clone(), field))
+            .or_default()
+            .extend(changes);
     }
 
     /// Seeds the artifact numbered `number` on `issue`, replacing any.
@@ -793,19 +814,31 @@ impl Fields for FakeTracker {
         issue: IssueNumber,
         field: &FieldRef,
     ) -> Result<FieldRead, FieldError> {
-        let state = self.state();
+        let mut state = self.state();
         state.field_check(&issue)?;
-        let Some(name) = state.fields.get(&(issue, field.source.clone())) else {
-            return Ok(FieldRead::Unset);
+        let key = (issue, field.source.clone());
+        let read = match state.fields.get(&key) {
+            None => Ok(FieldRead::Unset),
+            Some(name) if !field.options.contains(name) => {
+                Err(FieldError::Field(FieldFinding::OptionUnmapped))
+            }
+            Some(name) => Ok(FieldRead::Value(FieldValue {
+                field_id: None,
+                option_id: None,
+                name: name.clone(),
+            })),
         };
-        if !field.options.contains(name) {
-            return Err(FieldError::Field(FieldFinding::OptionUnmapped));
+        if let Some(change) = state
+            .field_changes
+            .get_mut(&key)
+            .and_then(VecDeque::pop_front)
+        {
+            match change {
+                Some(name) => state.fields.insert(key, name),
+                None => state.fields.remove(&key),
+            };
         }
-        Ok(FieldRead::Value(FieldValue {
-            field_id: None,
-            option_id: None,
-            name: name.clone(),
-        }))
+        read
     }
 
     async fn set_field(
