@@ -623,6 +623,26 @@ fn check_action_row(action: Action, value: &Value, path: &Path) -> Result<Action
 
     let apps_path = path.key("apps");
     let apps = string_list(required("apps")?, &apps_path)?;
+    for (index, app) in apps.iter().enumerate() {
+        if app.ends_with("[bot]") {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} must be an App slug, without [bot]"),
+            ));
+        }
+        if !is_app_slug(app) {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} must be an App slug: lowercase letters, digits and hyphens"),
+            ));
+        }
+        if apps[..index].contains(app) {
+            return Err(Error::schema(
+                &apps_path,
+                format!("{app:?} is listed twice"),
+            ));
+        }
+    }
     if action != Action::Merge && !apps.is_empty() {
         return Err(Error::schema(
             &apps_path,
@@ -633,6 +653,14 @@ fn check_action_row(action: Action, value: &Value, path: &Path) -> Result<Action
         ));
     }
     Ok(ActionTrust { people, apps })
+}
+
+/// Whether `app` is a GitHub App slug: non-empty, lowercase ASCII letters, digits and hyphens.
+fn is_app_slug(app: &str) -> bool {
+    !app.is_empty()
+        && app
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// `tracker.state` (`with_status`), `tracker.plan_verdict`, `tracker.decomp_verdict` or

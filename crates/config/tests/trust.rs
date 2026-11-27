@@ -291,10 +291,24 @@ fn row_keys_are_checked() {
             actions.insert(action.as_str().to_owned(), json!("none"));
         });
         assert_eq!(refused_at(&text), actions_path(action));
-        let text = with_actions(|actions| {
-            row(actions, action).insert("apps".to_owned(), json!([1]));
-        });
-        assert_eq!(refused_at(&text), format!("{}.apps", actions_path(action)));
+        for apps in [
+            json!([1]),
+            json!([""]),
+            json!([format!("{STEWARD}[bot]")]),
+            json!(["Mintswarm-Dev-Steward"]),
+            json!(["mintswarm dev"]),
+            json!(["mintswarm_dev"]),
+            json!([STEWARD, STEWARD]),
+        ] {
+            let text = with_actions(|actions| {
+                row(actions, action).insert("apps".to_owned(), apps.clone());
+            });
+            assert_eq!(
+                refused_at(&text),
+                format!("{}.apps", actions_path(action)),
+                "{apps}"
+            );
+        }
     }
 }
 
@@ -306,6 +320,10 @@ fn app_outside_merge_is_refused() {
         });
         if action == Action::Merge {
             load_repo_config(&text).expect("merge may trust an App");
+            let text = with_actions(|actions| {
+                row(actions, action).insert("apps".to_owned(), json!([STEWARD, "other-app-2"]));
+            });
+            load_repo_config(&text).expect("merge may trust several Apps");
         } else {
             assert_eq!(refused_at(&text), format!("{}.apps", actions_path(action)));
         }
