@@ -18,7 +18,9 @@ Checks:
   is never closed; an api-request-blob copy holding a valid block, which is
   ignored; a broken final reply after a good earlier one, whose fault is
   reported; a final message that is an unfenced document after a good
-  earlier draft, which is rejected rather than replaced by the draft; a CRLF reply, saved unchanged. Successes name the assistant
+  earlier draft, which is rejected rather than replaced by the draft; a
+  CRLF reply, saved unchanged; a stdout on a closed pipe, which still saves
+  and exits 0 with nothing on stderr. Successes name the assistant
   message used (K of M) and save exactly the document; failures exit 1,
   name the message checked, and write no file; a rejected reply whose
   OUTPUT names no file still exits 1;
@@ -379,6 +381,27 @@ class SaveOutput(Harness):
         # the reply is checked before OUTPUT, so the rejection wins
         path = self.reply_file(SUMMARY + "\n")
         self.assert_rejected(self.run_script("--text", str(path), "/"), "rule 1", "no document block")
+
+    def test_closed_stdout_is_ignored(self):
+        path = self.reply_file(REPLY)
+        self.assert_saved(self.run_script("--text", str(path), str(self.out)))
+        self.out.unlink()
+        self.out.with_name("review.result.json").unlink()
+        read, write = os.pipe()
+        os.close(read)
+        try:
+            proc = subprocess.Popen(
+                [*tool_command(), "--text", str(path), str(self.out)],
+                cwd=self.dir,
+                stdout=write,
+                stderr=subprocess.PIPE,
+            )
+        finally:
+            os.close(write)
+        _, stderr = proc.communicate()
+        self.assertEqual((proc.returncode, stderr), (0, b""), "a closed stdout changed the result")
+        self.assertEqual(self.saved(), DOCUMENT)
+        self.assertTrue(self.out.with_name("review.result.json").is_file())
 
     def test_record_without_id_is_own_message(self):
         path = self.transcript(record(None, text(REPLY)), record(None, text(SUMMARY)))

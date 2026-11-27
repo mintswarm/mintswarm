@@ -90,7 +90,7 @@ order, every key present, null for an absent value and [] for an absent
 list. Both go through temporary files in the target directory, so either
 both are written or neither. Then prints the result block, which
 assistant message the document came from (transcript mode only) and the
-saved size. Exits 0 when saved, 1 when the reply does not follow the rules
+saved size; a failure to write stdout is ignored. Exits 0 when saved, 1 when the reply does not follow the rules
 (nothing is written), 2 on a usage error or when INPUT cannot be read or
 OUTPUT cannot be written (nothing is left behind), or on an unexpected
 error. Read and write failures are reported in fixed phrases, those of
@@ -968,11 +968,28 @@ def run(argv: list) -> int:
     except OutputError as exc:
         print(f"save-output: {exc.message}", file=sys.stderr)
         return 2
-    print(result.rstrip())
-    if where:
-        print(f"document from {where}")
-    print(f"saved {len(document)} characters to {output}")
+    try:
+        print(result.rstrip())
+        if where:
+            print(f"document from {where}")
+        print(f"saved {len(document)} characters to {output}")
+        sys.stdout.flush()
+    except OSError:
+        # the files are saved; a stdout nobody reads changes nothing, as in the port
+        silence_stdout()
     return 0
+
+
+def silence_stdout() -> None:
+    """Point stdout at os.devnull, so that the flush at shutdown cannot report a failed write."""
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(fd, sys.stdout.fileno())
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        pass
 
 
 if __name__ == "__main__":
