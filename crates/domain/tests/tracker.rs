@@ -1,9 +1,10 @@
 //! The tracker's capability traits, their composition, and the shapes they read.
 
-use mintswarm_domain::ids::IssueNumber;
+use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifacts, Assignments, Collaborators, CommentEdits, Comments, Dependency, Direction, Fields,
-    Issue, Issues, LinkKind, Links, Login, PullLinks, Reactions, Statuses, Tracker, TrackerBase,
+    Artifacts, Assignments, CodeOwners, Collaborators, CommentEdits, Comments, Dependency,
+    Direction, Fields, Issue, Issues, LinkKind, Links, Login, Merges, PullLinks, Reactions,
+    Reviews, Statuses, Tracker, TrackerBase,
 };
 
 // Checked at compile time: any type with every capability is a `Tracker`, and a `Tracker` has
@@ -23,22 +24,40 @@ const _: () = {
     }
 
     // The capabilities outside `Tracker` share its one error, `T::Error`.
-    async fn one_error_with_extras<T: Tracker + Reactions + CommentEdits + Collaborators>(
+    async fn one_error_with_extras<
+        T: Tracker + Reactions + CommentEdits + Collaborators + Reviews + CodeOwners + Merges,
+    >(
         tracker: &T,
+        token: &T::MergeToken,
     ) -> Result<(), T::Error> {
         tracker.read_status(IssueNumber(1)).await?;
         tracker.react_plus_one(1).await?;
         tracker.edit_comment(1, String::new()).await?;
         tracker.read_permission(Login("someone".into())).await?;
+        tracker.read_reviews(PrNumber(1)).await?;
+        tracker.read_codeowners(RevId("0".repeat(40))).await?;
+        tracker
+            .merge(token, PrNumber(1), RevId("0".repeat(40)), String::new())
+            .await?;
         Ok(())
     }
 
     fn base<T: TrackerBase>() {}
 
-    fn each_implies_the_base<T: Reactions, U: CommentEdits, V: Collaborators>() {
+    fn each_implies_the_base<
+        T: Reactions,
+        U: CommentEdits,
+        V: Collaborators,
+        W: Reviews,
+        X: CodeOwners,
+        Y: Merges,
+    >() {
         base::<T>();
         base::<U>();
         base::<V>();
+        base::<W>();
+        base::<X>();
+        base::<Y>();
     }
 };
 

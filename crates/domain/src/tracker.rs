@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::field::{FieldError, FieldRead, FieldRef};
+use crate::hosting::CodeOwnersFile;
 use crate::ids::{IssueNumber, PrNumber, RevId};
 use crate::vcs::BranchName;
 
@@ -564,6 +565,147 @@ pub struct PullRequest {
     pub reviews: Vec<Review>,
     pub requested_reviewers: Vec<Login>,
     pub checks: Vec<CheckState>,
+}
+
+/// How a merge the host answered ended: merged, or refused for one of two reasons.
+///
+/// A failure that leaves the merge's fate unknown is the tracker's error instead; see
+/// [`Merges::may_have_landed`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MergeOutcome {
+    /// The pull request was merged, with this merge commit.
+    Merged(Merged),
+    /// The pull request's head is no longer the sha the merge was pinned to; nothing merged.
+    HeadMoved,
+    /// The host refused the merge as the pull request stands; nothing merged.
+    NotMergeable,
+}
+
+/// A pull request's reviews, review comments and threads, requested reviewers, and the checks
+/// and statuses on a commit.
+///
+/// It is not part of [`Tracker`]: only the plane reads them, so a [`Tracker`] bound alone does
+/// not give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::ids::PrNumber;
+/// use mintswarm_domain::tracker::{Reviews, Tracker};
+///
+/// fn reviews<T: Tracker>(tracker: &T) {
+///     let _ = tracker.read_reviews(PrNumber(1));
+/// }
+/// ```
+pub trait Reviews: TrackerBase {
+    /// The pull request's own fields.
+    fn read_pull(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<PullDetail, Self::Error>> + Send;
+
+    /// Every review of the pull request, in the host's order.
+    fn read_reviews(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<Vec<Review>, Self::Error>> + Send;
+
+    /// Every comment on the pull request's diff.
+    fn read_review_comments(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<Vec<ReviewComment>, Self::Error>> + Send;
+
+    /// Every review thread on the pull request, and whether each is resolved.
+    fn read_review_threads(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<Vec<ReviewThread>, Self::Error>> + Send;
+
+    /// The people and teams the pull request's review is still requested from.
+    fn read_requested_reviewers(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<RequestedReviewers, Self::Error>> + Send;
+
+    /// The latest check runs on the commit `sha`.
+    fn read_check_runs(
+        &self,
+        sha: RevId,
+    ) -> impl Future<Output = Result<Vec<CheckRun>, Self::Error>> + Send;
+
+    /// The check suites on the commit `sha`.
+    fn read_check_suites(
+        &self,
+        sha: RevId,
+    ) -> impl Future<Output = Result<Vec<CheckSuite>, Self::Error>> + Send;
+
+    /// The commit statuses on the commit `sha`, combined.
+    fn read_statuses(
+        &self,
+        sha: RevId,
+    ) -> impl Future<Output = Result<CombinedStatus, Self::Error>> + Send;
+}
+
+/// The CODEOWNERS file at a commit, and the paths a pull request changes.
+///
+/// It is not part of [`Tracker`]: only the plane reads them, so a [`Tracker`] bound alone does
+/// not give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::ids::RevId;
+/// use mintswarm_domain::tracker::{CodeOwners, Tracker};
+///
+/// fn owners<T: Tracker>(tracker: &T) {
+///     let _ = tracker.read_codeowners(RevId("0".repeat(40)));
+/// }
+/// ```
+pub trait CodeOwners: TrackerBase {
+    /// The CODEOWNERS file in force at commit `rev`: the first of
+    /// [`CODEOWNERS_PATHS`](crate::hosting::CODEOWNERS_PATHS) that holds a file, or `None` when
+    /// none does. `rev` must be a full commit id; a moving ref such as a branch name is refused
+    /// before the host is asked.
+    fn read_codeowners(
+        &self,
+        rev: RevId,
+    ) -> impl Future<Output = Result<Option<CodeOwnersFile>, Self::Error>> + Send;
+
+    /// Every file the pull request changes.
+    fn read_changed_files(
+        &self,
+        pr: PrNumber,
+    ) -> impl Future<Output = Result<Vec<ChangedFile>, Self::Error>> + Send;
+}
+
+/// Merging pull requests.
+///
+/// It is not part of [`Tracker`], and the runner never implements it: only the plane merges
+/// (design §13 P4), so a [`Tracker`] bound alone does not give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::ids::{PrNumber, RevId};
+/// use mintswarm_domain::tracker::{Merges, Tracker};
+///
+/// fn merge<T: Tracker>(tracker: &T, token: &u8) {
+///     let _ = tracker.merge(token, PrNumber(1), RevId("0".repeat(40)), String::new());
+/// }
+/// ```
+pub trait Merges: TrackerBase {
+    /// The credential a merge is made with, which its caller mints and passes in.
+    type MergeToken: Send + Sync;
+
+    /// Squash-merges `pr` if its head is still `sha`, with `title` as the commit title. The
+    /// call uses `token` and mints nothing. A host refusal is an [`MergeOutcome`]; an error
+    /// may leave the merge's fate unknown, which [`Merges::may_have_landed`] tells.
+    fn merge(
+        &self,
+        token: &Self::MergeToken,
+        pr: PrNumber,
+        sha: RevId,
+        title: String,
+    ) -> impl Future<Output = Result<MergeOutcome, Self::Error>> + Send;
+
+    /// Whether a merge that failed with `error` may have landed all the same, so the caller
+    /// must read the pull request back to learn whether it merged.
+    fn may_have_landed(error: &Self::Error) -> bool;
 }
 
 /// The code host. It declares no merge: the runner never merges.
