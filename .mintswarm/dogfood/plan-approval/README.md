@@ -1,6 +1,6 @@
 # Plan approval while dogfooding
 
-This directory stands in for the control plane's plan approval: the deterministic floor (`floor.py`) and the decision that combines it with the assess stage's judgement (`decision.py`). Until the control plane exists, the session runs them by hand for every implementation plan, as described here. `size.py` reads the size an analysis or a plan states (see Sizes below). `selftest.py` tests the three scripts offline; run it with `python3 -I .mintswarm/dogfood/plan-approval/selftest.py`.
+This directory stands in for the control plane's plan approval: the deterministic floor (`floor.py`) and the decision that combines it with the assess stage's judgement (`decision.py`). Until the control plane exists, the session runs them by hand for every implementation plan, as described here. `size.py` reads the size an analysis or a plan states (see Sizes below). `selftest.py` tests the three scripts offline; run it with `python3 -I .mintswarm/dogfood/plan-approval/selftest.py`. It runs as the `plan-approval-selftest` gate; under `MSW_IMPL=rust` it runs as the `plan-approval-selftest-rust` gate against `mintswarm-runner tool plan-floor` and `tool plan-decision`, while `size.py` stays on Python.
 
 The mode is `pipeline.plan_approval.mode` in `.mintswarm/config.yaml` at the job's base commit, never the worktree's copy:
 

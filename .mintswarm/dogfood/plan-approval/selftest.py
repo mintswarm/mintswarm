@@ -22,6 +22,19 @@ floor.py gets a generated issue document for the case's components, whose criter
 plan's Verification table quotes and whose comments hold a decoy criteria
 section, and an analysis with no questions, and no --screen.
 
+MSW_IMPL picks the implementation under test. Unset or empty, the checks run
+floor.py and decision.py; `rust`, they run `$MSW_RUST_BIN tool plan-floor` and
+`$MSW_RUST_BIN tool plan-decision`, the mintswarm-runner binary, whose path is
+resolved against the starting directory. Any other value, or `rust` without an
+executable MSW_RUST_BIN, exits 2 before any check runs. size.py stays on
+Python either way. Under Rust the `--components` reasons are expected after
+`plan-floor: ` instead of `floor.py: `, and the checks of Python internals or
+wording are skipped, each printing the Rust test that covers it and failing
+unless that `#[test]` fn exists in the file it names: the two missing-`yq`
+checks, the git-logging object store check, the catch-all's `unexpected
+error` wording (its exit 2 and one line still checked), and the glob
+semantics, authority triggers and span checks, which load the scripts.
+
 Checks:
 
 - config: the checkout's config has no pipeline.approve_plan and has the
@@ -287,6 +300,41 @@ CONFIG_PATH = ".mintswarm/config.yaml"
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 RECORD = Path(".mintswarm/job/outputs/decision.json")
 
+
+def usage_error(message):
+    print(f"selftest.py: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve_command():
+    """The mintswarm-runner binary under MSW_IMPL=rust, or None for the Python scripts."""
+    impl = os.environ.get("MSW_IMPL", "")
+    if impl == "":
+        return None
+    if impl != "rust":
+        usage_error(f"MSW_IMPL must be unset, empty or rust, not {impl!r}")
+    binary = os.environ.get("MSW_RUST_BIN", "")
+    if binary == "":
+        usage_error("MSW_IMPL=rust needs MSW_RUST_BIN, the path of the mintswarm-runner binary")
+    path = Path(binary).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        usage_error(f"MSW_RUST_BIN is not an executable file: {path}")
+    return str(path)
+
+
+RUST = os.environ.get("MSW_IMPL", "") == "rust"
+RUST_BIN = resolve_command()
+RUST_TOOLS = {FLOOR: "plan-floor", DECISION: "plan-decision"}
+FLOOR_PREFIX = "plan-floor: " if RUST else "floor.py: "
+
+
+def tool_argv(script: Path, args: list) -> list:
+    """The argv that runs floor.py or decision.py, or under Rust its `tool` command."""
+    if RUST:
+        return [RUST_BIN, "tool", RUST_TOOLS[script], *args]
+    return [sys.executable, str(script), *args]
+
+
 RULES = [
     "footprint",
     "require-human-paths",
@@ -439,6 +487,25 @@ class SelfTest:
 T = SelfTest()
 
 
+def skip_under_rust(check: str, test, path: str) -> None:
+    """Under Rust, skip a check of Python internals or wording; the Rust test `test` in `path` covers it.
+
+    `test` is one test name or a tuple of them. The self-test fails unless each is a `#[test]` fn in `path`.
+    """
+    tests = (test,) if isinstance(test, str) else tuple(test)
+    try:
+        text = (ROOT / path).read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    missing = [t for t in tests if not re.search(r"#\[test\]\s+fn " + re.escape(t) + r"\(", text)]
+    if missing:
+        T.check(f"skip {check}", False, f"no #[test] fn {', '.join(missing)} in {path}")
+    else:
+        print(
+            f"skip {check}: under Rust, {' and '.join(tests)} in {path} {'covers' if len(tests) == 1 else 'cover'} it"
+        )
+
+
 # --- sandbox --------------------------------------------------------------
 
 
@@ -499,7 +566,7 @@ class Sandbox:
 
     def exec(self, args: list, env: dict = None, script: Path = FLOOR):
         return subprocess.run(
-            [sys.executable, str(script), *args],
+            tool_argv(script, args),
             cwd=self.repo,
             env=env or self.env,
             capture_output=True,
@@ -2291,10 +2358,13 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         if name in messages:
             T.check(
                 f"unusable {name}: the reason",
-                proc.stderr.strip() == f"floor.py: {messages[name]}",
+                proc.stderr.strip() == f"{FLOOR_PREFIX}{messages[name]}",
                 proc.stderr.strip(),
             )
 
+    if RUST:
+        skip_under_rust("unusable yq missing", "runs_no_yq_and_no_python", "crates/runner/tests/plan_approval.rs")
+        return
     bindir = sb.tmp / "git-only"
     bindir.mkdir()
     (bindir / "git").symlink_to(shutil.which("git"))
@@ -2361,7 +2431,13 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
     outputs.chmod(0o555)
     try:
         proc = sb.exec(["--plan", good, *args])
-        exit_2("read-only outputs, no stale verdict: exit 2 from the catch-all", proc, unexpected=True)
+        exit_2("read-only outputs, no stale verdict: exit 2 from the catch-all", proc, unexpected=not RUST)
+        if RUST:
+            skip_under_rust(
+                "read-only outputs, no stale verdict: the unexpected error wording",
+                "a_failed_write_is_one_line_exit_2",
+                "crates/runner/tests/plan_approval.rs",
+            )
         T.check(
             "read-only outputs, no stale verdict: no verdict written",
             not verdict.exists() and not list(outputs.glob(".floor.*")),
@@ -3621,16 +3697,21 @@ def check_decision_unusable(sb: Sandbox, d: Decider) -> None:
             f"exit {proc.returncode}, record {'left' if record.exists() else 'gone'}: {proc.stderr.strip()}",
         )
 
-    bindir = sb.tmp / "git-only-decision"
-    bindir.mkdir()
-    (bindir / "git").symlink_to(shutil.which("git"))
-    record.write_text('{"stale": true}\n', encoding="utf-8")
-    proc = sb.exec(args(), env=dict(sb.env, PATH=str(bindir)), script=DECISION)
-    T.check(
-        "decision unusable yq missing: exit 2, no record",
-        proc.returncode == 2 and not record.exists(),
-        f"exit {proc.returncode}: {proc.stderr.strip()}",
-    )
+    if RUST:
+        skip_under_rust(
+            "decision unusable yq missing", "runs_no_yq_and_no_python", "crates/runner/tests/plan_approval.rs"
+        )
+    else:
+        bindir = sb.tmp / "git-only-decision"
+        bindir.mkdir()
+        (bindir / "git").symlink_to(shutil.which("git"))
+        record.write_text('{"stale": true}\n', encoding="utf-8")
+        proc = sb.exec(args(), env=dict(sb.env, PATH=str(bindir)), script=DECISION)
+        T.check(
+            "decision unusable yq missing: exit 2, no record",
+            proc.returncode == 2 and not record.exists(),
+            f"exit {proc.returncode}: {proc.stderr.strip()}",
+        )
 
     record.unlink(missing_ok=True)
     record.mkdir()
@@ -3836,28 +3917,36 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
     T.check("object store: no store is left after clean runs", not stores_left(sb), str(stores_left(sb)))
 
     # every read goes through --git-dir at a store in TMPDIR: a git on PATH that logs its arguments
-    bindir = sb.tmp / "git-logging"
-    bindir.mkdir()
-    log = sb.tmp / "git-arguments.log"
-    wrapper = bindir / "git"
-    wrapper.write_text(
-        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(log))}\nexec {shlex.quote(shutil.which("git"))} "$@"\n',
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
-    path = os.pathsep.join([str(bindir), sb.env.get("PATH", "")])
-    proc, verdict = sb.floor(config_args, env=dict(sb.env, PATH=path))
-    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-    in_store = [c for c in calls if c.startswith(f"--git-dir={sb.store_tmp}/{STORE_PREFIX}")]
-    elsewhere = [c for c in calls if c not in in_store]
-    T.check(
-        "object store: the store is made in TMPDIR, and the base, config and history are read through it",
-        (proc.returncode, verdict) == expected["config"]
-        and all(any(f" {word} " in c for c in in_store) for word in ("fetch", "rev-parse", "show", "log"))
-        and all(c.split(" ")[0] in ("config", "rev-parse", "init") for c in elsewhere)
-        and all("--git-common-dir" in c or "^{object}" in c for c in elsewhere if c.startswith("rev-parse")),
-        f"exit {proc.returncode}; calls {calls}",
-    )
+    if RUST:
+        skip_under_rust(
+            "object store: the store is made in TMPDIR, and the base, config and history are read through it",
+            "the_store_is_fresh_in_tmpdir_and_removed",
+            "crates/runner/tests/plan_approval.rs",
+        )
+    else:
+        bindir = sb.tmp / "git-logging"
+        bindir.mkdir()
+        log = sb.tmp / "git-arguments.log"
+        wrapper = bindir / "git"
+        wrapper.write_text(
+            f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(log))}\n'
+            f'exec {shlex.quote(shutil.which("git"))} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        path = os.pathsep.join([str(bindir), sb.env.get("PATH", "")])
+        proc, verdict = sb.floor(config_args, env=dict(sb.env, PATH=path))
+        calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        in_store = [c for c in calls if c.startswith(f"--git-dir={sb.store_tmp}/{STORE_PREFIX}")]
+        elsewhere = [c for c in calls if c not in in_store]
+        T.check(
+            "object store: the store is made in TMPDIR, and the base, config and history are read through it",
+            (proc.returncode, verdict) == expected["config"]
+            and all(any(f" {word} " in c for c in in_store) for word in ("fetch", "rev-parse", "show", "log"))
+            and all(c.split(" ")[0] in ("config", "rev-parse", "init") for c in elsewhere)
+            and all("--git-common-dir" in c or "^{object}" in c for c in elsewhere if c.startswith("rev-parse")),
+            f"exit {proc.returncode}; calls {calls}",
+        )
 
     dropped = commits["dropped"]
     looser = plain("show", f"{dropped}:{CONFIG_PATH}").stdout
@@ -3937,7 +4026,7 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
 
     # a forged config blob, reachable from a base of its own
     marked = yq_json(CONFIG)
-    marked["selftest_forge_target"] = True
+    marked["components"]["docs"]["description"] = "selftest forge target"
     target = sb.commit_config(as_json(marked), "forge target")
     blob = sb.git("rev-parse", f"{target}:{CONFIG_PATH}")
     forged_args = list(config_args)
@@ -4028,9 +4117,7 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
     subprocess.run(["git", "init", "-q", str(sb.tmp / "pctAx")], env=plain_env, check=True, capture_output=True)
     stale = percent / VERDICT
     stale.write_text('{"stale": true}\n', encoding="utf-8")
-    proc = subprocess.run(
-        [sys.executable, str(FLOOR), *config_args], cwd=percent, env=sb.env, capture_output=True, text=True
-    )
+    proc = subprocess.run(tool_argv(FLOOR, config_args), cwd=percent, env=sb.env, capture_output=True, text=True)
     verdict = json.loads(stale.read_text(encoding="utf-8")) if stale.exists() else None
     T.check(
         "object store, a '%' in the repository path: the verdict is the untampered one",
@@ -4471,9 +4558,18 @@ def main() -> int:
         check_object_store(sb, commits)
         check_size_floor(runner)
         check_size_cli(sb)
-    check_globs()
-    check_authority_triggers()
-    check_span()
+    if RUST:
+        skip_under_rust(
+            "glob semantics",
+            ("every_pattern_and_path_pair_matches_as_floor_py_does", "pinned_cases_match_as_floor_py_does"),
+            "crates/rules/tests/glob.rs",
+        )
+        skip_under_rust("authority triggers", "check_authority_triggers", "crates/rules/tests/plan_decision.rs")
+        skip_under_rust("span", "check_span", "crates/rules/tests/render.rs")
+    else:
+        check_globs()
+        check_authority_triggers()
+        check_span()
     check_size_bands()
     check_stdlib()
     print(f"{T.passed} passed, {T.failed} failed")

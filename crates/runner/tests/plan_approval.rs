@@ -18,9 +18,6 @@
 //! - `yq-missing`: with no `yq` on `PATH`, Python exits 2 with its one `cannot run yq: ` line; the
 //!   Rust tools run no `yq` and give a verdict, exit 0 or 1, with the floor's stderr empty and
 //!   the decision's its one `decision: ` line.
-//! - `unknown-config-key`: the self-test's forge target adds the top-level key
-//!   `selftest_forge_target` to the config, which Python ignores and `mintswarm_config`'s schema
-//!   refuses, so the Rust floor exits 2 on it.
 //!
 //! The Rust tests below stand in for the self-test's cases that check the Python's internals.
 
@@ -75,7 +72,6 @@ fn record() -> Vec<Value> {
 enum Difference {
     FootprintReasons,
     YqMissing,
-    UnknownConfigKey,
 }
 
 /// One side of a recorded call.
@@ -245,15 +241,6 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
     if line["yq"] == false && python.exit() == 2 && matches!(rust.exit(), 0 | 1) {
         return yq_missing(tool, &python, &rust, file, python_prefix);
     }
-    if line["check"] == "check_object_store"
-        && tool == "floor"
-        && matches!(python.exit(), 0 | 1)
-        && rust.exit() == 2
-        && rust.text("stderr") == "plan-floor: config: selftest_forge_target: unknown key\n"
-        && rust.file(file)["state"] == "absent"
-    {
-        return Ok(Some(Difference::UnknownConfigKey));
-    }
     if python.exit() != rust.exit() {
         return Err(format!("exit {} and {}", python.exit(), rust.exit()));
     }
@@ -343,11 +330,7 @@ fn every_selftest_call_equals_the_python() {
         }
     }
     assert!(failures.is_empty(), "differ from the Python: {failures:#?}");
-    for difference in [
-        Difference::FootprintReasons,
-        Difference::YqMissing,
-        Difference::UnknownConfigKey,
-    ] {
+    for difference in [Difference::FootprintReasons, Difference::YqMissing] {
         assert!(
             seen.contains(&difference),
             "{difference:?} is accepted but never seen"

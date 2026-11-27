@@ -12,7 +12,7 @@ The contract of `msw-vcs`, the read-only tool through which stages read the job'
   ```
 
   `base` is the base commit's full id. Other keys are ignored. The shim never falls back to a branch name: without a usable `vcs.json` every call fails with exit code 4. `head` is the worktree's `HEAD`.
-- `.mintswarm/dogfood/msw-vcs-selftest.py` checks the shim against this contract, and runs as the `msw-vcs-selftest` gate. Its cases are data: each is an argv with the exact stdout, stderr and exit code expected, over a fixture repository it builds. The `msw-vcs` tool must give the same stdout, stderr and exit code as the shim on every case.
+- `.mintswarm/dogfood/msw-vcs-selftest.py` checks the shim against this contract, and runs as the `msw-vcs-selftest` gate; under `MSW_IMPL=rust` it runs as the `msw-vcs-selftest-rust` gate against `mintswarm-runner tool msw-vcs`. Its cases are data: each is an argv with the exact stdout, stderr and exit code expected, over a fixture repository it builds. The `msw-vcs` tool must give the same stdout, stderr and exit code as the shim on every case.
 - The tool only reads. It has no write subcommand, writes no file and fetches nothing.
 
 ## Invocation

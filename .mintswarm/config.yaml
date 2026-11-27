@@ -211,8 +211,12 @@ gates:
       command: "cargo build --locked -p mintswarm-runner && MSW_IMPL=rust MSW_RUST_BIN=build/target/debug/mintswarm-runner python3 .mintswarm/dogfood/save-output-selftest.py"
     - name: msw-vcs-selftest
       command: "python3 .mintswarm/dogfood/msw-vcs-selftest.py"
+    - name: msw-vcs-selftest-rust
+      command: "cargo build --locked -p mintswarm-runner && MSW_IMPL=rust MSW_RUST_BIN=build/target/debug/mintswarm-runner python3 .mintswarm/dogfood/msw-vcs-selftest.py"
     - name: plan-approval-selftest
       command: "python3 .mintswarm/dogfood/plan-approval/selftest.py"
+    - name: plan-approval-selftest-rust
+      command: "cargo build --locked -p mintswarm-runner && MSW_IMPL=rust MSW_RUST_BIN=build/target/debug/mintswarm-runner python3 .mintswarm/dogfood/plan-approval/selftest.py"
     - name: decomposition-approval-selftest
       command: "python3 .mintswarm/dogfood/decomposition-approval/selftest.py"
     - name: landing-floor-selftest
