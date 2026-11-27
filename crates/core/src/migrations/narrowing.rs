@@ -163,7 +163,9 @@ pub struct Reading {
     pub advisories: Vec<(Advisory, Object)>,
     /// Each object the statement creates.
     pub creates: Vec<Object>,
-    /// Whether it is a temporary create, which creates nothing here but can shadow any name.
+    /// Whether it may make something temporary: it has a `temp` or `temporary` word, or a name
+    /// starting with `pg_temp`, quoted or not. Such a statement creates nothing here and can
+    /// shadow any name.
     pub temporary: bool,
 }
 
@@ -183,6 +185,13 @@ impl Reading {
 pub fn read(statement: &Statement) -> Reading {
     let mut reading = Reading::default();
     let mut cursor = Cursor::new(&statement.tokens);
+    reading.temporary = statement.tokens.iter().any(|token| match token {
+        Token::Word(word) => {
+            matches!(word.as_str(), "temp" | "temporary") || word.starts_with("pg_temp")
+        }
+        Token::Quoted(name) => name.starts_with("pg_temp"),
+        _ => false,
+    });
     if writes_catalog(statement) {
         let first = cursor.ident().unwrap_or_default().to_uppercase();
         reading.narrows(Narrowing::Unread, Object::Dependants(first));
@@ -499,7 +508,7 @@ const CREATE_MODIFIERS: &[&str] = &[
 ];
 
 /// `CREATE [UNIQUE] INDEX`, whose named index is a created relation in its table's schema, or a
-/// create of a relation, type, function or schema. A temporary create creates nothing here.
+/// create of a relation, type, function or schema. A temporary statement creates nothing here.
 fn read_create(cursor: &mut Cursor<'_>, reading: &mut Reading) {
     let or_replace = cursor.eat_all(&["or", "replace"]);
     let unique = cursor.eat("unique");
@@ -521,9 +530,7 @@ fn read_create(cursor: &mut Cursor<'_>, reading: &mut Reading) {
         }
         return;
     }
-    while let Some(word) = CREATE_MODIFIERS.iter().find(|word| cursor.eat(word)) {
-        reading.temporary |= word.starts_with("temp");
-    }
+    while CREATE_MODIFIERS.iter().any(|word| cursor.eat(word)) {}
     let Some(class) = class(cursor).filter(|_| !unique) else {
         return;
     };
@@ -756,7 +763,7 @@ impl Verdict {
 ///
 /// A narrowing is exempt when its object, or for a column or constraint the table or type that
 /// holds it, is created by an earlier statement of the list. A file that cannot be split is
-/// refused, and creates nothing for later files. After a temporary create, nothing more counts as
+/// refused, and creates nothing for later files. After a temporary statement, nothing counts as
 /// created, since an unqualified name, an index's or a view's included, may then be temporary.
 pub fn check(files: &[(&str, &str)]) -> Verdict {
     let mut verdict = Verdict::default();

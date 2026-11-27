@@ -174,14 +174,35 @@ pub(super) fn word_at(tokens: &[Token], at: usize) -> Option<&str> {
     }
 }
 
-/// Whether a statement may write a system catalog: an `INSERT`, `UPDATE`, `DELETE`, `MERGE`,
-/// `COPY` or `WITH` that names anything starting with `pg_`, `pg_catalog` included.
+/// Whether a statement may write a system catalog. It does when it names anything starting with
+/// `pg_`, `pg_catalog` included, and either has an `insert`, `update`, `delete`, `merge` or `copy`
+/// word anywhere, whatever its leading word, or is a `CREATE VIEW` or `CREATE RULE`. This fails
+/// closed on writes run through `EXPLAIN ANALYZE`, `PREPARE`, a rule or an updatable view.
 pub fn writes_catalog(statement: &Statement) -> bool {
-    let writes = ["insert", "update", "delete", "merge", "copy", "with"];
-    word_at(&statement.tokens, 0).is_some_and(|first| writes.contains(&first))
-        && statement.tokens.iter().any(|token| {
-            matches!(token, Token::Word(name) | Token::Quoted(name) if name.starts_with("pg_"))
-        })
+    let tokens = &statement.tokens;
+    let names_catalog = tokens.iter().any(
+        |token| matches!(token, Token::Word(name) | Token::Quoted(name) if name.starts_with("pg_")),
+    );
+    let writes = tokens.iter().any(|token| {
+        matches!(token, Token::Word(word)
+            if matches!(word.as_str(), "insert" | "update" | "delete" | "merge" | "copy"))
+    });
+    let modifiers = [
+        "or",
+        "replace",
+        "temp",
+        "temporary",
+        "local",
+        "global",
+        "recursive",
+    ];
+    let view_or_rule = word_at(tokens, 0) == Some("create")
+        && (1..tokens.len())
+            .map(|at| word_at(tokens, at))
+            .find(|word| !word.is_some_and(|word| modifiers.contains(&word)))
+            .flatten()
+            .is_some_and(|class| matches!(class, "view" | "rule"));
+    names_catalog && (writes || view_or_rule)
 }
 
 /// Classifies a statement by its leading keywords. Data and grants are closed lists, so anything
