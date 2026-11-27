@@ -405,8 +405,11 @@ class JsonObject(dict):
                 self.duplicates.append(key)
 
 
-def rust_debug(value: str) -> str:
+def rust_debug(value: str, quote: str = '"') -> str:
     """A string as Rust's `{:?}` writes it, as the Rust check's messages quote ids.
+
+    With quote="'", a single character as Rust's `{:?}` writes a char: in single quotes, with
+    `'` escaped and `"` left as it is.
 
     An approximation: Rust's char::escape_debug escapes by its is_printable table and
     Grapheme_Extend, approximated here by general categories. The two agree for ASCII and the
@@ -415,7 +418,7 @@ def rust_debug(value: str) -> str:
     """
     out = []
     for c in value:
-        if c in '"\\':
+        if c in quote + "\\":
             out.append("\\" + c)
         elif c in "\n\r\t\0":
             out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t", "\0": "\\0"}[c])
@@ -423,7 +426,7 @@ def rust_debug(value: str) -> str:
             out.append(f"\\u{{{ord(c):x}}}")
         else:
             out.append(c)
-    return '"' + "".join(out) + '"'
+    return quote + "".join(out) + quote
 
 
 def json_type(value) -> str:
@@ -445,7 +448,8 @@ def plain_problem(text: str) -> str:
     if not text:
         return ""
     if text[0] in INDICATORS or (text[0] in "-?:" and (len(text) == 1 or text[1] in " \t")):
-        return f"starts with {text[0]!r}; quote it with double quotes"
+        first = rust_debug(text[0], quote="'")
+        return f"starts with {first}; quote it with double quotes"
     if ": " in text or text.endswith(":") or ":\t" in text:
         return "holds ': '; quote it with double quotes"
     return ""

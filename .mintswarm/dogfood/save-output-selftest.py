@@ -470,6 +470,7 @@ def result_reply(*lines):
 
 # The reply line of `msw-result:` in result_reply(): the opener, DOCUMENT, the closer, a blank line, the fence.
 BLOCK_LINE = DOCUMENT.count("\n") + 5
+OUTPUTS_LINE = "  outputs: [.mintswarm/job/outputs/review.md]"
 
 
 def array(*questions):
@@ -485,7 +486,7 @@ def block(*questions, status="complete", reason='""', extra=()):
         "msw-result:",
         f"  status: {status}",
         "  artefact: review",
-        "  outputs: [.mintswarm/job/outputs/review.md]",
+        OUTPUTS_LINE,
         *array(*questions),
         f"  reason: {reason}",
         *extra,
@@ -674,6 +675,22 @@ class Questions(Harness):
                 "unpaired surrogate in a scalar",
                 block(good, status="needs_input", reason='"\\ud800"'),
                 [f"line {at[lines[-1]]}: reason: holds an unpaired surrogate"],
+            ),
+            (
+                "outputs item starting with a single quote",
+                [line.replace("[.mintswarm/job/outputs/review.md]", "['x']") for line in lines],
+                [
+                    f"line {at[OUTPUTS_LINE]}: outputs item \"'x'\" is not a plain string: "
+                    "starts with '\\''; quote it with double quotes"
+                ],
+            ),
+            (
+                "outputs item starting with an indicator",
+                [line.replace("[.mintswarm/job/outputs/review.md]", "[&x]") for line in lines],
+                [
+                    f'line {at[OUTPUTS_LINE]}: outputs item "&x" is not a plain string: '
+                    "starts with '&'; quote it with double quotes"
+                ],
             ),
             ("missing key", [line for line in lines if "artefact" not in line], ['missing key "artefact"']),
             (
