@@ -147,6 +147,24 @@ The fence is the design's `(attempt_id, lease_epoch)` pair (design §7.4), writt
 
 The plane drops a fenced event whose fence is stale. A stale fence does not fail `PutBlob`: the blob is still stored, since it is content-addressed.
 
+## Receive checks
+
+Every `runner/v1` message a runner or the plane receives, and the stage result block, passes one check at the edge before anything reads it: `Receive::receive` in `mintswarm_proto::check` (design D15).
+
+- A refused message gives a `ReceiveError` that names the message, the dotted path of the field and the `Rule` it breaks:
+  - `Missing`: a required message, `oneof` case, string, bytes or list is absent or empty;
+  - `NoBody`: a `Connect` envelope has no `body` case this build knows;
+  - `Unspecified` and `UnknownValue`: a required enum is `*_UNSPECIFIED`, or holds a value this build does not know;
+  - `EmptyId`: a required id is empty;
+  - `MalformedSha256`: a sha256 is not 64 lowercase hex characters;
+  - `Zero`: a number that counts from one, such as `seq`, `lease_epoch` or a revision, is zero;
+  - `PartialFence`: a `RunnerEvent` sets some of its fence fields but not all;
+  - `Question`: a `StageResult` question, or its status, breaks the stage contract.
+- The wire checks stop at the first violation, and a failed check closes the stream (design §5.3 rule 6). The `StageResult` check returns every violation at once.
+- `NoBody` is the exception: prost decodes a body case added by a newer peer as no body, so the receiver ignores and counts such an envelope rather than close the stream (design §5.3 rule 5).
+- An `AttemptOutcome` keeps an `AttemptOutcomeKind` it does not know as its raw value, and `effective_kind` reads it as `failed` (design §10).
+- The default instance of every checked message is refused, except `StatBlobsResponse`: an empty list means the plane holds every blob.
+
 ## Versioning and features
 
 - The package is `mintswarm.runner.v1`. A breaking change gets a new version directory beside `v1/` (see [repository layout](repository-layout.md)).
