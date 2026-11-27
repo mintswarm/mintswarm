@@ -80,7 +80,11 @@ RATE_DELAY = 1.0
 MIB = 1024 * 1024
 CRATES_META_CAP = 32 * MIB
 NPM_META_CAP = 64 * MIB
-ARCHIVE_CAP = 32 * MIB
+# An archive's peak memory is about ARCHIVE_CAP + TOTAL_CAP: the compressed body and one decompressed buffer.
+# The largest archives seen, @bufbuild/buf-*@1.75.0 from the npm registry: tarballs of 33,923,210 bytes
+# (darwin-x64), 33,969,156 (win32-x64) and 33,106,311 (linux-x64), against ARCHIVE_CAP of 67,108,864; the largest
+# dist.unpackedSize is 99,778,559 bytes (darwin-x64), against TOTAL_CAP of 134,217,728.
+ARCHIVE_CAP = 64 * MIB
 TOTAL_CAP = 128 * MIB
 MEMBER_CAP = 32 * MIB
 MEMBER_COUNT = 20000
@@ -149,27 +153,26 @@ def make_request(url: str) -> urllib.request.Request:
     return urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json, */*"})
 
 
-def fetch(url: str, cap: int) -> bytes:
-    """The body of url, at most cap bytes; the only network path. Every error is a FetchError."""
+def fetch(url: str, cap: int) -> bytearray:
+    """The body of url as one bytearray, at most cap bytes; the only network path. Every error is a FetchError."""
     host = check_url(url)
     if host in CRATES_HOSTS:
         time.sleep(RATE_DELAY)
     try:
         with opener().open(make_request(url), timeout=TIMEOUT) as response:
-            chunks, size = [], 0
-            while size <= cap:
-                chunk = response.read(min(cap + 1 - size, MIB))
+            body = bytearray()
+            while len(body) <= cap:
+                chunk = response.read(min(cap + 1 - len(body), MIB))
                 if not chunk:
                     break
-                chunks.append(chunk)
-                size += len(chunk)
+                body += chunk
     except urllib.error.HTTPError as exc:
         raise FetchError(f"{url}: HTTP {exc.code}") from exc
     except Exception as exc:
         raise FetchError(f"{url}: {type(exc).__name__}: {exc}") from exc
-    if size > cap:
+    if len(body) > cap:
         raise OverCap(f"{url}: response over {cap} bytes")
-    return b"".join(chunks)
+    return body
 
 
 def fetch_json(url: str, cap: int):
@@ -203,26 +206,34 @@ def newest(items: list, key: str) -> list:
 # --- archives ---------------------------------------------------------------
 
 
-def gunzip(data: bytes) -> bytes:
-    """data, one gzip member and nothing after it, decompressed to at most TOTAL_CAP bytes."""
+def gunzip(data) -> bytearray:
+    """data, one gzip member and nothing after it, decompressed to at most TOTAL_CAP bytes.
+
+    The input is read in MIB slices and each call yields at most MIB, so no full copy of either is made.
+    """
     stream = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    out, pending = bytearray(), data
+    view, out, offset, pending = memoryview(data), bytearray(), 0, b""
     try:
-        while pending:
-            chunk = stream.decompress(pending, TOTAL_CAP + 1 - len(out))
+        while not stream.eof:
+            if not pending:
+                if offset >= len(view):
+                    break
+                pending = view[offset : offset + MIB]
+                offset += len(pending)
+            chunk = stream.decompress(pending, min(MIB, TOTAL_CAP + 1 - len(out)))
             out += chunk
             if len(out) > TOTAL_CAP:
                 raise PackageError("failed", f"archive over {TOTAL_CAP} bytes decompressed")
-            if not chunk and stream.unconsumed_tail == pending:
+            if not chunk and len(stream.unconsumed_tail) == len(pending):
                 break
             pending = stream.unconsumed_tail
     except zlib.error as exc:
         raise PackageError("failed", f"archive is not gzip: {exc}") from exc
     if not stream.eof:
         raise PackageError("failed", "archive gzip stream is truncated")
-    if stream.unused_data:
+    if stream.unused_data or offset < len(view):
         raise PackageError("failed", "archive has data after its gzip stream")
-    return bytes(out)
+    return out
 
 
 def fold(path: str) -> str:
@@ -246,6 +257,36 @@ def unsafe(member: tarfile.TarInfo) -> str:
     return ""
 
 
+class ViewReader(io.RawIOBase):
+    """A seekable, read-only file over a bytes-like value, without the copy io.BytesIO makes of a bytearray."""
+
+    def __init__(self, data):
+        super().__init__()
+        self.view, self.position = memoryview(data), 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self.position, io.SEEK_END: len(self.view)}[whence]
+        if base + offset < 0:
+            raise ValueError("negative seek position")
+        self.position = base + offset
+        return self.position
+
+    def readinto(self, buffer) -> int:
+        piece = self.view[self.position : self.position + len(buffer)]
+        memoryview(buffer).cast("B")[: len(piece)] = piece
+        self.position += len(piece)
+        return len(piece)
+
+
 class Archive:
     """The files of a .tar.gz under its single top directory, read in memory; PackageError when unsafe.
 
@@ -256,7 +297,7 @@ class Archive:
         raw = gunzip(data)
         self.files, self.folded = {}, {}
         try:
-            self.tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+            self.tar = tarfile.open(fileobj=ViewReader(raw), mode="r:")
             count = 0
             while True:
                 member = self.tar.next()
@@ -282,7 +323,7 @@ class Archive:
                 self.folded[fold(rest)] = rest
                 if member.isfile():
                     self.files[rest] = member
-            if raw[self.tar.offset :].strip(b"\0"):
+            if raw.count(b"\0", self.tar.offset) != len(raw) - self.tar.offset:
                 raise PackageError("failed", "archive has data after its end")
         except (tarfile.TarError, EOFError, ValueError) as exc:
             raise PackageError("failed", f"archive cannot be read: {exc}") from exc
