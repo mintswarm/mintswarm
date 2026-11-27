@@ -209,7 +209,7 @@ fn each_statement_is_classified() {
         "ALTER TABLE t ADD COLUMN y int",
         "DROP TABLE t",
         "TRUNCATE t",
-        "SET search_path TO x",
+        "SET lock_timeout = 0",
         "FROBNICATE t",
         "ALTER DEFAULT x",
     ] {
@@ -407,7 +407,6 @@ fn not_narrowing_forms_report_nothing() {
         "GRANT SELECT ON jobs TO r",
         "REVOKE SELECT ON jobs FROM r",
         "COMMENT ON TABLE jobs IS 'DROP TABLE jobs'",
-        "ALTER INDEX jobs_x RENAME TO jobs_y",
         "ALTER TRIGGER t ON jobs RENAME TO u",
         "ALTER TABLE jobs ADD COLUMN y int",
         "ALTER TABLE jobs ADD COLUMN y int NOT NULL DEFAULT 0",
@@ -480,7 +479,7 @@ fn creations_are_reported_and_conditional_creates_create_nothing() {
             "CREATE UNLOGGED TABLE other.jobs (x int)",
             vec![Object::Relation(Name::new("other", "jobs"))],
         ),
-        ("CREATE TEMP VIEW v AS SELECT 1", vec![relation("v")]),
+        ("CREATE TEMP VIEW v AS SELECT 1", vec![]),
         (
             "CREATE MATERIALIZED VIEW m AS SELECT 1",
             vec![relation("m")],
@@ -515,7 +514,7 @@ fn creations_are_reported_and_conditional_creates_create_nothing() {
         ),
         ("CREATE SCHEMA IF NOT EXISTS s", vec![]),
         ("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS y int", vec![]),
-        ("CREATE INDEX i ON jobs (x)", vec![]),
+        ("CREATE INDEX i ON jobs (x)", vec![relation("i")]),
     ];
     for (text, expected) in cases {
         assert_eq!(reading(text).creates, expected, "{text}");
@@ -877,7 +876,7 @@ fn naming_standard_conforming_strings_is_refused() {
             lex_error(&format!(
                 "SELECT 1;\n{text}; SELECT '\\'; DROP TABLE jobs; --'"
             )),
-            LexError::StandardConformingStrings { line: 2 },
+            LexError::SessionSetting { line: 2 },
             "{text}"
         );
     }
@@ -893,7 +892,7 @@ fn naming_set_config_or_pg_settings_is_refused() {
     ] {
         assert_eq!(
             lex_error(&format!("SELECT 1;\n{text};")),
-            LexError::StandardConformingStrings { line: 2 },
+            LexError::SessionSetting { line: 2 },
             "{text}"
         );
     }
@@ -1030,6 +1029,36 @@ fn drops_that_reach_unnamed_objects_are_narrowings() {
     assert!(
         refused.refusals[0]
             .to_string()
-            .contains("the objects DROP OWNED drops")
+            .contains("the objects DROP OWNED reaches")
     );
+}
+
+#[test]
+fn forms_that_could_hide_a_narrowing_are_refused() {
+    for text in [
+        "SELECT 1; -- note\rDROP TABLE jobs;\nSELECT 2",
+        "-- only a comment\rALTER TABLE jobs ALTER email SET NOT NULL",
+        "SET client_encoding = 'SJIS'",
+        "SET NAMES 'SJIS'",
+        "SET search_path TO scratch; CREATE TABLE jobs (id int); RESET search_path; DROP TABLE jobs",
+        "SET SCHEMA 'scratch'",
+        "RESET ALL",
+        "DISCARD ALL",
+        "ALTER INDEX jobs RENAME TO jobs_old",
+        "ALTER INDEX IF EXISTS mintswarm.jobs RENAME TO jobs_old",
+        "CREATE TEMP TABLE jobs (id int); DROP TABLE mintswarm.jobs",
+        "CREATE TEMPORARY TABLE jobs (id int); DROP TABLE jobs; DROP TABLE jobs",
+        "ALTER TABLE jobs ADD COLUMN flag boolean NOT NULL DEFAULT NULL",
+        "ALTER TABLE jobs ADD CONSTRAINT nn NOT NULL email",
+        "ALTER TABLE jobs ADD NOT NULL email",
+        "UPDATE pg_catalog.pg_attribute SET attnotnull = true WHERE attname = 'email'",
+    ] {
+        assert!(!check(&[(FIRST, text)]).is_accepted(), "{text}");
+    }
+    let accepted = "CREATE INDEX i ON jobs (x); ALTER INDEX i RENAME TO j; SET LOCAL lock_timeout = 0; CREATE FUNCTION f() RETURNS int SET search_path = x AS $$ SELECT 1 $$";
+    assert!(check(&[(FIRST, accepted)]).is_accepted());
+    let lone_cr = statements("SELECT 1; -- c\rSELECT 2;\r\nSELECT 3");
+    assert_eq!(lone_cr[2].line, 3);
+    let catalog = one("UPDATE pg_attribute SET attnotnull = true");
+    assert_eq!(classify(&catalog), Kind::Ddl);
 }
