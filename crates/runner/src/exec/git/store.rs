@@ -204,7 +204,7 @@ impl GitStore {
     }
 
     /// The first setting that makes the store a partial clone, as `landing/floor.py` reads them.
-    fn promisor_key(&self) -> Result<Option<String>, GitError> {
+    pub(super) fn promisor_key(&self) -> Result<Option<String>, GitError> {
         let out = self.git(["config", "--list", "-z"])?;
         for entry in out.split(|&byte| byte == 0) {
             let entry = String::from_utf8_lossy(entry);

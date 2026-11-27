@@ -2,6 +2,7 @@
 //! the test-only `file://` remote.
 
 mod bundle;
+mod fresh_store;
 mod history;
 mod read;
 mod retry;
@@ -335,12 +336,12 @@ pub(super) fn script(path: &Path, body: &str) {
 }
 
 /// Set in the child that a test runs in by [`run_in_child`].
-const CHILD: &str = "MSW_TEST_GIT_CHILD";
+pub(super) const CHILD: &str = "MSW_TEST_GIT_CHILD";
 
 /// Run the test `test` again in a child process, with `envs` set in its real environment and
 /// `removed` unset; `std::env::set_var` would need unsafe code. The child writes `done` to the
 /// file `CHILD` names, so a filter that matched nothing cannot pass.
-fn run_in_child(test: &str, dir: &Path, envs: &[(&str, OsString)], removed: &[&str]) {
+pub(super) fn run_in_child(test: &str, dir: &Path, envs: &[(&str, OsString)], removed: &[&str]) {
     let done = dir.join("child-done");
     let mut command = Command::new(std::env::current_exe().unwrap());
     command.args([test, "--exact", "--nocapture", "--test-threads=1"]);
