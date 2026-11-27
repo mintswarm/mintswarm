@@ -36,10 +36,18 @@ message GitHubWebhook {
 }
 
 // An issue dependency: the blocked issue and the issue that blocks it.
+//
+// A side's repository is the payload's `<side>_repo` when it has one.
+// Otherwise it is the delivery's `repository` for the delivery's own side
+// (blocked for `blocked_by_*`, blocking for `blocking_*`), and the owner and
+// name in the issue's own `repository_url` for the far side; with neither it
+// is empty, never the other side's repository.
 message IssueDependency {
-  // The blocked issue; unset when the payload omits it.
+  // The blocked issue; unset when the payload omits it. Its repository is
+  // `blocked_issue_repo`, else as the message comment says.
   ItemRef blocked = 1;
-  // The blocking issue; unset when the payload omits it.
+  // The blocking issue; unset when the payload omits it. Its repository is
+  // `blocking_issue_repo`, else as the message comment says.
   ItemRef blocking = 2;
 }
 

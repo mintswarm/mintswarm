@@ -555,6 +555,72 @@ fn cross_repository_link_names_both_repositories() {
 }
 
 #[test]
+fn far_side_without_its_repo_never_takes_the_delivery_repository() {
+    let issue = |number: u64, repository_url: Option<&str>| {
+        let mut issue = json!({"number": number, "title": "An issue"});
+        if let Some(url) = repository_url {
+            issue["repository_url"] = json!(url);
+        }
+        issue
+    };
+    let item = |repository: &str, number: u64| {
+        Some(ItemRef {
+            repository: repository.to_owned(),
+            number,
+        })
+    };
+    let far_url = Some("https://api.github.com/repos/other/repo");
+    let own_url = Some("https://api.github.com/repos/owner/name");
+    let cases = [
+        // A blocked_by_* delivery is sent for the blocked side; the blocking side is far.
+        (
+            "blocked_by_added",
+            issue(5, own_url),
+            issue(9, far_url),
+            item("owner/name", 5),
+            item("other/repo", 9),
+        ),
+        (
+            "blocked_by_removed",
+            issue(5, None),
+            issue(9, None),
+            item("owner/name", 5),
+            item("", 9),
+        ),
+        // A blocking_* delivery is sent for the blocking side; the blocked side is far.
+        (
+            "blocking_added",
+            issue(5, far_url),
+            issue(9, own_url),
+            item("other/repo", 5),
+            item("owner/name", 9),
+        ),
+        (
+            "blocking_removed",
+            issue(5, Some("https://api.github.com/repos/malformed")),
+            issue(9, None),
+            item("", 5),
+            item("owner/name", 9),
+        ),
+    ];
+    for (action, blocked_issue, blocking_issue, blocked, blocking) in cases {
+        let payload = json!({
+            "action": action,
+            "blocked_issue": blocked_issue,
+            "blocking_issue": blocking_issue,
+            "repository": {"full_name": "owner/name"},
+            "sender": {"login": "contributor-1", "type": "User"},
+        });
+        let out = run_value("issue_dependencies", &payload).event;
+        assert_eq!(
+            dependency(&out),
+            &IssueDependency { blocked, blocking },
+            "{action}"
+        );
+    }
+}
+
+#[test]
 fn one_sided_blocking_added_leaves_blocked_unset() {
     let mut payload = json_of(&fixture("issue_dependencies.blocking_added"));
     let object = payload.as_object_mut().unwrap();

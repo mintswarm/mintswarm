@@ -144,7 +144,7 @@ pub fn normalise(
             .map(untrusted),
         detail: detail(event, &action, payload),
         payload: Vec::new(),
-        dependency: dependency(event, payload),
+        dependency: dependency(event, &action, payload),
     };
 
     let event = v1::WatchEvent {
@@ -213,16 +213,32 @@ impl<'a> Item<'a> {
 }
 
 /// For an `issue_dependencies` delivery, both sides of the link, each set only when the payload
-/// names its issue's number. A side's repository is its `<side>_repo` object's `full_name` when
-/// the payload has one, otherwise the delivery's `repository`.
-fn dependency(event: &str, payload: &Map<String, Value>) -> Option<v1::IssueDependency> {
+/// names its issue's number.
+///
+/// A side's repository is its `<side>_repo` object's `full_name` when the payload has one.
+/// Otherwise it is the delivery's `repository` for the delivery's own side (blocked for a
+/// `blocked_by_*` action, blocking for a `blocking_*` one), and the `<owner>/<name>` of the
+/// issue's own `repository_url` (`…/repos/<owner>/<name>`) for the far side. With none of these
+/// it is empty, so a side never names the other side's repository.
+fn dependency(
+    event: &str,
+    action: &str,
+    payload: &Map<String, Value>,
+) -> Option<v1::IssueDependency> {
     if event != "issue_dependencies" {
         return None;
     }
-    let side = |issue: &str, repo: &str| {
-        let number = payload.get(issue)?.get("number")?.as_u64()?;
-        let repository = text_at(payload.get(repo).and_then(|r| r.get("full_name")))
-            .or_else(|| text_at(payload.get("repository").and_then(|r| r.get("full_name"))))
+    let side = |issue: &str, repo: &str, own: bool| {
+        let object = payload.get(issue)?;
+        let number = object.get("number")?.as_u64()?;
+        let repository = full_name(payload.get(repo))
+            .or_else(|| {
+                if own {
+                    full_name(payload.get("repository"))
+                } else {
+                    text_at(object.get("repository_url")).and_then(repository_of_url)
+                }
+            })
             .unwrap_or_default();
         Some(v1::ItemRef {
             repository: repository.to_owned(),
@@ -230,9 +246,31 @@ fn dependency(event: &str, payload: &Map<String, Value>) -> Option<v1::IssueDepe
         })
     };
     Some(v1::IssueDependency {
-        blocked: side("blocked_issue", "blocked_issue_repo"),
-        blocking: side("blocking_issue", "blocking_issue_repo"),
+        blocked: side(
+            "blocked_issue",
+            "blocked_issue_repo",
+            action.starts_with("blocked_by_"),
+        ),
+        blocking: side(
+            "blocking_issue",
+            "blocking_issue_repo",
+            action.starts_with("blocking_"),
+        ),
     })
+}
+
+/// The `full_name` of a repository object, when it has one.
+fn full_name(object: Option<&Value>) -> Option<&str> {
+    text_at(object?.get("full_name"))
+}
+
+/// The `<owner>/<name>` that an API repository URL, `…/repos/<owner>/<name>`, ends in; `None`
+/// for any other shape.
+fn repository_of_url(url: &str) -> Option<&str> {
+    let (_, path) = url.rsplit_once("/repos/")?;
+    let (owner, name) = path.split_once('/')?;
+    let valid = |part: &str| !part.is_empty() && !part.contains('/');
+    (valid(owner) && valid(name)).then_some(path)
 }
 
 /// The string at `value`, when it is one.
