@@ -782,9 +782,7 @@ fn authentication_md_covers_the_contract() {
     }
 
     assert!(
-        !AUTHENTICATION_MD
-            .lines()
-            .any(|line| names_an_edge_route(line)),
+        !AUTHENTICATION_MD.lines().any(names_an_edge_route),
         "authentication.md names an edge route"
     );
     let lowercase = AUTHENTICATION_MD.to_lowercase();
