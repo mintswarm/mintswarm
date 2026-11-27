@@ -3,7 +3,9 @@
 //!
 //! The lexer removes comments, blanks string literals and leaves dollar-quoted bodies unread,
 //! so nothing inside them is ever seen as SQL. It splits only on a `;` outside all of these, and
-//! fails closed on text it cannot split safely. This file uses `std` only.
+//! fails closed on text it cannot split safely: a `;` inside parentheses, a `BEGIN ATOMIC` body,
+//! and any mention of `standard_conforming_strings`, since the lexer assumes it is on. Whitespace
+//! and identifier characters are Postgres's own classes. This file uses `std` only.
 
 use std::error::Error;
 use std::fmt;
@@ -67,6 +69,18 @@ pub enum LexError {
         /// The line of `atomic`.
         line: usize,
     },
+    /// A `;` inside parentheses, such as a multi-action rule, which the lexer cannot tell from a
+    /// statement's end.
+    SemicolonInParentheses {
+        /// The line of the `;`.
+        line: usize,
+    },
+    /// A mention of `standard_conforming_strings`, whose change would make plain literals read
+    /// differently from how the lexer reads them.
+    StandardConformingStrings {
+        /// The line of the mention.
+        line: usize,
+    },
 }
 
 impl LexError {
@@ -77,7 +91,9 @@ impl LexError {
             | Self::UnterminatedLiteral { line }
             | Self::UnterminatedQuotedIdentifier { line }
             | Self::UnterminatedDollarQuote { line }
-            | Self::AtomicBody { line } => *line,
+            | Self::AtomicBody { line }
+            | Self::SemicolonInParentheses { line }
+            | Self::StandardConformingStrings { line } => *line,
         }
     }
 }
@@ -101,20 +117,30 @@ impl fmt::Display for LexError {
                 f,
                 "line {line}: a BEGIN ATOMIC body cannot be split lexically; use a dollar-quoted body"
             ),
+            Self::SemicolonInParentheses { line } => write!(
+                f,
+                "line {line}: a `;` inside parentheses cannot be split lexically; use one statement per action"
+            ),
+            Self::StandardConformingStrings { line } => write!(
+                f,
+                "line {line}: standard_conforming_strings must stay on, so a migration does not name it"
+            ),
         }
     }
 }
 
 impl Error for LexError {}
 
-/// What a statement does, by its leading keyword.
+/// What a statement does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// Anything that is neither data nor a grant: schema changes and unknown statements.
     Ddl,
-    /// `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, `SELECT`, `WITH`, `DO` or `CALL`.
+    /// `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, `SELECT`, `WITH`, `DO` or `CALL`, except a
+    /// `SELECT` or `WITH` that creates a table with `INTO`.
     Data,
-    /// `GRANT`, `REVOKE` or `ALTER DEFAULT PRIVILEGES`.
+    /// `GRANT`, `REVOKE`, `ALTER DEFAULT PRIVILEGES`, or `CREATE SCHEMA` with a grant or revoke
+    /// among its elements.
     GrantOrRevoke,
 }
 
@@ -123,15 +149,34 @@ const DATA: &[&str] = &[
     "insert", "update", "delete", "merge", "copy", "select", "with", "do", "call",
 ];
 
-/// Classifies a statement by its leading keyword. Data and grants are closed lists, so anything
+/// Classifies a statement by its leading keywords. Data and grants are closed lists, so anything
 /// else, an unknown keyword included, is DDL.
+///
+/// A `SELECT` or `WITH` with any `into` that does not follow `insert` or `merge` is DDL, since
+/// `SELECT … INTO` creates a table. A `CREATE SCHEMA` with any `grant` or `revoke` word is a grant:
+/// both words are reserved, so they cannot be unquoted names.
 pub fn classify(statement: &Statement) -> Kind {
     let word = |at: usize| match statement.tokens.get(at) {
         Some(Token::Word(word)) => Some(word.as_str()),
         _ => None,
     };
+    let any = |found: &dyn Fn(usize, &str) -> bool| {
+        (0..statement.tokens.len()).any(|at| word(at).is_some_and(|next| found(at, next)))
+    };
     match word(0) {
+        Some("select" | "with")
+            if any(&|at, next| {
+                next == "into" && !(at > 0 && matches!(word(at - 1), Some("insert" | "merge")))
+            }) =>
+        {
+            Kind::Ddl
+        }
         Some(first) if DATA.contains(&first) => Kind::Data,
+        Some("create")
+            if word(1) == Some("schema") && any(&|_, next| matches!(next, "grant" | "revoke")) =>
+        {
+            Kind::GrantOrRevoke
+        }
         Some("grant" | "revoke") => Kind::GrantOrRevoke,
         Some("alter") if word(1) == Some("default") && word(2) == Some("privileges") => {
             Kind::GrantOrRevoke
@@ -156,6 +201,9 @@ pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
             break;
         };
         if next == ';' {
+            if current.depth > 0 {
+                return Err(LexError::SemicolonInParentheses { line: lexer.line });
+            }
             lexer.bump();
             current.finish(&mut statements);
             continue;
@@ -174,17 +222,30 @@ pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
 #[derive(Default)]
 struct Building {
     line: usize,
+    /// The parenthesis depth, never below 0.
+    depth: usize,
     text: String,
     tokens: Vec<Token>,
 }
 
 impl Building {
-    /// Adds a token, refusing `begin` directly followed by `atomic`.
+    /// Adds a token, refusing `begin` directly followed by `atomic`, and any word or quoted
+    /// identifier `standard_conforming_strings`, in any case.
     fn push(&mut self, token: Token, raw: &str, line: usize, gap: bool) -> Result<(), LexError> {
         if matches!(&token, Token::Word(word) if word == "atomic")
             && matches!(self.tokens.last(), Some(Token::Word(word)) if word == "begin")
         {
             return Err(LexError::AtomicBody { line });
+        }
+        if matches!(&token, Token::Word(word) | Token::Quoted(word)
+            if word.eq_ignore_ascii_case("standard_conforming_strings"))
+        {
+            return Err(LexError::StandardConformingStrings { line });
+        }
+        match token {
+            Token::Symbol('(') => self.depth += 1,
+            Token::Symbol(')') => self.depth = self.depth.saturating_sub(1),
+            _ => {}
         }
         if self.tokens.is_empty() {
             self.line = line;
@@ -204,7 +265,8 @@ impl Building {
                 line: building.line,
                 text: building
                     .text
-                    .split_whitespace()
+                    .split(is_space)
+                    .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join(" "),
                 tokens: building.tokens,
@@ -246,7 +308,7 @@ impl Lexer {
         let mut gap = false;
         loop {
             match (self.peek(0), self.peek(1)) {
-                (Some(next), _) if next.is_whitespace() => {
+                (Some(next), _) if is_space(next) => {
                     self.bump();
                 }
                 (Some('-'), Some('-')) => {
@@ -380,11 +442,7 @@ impl Lexer {
             return Ok(Token::Param(digits));
         }
         let mut end = self.at + 1;
-        while self
-            .chars
-            .get(end)
-            .is_some_and(|next| next.is_alphanumeric() || *next == '_')
-        {
+        while self.chars.get(end).is_some_and(|next| is_tag_char(*next)) {
             end += 1;
         }
         if self.chars.get(end) != Some(&'$') {
@@ -405,12 +463,31 @@ impl Lexer {
     }
 }
 
-/// Whether a character starts an unquoted word: a letter, a digit or `_`.
-fn is_word_start(next: char) -> bool {
-    next.is_alphanumeric() || next == '_'
+/// Whether a character is whitespace to Postgres: space, tab, newline, carriage return, form
+/// feed or vertical tab, and nothing else.
+fn is_space(next: char) -> bool {
+    matches!(next, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
 }
 
-/// Whether a character continues an unquoted word: a letter, a digit, `_` or `$`.
+/// Whether a character is an identifier letter to Postgres: an ASCII letter, `_`, or any
+/// non-ASCII character.
+fn is_ident_letter(next: char) -> bool {
+    next.is_ascii_alphabetic() || next == '_' || !next.is_ascii()
+}
+
+/// Whether a character starts an unquoted word: an identifier letter, or a digit, so that a
+/// number is a word too.
+fn is_word_start(next: char) -> bool {
+    is_ident_letter(next) || next.is_ascii_digit()
+}
+
+/// Whether a character continues an unquoted word: an identifier letter, a digit or `$`.
 fn is_word_char(next: char) -> bool {
-    next.is_alphanumeric() || next == '_' || next == '$'
+    is_word_start(next) || next == '$'
+}
+
+/// Whether a character continues a dollar-quote tag after its first: an identifier letter or a
+/// digit. A leading digit never gets here, since `$` and a digit is a parameter.
+fn is_tag_char(next: char) -> bool {
+    is_word_start(next)
 }
