@@ -47,12 +47,21 @@ Checks:
   block.yaml, wrapped in a reply, gives exactly its result.json, byte for
   byte.
 
+MSW_IMPL picks the implementation under test. Unset or empty, the checks run
+save-output.py; `rust`, they run `$MSW_RUST_BIN tool save-output`, the
+mintswarm-runner binary, whose path is resolved against the starting
+directory. Any other value, or `rust` without an executable MSW_RUST_BIN,
+exits 2 before any check runs. Under Rust the check that imports
+save-output.py as a module is skipped; the unit test of that name in
+crates/runner/src/tool/save_output.rs covers it.
+
 Prints one line per check and exits 0 only if every check passed.
 Standard library only.
 """
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -90,6 +99,37 @@ RECORD = {
     "pr_title": None,
 }
 FIXTURES = ROOT / "crates" / "domain" / "tests" / "fixtures" / "result-blocks"
+
+
+def usage_error(message):
+    print(f"save-output-selftest: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def resolve_command():
+    """The argv prefix that runs the save-output tool, chosen by MSW_IMPL and MSW_RUST_BIN."""
+    impl = os.environ.get("MSW_IMPL", "")
+    if impl == "":
+        return [sys.executable, "-I", str(SCRIPT)]
+    if impl != "rust":
+        usage_error(f"MSW_IMPL must be unset, empty or rust, not {impl!r}")
+    binary = os.environ.get("MSW_RUST_BIN", "")
+    if binary == "":
+        usage_error("MSW_IMPL=rust needs MSW_RUST_BIN, the path of the mintswarm-runner binary")
+    path = Path(binary).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        usage_error(f"MSW_RUST_BIN is not an executable file: {path}")
+    return [str(path), "tool", "save-output"]
+
+
+RUST = os.environ.get("MSW_IMPL", "") == "rust"
+COMMAND = resolve_command()
+
+
+def tool_command():
+    """The argv prefix that runs the save-output tool under test."""
+    return list(COMMAND)
+
 
 # The document title each artefact's skeleton carries.
 TITLES = {
@@ -165,7 +205,7 @@ class Harness(unittest.TestCase):
 
     def run_script(self, *args):
         return subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), *args],
+            [*tool_command(), *args],
             cwd=self.dir,
             capture_output=True,
             text=True,
@@ -254,7 +294,7 @@ class SaveOutput(Harness):
         reply = broken(REPLY, "```yaml\nmsw-result:\n", "```msw-result\n")
         path = self.transcript(record("msg_1", handback(reply)))
         proc = self.run_script(str(path), str(self.out))
-        self.assert_rejected(proc, "Result block", "tagged 'msw-result'", message="assistant message 1 of 1 (msg_1)")
+        self.assert_rejected(proc, "Result block", 'tagged "msw-result"', message="assistant message 1 of 1 (msg_1)")
 
     # Further cases.
 
@@ -262,7 +302,7 @@ class SaveOutput(Harness):
         reply = broken(REPLY, "```yaml\nmsw-result:\n  status: complete\n", "```yaml\nstatus: complete\n")
         path = self.transcript(record("msg_1", handback(reply)))
         proc = self.run_script(str(path), str(self.out))
-        self.assert_rejected(proc, "Result block", "'status: complete'", "'msw-result:'")
+        self.assert_rejected(proc, "Result block", '"status: complete"', "'msw-result:'")
 
     def test_document_never_closed(self):
         reply = "````markdown\n" + DOCUMENT + "\n" + RESULT
@@ -330,11 +370,11 @@ class SaveOutput(Harness):
             (
                 "rule 6",
                 broken(REPLY, "````\n\n```yaml\nmsw", "````\n\nStatus below.\n\n```yaml\nmsw"),
-                "'Status below.'",
+                '"Status below."',
             ),
             ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```\nmsw-result:"), "untagged"),
-            ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```msw-result"), "tagged 'msw-result'"),
-            ("Result block", broken(REPLY, "msw-result:\n", "result:\n"), "'result:'"),
+            ("Result block", broken(REPLY, "```yaml\nmsw-result:", "```msw-result"), 'tagged "msw-result"'),
+            ("Result block", broken(REPLY, "msw-result:\n", "result:\n"), '"result:"'),
             ("Result block", REPLY.rsplit("```", 1)[0], "result block is never closed"),
         ]
         for rule, reply, fragment in cases:
@@ -402,7 +442,7 @@ class Skeletons(unittest.TestCase):
             out = tmp / f"{stage}-{artefact}.md"
             reply.write_text("\n".join(body) + "\n", encoding="utf-8")
             proc = subprocess.run(
-                [sys.executable, "-I", str(SCRIPT), "--text", str(reply), str(out)],
+                [*tool_command(), "--text", str(reply), str(out)],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -430,6 +470,7 @@ def result_reply(*lines):
 
 # The reply line of `msw-result:` in result_reply(): the opener, DOCUMENT, the closer, a blank line, the fence.
 BLOCK_LINE = DOCUMENT.count("\n") + 5
+OUTPUTS_LINE = "  outputs: [.mintswarm/job/outputs/review.md]"
 
 
 def array(*questions):
@@ -445,7 +486,7 @@ def block(*questions, status="complete", reason='""', extra=()):
         "msw-result:",
         f"  status: {status}",
         "  artefact: review",
-        "  outputs: [.mintswarm/job/outputs/review.md]",
+        OUTPUTS_LINE,
         *array(*questions),
         f"  reason: {reason}",
         *extra,
@@ -635,6 +676,22 @@ class Questions(Harness):
                 block(good, status="needs_input", reason='"\\ud800"'),
                 [f"line {at[lines[-1]]}: reason: holds an unpaired surrogate"],
             ),
+            (
+                "outputs item starting with a single quote",
+                [line.replace("[.mintswarm/job/outputs/review.md]", "['x']") for line in lines],
+                [
+                    f"line {at[OUTPUTS_LINE]}: outputs item \"'x'\" is not a plain string: "
+                    "starts with '\\''; quote it with double quotes"
+                ],
+            ),
+            (
+                "outputs item starting with an indicator",
+                [line.replace("[.mintswarm/job/outputs/review.md]", "[&x]") for line in lines],
+                [
+                    f'line {at[OUTPUTS_LINE]}: outputs item "&x" is not a plain string: '
+                    "starts with '&'; quote it with double quotes"
+                ],
+            ),
             ("missing key", [line for line in lines if "artefact" not in line], ['missing key "artefact"']),
             (
                 "bad enum",
@@ -685,12 +742,15 @@ class Questions(Harness):
             (
                 "text after ]",
                 [line + " extra" if line == "    ]" else line for line in lines],
-                [f"line {at['    ]']}: text after the questions array's closing ]: 'extra'"],
+                [f"line {at['    ]']}: text after the questions array's closing ]: \"extra\""],
             ),
             (
                 "malformed array",
                 [line.replace('"q1", ', '"q1" ') for line in lines],
-                [f"line {at['    ]'] - 1}: the questions array is not valid JSON: Expecting ',' delimiter"],
+                [
+                    f"line {at['  questions: [']}: the questions array is not valid JSON; "
+                    "write it as a JSON array of question objects"
+                ],
             ),
             (
                 "unclosed array",
@@ -706,6 +766,10 @@ class Questions(Harness):
         q = question(question="\x1c", why="\u200b")
         self.assert_accepted(block(q, status="needs_input"), record_of(q, status="needs_input"))
 
+    @unittest.skipIf(
+        RUST,
+        "imports save-output.py; under Rust, write_both_cleans_up_on_any_exception in crates/runner/src/tool/save_output.rs covers it",
+    )
     def test_write_both_cleans_up_on_any_exception(self):
         spec = importlib.util.spec_from_file_location("save_output", SCRIPT)
         module = importlib.util.module_from_spec(spec)
@@ -803,7 +867,7 @@ class Fixtures(unittest.TestCase):
                     reply.write_text(result_reply(*lines), encoding="utf-8")
                     out = Path(tmp) / case.name / "document.md"
                     proc = subprocess.run(
-                        [sys.executable, "-I", str(SCRIPT), "--text", str(reply), str(out)],
+                        [*tool_command(), "--text", str(reply), str(out)],
                         cwd=tmp,
                         capture_output=True,
                         text=True,
