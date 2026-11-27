@@ -821,7 +821,10 @@ fn maintainers_parent() -> ParentIssue {
 #[tokio::test]
 async fn a_parent_author_is_read_with_its_bot_flag_or_as_none() {
     let responder = Responder::start().await;
-    responder.reply(200, r#"{"number":7,"user":{"login":"helper","type":"Bot"}}"#);
+    responder.reply(
+        200,
+        r#"{"number":7,"user":{"login":"helper","type":"Bot"}}"#,
+    );
     responder.reply(200, r#"{"number":7}"#);
     responder.reply(200, r#"{"number":7,"user":null}"#);
     responder.reply(200, r#"{"number":7,"user":{"login":42,"type":"User"}}"#);

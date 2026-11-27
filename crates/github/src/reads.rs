@@ -453,7 +453,9 @@ impl GitHubReads {
         };
         let number = IssueNumber(u64_at(&parent, "number", &endpoint)?);
         let user = parent.get("user").filter(|user| user.is_object());
-        let login = user.and_then(|user| user.get("login")).and_then(Value::as_str);
+        let login = user
+            .and_then(|user| user.get("login"))
+            .and_then(Value::as_str);
         let (author, author_is_bot) = match (user, login) {
             (Some(user), Some(login)) => (
                 Some(Login(login.to_owned())),
@@ -882,7 +884,9 @@ fn summary_total_at(
 /// Whether the user object `user` is a bot, as [`is_bot`] decides from its `login` and `type`.
 pub(crate) fn user_is_bot(user: &Value) -> bool {
     is_bot(
-        user.get("login").and_then(Value::as_str).unwrap_or_default(),
+        user.get("login")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
         user.get("type").and_then(Value::as_str),
     )
 }
