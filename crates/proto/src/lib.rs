@@ -64,6 +64,11 @@ pub mod watch {
     }
 }
 
+/// The receive checks: each received `runner/v1` message, and a stage's
+/// `StageResult`, is accepted or refused with a typed error naming the
+/// message, the field and the rule.
+pub mod check;
+
 /// The proto3 JSON mapping of every generated message, derived from the
 /// protos (design §12.4), with Z-normalised RFC 3339 timestamps.
 ///
