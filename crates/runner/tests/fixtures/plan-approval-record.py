@@ -117,7 +117,7 @@ def git_dirs(cwd: Path, tmpdir: Path, env: dict) -> list:
             text = dot.read_text(encoding="utf-8").strip()
             if not text.startswith("gitdir: "):
                 raise RecorderError(f"{dot} is not a gitdir file")
-            dirs.append((here / text[len("gitdir: "):]).resolve())
+            dirs.append((here / text[len("gitdir: ") :]).resolve())
             break
         if here == bound or here.parent == here or bound not in here.parents:
             break
