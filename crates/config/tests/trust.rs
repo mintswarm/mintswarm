@@ -232,7 +232,13 @@ fn actions_load_into_the_table() {
 
 #[test]
 fn absent_actions_trust_no_one() {
-    let config = load_repo_config(REPO_JSON).expect("the config loads");
+    let text = variant(|c| {
+        c.pointer_mut(TRACKER)
+            .and_then(Value::as_object_mut)
+            .expect("tracker is a mapping")
+            .remove("actions");
+    });
+    let config = load_repo_config(&text).expect("the config loads");
     assert_eq!(config.actions(), &ActionTable::default());
     for action in Action::ALL {
         assert_eq!(
