@@ -1,18 +1,21 @@
-//! The `mintswarm.watch.v1` code: its messages carry the design's fields, the
-//! tonic client and server are exported, a `WatchEvent` round-trips through
-//! prost with a known or an unknown body, and the protos' comments state the
-//! cursor and id rules and the issue dependency's shape.
+//! The `mintswarm.watch.v1` code: its messages carry the design's fields,
+//! including the invalidation bodies and the action reference, the tonic
+//! client and server are exported, a `WatchEvent` round-trips through prost
+//! with a known or an unknown body, the protos' comments state the cursor and
+//! id rules, the issue dependency's shape and the auth codes' meaning, and no
+//! proto of the package imports an `auth.v1` file.
 
 #![cfg(test)]
 
 use std::collections::HashMap;
 
 use mintswarm_proto::watch::v1::{
-    Actor, ActorClass, ActorType, AttributeMatch, Forwarding, GapReason, GetServerInfoRequest,
-    GetServerInfoResponse, GitHubWebhook, IssueDependency, ItemKind, ItemRef,
-    ListWatchEventsRequest, ListWatchEventsResponse, Mark, MarkKind, Party, PartyMatch, Retention,
-    StartAt, Subject, SubscribeRequest, SubscribeResponse, UntrustedText, Verdict, WatchEvent,
-    WatchFilter, subscribe_request, watch_event, watch_service_client, watch_service_server,
+    ActionRef, Actor, ActorClass, ActorType, AttributeMatch, Forwarding, GapReason,
+    GetServerInfoRequest, GetServerInfoResponse, GitHubWebhook, IssueDependency, ItemChanged,
+    ItemKind, ItemRef, LinkChanged, ListWatchEventsRequest, ListWatchEventsResponse, Mark,
+    MarkKind, Party, PartyMatch, Retention, RoleChanged, StartAt, Subject, SubscribeRequest,
+    SubscribeResponse, UntrustedText, Verdict, WatchEvent, WatchFilter, subscribe_request,
+    watch_event, watch_service_client, watch_service_server,
 };
 use prost::Message;
 
@@ -67,6 +70,9 @@ fn envelope() -> WatchEvent {
             verdict: Verdict::Pass.into(),
             rule: "maintainer".to_owned(),
             opt_in: String::new(),
+        }),
+        action: Some(ActionRef {
+            action_id: "0193a1b2-0000-7000-8000-000000000003".to_owned(),
         }),
         body: None,
     }
@@ -174,10 +180,143 @@ fn watch_event_with_a_github_body_round_trips() {
 }
 
 #[test]
-fn body_has_only_the_github_webhook_case() {
-    let body = watch_event::Body::GithubWebhook(github_webhook());
-    match body {
-        watch_event::Body::GithubWebhook(webhook) => assert_eq!(webhook.event, "issue_comment"),
+fn body_has_the_four_cases() {
+    let bodies = [
+        watch_event::Body::GithubWebhook(github_webhook()),
+        watch_event::Body::LinkChanged(LinkChanged {
+            identity_id: "identity".to_owned(),
+        }),
+        watch_event::Body::RoleChanged(RoleChanged {}),
+        watch_event::Body::ItemChanged(ItemChanged {}),
+    ];
+    let names: Vec<&str> = bodies
+        .iter()
+        .map(|body| match body {
+            watch_event::Body::GithubWebhook(_) => "github_webhook",
+            watch_event::Body::LinkChanged(_) => "link_changed",
+            watch_event::Body::RoleChanged(_) => "role_changed",
+            watch_event::Body::ItemChanged(_) => "item_changed",
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "github_webhook",
+            "link_changed",
+            "role_changed",
+            "item_changed"
+        ]
+    );
+}
+
+#[test]
+fn invalidation_bodies_have_exactly_the_design_fields() {
+    let LinkChanged { identity_id } = LinkChanged::default();
+    let _: String = identity_id;
+    let RoleChanged {} = RoleChanged::default();
+    let ItemChanged {} = ItemChanged::default();
+    let fields = block(WATCH, "message LinkChanged {")
+        .lines()
+        .filter(|l| l.trim_end().ends_with(';') && !l.trim_start().starts_with("//"))
+        .count();
+    assert_eq!(fields, 1, "LinkChanged has exactly one field");
+}
+
+#[test]
+fn invalidation_kinds_are_documented() {
+    let event = block(WATCH, "message WatchEvent {");
+    for (line, kind) in [
+        (
+            "LinkChanged link_changed = 21;",
+            "`availability.link_changed`",
+        ),
+        (
+            "RoleChanged role_changed = 22;",
+            "`availability.role_changed`",
+        ),
+        (
+            "ItemChanged item_changed = 23;",
+            "`availability.item_changed`",
+        ),
+    ] {
+        assert_says(&leading_comment(event, line), kind);
+    }
+    let link = leading_comment(WATCH, "message LinkChanged {");
+    assert_says(&link, "`Subscribe`");
+    assert_says(&link, "`ListWatchEvents`");
+    assert_says(
+        &leading_comment(WATCH, "message RoleChanged {}"),
+        "`subject.repository`",
+    );
+    let item = leading_comment(WATCH, "message ItemChanged {}");
+    for field in [
+        "`subject.repository`",
+        "`subject.item_kind`",
+        "`subject.number`",
+    ] {
+        assert_says(&item, field);
+    }
+}
+
+#[test]
+fn action_reference_round_trips() {
+    let event = WatchEvent {
+        kind: "availability.item_changed".to_owned(),
+        body: Some(watch_event::Body::ItemChanged(ItemChanged {})),
+        ..envelope()
+    };
+    let back = WatchEvent::decode(event.encode_to_vec().as_slice()).expect("decodes");
+    assert_eq!(back, event);
+    assert_eq!(
+        back.action
+            .expect("the action reference survives")
+            .action_id,
+        "0193a1b2-0000-7000-8000-000000000003"
+    );
+    let unset = WatchEvent {
+        action: None,
+        ..event
+    };
+    let back = WatchEvent::decode(unset.encode_to_vec().as_slice()).expect("decodes");
+    assert_eq!(back.action, None);
+    assert_eq!(back, unset);
+}
+
+#[test]
+fn auth_codes_are_documented() {
+    let service = leading_comment(WATCH, "service WatchService {");
+    assert_says(&service, "`UNAUTHENTICATED`");
+    assert_says(&service, "expired, revoked or no longer admitted");
+    assert_says(&service, "`PERMISSION_DENIED`");
+    assert_says(&service, "lacks the right");
+    assert!(
+        !service.contains("reserved"),
+        "the service comment still reserves codes: {service}"
+    );
+    let rpcs = block(WATCH, "service WatchService {");
+    for rpc in [
+        "rpc GetServerInfo(",
+        "rpc Subscribe(",
+        "rpc ListWatchEvents(",
+    ] {
+        let comment = leading_comment(rpcs, rpc);
+        assert_says(&comment, "`UNAUTHENTICATED`");
+        assert_says(&comment, "`PERMISSION_DENIED`");
+    }
+    assert_says(
+        &leading_comment(rpcs, "rpc Subscribe("),
+        "Link changes never end a stream",
+    );
+}
+
+#[test]
+fn no_auth_import() {
+    for src in [WATCH, GITHUB, COMMON] {
+        assert!(
+            !src.lines()
+                .any(|l| l.starts_with("import") && l.contains("mintswarm/auth/")),
+            "a proto of the package imports an auth.v1 file"
+        );
     }
 }
 
@@ -397,8 +536,8 @@ fn gap_reason_has_the_three_reasons() {
 fn unknown_body_field_decodes_with_body_unset() {
     let event = envelope();
     let mut bytes = event.encode_to_vec();
-    // Field 21, length-delimited: the varint of (21 << 3) | 2 = 170.
-    bytes.extend_from_slice(&[0xAA, 0x01, 0x03, b'n', b'e', b'w']);
+    // Field 30, length-delimited: the varint of (30 << 3) | 2 = 242.
+    bytes.extend_from_slice(&[0xF2, 0x01, 0x03, b'n', b'e', b'w']);
     let back = WatchEvent::decode(bytes.as_slice()).expect("decodes");
     assert_eq!(back.body, None);
     assert_eq!(back, event);
@@ -531,13 +670,16 @@ fn one_way_import() {
         ["import \"mintswarm/watch/v1/common.proto\";"],
         "github.proto imports only common.proto"
     );
-    let watch = imports(WATCH);
-    for file in ["common", "github"] {
-        assert!(
-            watch.contains(&format!("import \"mintswarm/watch/v1/{file}.proto\";").as_str()),
-            "watch.proto imports {file}.proto"
-        );
-    }
+    assert_eq!(
+        imports(WATCH),
+        [
+            "import \"google/protobuf/duration.proto\";",
+            "import \"google/protobuf/timestamp.proto\";",
+            "import \"mintswarm/watch/v1/common.proto\";",
+            "import \"mintswarm/watch/v1/github.proto\";",
+        ],
+        "watch.proto imports exactly its four files"
+    );
     let defines = |src: &str, message: &str| src.contains(&format!("message {message} {{"));
     assert!(defines(COMMON, "ItemRef"));
     assert!(!defines(WATCH, "ItemRef") && !defines(GITHUB, "ItemRef"));
