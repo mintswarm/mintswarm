@@ -2,13 +2,17 @@ syntax = "proto3";
 
 package mintswarm.watch.v1;
 
+import "mintswarm/watch/v1/common.proto";
+
 // The body of a `github.webhook` event: one verified GitHub webhook
 // delivery.
 //
 // One normaliser maps a verified delivery to the envelope and this body. The
-// envelope's `subject` is the issue or pull request, with its title; `actor`
-// is the delivery's `sender`; `parties` are the item's author, assignees and
-// requested reviewers; and `attributes` holds `event` and `action`.
+// envelope's `subject` is the issue or pull request, with its title; for an
+// `issue_dependencies` delivery it is the issue in `repository`, the side the
+// delivery was sent for. `actor` is the delivery's `sender`; `parties` are the
+// item's author, assignees and requested reviewers; and `attributes` holds
+// `event` and `action`.
 message GitHubWebhook {
   // The X-GitHub-Delivery GUID; unique in the store.
   string delivery = 1;
@@ -24,6 +28,19 @@ message GitHubWebhook {
   // The verified raw JSON payload; sent only when the request sets
   // `include_payload`, for debugging.
   bytes payload = 6;
+  // The link between two issues; set only for `issue_dependencies`
+  // deliveries. `action` is the change: `blocked_by_added`,
+  // `blocked_by_removed`, `blocking_added` or `blocking_removed`. One link
+  // gives two deliveries, one per side, naming the same pair.
+  IssueDependency dependency = 7;
+}
+
+// An issue dependency: the blocked issue and the issue that blocks it.
+message IssueDependency {
+  // The blocked issue; unset when the payload omits it.
+  ItemRef blocked = 1;
+  // The blocking issue; unset when the payload omits it.
+  ItemRef blocking = 2;
 }
 
 // A string that a GitHub user wrote: a title, a body, a label name, a branch

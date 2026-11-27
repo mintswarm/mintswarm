@@ -54,8 +54,9 @@ pub mod job {
 pub mod watch {
     /// Version 1 of the watch protocol: `WatchService`, with the generated
     /// tonic client and server, the `WatchEvent` envelope, the `WatchFilter`
-    /// and the stream's marks (`watch.proto`); and the `github.webhook` body,
-    /// `GitHubWebhook`, with `UntrustedText` (`github.proto`).
+    /// and the stream's marks (`watch.proto`); the `github.webhook` body,
+    /// `GitHubWebhook`, with `IssueDependency` and `UntrustedText`
+    /// (`github.proto`); and `ItemRef`, which both use (`common.proto`).
     ///
     /// Like every client in this crate, the client has no `connect(dst)`
     /// constructor: build one with `WatchServiceClient::new(channel)`.
