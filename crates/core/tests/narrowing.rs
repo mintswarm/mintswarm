@@ -77,6 +77,23 @@ fn the_display_text_drops_comments_and_collapses_whitespace() {
 }
 
 #[test]
+fn a_statements_span_is_its_source_text() {
+    let text = "INSERT INTO a VALUES ('x  y\nž');\n-- A comment.\n  CREATE TABLE b (id int) ;\nSELECT U&\"a b\" FROM c";
+    let spans: Vec<&str> = statements(text)
+        .iter()
+        .map(|statement| &text[statement.span.clone()])
+        .collect();
+    assert_eq!(
+        spans,
+        [
+            "INSERT INTO a VALUES ('x  y\nž')",
+            "CREATE TABLE b (id int)",
+            "SELECT U&\"a b\" FROM c",
+        ]
+    );
+}
+
+#[test]
 fn block_comments_nest() {
     let statement = one("/* outer /* inner */ DROP TABLE a; */ SELECT 1");
     assert_eq!(classify(&statement), Kind::Data);

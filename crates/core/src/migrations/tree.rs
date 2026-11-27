@@ -56,8 +56,7 @@ const fn key(name: &'static str, on_up: bool, on_down: bool, value: bool) -> Key
 /// Every recognised header key, as `key(name, on_up, on_down, value)`. Lifting a refusal
 /// changes one entry.
 const KEYS: &[Key] = &[
-    // On up files, lifted by migrate-plan.
-    key(NO_TRANSACTION, false, true, false),
+    key(NO_TRANSACTION, true, true, false),
     key("depends-on", false, false, true),
     key("irreversible-enum", false, false, true),
     key("code-floor", false, false, true),
@@ -118,6 +117,8 @@ pub struct Migration {
     pub name: String,
     /// The up file's path relative to the tree root, with `/` separators.
     pub up: String,
+    /// Whether the up file runs outside a transaction.
+    pub no_transaction: bool,
     /// The down file, if there is one.
     pub down: Option<Down>,
 }
@@ -355,6 +356,7 @@ pub fn validate(files: &[(&str, &[u8])]) -> Result<Report, Vec<TreeError>> {
                 version: entry.version.to_owned(),
                 name: entry.name.to_owned(),
                 up: entry.file.to_owned(),
+                no_transaction: entry.no_transaction,
                 down: None,
             },
         );

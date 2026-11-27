@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mintswarm_core::migrations::{
-    Down, MintError, TreeError, Warning, embedded, embedded_tree, is_valid_version, mint,
-    read_tree, validate, version_of,
+    Down, MintError, TreeError, Warning, embedded, embedded_tree, is_valid_version, mint, plan,
+    read_tree, recorded, validate, version_of,
 };
 
 const DIR: &str = "mintswarm/migrations";
@@ -179,6 +179,7 @@ fn a_migration_with_its_down_gives_no_warning() {
     assert_eq!(migration.version, "20260101000000");
     assert_eq!(migration.name, "a");
     assert_eq!(migration.up, up);
+    assert!(!migration.no_transaction);
     assert_eq!(
         migration.down,
         Some(Down {
@@ -240,7 +241,6 @@ fn keys_not_implemented_yet_are_refused_on_an_up_file() {
         ("pile-hash", "-- migrate: pile-hash abc"),
         ("pile-commit", "-- migrate: pile-commit abc"),
         ("declared-difference", "-- migrate: declared-difference x"),
-        ("no-transaction", "-- migrate: no-transaction"),
     ] {
         let file = path("20260101000000_a.up.sql");
         let text = format!("-- A table.\n{line}\nCREATE TABLE a ();\n");
@@ -253,6 +253,17 @@ fn keys_not_implemented_yet_are_refused_on_an_up_file() {
             "{key}"
         );
     }
+}
+
+#[test]
+fn an_up_file_may_run_outside_a_transaction() {
+    let file = path("20260101000000_a_idx.up.sql");
+    let text = "-- migrate: no-transaction\nCREATE INDEX CONCURRENTLY a_idx ON a (id);\n";
+    let report = check(&[(&file, text)]).expect("the tree is valid");
+    let [migration] = report.migrations.as_slice() else {
+        panic!("one migration: {:?}", report.migrations);
+    };
+    assert!(migration.no_transaction);
 }
 
 #[test]
@@ -493,4 +504,64 @@ fn mint_creates_the_tree_root_below_an_existing_parent() {
         created.parent(),
         Some(tree.join("mintswarm/migrations").as_path())
     );
+}
+
+/// The up files of a plan's pending migrations.
+fn pending(plan: &mintswarm_core::migrations::Plan<'_>) -> Vec<String> {
+    plan.pending
+        .iter()
+        .map(|migration| migration.up.clone())
+        .collect()
+}
+
+/// A tree of `(path, text)` pairs as the planner takes it.
+fn pairs<'a>(files: &'a [(String, &'a str)]) -> Vec<(&'a str, &'a [u8])> {
+    files
+        .iter()
+        .map(|(file, text)| (file.as_str(), text.as_bytes()))
+        .collect()
+}
+
+#[test]
+fn the_plan_for_an_empty_database_lists_every_file() {
+    let files = [
+        (path("20260102000000_b.up.sql"), "CREATE TABLE b ();"),
+        (path("20260101000000_a.up.sql"), "CREATE TABLE a ();"),
+    ];
+    let tree = pairs(&files);
+    let report = validate(&tree).expect("the tree is valid");
+    let plan = plan(&report, &tree, &[]).expect("nothing drifts");
+    assert_eq!(pending(&plan), [files[1].0.clone(), files[0].0.clone()]);
+    assert!(plan.orphans.is_empty());
+}
+
+#[test]
+fn the_plan_against_a_merge_base_lists_the_remaining_files() {
+    let files = [
+        (path("20260101000000_v1.up.sql"), "CREATE TABLE v1 ();"),
+        (path("20260102000000_v2.up.sql"), "CREATE TABLE v2 ();"),
+        (path("20260103000000_v3.up.sql"), "CREATE TABLE v3 ();"),
+        (path("20260104000000_v4.up.sql"), "CREATE TABLE v4 ();"),
+    ];
+    let base_files = [files[0].clone(), files[2].clone()];
+    let base = pairs(&base_files);
+    let head = pairs(&files);
+    let base_report = validate(&base).expect("the base is valid");
+    let report = validate(&head).expect("the head is valid");
+    let plan = plan(&report, &head, &recorded(&base_report, &base)).expect("nothing drifts");
+    assert_eq!(pending(&plan), [files[1].0.clone(), files[3].0.clone()]);
+    assert!(plan.orphans.is_empty());
+}
+
+#[test]
+fn the_plan_of_a_fully_applied_tree_is_empty() {
+    let files = [
+        (path("20260101000000_a.up.sql"), "CREATE TABLE a ();"),
+        (path("20260102000000_b.up.sql"), "CREATE TABLE b ();"),
+    ];
+    let tree = pairs(&files);
+    let report = validate(&tree).expect("the tree is valid");
+    let plan = plan(&report, &tree, &recorded(&report, &tree)).expect("nothing drifts");
+    assert!(plan.pending.is_empty());
+    assert!(plan.orphans.is_empty());
 }

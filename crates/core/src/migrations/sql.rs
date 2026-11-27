@@ -37,6 +37,9 @@ pub struct Statement {
     /// Its source with comments removed and each whitespace run collapsed to one space, without
     /// the closing `;`.
     pub text: String,
+    /// The byte range of its source in the file's text, from the start of its first token to the
+    /// end of its last, without the closing `;`: the statement exactly as written.
+    pub span: std::ops::Range<usize>,
     /// Its tokens, never empty.
     pub tokens: Vec<Token>,
 }
@@ -277,6 +280,11 @@ pub fn classify(statement: &Statement) -> Kind {
 pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
     let mut lexer = Lexer {
         chars: text.chars().collect(),
+        offsets: text
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain([text.len()])
+            .collect(),
         at: 0,
         line: 1,
     };
@@ -292,16 +300,16 @@ pub fn split(text: &str) -> Result<Vec<Statement>, LexError> {
                 return Err(LexError::SemicolonInParentheses { line: lexer.line });
             }
             lexer.bump();
-            current.finish(&mut statements);
+            current.finish(&mut statements, &lexer.offsets);
             continue;
         }
         let line = lexer.line;
         let start = lexer.at;
         let token = lexer.token()?;
         let raw: String = lexer.chars[start..lexer.at].iter().collect();
-        current.push(token, &raw, line, gap)?;
+        current.push(token, &raw, line, gap, start..lexer.at)?;
     }
-    current.finish(&mut statements);
+    current.finish(&mut statements, &lexer.offsets);
     let changes = |statement: &&Statement| {
         let word = |at: usize| word_at(&statement.tokens, at).unwrap_or_default();
         let target = word(1 + usize::from(matches!(word(1), "session" | "local")));
@@ -319,6 +327,10 @@ struct Building {
     line: usize,
     /// The parenthesis depth, never below 0.
     depth: usize,
+    /// The char index where its first token starts.
+    start: usize,
+    /// The char index where its last token ends.
+    end: usize,
     text: String,
     tokens: Vec<Token>,
 }
@@ -326,7 +338,15 @@ struct Building {
 impl Building {
     /// Adds a token, refusing `begin` directly followed by `atomic`, and any word or quoted
     /// identifier `standard_conforming_strings`, `set_config` or `pg_settings`, in any case.
-    fn push(&mut self, token: Token, raw: &str, line: usize, gap: bool) -> Result<(), LexError> {
+    /// `chars` is the token's range of char indices.
+    fn push(
+        &mut self,
+        token: Token,
+        raw: &str,
+        line: usize,
+        gap: bool,
+        chars: std::ops::Range<usize>,
+    ) -> Result<(), LexError> {
         if matches!(&token, Token::Word(word) if word == "atomic")
             && matches!(self.tokens.last(), Some(Token::Word(word)) if word == "begin")
         {
@@ -346,16 +366,19 @@ impl Building {
         }
         if self.tokens.is_empty() {
             self.line = line;
+            self.start = chars.start;
         } else if gap {
             self.text.push(' ');
         }
         self.text.push_str(raw);
         self.tokens.push(token);
+        self.end = chars.end;
         Ok(())
     }
 
-    /// Ends the statement, keeping it when it has a token.
-    fn finish(&mut self, statements: &mut Vec<Statement>) {
+    /// Ends the statement, keeping it when it has a token. `offsets` maps each char index of the
+    /// text, and its end, to a byte offset.
+    fn finish(&mut self, statements: &mut Vec<Statement>, offsets: &[usize]) {
         let building = std::mem::take(self);
         if !building.tokens.is_empty() {
             statements.push(Statement {
@@ -366,6 +389,7 @@ impl Building {
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join(" "),
+                span: offsets[building.start]..offsets[building.end],
                 tokens: building.tokens,
             });
         }
@@ -375,6 +399,8 @@ impl Building {
 /// A cursor over a file's characters that counts lines.
 struct Lexer {
     chars: Vec<char>,
+    /// The byte offset of each char in the text, and the text's length at the end.
+    offsets: Vec<usize>,
     at: usize,
     line: usize,
 }
