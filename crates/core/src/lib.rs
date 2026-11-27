@@ -5,3 +5,4 @@ pub mod migrations;
 pub mod state_sync;
 pub mod testing;
 pub mod tracker;
+pub mod watch;

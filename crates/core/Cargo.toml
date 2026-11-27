@@ -19,12 +19,15 @@ deadpool-postgres = { workspace = true }
 mintswarm-config = { path = "../config" }
 mintswarm-domain = { path = "../domain" }
 mintswarm-github = { path = "../github" }
+mintswarm-proto = { path = "../proto" }
 rustix = { workspace = true, features = ["process"], optional = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"], optional = true }
 tokio-postgres = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }
