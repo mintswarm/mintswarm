@@ -43,9 +43,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::OnceCell;
+use tokio_postgres::{Client, Config, NoTls};
 
 use crate::migrations::{self, Outcome};
-use tokio_postgres::{Client, Config, NoTls};
 
 pub use discovery::Backend;
 pub use error::PgHarnessError;
