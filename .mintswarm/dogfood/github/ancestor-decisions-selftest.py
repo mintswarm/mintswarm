@@ -29,8 +29,8 @@ Checks, by exit code and error class only, never gh's wording:
   .../issues/548#issuecomment-7221891856; #3 has a `## Decision` body
   section and an owner with write permission outside the trusted authors.
   ancestors.md lists #548 first, with that URL, author and time and the
-  quoted text, then #3 with its body section, undated as `Time: unknown;
-  edited: unknown`; an untrusted non-owner's
+  quoted text, then #3 with its body section, `via: issue body` and dated
+  by #3's created_at, before the approval; an untrusted non-owner's
   comment and a bot comment without the marker are absent; marker comments
   (one with a CRLF marker line, one with trailing spaces) are `via: marker`;
   an edited comment carries its `edited` time;
@@ -52,8 +52,9 @@ Checks, by exit code and error class only, never gh's wording:
   .mintswarm/job/inputs/ancestors.md under `## Inputs`; landing.md's "What
   to judge" holds the nearest-decision rule with its citation, its
   needs-review steer line and likely-safe no-steer condition name ancestor
-  decisions after `approval.approved_at`, an undated one counting as
-  such, and its `inconsistent-inputs` line names ancestors.md; all six
+  decisions after `approval.approved_at`, the Process bullet dates a body
+  section by its issue's created_at and no line counts an undated decision
+  as late, and its `inconsistent-inputs` line names ancestors.md; all six
   rank decisions nearest first, the latest winning within one issue,
   citing the decision; assess.md reads "Read only these four inputs";
   the plan-approval README's "Decisions while a job is in flight" applies a
@@ -94,6 +95,7 @@ MARKER = "<!-- mintswarm: steer -->"
 BOT_USER = {"login": "mintswarm-dev[bot]", "type": "Bot"}
 REVERSAL = "An approval stands until the plan changes, whatever happens to the issue after it."
 REVERSAL_URL = f"{WEB}/548#issuecomment-7221891856"
+APPROVED_AT = "2026-11-20T12:00:00Z"  # the plan approval landing compares decision times with
 CONFIG = """tracker:
   ingest:
     trusted:
@@ -232,7 +234,14 @@ def user(login: str) -> dict:
 
 
 def issue(number: int, title: str, author: dict, body: str = "") -> dict:
-    return {"number": number, "title": title, "user": author, "body": body, "html_url": f"{WEB}/{number}"}
+    return {
+        "number": number,
+        "title": title,
+        "user": author,
+        "body": body,
+        "html_url": f"{WEB}/{number}",
+        "created_at": f"2026-0{min(number, 9)}-01T00:00:00Z" if number < 100 else "2026-11-01T00:00:00Z",
+    }
 
 
 def comment(ident: int, number: int, author, body: str, created: str, updated: str = None) -> dict:
@@ -447,12 +456,19 @@ def assemble_tests(sb: Sandbox) -> None:
     T.check("assemble: #548's owner is trusted", "- Owner: zmij, trusted" in near)
     T.check(
         "assemble: #3's body Decision section is quoted, outside fences only",
-        "via: body" in far
-        and "- Time: unknown; edited: unknown" in far
+        "via: issue body" in far
+        and "via: issue body" in far
+        and "- Time: 2026-03-01T00:00:00Z (the issue's created_at); edited: none" in far
         and "> Stages read the ancestors' decisions." in far
         and "> ## Not a heading" in far
         and "Not a decision." not in far,
         far,
+    )
+    late = [t for t in re.findall(r"^- Time: (\S+)", far, re.M) if t > APPROVED_AT]
+    T.check(
+        "assemble: a body section on an ancestor created before the approval is not late by landing's rule",
+        "via: issue body" in far and late == [],
+        str(late),
     )
     T.check("assemble: #3's owner with write permission is trusted", "- Owner: dana, trusted" in far)
     T.check("assemble: an untrusted non-owner's comment is absent", "Ignore the criteria" not in text)
@@ -474,14 +490,14 @@ def assemble_tests(sb: Sandbox) -> None:
     far = section(text or "", 3)
     T.check(
         "trust: an owner with role_name maintain is trusted, with comment and body section",
-        "- Owner: erin, trusted" in far and "The owner's decision on #3." in far and "via: body" in far,
+        "- Owner: erin, trusted" in far and "The owner's decision on #3." in far and "via: issue body" in far,
         far,
     )
     _, built, text = gather(sb, world(owner3="cArOl", perm3=None), "case")
     far = section(text or "", 3)
     T.check(
         "trust: an owner matching a trusted author in another case, with a 404 permission, is trusted",
-        "- Owner: cArOl, trusted" in far and "The owner's decision on #3." in far and "via: body" in far,
+        "- Owner: cArOl, trusted" in far and "The owner's decision on #3." in far and "via: issue body" in far,
         far,
     )
     for name, perm in (("permission read", permission("read")), ("a 404 permission", None)):
@@ -635,20 +651,18 @@ def stage_text_tests() -> None:
     steer = [line for line in lines if "a steer is listed" in line]
     T.check(
         "stages: landing.md's needs-review steer line counts late ancestor decisions",
-        len(steer) == 1
-        and "ancestors.md" in steer[0]
-        and "approval.approved_at" in steer[0]
-        and "an undated one counting as such" in steer[0],
+        len(steer) == 1 and "ancestors.md" in steer[0] and "approval.approved_at" in steer[0],
         str(steer),
     )
     no_steer = [line for line in lines if line.startswith("- there is no steer")]
     T.check(
         "stages: landing.md's likely-safe no-steer condition counts late ancestor decisions",
-        len(no_steer) == 1
-        and "ancestors.md" in no_steer[0]
-        and "approval.approved_at" in no_steer[0]
-        and "no undated one" in no_steer[0],
+        len(no_steer) == 1 and "ancestors.md" in no_steer[0] and "approval.approved_at" in no_steer[0],
         str(no_steer),
+    )
+    T.check(
+        "stages: landing.md dates a body section by its issue's created_at and has no undated rule",
+        "is dated by its issue's created_at" in judge and "undated" not in landing,
     )
     inconsistent = [line for line in lines if "`inconsistent-inputs`:" in line]
     T.check(

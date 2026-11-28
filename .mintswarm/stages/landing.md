@@ -75,7 +75,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
-  - the ancestor decisions in `ancestors.md` given or edited after `approval.approved_at`, by count, issue, author and time; an undated decision (`Time: unknown`, a body section) counts as given after it;
+  - the ancestor decisions in `ancestors.md` given or edited after `approval.approved_at`, by count, issue, author and time; a body section (`via: issue body`) is dated by its issue's created_at;
   - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
 - **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present, and whether the plan was approved by a human, as Bands defines it. That bears on the bands, and the plan sha256 check is a consistency check.
 
@@ -119,7 +119,7 @@ Pick exactly one band. Check them in this order and take the first whose conditi
 3. `needs-review` (shown as Needs review), confidence 50 to 79, when none of the above holds and any of these holds:
    - an earlier blocker or major finding was disputed, or its fix does not match what was asked;
    - an earlier gate round failed;
-   - a steer is listed: `steers` is not `[]`, or `ancestors.md` lists an ancestor decision given or edited after `approval.approved_at`, an undated one counting as such;
+   - a steer is listed: `steers` is not `[]`, or `ancestors.md` lists an ancestor decision given or edited after `approval.approved_at`;
    - a broad catch-all appears: a catch-everything handler, a swallowed error, `|| true`;
    - `external_steps` is not empty;
    - for a plan not approved by a human only: there is more than one review round, `gate_changes` is not empty, or the diff makes a declared change to `.mintswarm/config.yaml` or to a gate-named file.
@@ -133,7 +133,7 @@ The conditions of `likely-safe` and `safe`:
 - no undeclared dependency, no disabled check or weakened assertion other than a removed or loosened gate that a plan approved by a human declared, or a weakening a listed `weakens-safeguard` trigger names, and no broad catch-all appears;
 - review passed: the last review round is `pass` and `current`, it lists no finding at or above `pipeline.review.clear` and, whatever the setting, no blocker or major finding, and no blocker or major finding was disputed; for a plan not approved by a human, also in its first round: exactly one review round;
 - every gate round passed, and the latest is `current`;
-- there is no steer: `steers` is `[]`, and `ancestors.md` lists no ancestor decision given or edited after `approval.approved_at`, and no undated one;
+- there is no steer: `steers` is `[]`, and `ancestors.md` lists no ancestor decision given or edited after `approval.approved_at`;
 - no review is re-requested: `review_requests` is `[]`;
 - every consistency check holds;
 - every listed check concluded `success`;

@@ -82,9 +82,8 @@ first, with its URL, its owner and whether that owner is trusted. Each
 decision follows, body sections first in body order, then comments by
 created_at and id, with its kind, author, `via`, `time`, `edited` (the
 comment's updated_at when it differs from created_at, else `none`; a body
-section has `time: unknown; edited: unknown`, and the landing stage counts
-such an undated decision as given after the plan's approval) and URL, and its text quoted with every line
-prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
+section is `via: issue body`, dated by its issue's own created_at, with
+`edited: none`) and URL, and its text quoted with every line prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
 `Risk:` line can reach column 0. An ancestor without decisions says
 `No decisions.`; a root issue gives the line `#N has no ancestors.`. The
 file is written to a temporary file and renamed.
@@ -518,8 +517,8 @@ def render(issue: int, chain: list, responses: Responses, authors: set) -> str:
         data = responses.load(f"issue-{number}.json")
         if not isinstance(data, dict) or data.get("number") != number:
             raise InputError(f"issue-{number}.json is not issue #{number}")
-        if not isinstance(data.get("title"), str) or not isinstance(data.get("html_url"), str):
-            raise InputError(f"issue #{number} has no title or html_url")
+        if not all(isinstance(data.get(k), str) for k in ("title", "html_url", "created_at")):
+            raise InputError(f"issue #{number} has no title, html_url or created_at")
         issues[number] = data
     lines = [f"# Ancestor decisions: #{issue}", ""]
     if not chain:
@@ -547,8 +546,8 @@ def render(issue: int, chain: list, responses: Responses, authors: set) -> str:
                 lines += [
                     f"### Decision {count}",
                     "",
-                    f"- Kind: issue body section; author: {author}; via: body",
-                    "- Time: unknown; edited: unknown (an undated body decision counts as given after any approval)",
+                    f"- Kind: issue body section; author: {author}; via: issue body",
+                    f"- Time: {data['created_at']} (the issue's created_at); edited: none",
                     f"- URL: {data['html_url']}",
                     "",
                     *quoted(section),
@@ -622,8 +621,8 @@ def main(argv: list) -> int:
         if command == "assemble":
             try:
                 remove(OUTPUT)
-            except Exception:
-                pass
+            except OSError as removal:
+                print(f"ancestor-decisions: cannot remove {OUTPUT}: {removal}", file=sys.stderr)
         message = " ".join(str(exc).split())
         print(f"ancestor-decisions: unexpected error: {type(exc).__name__}: {message}", file=sys.stderr)
         return 2
