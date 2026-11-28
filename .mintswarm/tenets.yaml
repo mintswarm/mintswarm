@@ -4,3 +4,4 @@ namespace: "@mintswarm/mintswarm"
 packs:
   repository: { path: ".mintswarm/tenets/repository", intent: "internal" }
   rust: { path: ".mintswarm/tenets/rust", intent: "internal" }
+  web: { path: ".mintswarm/tenets/web", intent: "internal" }

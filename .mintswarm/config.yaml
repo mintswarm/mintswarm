@@ -284,10 +284,14 @@ gates:
 # The packs it exports are declared in .mintswarm/tenets.yaml. The format and the schema of this
 # section are in mintswarm/tenets (FORMAT.md, schemas/settings.schema.yaml).
 tenets:
+  # Until docs/conventions/ is retired, these documents say the same things; the tenets win.
+  conventions:
+    paths: ["AGENTS.md", "docs/conventions/**"]
+    precedence: "tenets"
   sources:
     - pack: "@mintswarm/tenets:rust"
       from: "git+https://github.com/mintswarm/tenets"
-      tag: "rust/v0.1.2"
+      tag: "rust/v0.1.3"
       # docs/conventions/rust.md states these without exception, so mintswarm holds itself to must.
       tenets:
         edition-inherited: { strength: "must" }
@@ -304,7 +308,46 @@ tenets:
         api-guidelines: { strength: "must" }
         unit-tests-beside-code: { strength: "must" }
         integration-tests-in-tests-dir: { strength: "must" }
+    - pack: "@mintswarm/tenets:engineering"
+      from: "git+https://github.com/mintswarm/tenets"
+      tag: "engineering/v0.1.0"
+    - pack: "@mintswarm/tenets:typescript"
+      from: "git+https://github.com/mintswarm/tenets"
+      tag: "typescript/v0.1.0"
+      # docs/conventions/typescript.md states these without exception (and prefers readonly).
+      tenets:
+        stricter-index-and-optional: { strength: "must" }
+        no-any: { strength: "must" }
+        no-non-null-assertion: { strength: "must" }
+        catch-unknown: { strength: "must" }
+        exhaustive-switch: { strength: "must" }
+        literal-unions-over-enums: { strength: "must" }
+        type-only-imports: { strength: "must" }
+        es-modules-only: { strength: "must" }
+        formatter-formats: { strength: "must" }
+        lint-clean: { strength: "must" }
+        narrow-lint-suppression: { strength: "must" }
+        named-exports: { strength: "must" }
+        readonly-data: { strength: "should" }
+    - pack: "@mintswarm/tenets:npm"
+      from: "git+https://github.com/mintswarm/tenets"
+      tag: "npm/v0.1.0"
+    - pack: "@mintswarm/tenets:react"
+      from: "git+https://github.com/mintswarm/tenets"
+      tag: "react/v0.1.0"
+      # docs/conventions/react.md states these without exception.
+      tenets:
+        function-components: { strength: "must" }
+        effects-synchronise: { strength: "must" }
+        derive-dont-mirror: { strength: "must" }
+        complete-dependencies: { strength: "must" }
+        stable-keys: { strength: "must" }
+        minimal-lifted-state: { strength: "must" }
+        jsx-without-logic: { strength: "must" }
+        test-by-role: { strength: "must" }
     - pack: "@mintswarm/mintswarm:repository"
       from: "self"
     - pack: "@mintswarm/mintswarm:rust"
+      from: "self"
+    - pack: "@mintswarm/mintswarm:web"
       from: "self"

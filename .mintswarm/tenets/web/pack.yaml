@@ -1,0 +1,7 @@
+id: "web"
+name: "mintswarm web"
+description: "mintswarm's own decisions for its TypeScript and React package at web/, on top of @mintswarm/tenets:typescript, :npm and :react."
+applies:
+  kind: ["design", "plan", "code", "test"]
+  system: { lang: ["ts"] }
+  paths: ["web/**"]
