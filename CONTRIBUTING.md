@@ -4,16 +4,16 @@ mintswarm is fair source under FSL-1.1-ALv2. Contributions need a signed CLA so 
 
 ## Branching model
 
-Trunk-based: `master` is the only long-lived branch, always builds, always passes the gates, and is releasable at any commit.
+Trunk-based: `master` is the only long-lived branch, always builds, always passes the gates, and is releasable at any commit. It is also this repository's work branch, the branch the factory integrates into, named in `.mintswarm/dogfood/project-setup.yaml`.
 
 | Branch | Purpose | Lifetime |
 | --- | --- | --- |
 | `master` | trunk; every change lands here through a PR | permanent |
 | `<type>/<issue>-<slug>` | one change by a person | days, deleted on merge |
-| `mintswarm/<id>-<slug>` | **reserved** for the factory's own work branches | managed by mintswarm |
+| `mintswarm/<id>-<slug>` | **reserved** for the factory's own job branches | managed by mintswarm |
 | `release/<major>.<minor>` | patch line for an already-released version, cut from its tag only when a fix must ship without what is on `master` | until that line is unsupported |
 
-### Work branches
+### Topic branches
 
 Name them `<type>/<issue>-<slug>`, lower case, hyphens:
 
@@ -28,7 +28,7 @@ exp/3-claude-headless-interrupt
 
 - Keep branches short-lived: aim to merge within a few days. Large work lands in steps behind a disabled code path or config flag, not on a long-running branch.
 - Rebase on `master` to pick up changes; do not merge `master` into your branch.
-- Force-push your own work branch freely (`--force-with-lease`); never anyone else's.
+- Force-push your own topic branch freely (`--force-with-lease`); never anyone else's.
 - `exp/*` branches hold spikes. They never merge: the findings go to the spike's issue, and what they settle goes into `docs/architecture/` through a normal PR.
 
 ### Reserved prefix
@@ -52,7 +52,7 @@ docs(docs): describe the repository layout
 
 Scopes are the project's components, defined under `components` in `.mintswarm/config.yaml`: CI workflows and repository tooling use `tooling`, `docs/` and the top-level documents use `docs`. The scope is the issue's components, comma-separated in the issue's order with no spaces, such as `feat(domain,agents): …`. A change that also touches the `shared` paths listed in that file takes the scope of the components it is made for; a change confined to `shared` paths has no scope (`chore: bump tokio`). A breaking change to a contract (proto, migration semantics, config schema, job MCP tools) carries `!` and a `BREAKING CHANGE:` footer.
 
-Inside a work branch commits can be as small as you like; the PR title is what lands on `master`.
+Inside a topic branch commits can be as small as you like; the PR title is what lands on `master`.
 
 ## Pull requests
 
@@ -90,6 +90,6 @@ The `gates` workflow (`.github/workflows/gates.yml`) reports one status check pe
 
 The gates are the `gates.run` entries of `.mintswarm/config.yaml`; `.github/workflows/gates.yml` runs each one as its own check. Before pushing, run the same commands: each entry's `command`, on its own from the repository root, for example in a subshell `( … )`, since some of them `cd` into `web/` and the next one expects the root again.
 
-`whitespace` needs `origin/master` fetched. Some gates need tools beyond the Rust and Python toolchains: `black` for `python-format`, `cargo-nextest` for `rust-test`, a local PostgreSQL (`initdb` and `postgres` on `PATH`, through `pg_config`, or in `MINTSWARM_PG_BIN`) or `docker` or `podman` with the `postgres:17` image already pulled for `rust-test-postgres`, `yq` for the dogfood selftests, and Node and `pnpm` for `proto-lint` and the `typescript-*` gates, which install buf and the TypeScript tools from `web/pnpm-lock.yaml` through `web-install.sh`. Use the versions CI uses: `make required-versions`, which itself needs `yq`, lists each tool's version with the file that pins it.
+`whitespace` needs the work branch fetched (`origin/master` here). Some gates need tools beyond the Rust and Python toolchains: `black` for `python-format`, `cargo-nextest` for `rust-test`, a local PostgreSQL (`initdb` and `postgres` on `PATH`, through `pg_config`, or in `MINTSWARM_PG_BIN`) or `docker` or `podman` with the `postgres:17` image already pulled for `rust-test-postgres`, `yq` for the dogfood selftests, and Node and `pnpm` for `proto-lint` and the `typescript-*` gates, which install buf and the TypeScript tools from `web/pnpm-lock.yaml` through `web-install.sh`. Use the versions CI uses: `make required-versions`, which itself needs `yq`, lists each tool's version with the file that pins it.
 
 The gate commands write their build output only under the git-ignored `build/` at the repository root, never next to sources. The dependency install (`web-install.sh`) writes `node_modules/` under `web/`, which is a dependency install, not build output.

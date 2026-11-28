@@ -40,7 +40,7 @@ Return `design.md` as `.mintswarm/stages.md` describes. Leave out sections that 
 
 - **Issue:** #<n>, and what it is part of.
 - **Inputs:** the issue with its decisions, the analysis, the parent artefacts used.
-- **Repository evidence:** the base commit, and changes on the default branch the design assumes.
+- **Repository evidence:** the base commit, and changes on the work branch the design assumes.
 - **Not designed here:** what is left to other issues, with their numbers.
 
 ## 1. Summary
