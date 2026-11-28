@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report plan approvals and other commands given on the tracker, with a verdict on each; never write.
 
-    watch-plan-approvals.py ISSUE... [--base origin/master]
+    watch-plan-approvals.py ISSUE... [--base origin/<work branch>]
     watch-plan-approvals.py --commands CONTEXT
 
 Dogfooding stand-in for the control plane's handler of `/approve-plan`, of
@@ -427,7 +427,7 @@ def watch(number: int, config: dict) -> list:
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(description="Report tracker commands and hand-set plan approved values.")
     parser.add_argument("issues", type=int, nargs="*", metavar="ISSUE", help="issue numbers")
-    parser.add_argument("--base", default="origin/master", help="ref to read the config at (default origin/master)")
+    parser.add_argument("--base", default=None, help="ref to read the config at (default origin/<work branch>)")
     parser.add_argument("--commands", metavar="CONTEXT", help="print the Commands section of CONTEXT and exit")
     args = parser.parse_args(argv)
 
@@ -443,6 +443,8 @@ def main(argv: list) -> int:
             raise ms.UsageError("give at least one issue")
         if any(number <= 0 for number in args.issues):
             raise ms.UsageError("issue numbers must be positive")
+        if args.base is None:
+            args.base = ms.default_base()
         config = ms.settings(args.base)
         found = [line for number in args.issues for line in watch(number, config)]
     except ms.UsageError as err:

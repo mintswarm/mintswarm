@@ -2,8 +2,8 @@
 """Stand-in for mikefarah yq in the Linux check image, built on PyYAML.
 
 Accepts only "yq -o=json . FILE", the one form reclassify.py and msw-state.py
-use (with FILE /dev/stdin), and
-refuses anything else, so a new use of yq fails loudly instead of differing
+use (with FILE /dev/stdin) and ../../project-setup.py uses (with FILE its
+project-setup.yaml), and refuses anything else, so a new use of yq fails loudly instead of differing
 from the real tool.
 """
 import json

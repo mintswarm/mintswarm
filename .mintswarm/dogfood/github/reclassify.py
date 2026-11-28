@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Re-classify an implementation issue as a plan when its analysis splits it.
 
-    reclassify.py split ISSUE --analysis PATH --analysis-url URL [--base origin/master] [--dry-run]
-    reclassify.py check-parent PARENT [--base origin/master]
+    reclassify.py split ISSUE --analysis PATH --analysis-url URL [--base origin/<work branch>] [--dry-run]
+    reclassify.py check-parent PARENT [--base origin/<work branch>]
 
 Dogfooding stand-in for the runner's re-classification before decomposition.
 Every GitHub call goes through bot-gh.sh, so as mintswarm-dev[bot].
@@ -68,6 +68,7 @@ configuration. Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -312,6 +313,21 @@ def check_parent(number: int, base: str) -> int:
     return 1
 
 
+def default_base() -> str:
+    """origin/ and the work branch, read by ../project-setup.py loaded by path; RuntimeError when it cannot be."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to project-setup.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_project_setup", HERE.parent / "project-setup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        raise RuntimeError("cannot load project-setup.py") from None
+    try:
+        return "origin/" + module.work_branch()
+    except module.SetupError as err:
+        raise RuntimeError(f"cannot read the work branch: {err}") from None
+
+
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(description="Re-classify a split issue as a plan, or check a parent's type.")
     sub = parser.add_subparsers(dest="action", required=True)
@@ -319,14 +335,16 @@ def main(argv: list) -> int:
     s.add_argument("number", type=int, help="issue number")
     s.add_argument("--analysis", required=True, help="path to the published analysis.md")
     s.add_argument("--analysis-url", required=True, help="the analysis artifact's html_url")
-    s.add_argument("--base", default="origin/master", help="ref to read the config at (default origin/master)")
+    s.add_argument("--base", default=None, help="ref to read the config at (default origin/<work branch>)")
     s.add_argument("--dry-run", action="store_true", help="print the lines, change nothing")
     c = sub.add_parser("check-parent", help="refuse a parent that is neither a plan nor a design issue")
     c.add_argument("number", type=int, help="parent issue number")
-    c.add_argument("--base", default="origin/master", help="ref to read the config at (default origin/master)")
+    c.add_argument("--base", default=None, help="ref to read the config at (default origin/<work branch>)")
     args = parser.parse_args(argv)
 
     try:
+        if getattr(args, "base", "") is None:
+            args.base = default_base()
         if args.number <= 0:
             raise UsageError("the issue number must be positive")
         if args.action == "split":

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Request review on a PR from the code owners of its changed paths.
 
-    request-review.py PR --branch B [--base origin/master] [--dry-run]
-    request-review.py PR --files F... [--base origin/master] [--dry-run]
+    request-review.py PR --branch B [--base origin/<work branch>] [--dry-run]
+    request-review.py PR --files F... [--base origin/<work branch>] [--dry-run]
 
 Dogfooding stand-in for the runner's review requests. Run it after the PR is
 opened and again after it is marked ready for review.
@@ -32,6 +32,7 @@ Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
@@ -79,16 +80,35 @@ def request(pr: int, logins: list) -> list:
     return [r.get("login", "") for r in response.get("requested_reviewers") or []]
 
 
+def default_base() -> str:
+    """origin/ and the work branch, read by ../project-setup.py loaded by path; RuntimeError when it cannot be."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to project-setup.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_project_setup", HERE.parent / "project-setup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        raise RuntimeError("cannot load project-setup.py") from None
+    try:
+        return "origin/" + module.work_branch()
+    except module.SetupError as err:
+        raise RuntimeError(f"cannot read the work branch: {err}") from None
+
+
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(description="Request review from the code owners of the changed paths.")
     parser.add_argument("pr", type=int, help="pull request number")
     parser.add_argument("--branch", help="the PR's head branch, for git diff")
-    parser.add_argument("--base", default="origin/master", help="ref to diff against and read CODEOWNERS at")
+    parser.add_argument(
+        "--base", default=None, help="ref to diff against and read CODEOWNERS at (default origin/<work branch>)"
+    )
     parser.add_argument("--files", nargs="+", help="changed files, instead of git diff")
     parser.add_argument("--dry-run", action="store_true", help="print the reviewers, send nothing")
     args = parser.parse_args(argv)
 
     try:
+        if getattr(args, "base", "") is None:
+            args.base = default_base()
         if args.pr <= 0:
             raise UsageError("PR must be a positive number")
         if (args.files is None) == (not args.branch):

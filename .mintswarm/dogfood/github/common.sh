@@ -32,6 +32,10 @@
 #     for mintswarm-dev ($MSW_APP_CONFIG) and mintswarm-dev-steward
 #     ($MSW_STEWARD_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
 #     for any other name.
+#   - msw_work_branch prints the work branch, the branch the factory
+#     integrates into, read by ../project-setup.py from the project-setup.yaml
+#     beside it; it dies with exit 1 when the setup cannot be read. Capture it
+#     with work="$(msw_work_branch)" || exit.
 #
 # bash 3.2 compatible.
 
@@ -69,6 +73,13 @@ MSW_GIT_ALLOW_FILE=0
 msw_die() {
   printf '%s: %s\n' "$(basename "$0")" "$*" >&2
   exit 1
+}
+
+msw_work_branch() {
+  local work
+  work="$(python3 -I "$MSW_HERE/../project-setup.py" work-branch)" \
+    || msw_die "cannot read the work branch from $MSW_HERE/../project-setup.yaml"
+  printf '%s\n' "$work"
 }
 
 msw_token() {
