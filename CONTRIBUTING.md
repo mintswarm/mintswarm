@@ -73,7 +73,9 @@ The `master` ruleset requires:
 - squash merge as the only allowed method, and linear history
 - no force-push and no deletion
 
-The repository Admin role may bypass the ruleset for pull requests only; nothing else bypasses it, and no one pushes to `master` directly. The maintainer's own PRs, whose only code owner is their author, merge through this bypass without an approving review, and GitHub logs each use of it.
+The repository Admin role and the `mintswarm-dev-steward` GitHub App may bypass the ruleset, each for pull requests only; nothing else bypasses it, and no one pushes to `master` directly. The maintainer's own PRs, whose only code owner is their author, merge through the Admin bypass without an approving review, and GitHub logs each use of either bypass.
+
+`mintswarm-dev-steward` is mintswarm's landing identity: its bypass merges the `mintswarm/*` PRs the maintainer has approved in the session, and `.mintswarm/dogfood/github/land.py` is the only script that acts as it. Removing the steward's entry from the `master` ruleset's bypass list is the kill switch: GitHub then refuses its merges. Its setup and the hard stop are in the [Steward section of the GitHub README](.mintswarm/dogfood/github/README.md#steward).
 
 The repository settings, outside the ruleset, allow squash merge only and delete head branches after merge.
 
