@@ -54,6 +54,10 @@ const FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The files at the top of `api/proto/opentelemetry/` that are the repository's own, not
+/// vendored; every other file anywhere under it must be in [`FILES`].
+const NOT_VENDORED: &[&str] = &[".gitattributes", "VENDOR", "vendor.py"];
+
 /// The repository root.
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -113,9 +117,16 @@ fn vendor_records_the_pinned_tag_and_a_hash() {
 fn vendored_files_are_exactly_the_pinned_set() {
     let dir = vendored();
     let mut files = Vec::new();
-    walk(&dir.join("proto"), &mut files);
-    let mut actual: BTreeMap<String, String> = files
+    walk(&dir, &mut files);
+    let actual: BTreeMap<String, String> = files
         .iter()
+        .filter(|path| {
+            path.parent() != Some(dir.as_path())
+                || !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| NOT_VENDORED.contains(&name))
+        })
         .map(|path| {
             let name = path
                 .strip_prefix(&dir)
@@ -126,10 +137,6 @@ fn vendored_files_are_exactly_the_pinned_set() {
             (name, sha256(&fs::read(path).unwrap()))
         })
         .collect();
-    actual.insert(
-        "LICENSE".into(),
-        sha256(&fs::read(dir.join("LICENSE")).unwrap()),
-    );
     let expected: BTreeMap<String, String> = FILES
         .iter()
         .map(|(name, digest)| ((*name).to_owned(), (*digest).to_owned()))
