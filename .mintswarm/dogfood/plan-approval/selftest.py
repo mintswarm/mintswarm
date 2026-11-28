@@ -67,8 +67,8 @@ Checks:
   double comma, nesting deeper than 512, a syntax error before such
   nesting, which is the one reported, one after it, where the nesting is
   reported, a number right before the deep container, a syntax error at
-  it, an integer outside u64 and one of 5000 digits) has its exact
-  reason;
+  it, a `\\u` escape with a non-hex digit, at its `u`, an integer
+  outside u64 and one of 5000 digits) has its exact reason;
 - base ref: with a worktree config and a HEAD commit that drop a
   require_human path, `--base` at the earlier commit still gives the hit;
 - historic fixtures: fixtures/plan-{9,12,14,19,20,10}.md, with a
@@ -1549,6 +1549,7 @@ def unusable_footprints() -> list:
         ("fault before deep nesting", plan_text(block=replaced(block, '"external_steps": []', BEFORE_DEEP))),
         ("fault after deep nesting", plan_text(block=replaced(block, '"external_steps": []', AFTER_DEEP))),
         ("number before deep nesting", plan_text(block=replaced(block, '"external_steps": []', DIGIT_DEEP))),
+        ("bad unicode escape", plan_text(block=replaced(block, '"files"', BAD_ESCAPE))),
         ("integer out of range", plan_text(footprint=base(estimated_lines=10**25))),
         ("integer past the digit limit", plan_text(block=replaced(block, '"estimated_lines": 6', LONG_INTEGER))),
     ]
@@ -1601,6 +1602,8 @@ BEFORE_DEEP = f'"external_steps": [x, {DEEP}]'
 AFTER_DEEP = f'"external_steps": [{DEEP}, x]'
 # A number right before the 513th container, which stands where no value may: a syntax error at it.
 DIGIT_DEEP = '"external_steps": ' + "[" * 510 + "1" + "[" * 10 + "]" * 10 + "]" * 510
+# A \u escape with a non-hex digit, reported at its `u`.
+BAD_ESCAPE = '"fi\\u12xles"'
 # More digits than Python's int() reads by default.
 LONG_INTEGER = '"estimated_lines": ' + "9" * 5000
 
@@ -1637,6 +1640,9 @@ def footprint_json_reasons() -> dict:
         "number before deep nesting": prefix
         + "not valid JSON: "
         + position(replaced(block, '"external_steps": []', DIGIT_DEEP), '"external_steps": ', 18 + 510 + 1),
+        "bad unicode escape": prefix
+        + "not valid JSON: "
+        + position(replaced(block, '"files"', BAD_ESCAPE), BAD_ESCAPE, 4),
         "integer out of range": prefix + "an integer is out of range",
         "integer past the digit limit": prefix + "an integer is out of range",
     }

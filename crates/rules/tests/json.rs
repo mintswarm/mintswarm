@@ -452,3 +452,30 @@ fn the_first_error_comes_first_around_deep_nesting() {
         assert_eq!(at(&text).to_string(), reason, "{}", &text[..20]);
     }
 }
+
+/// A bad `\u` escape is reported at its `u`, and a backslash that ends the text at the string's
+/// opening quote, as Python reports them.
+#[test]
+fn escape_errors_are_where_python_reports_them() {
+    let cases = [
+        (r#"{"a": "\u12x"}"#, 9),
+        (r#"{"a": "\uzzzz"}"#, 9),
+        (r#"{"a": "\ud800\u12"}"#, 15),
+        (r#"{"a": "\ud800\uzz"}"#, 15),
+        (r#"{"a": "\"#, 7),
+        (r#"{"a": "\u004"#, 9),
+        (r#"{"a": "\u0041"#, 7),
+        (r#"{"a": "\ud800\u004"#, 15),
+        (r#"{"a": "\ud83d\ude00"#, 7),
+        (r#"{"a": "\q"}"#, 8),
+        (r#""\u12"#, 3),
+    ];
+    for (text, column) in cases {
+        let error = at(text);
+        assert_eq!(
+            (error.kind, error.line, error.column),
+            (ReadErrorKind::Syntax, 1, column),
+            "{text}"
+        );
+    }
+}

@@ -255,12 +255,14 @@ impl Reader<'_> {
         }
     }
 
+    /// The four hex digits after the `u` of a `\u` escape, the reader past the `u`; a short or
+    /// non-hex escape is a syntax error at the `u`, as Python reports it.
     fn hex4(&mut self) -> Result<u32, ReadError> {
         let digits = self
             .bytes
             .get(self.at..self.at + 4)
             .filter(|d| d.iter().all(u8::is_ascii_hexdigit))
-            .ok_or_else(|| self.syntax(self.at))?;
+            .ok_or_else(|| self.syntax(self.at - 1))?;
         self.at += 4;
         let mut value = 0;
         for digit in digits {
@@ -306,6 +308,8 @@ impl Reader<'_> {
                             out.push(self.unicode_escape(escape)?);
                             continue;
                         }
+                        // a backslash that ends the text leaves the string unterminated
+                        None => return Err(self.syntax(open)),
                         _ => return Err(self.syntax(escape)),
                     };
                     self.at += 1;
