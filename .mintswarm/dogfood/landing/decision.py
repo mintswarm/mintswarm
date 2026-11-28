@@ -28,7 +28,9 @@ as they are:
 
 1. keep the round with landing/keep-round.py;
 2. collect the facts: `landing/collect-facts.py fetch`, then `assemble`,
-   which writes .mintswarm/job/inputs/landing/facts.json;
+   which writes .mintswarm/job/inputs/landing/facts.json; right after it,
+   `github/ancestor-decisions.py fetch`, then `assemble`, which writes
+   .mintswarm/job/inputs/ancestors.md;
 3. extract a base-ref copy of .mintswarm/dogfood/ to a temporary directory
    outside the worktree (`git archive` of the base commit), and run
    landing/floor.py from that copy, in the worktree, with the same --plan,
