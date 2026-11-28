@@ -41,8 +41,9 @@ pages stop at the first page with fewer than 100 items; more than 30 pages
 exit 1. A 404 on a permission read is saved as `null`: no permission, as
 watch-plan-approvals.py treats it. Every other response is saved byte for
 byte, as parent-of-<n>.json, issue-<a>.json, edited-<a>.json,
-comments-<a>.<K>.json and permission-<login>.json (login in lower case), with request.json holding
-`issue`, `ancestors` (the chain, nearest first) and `fetched_at`.
+comments-<a>.<K>.json and permission-<login>.json (login in lower case),
+with request.json holding `issue`, `ancestors` (the chain, nearest first)
+and `fetched_at`.
 Everything goes to a temporary directory beside DIR, renamed onto DIR only
 when every call succeeded, so a failure leaves DIR as it was. DIR defaults
 to .mintswarm/job/ancestors/responses, outside inputs/.
@@ -76,7 +77,7 @@ A decision on an ancestor is one of:
 - a section of the ancestor's body, when its owner is trusted, under an ATX
   heading whose text starts with `Decision`, found outside ``` and ~~~
   fenced blocks, up to the next heading of the same or a higher level
-  (`via: body`).
+  (`via: issue body`).
 
 Every other comment and section is left out; so is every comment and body
 section of an untrusted owner, unless it is a trusted author's or a marker
@@ -89,10 +90,12 @@ decision follows, body sections first in body order, then comments by
 created_at and id, with its kind, author, `via`, `time`, `edited` (the
 comment's updated_at when it differs from created_at, else `none`; a body
 section is `via: issue body`, dated by its issue's own created_at, with
-the body's lastEditedAt as `edited`, `none` when never edited) and URL, and its text quoted with every line prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
-`Risk:` line can reach column 0. An ancestor without decisions says
-`No decisions.`; a root issue gives the line `#N has no ancestors.`. The
-file is written to a temporary file and renamed.
+the body's lastEditedAt as `edited`, `none` when never edited) and URL,
+and its text quoted with every line prefixed by `> ` (CR and CRLF read as
+LF), so no quoted fence and no `Risk:` line can reach column 0. An
+ancestor without decisions says `No decisions.`; a root issue gives the
+line `#N has no ancestors.`. The file is written to a temporary file and
+renamed.
 
 Exits 0 when saved or written; 1 when fetch fails (a bot-gh.sh failure
 other than the 404s above, a response that is not JSON or of the wrong
