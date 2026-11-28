@@ -116,17 +116,22 @@ impl Line {
             Cause::Triggered { blocker_changes } => blocker_changes
                 .iter()
                 .map(|change| {
+                    let blocker = report::name_of(&change.repository, change.blocker.0, repository);
                     json!({
-                        "blocker": report::name_of(&change.repository, change.blocker.0, repository),
+                        "blocker": blocker,
                         "change": change_name(change.change),
                     })
                 })
                 .collect(),
         };
+        let cause_name = match cause {
+            Cause::Sweep => "sweep",
+            Cause::Triggered { .. } => "triggered",
+        };
         let line = json!({
             "evaluator": "state_sync",
             "issue": issue.0,
-            "cause": match cause { Cause::Sweep => "sweep", Cause::Triggered { .. } => "triggered" },
+            "cause": cause_name,
             "causes": causes,
             "fan_out": Value::Null,
             "value_before": self.value_before,
