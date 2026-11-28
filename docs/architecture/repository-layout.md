@@ -55,7 +55,7 @@ mintswarm/
 │   │   └── migrations/     # append-only SQL migrations
 │   ├── server/             # `mintswarm-server` binary
 │   ├── steward/            # `mintswarm-steward` signing-key binary
-│   ├── runner/             # `mintswarm-runner` daemon
+│   ├── runner/             # `mintswarm-runner` daemon, `tool pr-labels`
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` CLI binary
 │
