@@ -8,11 +8,19 @@
 //! - a number too large for a finite `f64` (Python reads `1e400` as infinity) is
 //!   [`ReadErrorKind::NonFinite`];
 //! - an integer outside `i64` and `u64` (Python's integers are unbounded) is
-//!   [`ReadErrorKind::IntegerOutOfRange`];
+//!   [`ReadErrorKind::IntegerOutOfRange`], which `floor.py` checks for the footprint with a
+//!   `parse_int` hook;
 //! - a `\u` escape of a lone surrogate, which a Rust string cannot hold, is
 //!   [`ReadErrorKind::LoneSurrogate`];
-//! - nesting deeper than [`MAX_DEPTH`] containers (Python raises `RecursionError` far deeper) is
-//!   [`ReadErrorKind::TooDeep`].
+//! - nesting deeper than [`MAX_DEPTH`] containers is [`ReadErrorKind::TooDeep`], at the first
+//!   container past it, where reading stops. For the footprint, `floor.py` scans for that
+//!   container and decodes only the text before it, so an earlier error comes first and nothing
+//!   after the container is read, and the first error is the one reported on both sides.
+//!
+//! The kinds are only those Python can tell apart without reading its decoder's message: every
+//! `JSONDecodeError` is [`ReadErrorKind::Syntax`], at the position Python gives it. A comma
+//! followed only by whitespace and a closing `]` or `}` is reported at the comma, as Python 3.13
+//! and later report it.
 //!
 //! Python's error wording is not reproduced: a [`ReadError`] is structured, and each tool phrases
 //! its own message from it.
@@ -21,13 +29,16 @@ use std::fmt;
 
 use mintswarm_domain::records::Json;
 
+use crate::py::repr_str;
+
 /// The deepest nesting of arrays and objects [`read`] accepts.
 pub const MAX_DEPTH: usize = 512;
 
 /// Why a text is not strict JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadErrorKind {
-    /// The text is not JSON at all: Python's `JSONDecodeError` for anything not listed below.
+    /// The text is not JSON: Python's `JSONDecodeError`, among them an unescaped control
+    /// character in a string, a leading byte order mark and text after the value.
     Syntax,
     /// An object holds the key twice, found when the object closes as `object_pairs_hook` finds it.
     DuplicateKey(String),
@@ -39,12 +50,6 @@ pub enum ReadErrorKind {
     LoneSurrogate,
     /// An integer outside both `i64` and `u64`.
     IntegerOutOfRange,
-    /// An unescaped control character (below U+0020) inside a string.
-    ControlCharacter,
-    /// The text starts with a byte order mark.
-    Bom,
-    /// More text follows the value.
-    ExtraData,
     /// Arrays and objects nest deeper than [`MAX_DEPTH`].
     TooDeep,
 }
@@ -53,14 +58,11 @@ impl fmt::Display for ReadErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReadErrorKind::Syntax => f.write_str("not valid JSON"),
-            ReadErrorKind::DuplicateKey(key) => write!(f, "duplicate key {key:?}"),
+            ReadErrorKind::DuplicateKey(key) => write!(f, "duplicate key {}", repr_str(key)),
             ReadErrorKind::Constant(name) => write!(f, "{name} is not allowed"),
             ReadErrorKind::NonFinite => f.write_str("a number is not finite"),
             ReadErrorKind::LoneSurrogate => f.write_str("a lone surrogate escape"),
             ReadErrorKind::IntegerOutOfRange => f.write_str("an integer is out of range"),
-            ReadErrorKind::ControlCharacter => f.write_str("a control character in a string"),
-            ReadErrorKind::Bom => f.write_str("a byte order mark"),
-            ReadErrorKind::ExtraData => f.write_str("extra data"),
             ReadErrorKind::TooDeep => write!(f, "nested deeper than {MAX_DEPTH}"),
         }
     }
@@ -77,13 +79,23 @@ pub struct ReadError {
     pub column: usize,
 }
 
+/// The kind alone for the kinds a Python hook detects, which carry no position there: a
+/// duplicate key, a constant and an integer out of range. The kind and its line and column for
+/// every other.
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: line {} column {}",
-            self.kind, self.line, self.column
-        )
+        match self.kind {
+            ReadErrorKind::DuplicateKey(_)
+            | ReadErrorKind::Constant(_)
+            | ReadErrorKind::IntegerOutOfRange => {
+                write!(f, "{}", self.kind)
+            }
+            _ => write!(
+                f,
+                "{}: line {} column {}",
+                self.kind, self.line, self.column
+            ),
+        }
     }
 }
 
@@ -101,13 +113,13 @@ pub fn read(text: &str) -> Result<Json, ReadError> {
         at: 0,
     };
     if text.starts_with('\u{feff}') {
-        return Err(reader.error(ReadErrorKind::Bom, 0));
+        return Err(reader.syntax(0));
     }
     reader.skip_whitespace();
     let value = reader.value(0)?;
     reader.skip_whitespace();
     if reader.at < reader.bytes.len() {
-        return Err(reader.error(ReadErrorKind::ExtraData, reader.at));
+        return Err(reader.syntax(reader.at));
     }
     Ok(value)
 }
@@ -141,6 +153,17 @@ impl Reader<'_> {
     fn skip_whitespace(&mut self) {
         while let Some(b' ' | b'\t' | b'\n' | b'\r') = self.peek() {
             self.at += 1;
+        }
+    }
+
+    /// Past the comma at `comma` and the whitespace after it; a closing `]` or `}` next is a
+    /// trailing comma, reported at the comma.
+    fn after_comma(&mut self, comma: usize) -> Result<(), ReadError> {
+        self.at = comma + 1;
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b']' | b'}') => Err(self.syntax(comma)),
+            _ => Ok(()),
         }
     }
 
@@ -232,12 +255,14 @@ impl Reader<'_> {
         }
     }
 
+    /// The four hex digits after the `u` of a `\u` escape, the reader past the `u`; a short or
+    /// non-hex escape is a syntax error at the `u`, as Python reports it.
     fn hex4(&mut self) -> Result<u32, ReadError> {
         let digits = self
             .bytes
             .get(self.at..self.at + 4)
             .filter(|d| d.iter().all(u8::is_ascii_hexdigit))
-            .ok_or_else(|| self.syntax(self.at))?;
+            .ok_or_else(|| self.syntax(self.at - 1))?;
         self.at += 4;
         let mut value = 0;
         for digit in digits {
@@ -283,12 +308,14 @@ impl Reader<'_> {
                             out.push(self.unicode_escape(escape)?);
                             continue;
                         }
+                        // a backslash that ends the text leaves the string unterminated
+                        None => return Err(self.syntax(open)),
                         _ => return Err(self.syntax(escape)),
                     };
                     self.at += 1;
                     out.push(c);
                 }
-                Some(_) => return Err(self.error(ReadErrorKind::ControlCharacter, self.at)),
+                Some(_) => return Err(self.syntax(self.at)),
             }
         }
     }
@@ -340,10 +367,7 @@ impl Reader<'_> {
                     self.at += 1;
                     return Ok(Json::Array(items));
                 }
-                Some(b',') => {
-                    self.at += 1;
-                    self.skip_whitespace();
-                }
+                Some(b',') => self.after_comma(self.at)?,
                 _ => return Err(self.syntax(self.at)),
             }
         }
@@ -380,10 +404,7 @@ impl Reader<'_> {
                     self.at += 1;
                     break;
                 }
-                Some(b',') => {
-                    self.at += 1;
-                    self.skip_whitespace();
-                }
+                Some(b',') => self.after_comma(self.at)?,
                 _ => return Err(self.syntax(self.at)),
             }
         }

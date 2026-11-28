@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use mintswarm_domain::records::BaseRef;
 use mintswarm_domain::vcs::{RepoPath, Vcs};
 use mintswarm_rules::exit::Unusable;
+use mintswarm_rules::io_phrase;
 use mintswarm_rules::plan_floor::{Bundle, CONFIG, Item, Subjects};
 
 use super::{GitError, GitStore, read};
@@ -54,8 +55,9 @@ pub enum BundleError {
         #[source]
         source: GitError,
     },
-    /// A document or result record that is missing, not a regular file, or unreadable.
-    #[error("cannot read the {what} {path}")]
+    /// A document or result record that is missing, not a regular file, or unreadable; the
+    /// phrase is [`io_phrase::read_phrase`]'s for the file error, "read failed" without one.
+    #[error("cannot read the {what} {path}: {}", read_phrase(source.as_ref()))]
     Document {
         /// What the file is.
         what: &'static str,
@@ -65,6 +67,12 @@ pub enum BundleError {
         #[source]
         source: Option<std::io::Error>,
     },
+}
+
+/// Why a document could not be read: the file error's phrase, or "read failed" when there is no
+/// file error, for a file that is not regular or a name without a file.
+fn read_phrase(source: Option<&std::io::Error>) -> &'static str {
+    source.map_or("read failed", |error| io_phrase::read_phrase(error.kind()))
 }
 
 impl BundleError {

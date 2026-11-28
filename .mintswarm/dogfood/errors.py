@@ -8,8 +8,10 @@ where it occurs and re-raised as a DomainError `from` it, never shown.
 
 - DomainError: the base class; its message is the text it was given.
 - read_phrase and write_phrase: the fixed phrase for an error reading or
-  writing a file, the words of `read_text` and `write_failure` in
-  crates/runner/src/tool/save_output.rs, chosen by errno.
+  writing a file, chosen by errno; their Rust words are `read_phrase`,
+  `write_phrase` and `NOT_UTF8` in crates/rules/src/io_phrase.rs, chosen by
+  io::ErrorKind.
+- text_position: the 1-based line and column of a position in a text.
 - decode_position: the line and column where a JSONDecodeError stopped,
   counted from its document and position by this module.
 - crash_line: the line a tool prints for an exception it did not expect,
@@ -73,12 +75,17 @@ def write_phrase(exc: BaseException) -> str:
     return WRITE_FAILED
 
 
+def text_position(doc: str, pos: int) -> tuple:
+    """The 1-based (line, column) of the character at pos in doc, the column counted in characters."""
+    before = doc[:pos]
+    line = before.count("\n") + 1
+    column = pos - (before.rfind("\n") + 1) + 1
+    return line, column
+
+
 def decode_position(exc: json.JSONDecodeError) -> tuple:
     """The 1-based (line, column) where decoding stopped, from exc.doc and exc.pos only."""
-    before = exc.doc[: exc.pos]
-    line = before.count("\n") + 1
-    column = exc.pos - (before.rfind("\n") + 1) + 1
-    return line, column
+    return text_position(exc.doc, exc.pos)
 
 
 def crash_line(tool: str, exc: BaseException) -> str:

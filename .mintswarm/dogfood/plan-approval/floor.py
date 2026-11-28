@@ -58,7 +58,7 @@ store made for this run, never from the job repository's own objects:
   .git/shallow cuts short, so the store is refused if it is shallow, and
   then every object reachable from the fetched id is walked in it
   (`git rev-list --objects`): an object missing from the store fails the
-  fetch too, with git's whole error output;
+  fetch too, named by its command and exit status;
 - the id is peeled to its commit in that store, and every later read runs
   as `git --git-dir=<store>`; the store is deleted when the run ends,
   whatever its outcome.
@@ -121,7 +121,9 @@ Rules, evaluated in this order. The declared paths are `files` plus each
 new dependency's `manifest`.
 
   footprint                  the footprint is missing, misplaced, not strict
-                             JSON (no duplicate keys, NaN or Infinity), not
+                             JSON (no duplicate keys, NaN or Infinity, no
+                             integer outside i64 and u64, no nesting deeper
+                             than 512), not
                              of the shape above (lists without null or
                              repeated values, `estimated_lines` an integer
                              of 0 or more, `production_lines` an integer
@@ -263,15 +265,23 @@ unresolvable base ref, a partial clone, a failed fetch into the object store
 invalid config, an unreadable or non-UTF-8 plan, issue document, analysis,
 screen record or result record that exists, git or yq missing or failing
 (reading the history too), a stale verdict that cannot be deleted, or any
-unexpected error. Unusable input leaves no verdict file, unless a stale one
-could not be deleted. The interpreter itself exits 1 when it crashes outside
-main(), for example at import time, so exit 0 or 1 counts only together with
+unexpected error, reported as a fixed line naming only its class. Unusable
+input leaves no verdict file, unless a stale one could not be deleted. The
+interpreter itself exits 1 when it crashes outside main(), for example at
+import time, so exit 0 or 1 counts only together with
 a verdict file whose `plan.sha256`, `base.commit` and document bindings match
-the request; exit 2 never comes with a valid verdict. Standard library only, apart from running
-git and yq."""
+the request; exit 2 never comes with a valid verdict.
+
+Every message is the floor's own, in the wording of rules::plan_floor and
+the runner's plan-floor bundle: a failure of the JSON decoder, yq, shlex,
+the operating system or git is caught where it occurs and re-raised as a
+fixed cause `from` it, never shown. The domain errors and the file-error
+phrases come from .mintswarm/dogfood/errors.py, loaded by path. Standard
+library only, apart from running git and yq."""
 
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -283,6 +293,31 @@ import tempfile
 import unicodedata
 import urllib.parse
 from pathlib import Path
+
+
+def load_errors():
+    """errors.py from the directory above this script, loaded by path without writing bytecode.
+
+    Run as a script, a failure prints a fixed line and exits 2; imported by another tool, it raises
+    ImportError."""
+    written = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to errors.py
+    try:
+        path = Path(__file__).resolve().parent.parent / "errors.py"
+        spec = importlib.util.spec_from_file_location("msw_dogfood_errors", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        if __name__ == "__main__":
+            print("floor.py: cannot load errors.py", file=sys.stderr)
+            sys.exit(2)
+        raise ImportError("cannot load errors.py") from exc
+    finally:
+        sys.dont_write_bytecode = written
+    return module
+
+
+errors = load_errors()
 
 VERDICT = Path(".mintswarm/job/outputs/floor.json")
 CONFIG = ".mintswarm/config.yaml"
@@ -372,6 +407,13 @@ CHECKBOX = re.compile(r"\[[ x]\](?:[ \t]+|$)(.*)", re.DOTALL)
 SEPARATOR_CELL = re.compile(r"[ \t]*:?-{3,}:?[ \t]*")
 CELL_BAR = re.compile(r"(?<!\\)\|")
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+MAX_DEPTH = 512  # the deepest nesting of arrays and objects a footprint may have, as rules::json reads it
+# Every YAML failure, whether yq rejects the config or its JSON is not strict (a duplicate key, for one): no key
+# path, as rules::plan_floor words it.
+NOT_YAML = f"config: {CONFIG} at the base is not valid YAML"
+NOT_UTF8_CONFIG = f"config: {CONFIG} at the base is not UTF-8"
+# The integers rules::json reads: those that fit in i64 or u64.
+INT_RANGE = (-(2**63), 2**64 - 1)
 STORE_PREFIX = "msw-floor-objects-"
 # Dropped by neutral_git_env(): config and diff settings passed through the environment, and the
 # repository-local variables (readiness/check.py's GIT_LOCAL_ENV), so no variable points git elsewhere.
@@ -411,24 +453,28 @@ UPLOAD_PACK = (
 )
 
 
-class InputError(Exception):
+class InputError(errors.DomainError):
     """Unusable input: exit 2, no verdict."""
 
 
-class FootprintError(Exception):
+class FootprintError(errors.DomainError):
     """The footprint rule is a hit."""
 
 
-class DocumentError(Exception):
+class DocumentError(errors.DomainError):
     """A document rule is a hit; the message is its reason."""
 
 
-class ScreenError(Exception):
+class ScreenError(errors.DomainError):
     """The screen record is not usable; the message is the dependency-screen rule's fixed reason."""
 
 
-class RecordError(Exception):
+class RecordError(errors.DomainError):
     """A result record is not usable; the message is its fixed cause."""
+
+
+class JsonError(errors.DomainError, ValueError):
+    """What strict_json's own hooks reject: a duplicate key or a constant; a ValueError, as the decoder's are."""
 
 
 def glob_to_regex(pattern: str) -> re.Pattern:
@@ -469,13 +515,13 @@ def _no_duplicates(pairs: list) -> dict:
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate key {key!r}")
+            raise JsonError(f"duplicate key {key!r}")
         result[key] = value
     return result
 
 
 def _no_constant(name: str):
-    raise ValueError(f"{name} is not allowed")
+    raise JsonError(f"{name} is not allowed")
 
 
 def strict_json(text: str):
@@ -523,14 +569,18 @@ def parse_args(argv: list) -> dict:
 # --- base-ref configuration ---------------------------------------------
 
 
+def cannot_run(program: str, exc: OSError) -> InputError:
+    """The unusable input for a program that does not start, named by the file-error phrase of why."""
+    return InputError(f"cannot run {program}: {errors.read_phrase(exc)}")
+
+
 def run(argv: list, data: bytes = None) -> bytes:
     try:
         proc = subprocess.run(argv, input=data, capture_output=True)
     except OSError as exc:
-        raise InputError(f"cannot run {argv[0]}: {exc}") from exc
+        raise cannot_run(argv[0], exc) from exc
     if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
-        raise InputError(f"{command_name(argv)} failed: {detail[-1] if detail else f'exit {proc.returncode}'}")
+        raise InputError(f"{command_name(argv)} failed: exit {proc.returncode}")
     return proc.stdout
 
 
@@ -602,25 +652,28 @@ def resolve_id(label: str, ref: str) -> str:
             ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{object}}"], capture_output=True
         )
     except OSError as exc:
-        raise InputError(f"cannot run git: {exc}") from exc
+        raise cannot_run("git", exc) from exc
     oid = proc.stdout.decode("ascii", errors="replace").strip()
     if proc.returncode != 0 or not HASH.fullmatch(oid):
         raise InputError(f"{label} ref {ref!r} does not resolve to a commit")
     return oid
 
 
+def exit_status(returncode: int) -> str:
+    """A program's exit status in the runner's words: `exit code N`, or `no exit code` when a signal ended it."""
+    return f"exit code {returncode}" if returncode >= 0 else "no exit code"
+
+
 def fetch(argv: list) -> None:
-    """Run one step of filling the object store; a failure is the fetch's, with all of git's error output."""
+    """Run one step of filling the object store; a failure is the fetch's, named by its command and exit status."""
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
-        raise InputError(f"cannot run {argv[0]}: {exc}") from exc
+        raise cannot_run(argv[0], exc) from exc
     if proc.returncode != 0:
-        lines = proc.stderr.decode("utf-8", errors="replace").splitlines()
-        detail = "; ".join(line.strip() for line in lines if line.strip())  # all of it, on one line
         raise InputError(
             "the fetch from the job repository into a fresh object store failed "
-            f"({command_name(argv)}, exit {proc.returncode})" + (f": {detail}" if detail else "")
+            f"({command_name(argv)}, {exit_status(proc.returncode)})"
         )
 
 
@@ -662,8 +715,8 @@ def object_store(refs: dict):
         for label, oid in ids.items():
             try:
                 commits[label] = resolve_base(oid, git_dir=store)
-            except InputError as exc:
-                raise InputError(f"{label} ref {refs[label]!r} does not resolve to a commit") from exc
+            except InputError as error:
+                raise InputError(f"{label} ref {refs[label]!r} does not resolve to a commit") from error
         yield store, commits
     finally:
         shutil.rmtree(store, ignore_errors=True)
@@ -685,7 +738,7 @@ def resolve_base(ref: str, git_dir=None) -> str:
             capture_output=True,
         )
     except OSError as exc:
-        raise InputError(f"cannot run git: {exc}") from exc
+        raise cannot_run("git", exc) from exc
     commit = proc.stdout.decode("ascii", errors="replace").strip()
     if proc.returncode != 0 or not HASH.fullmatch(commit):
         raise InputError(f"base ref {ref!r} does not resolve to a commit")
@@ -696,14 +749,23 @@ def load_config(commit: str, git_dir=None) -> dict:
     try:
         proc = subprocess.run(git_argv(git_dir, "show", f"{commit}:{CONFIG}"), capture_output=True)
     except OSError as exc:
-        raise InputError(f"cannot run git: {exc}") from exc
+        raise cannot_run("git", exc) from exc
     if proc.returncode != 0:
         raise InputError(f"no {CONFIG} at {commit}")
-    converted = run(["yq", "-p=yaml", "-o=json", "."], proc.stdout)
     try:
-        config = strict_json(converted.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise InputError(f"{CONFIG} at {commit} does not convert to JSON: {exc}") from exc
+        proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InputError(NOT_UTF8_CONFIG) from exc
+    try:
+        converted = subprocess.run(["yq", "-p=yaml", "-o=json", "."], input=proc.stdout, capture_output=True)
+    except OSError as exc:
+        raise cannot_run("yq", exc) from exc
+    if converted.returncode != 0:
+        raise InputError(NOT_YAML)
+    try:
+        config = strict_json(converted.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise InputError(NOT_YAML) from exc
     if not isinstance(config, dict):
         raise InputError(f"{CONFIG} at {commit} is not a mapping")
     return config
@@ -813,10 +875,7 @@ def validate_config(config: dict, names: list) -> dict:
         if not isinstance(gate, dict) or not isinstance(gate.get("command"), str):
             raise InputError(f"config: gates.run[{index}] must be a mapping with a command string")
         name = gate.get("name") if isinstance(gate.get("name"), str) else f"gates.run[{index}]"
-        try:
-            words = shlex.split(gate["command"])
-        except ValueError as exc:
-            raise InputError(f"config: gate {name}: command does not split: {exc}") from exc
+        words = split_command(gate["command"], index)
         directory = []
         for index, word in enumerate(words):
             while word.startswith("./"):
@@ -858,6 +917,19 @@ def validate_config(config: dict, names: list) -> dict:
     }
 
 
+def split_command(command: str, index: int) -> list:
+    """The words of gates.run[index]'s command, split as shlex.split splits it; why it does not split is read
+    from the lexer's state, never from the error's text."""
+    lex = shlex.shlex(command, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    try:
+        return list(lex)
+    except ValueError as exc:
+        why = "a backslash ends the command" if lex.state in lex.escape else "a quote is not closed"
+        raise InputError(f"config: gates.run[{index}].command: does not split: {why}") from exc
+
+
 def prepare(commit: str, components: list, plan: bytes, git_dir=None) -> tuple:
     """(config, cfg): the config at commit, validated for components. The plan is not read here."""
     config = load_config(commit, git_dir=git_dir)
@@ -867,13 +939,18 @@ def prepare(commit: str, components: list, plan: bytes, git_dir=None) -> tuple:
 # --- footprint -----------------------------------------------------------
 
 
+def read_failure(what: str, path, exc: BaseException) -> InputError:
+    """The unusable input for a file that cannot be read: where its bytes stop being UTF-8, or the phrase for its
+    OSError."""
+    if isinstance(exc, UnicodeDecodeError):
+        why = f"it is not UTF-8 at byte {exc.start}"
+    else:
+        why = errors.read_phrase(exc)
+    return InputError(f"cannot read the {what} {path}: {why}")
+
+
 def read_plan(path: str) -> bytes:
-    try:
-        data = Path(path).read_bytes()
-        data.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise InputError(f"cannot read the plan {path}: {exc}") from exc
-    return data
+    return read_document(path, "plan")
 
 
 def is_heading(line: str) -> bool:
@@ -958,13 +1035,95 @@ def check_entries(value: list, key: str, fields: tuple) -> None:
                 raise FootprintError(f"{key}.{field} must be a string")
 
 
+def too_deep(text: str):
+    """The offset of the first `[` or `{` outside strings nested deeper than MAX_DEPTH, where rules::json stops if
+    nothing before it is wrong, or None when there is none."""
+    depth = 0
+    in_string = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+        elif c in "[{":
+            depth += 1
+            if depth > MAX_DEPTH:
+                return i
+        elif c in "]}":
+            depth -= 1
+        i += 1
+    return None
+
+
+def decode_failure(exc: json.JSONDecodeError) -> str:
+    """Where decoding stopped, as rules::json reports it: at a closing `]` or `}` right after a comma, the comma,
+    as Python 3.13 and later report it."""
+    pos = exc.pos
+    if exc.doc[pos : pos + 1] in ("]", "}"):
+        before = exc.doc[:pos].rstrip(" \t\n\r")
+        if before.endswith(","):
+            pos = len(before) - 1
+    line, column = errors.text_position(exc.doc, pos)
+    return f"not valid JSON: line {line} column {column}"
+
+
+def _bounded_int(digits: str) -> int:
+    """An integer of the footprint, which rules::json reads only in i64 or u64; checked before int(), so no digit
+    limit of Python's is ever reached."""
+    if len(digits.lstrip("-")) <= 20:
+        value = int(digits)
+        if INT_RANGE[0] <= value <= INT_RANGE[1]:
+            return value
+    raise JsonError("an integer is out of range")
+
+
+def strict_footprint(text: str):
+    """text read as strict JSON with the footprint's hooks: no duplicate key, constant or integer outside i64 and
+    u64."""
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constant, parse_int=_bounded_int)
+
+
+def footprint_json(block: str):
+    """The footprint block read as strict JSON; a FootprintError with a fixed cause when it is not.
+
+    The first error in the text is the one reported, as rules::json reads it in one pass. Past a container nested
+    deeper than MAX_DEPTH, only the text before it is decoded: an error of the decoder or a hook there comes first;
+    an error at the cut, where the deep container stands as a value, is the depth error; and a cut where no value
+    may stand, or after a whole document, is a syntax error there, as rules::json reports it."""
+    prefix = "the footprint is not strict JSON: "
+    deep = too_deep(block)
+    try:
+        if deep is None:
+            return strict_footprint(block)
+        strict_footprint(block[:deep])
+    except JsonError as error:
+        raise FootprintError(prefix + str(error)) from error
+    except json.JSONDecodeError as exc:
+        if deep is None or exc.pos < deep:
+            raise FootprintError(prefix + decode_failure(exc)) from exc
+        # At the cut: the deep container is the error when a value may stand there, as with `[]` in its place,
+        # which no token before the cut can run on into, as a number would run on into `0`.
+        try:
+            strict_footprint(block[:deep] + "[]")
+        except json.JSONDecodeError as cut:
+            if cut.pos > deep:
+                line, column = errors.text_position(block, deep)
+                raise FootprintError(prefix + f"nested deeper than {MAX_DEPTH}: line {line} column {column}") from exc
+        except JsonError:
+            pass
+    line, column = errors.text_position(block, deep)
+    raise FootprintError(prefix + f"not valid JSON: line {line} column {column}")
+
+
 def parse_footprint(text: str) -> dict:
     lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
     block = locate_footprint(lines)
-    try:
-        document = strict_json(block)
-    except ValueError as exc:
-        raise FootprintError(f"the footprint is not valid JSON: {exc}") from exc
+    document = footprint_json(block)
     if not isinstance(document, dict) or list(document) != ["footprint"]:
         raise FootprintError("the top level must be an object with the single key 'footprint'")
     footprint = document["footprint"]
@@ -1055,8 +1214,8 @@ def screen_reasons(footprint: dict, text) -> list:
         return [f"{count} declared package{'' if count == 1 else 's'} and no screen record (--screen)"]
     try:
         record = parse_screen(text)
-    except ScreenError as exc:
-        return [str(exc)]
+    except ScreenError as error:
+        return [str(error)]
     reasons = []
     remaining = list(declared)
     for package in record["packages"]:
@@ -1177,7 +1336,7 @@ def read_document(path: str, what: str) -> bytes:
         data = Path(path).read_bytes()
         data.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise InputError(f"cannot read the {what} {path}: {exc}") from exc
+        raise read_failure(what, path, exc) from exc
     return data
 
 
@@ -1253,7 +1412,7 @@ def read_record(path: str):
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:
-        raise InputError(f"cannot read the result record {record}: {exc}") from exc
+        raise read_failure("result record", record, exc) from exc
     return data
 
 
@@ -1287,9 +1446,9 @@ def question_reasons(text: str, what: str, record=None) -> list:
     if record is not None:
         try:
             questions = record_questions(record)
-        except RecordError as exc:
+        except RecordError as error:
             # The section-level rules still run; the bullets are neither hits nor compared.
-            reasons.append(f"{what}: the result record is not usable: {exc}")
+            reasons.append(f"{what}: the result record is not usable: {error}")
         else:
             for kind, question in questions:
                 if kind != "assumption":
@@ -1298,8 +1457,8 @@ def question_reasons(text: str, what: str, record=None) -> list:
     try:
         # Questions runs to the next `## ` heading, so a `# ` heading cannot end it early.
         start, body = section(lines, "Questions", what, ends=(2,))
-    except DocumentError as exc:
-        return reasons + [str(exc)]
+    except DocumentError as error:
+        return reasons + [str(error)]
     bullets = {"must_decide": 0, "recommended": 0, "blocking": 0, "assumption": 0, "unknown": 0}
     for offset, line in enumerate(body):
         number = start + offset + 1
@@ -1394,8 +1553,8 @@ def criteria_reasons(issue: str, plan_text: str) -> list:
         if not wanted:
             raise DocumentError("the issue document: '## Acceptance criteria' holds no criteria")
         quoted = plan_criteria(plan_text)
-    except DocumentError as exc:
-        return [str(exc)]
+    except DocumentError as error:
+        return [str(error)]
     reasons = []
     remaining = list(quoted)
     for criterion in wanted:
@@ -1456,10 +1615,9 @@ def history(commit: str, git_dir=None) -> list:
     try:
         proc = subprocess.run(argv, capture_output=True)
     except OSError as exc:
-        raise InputError(f"cannot run git: {exc}") from exc
+        raise cannot_run("git", exc) from exc
     if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
-        raise InputError(f"git log failed: {detail[-1] if detail else f'exit {proc.returncode}'}")
+        raise InputError(f"git log failed: exit {proc.returncode}")
     return [s for s in proc.stdout.decode("utf-8", errors="replace").split("\0") if s]
 
 
@@ -1501,9 +1659,9 @@ def conclude(
     None when there is none."""
     try:
         footprint = parse_footprint(plan_text)
-    except FootprintError as exc:
+    except FootprintError as error:
         footprint = None
-        rules = [{"rule": "footprint", "result": "hit", "reasons": [str(exc)]}]
+        rules = [{"rule": "footprint", "result": "hit", "reasons": [str(error)]}]
     else:
         rules = [{"rule": "footprint", "result": "clean", "reasons": []}]
         rules += evaluate(footprint, components, cfg, screen)
@@ -1527,7 +1685,7 @@ def remove_stale_verdict() -> None:
     try:
         remove(VERDICT)
     except OSError as exc:
-        raise InputError(f"cannot delete the stale verdict {VERDICT}: {exc}") from exc
+        raise InputError(f"cannot delete the stale verdict {VERDICT}") from exc
 
 
 def write_verdict(verdict: dict) -> None:
@@ -1604,16 +1762,15 @@ def floor(argv: list) -> int:
 def main(argv: list) -> int:
     try:
         return floor(argv)
-    except InputError as exc:
-        print(f"floor.py: {exc}", file=sys.stderr)
+    except InputError as error:
+        print(f"floor.py: {error}", file=sys.stderr)
         return 2
     except Exception as exc:  # a crash must never read as a hit or clean
         try:
             remove(VERDICT)
         except Exception:  # the handler itself must always end in exit 2
             pass
-        message = " ".join(str(exc).split())
-        print(f"floor.py: unexpected error: {type(exc).__name__}: {message}", file=sys.stderr)
+        print(errors.crash_line("floor.py", exc), file=sys.stderr)
         return 2
 
 

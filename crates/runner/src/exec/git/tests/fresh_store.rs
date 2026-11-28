@@ -235,6 +235,29 @@ fn a_forged_loose_object_fails_the_fetch() {
     assert!(forged.exists());
 }
 
+/// The Rust side of `plan-approval/selftest.py`'s check that a failed fetch is named by its
+/// command and exit status only, with nothing git wrote after it.
+#[test]
+fn a_forged_loose_object_names_only_the_fetch() {
+    let job = Job::new();
+    job.forge_config();
+    let message = job.fresh(&job.base).unwrap_err().to_string();
+    let named = message
+        .strip_prefix("the fetch from the job repository into a fresh object store failed (git ")
+        .and_then(|rest| rest.strip_suffix(')'));
+    let Some(named) = named else {
+        panic!("{message}");
+    };
+    let (command, status) = named.split_once(", ").expect("the command and its status");
+    let exit_code = status
+        .strip_prefix("exit code ")
+        .is_some_and(|code| !code.is_empty() && code.bytes().all(|b| b.is_ascii_digit()));
+    assert!(
+        !command.is_empty() && !command.contains(' ') && (exit_code || status == "no exit code"),
+        "{message}"
+    );
+}
+
 #[test]
 fn a_forged_shallow_file_is_refused_naming_the_fetch() {
     let job = Job::new();

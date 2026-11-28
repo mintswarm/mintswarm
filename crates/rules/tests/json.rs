@@ -85,29 +85,82 @@ fn lone_surrogates_are_rejected() {
 }
 
 #[test]
-fn a_byte_order_mark_is_rejected() {
+fn a_byte_order_mark_is_a_syntax_error() {
     let error = at("\u{feff}{}");
-    assert_eq!(error.kind, ReadErrorKind::Bom);
+    assert_eq!(error.kind, ReadErrorKind::Syntax);
     assert_eq!((error.line, error.column), (1, 1));
 }
 
 #[test]
-fn extra_data_is_rejected_where_python_finds_it() {
+fn extra_data_is_a_syntax_error_where_python_finds_it() {
     let error = at("[1] x");
-    assert_eq!(error.kind, ReadErrorKind::ExtraData);
+    assert_eq!(error.kind, ReadErrorKind::Syntax);
     assert_eq!((error.line, error.column), (1, 5));
-    assert_eq!(kind("01"), ReadErrorKind::ExtraData);
-    assert_eq!(kind("1."), ReadErrorKind::ExtraData);
-    assert_eq!(kind("1e"), ReadErrorKind::ExtraData);
-    assert_eq!(kind("{} {}"), ReadErrorKind::ExtraData);
+    for (text, column) in [("01", 2), ("1.", 2), ("1e", 2), ("{} {}", 4)] {
+        let error = at(text);
+        assert_eq!(
+            (error.kind, error.line, error.column),
+            (ReadErrorKind::Syntax, 1, column),
+            "{text:?}"
+        );
+    }
 }
 
 #[test]
-fn control_characters_in_strings_are_rejected() {
+fn control_characters_in_strings_are_a_syntax_error() {
     let error = at("{\"é\": \"a\tb\"}");
-    assert_eq!(error.kind, ReadErrorKind::ControlCharacter);
+    assert_eq!(error.kind, ReadErrorKind::Syntax);
     assert_eq!((error.line, error.column), (1, 9));
-    assert_eq!(kind("\"a\nb\""), ReadErrorKind::ControlCharacter);
+    let error = at("\"a\nb\"");
+    assert_eq!(
+        (error.kind, error.line, error.column),
+        (ReadErrorKind::Syntax, 1, 3)
+    );
+}
+
+#[test]
+fn a_trailing_comma_is_reported_at_the_comma() {
+    for (text, line, column) in [
+        ("[1,]", 1, 3),
+        (r#"{"a": 1,}"#, 1, 8),
+        ("[1,\n  ]", 1, 3),
+        ("[1,,]", 1, 4),
+        ("[,]", 1, 2),
+        ("[1,}", 1, 3),
+        (r#"{"a":1,]"#, 1, 7),
+    ] {
+        let error = at(text);
+        assert_eq!(
+            (error.kind, error.line, error.column),
+            (ReadErrorKind::Syntax, line, column),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn errors_display_with_a_position_unless_a_hook_finds_them() {
+    assert_eq!(at(r#"{"a": 1, "a": 2}"#).to_string(), "duplicate key 'a'");
+    assert_eq!(at("[NaN]").to_string(), "NaN is not allowed");
+    assert_eq!(
+        at(&format!("[{}]", "9".repeat(5000))).to_string(),
+        "an integer is out of range"
+    );
+    assert_eq!(
+        at("{ not json").to_string(),
+        "not valid JSON: line 1 column 3"
+    );
+    assert_eq!(
+        at(&"[".repeat(MAX_DEPTH + 1)).to_string(),
+        format!(
+            "nested deeper than {MAX_DEPTH}: line 1 column {}",
+            MAX_DEPTH + 1
+        )
+    );
+    assert_eq!(
+        at("1e400").to_string(),
+        "a number is not finite: line 1 column 1"
+    );
 }
 
 #[test]
@@ -130,8 +183,8 @@ fn malformed_text_is_a_syntax_error() {
     ] {
         assert_eq!(kind(text), ReadErrorKind::Syntax, "{text:?}");
     }
-    let error = at("[1,\n  ]");
-    assert_eq!((error.line, error.column), (2, 3));
+    let error = at("[1 2]");
+    assert_eq!((error.line, error.column), (1, 4));
 }
 
 #[test]
@@ -344,4 +397,85 @@ fn every_record_type_is_written_as_the_python_tools_write_it() {
         .filter(|entry| str_field(entry, "ascii") != str_field(entry, "disk"))
         .count();
     assert!(escaped > 0, "some record has non-ASCII text to escape");
+}
+
+/// The first error in the text is the one reported, around nesting deeper than [`MAX_DEPTH`], as
+/// `floor.py`'s footprint reader reports it.
+#[test]
+fn the_first_error_comes_first_around_deep_nesting() {
+    let deep = format!("{}{}", "[".repeat(600), "]".repeat(600));
+    let cases = [
+        (
+            format!(r#"{{"a": [{deep}, x]}}"#),
+            "nested deeper than 512: line 1 column 518",
+        ),
+        (
+            format!(r#"{{"a": [{deep}, NaN]}}"#),
+            "nested deeper than 512: line 1 column 518",
+        ),
+        (
+            format!(r#"{{"a": [x, {deep}]}}"#),
+            "not valid JSON: line 1 column 8",
+        ),
+        (
+            format!(r#"{{"a": [1 {deep}]}}"#),
+            "not valid JSON: line 1 column 10",
+        ),
+        (
+            format!(
+                r#"{{"a": {}1{}{}{}}}"#,
+                "[".repeat(511),
+                "[".repeat(10),
+                "]".repeat(10),
+                "]".repeat(511)
+            ),
+            "not valid JSON: line 1 column 519",
+        ),
+        (
+            format!(r#"{{"a": {}1e5[]}}"#, "[".repeat(511)),
+            "not valid JSON: line 1 column 521",
+        ),
+        (
+            format!("{{{}", "[".repeat(600)),
+            "not valid JSON: line 1 column 2",
+        ),
+        (
+            format!(r#"{{"a": {{"k":1,"k":2}}, "b": {deep}}}"#),
+            "duplicate key 'k'",
+        ),
+        (
+            format!("{{}} {}", "[".repeat(600)),
+            "not valid JSON: line 1 column 4",
+        ),
+    ];
+    for (text, reason) in cases {
+        assert_eq!(at(&text).to_string(), reason, "{}", &text[..20]);
+    }
+}
+
+/// A bad `\u` escape is reported at its `u`, and a backslash that ends the text at the string's
+/// opening quote, as Python reports them.
+#[test]
+fn escape_errors_are_where_python_reports_them() {
+    let cases = [
+        (r#"{"a": "\u12x"}"#, 9),
+        (r#"{"a": "\uzzzz"}"#, 9),
+        (r#"{"a": "\ud800\u12"}"#, 15),
+        (r#"{"a": "\ud800\uzz"}"#, 15),
+        (r#"{"a": "\"#, 7),
+        (r#"{"a": "\u004"#, 9),
+        (r#"{"a": "\u0041"#, 7),
+        (r#"{"a": "\ud800\u004"#, 15),
+        (r#"{"a": "\ud83d\ude00"#, 7),
+        (r#"{"a": "\q"}"#, 8),
+        (r#""\u12"#, 3),
+    ];
+    for (text, column) in cases {
+        let error = at(text);
+        assert_eq!(
+            (error.kind, error.line, error.column),
+            (ReadErrorKind::Syntax, 1, column),
+            "{text}"
+        );
+    }
 }

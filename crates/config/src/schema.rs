@@ -61,7 +61,7 @@ use crate::activity::check_activity;
 use crate::state::check_options;
 use crate::{
     Action, ActionTable, ActionTrust, ActivityRule, Error, Path, People, Stage, StateSettings,
-    StatusMode, Trust, TrustMatch, parse_yaml,
+    StatusMode, Trust, TrustMatch, parse_yaml, shlex_split,
 };
 
 /// The plan-approval and landing modes.
@@ -1341,7 +1341,8 @@ fn check_formatter(
         Value::String(command) if !command.trim().is_empty() => command.clone(),
         _ => return Err(Error::schema(&command_path, "must be a non-empty string")),
     };
-    shell_split_ok(&command)
+    shlex_split(&command)
+        .map(|_| ())
         .map_err(|problem| Error::schema(&command_path, format!("does not split: {problem}")))?;
 
     let paths_path = path.key("paths");
@@ -1389,43 +1390,13 @@ fn check_gate(gate: &Value, path: &Path) -> Result<(), Error> {
         Some(Value::String(command)) => command,
         _ => return Err(Error::schema(&command_path, "must be a string")),
     };
-    shell_split_ok(command)
+    shlex_split(command)
+        .map(|_| ())
         .map_err(|problem| Error::schema(&command_path, format!("does not split: {problem}")))?;
     if let Some(timeout) = map.get("timeout") {
         bounded(timeout, &path.key("timeout"), 1, None)?;
     }
     Ok(())
-}
-
-/// Whether POSIX `shlex.split` accepts `command`: every quote is closed and no escape is left
-/// without the character it escapes.
-fn shell_split_ok(command: &str) -> Result<(), &'static str> {
-    enum State {
-        Plain,
-        Single,
-        Double,
-    }
-    const UNCLOSED: &str = "No closing quotation";
-    const ESCAPE: &str = "No escaped character";
-    let mut state = State::Plain;
-    let mut chars = command.chars();
-    while let Some(c) = chars.next() {
-        match (&state, c) {
-            (State::Plain, '\\') | (State::Double, '\\') => {
-                if chars.next().is_none() {
-                    return Err(ESCAPE);
-                }
-            }
-            (State::Plain, '\'') => state = State::Single,
-            (State::Plain, '"') => state = State::Double,
-            (State::Single, '\'') | (State::Double, '"') => state = State::Plain,
-            _ => {}
-        }
-    }
-    match state {
-        State::Plain => Ok(()),
-        State::Single | State::Double => Err(UNCLOSED),
-    }
 }
 
 /// A format name: `[a-z0-9][a-z0-9-]*`.
@@ -1531,17 +1502,7 @@ fn check_converter(name: &str, value: &Value, path: &Path) -> Result<(), Error> 
 
 #[cfg(test)]
 mod tests {
-    use super::{format_name, shell_split_ok};
-
-    #[test]
-    fn shell_split_finds_unclosed_quotes_and_escapes() {
-        assert!(shell_split_ok("cd ./web && bash x.sh").is_ok());
-        assert!(shell_split_ok(r#"echo "a \" b" 'c\'"#).is_ok());
-        assert!(shell_split_ok("echo 'a").is_err());
-        assert!(shell_split_ok("echo \"a").is_err());
-        assert!(shell_split_ok("echo a\\").is_err());
-        assert!(shell_split_ok("echo \"a\\").is_err());
-    }
+    use super::format_name;
 
     #[test]
     fn format_names() {
