@@ -166,7 +166,10 @@ enum MainError {
     #[error(transparent)]
     Serve(#[from] webhooks::ServeError),
     #[error("cannot read {}", path.display())]
-    ReadConfig { path: PathBuf },
+    ReadConfig {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("cannot load {}: {source}", path.display())]
     Config {
         path: PathBuf,
@@ -191,8 +194,9 @@ fn main() -> ExitCode {
 /// Reads and loads the plane's settings at `path`, with the process's environment as the
 /// overrides.
 fn load_config(path: &std::path::Path) -> Result<PlaneConfig, MainError> {
-    let text = std::fs::read_to_string(path).map_err(|_| MainError::ReadConfig {
+    let text = std::fs::read_to_string(path).map_err(|source| MainError::ReadConfig {
         path: path.to_path_buf(),
+        source,
     })?;
     load_plane_config(&text, |name| std::env::var_os(name)).map_err(|source| MainError::Config {
         path: path.to_path_buf(),
