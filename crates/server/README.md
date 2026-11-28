@@ -1,6 +1,69 @@
 # mintswarm-server
 
-The control-plane server binary. `serve` and `migrate` only parse for now; `webhooks` receives the GitHub App's webhooks and appends each verified delivery to a log file, so a session can watch the log instead of polling GitHub.
+The control-plane server binary. `serve` runs the control plane, `migrate` applies its database migrations, and `webhooks` receives the GitHub App's webhooks and appends each verified delivery to a log file, so a session can watch the log instead of polling GitHub.
+
+## Running the control plane
+
+```sh
+mintswarm-server serve --config mintswarm.yaml
+```
+
+`--config` defaults to `mintswarm.yaml` in the current directory. On start, `serve`:
+
+1. loads the settings and refuses a `listen` address that is not loopback (see below);
+2. binds `listen` and prints `mintswarm-server serve: listening on http://<addr>` on stderr;
+3. takes the leader lock, a Postgres session advisory lock held on a connection of its own;
+4. applies the database migrations, as `migrate` does;
+5. makes the `projects` rows match `projects:` in the settings;
+6. starts the readiness probe.
+
+Only one instance leads at a time. A second `serve` against the same database is a standby: it tries for the lock every second and answers `/readyz` with `503` until the leader's database session ends, then takes over and goes through steps 4 to 6. While the database cannot be reached, `serve` keeps trying every second instead of exiting. A leader whose lock session ends or stops answering exits 1, so it must run under a supervisor that restarts it, such as compose with a restart policy; it comes back as a standby.
+
+It runs until Ctrl-C (SIGINT) or SIGTERM, standby or leader, then stops serving, releases the lock and exits 0. It exits 1 on a settings error, a refused address, a failed migration or reconciliation, or a lost lock.
+
+### Health
+
+- `GET /healthz` answers `200` while the process runs.
+- `GET /readyz` answers `200` when this instance holds the leader lock, the database answers and every migration is applied. Otherwise it answers `503` with a one-line body naming the failing checks, such as `not ready: leader, migrations`. The database and migration checks run every 2 seconds in the background, each bounded by 2 seconds, so the answer is at most a few seconds old and a hung database never holds a request.
+
+### Listening only on loopback
+
+No auth provider exists yet, so nothing could check who calls the plane. `serve` therefore refuses a `listen` address that is not loopback, such as `0.0.0.0:8080`, with `no auth provider is configured, so serve listens only on a loopback address`, and exits 1 before connecting to anything.
+
+### The settings
+
+```yaml
+listen: 127.0.0.1:8080          # required: the address and port serve listens on
+database:
+  url: postgres://mintswarm@db:5432/mintswarm   # required: a Postgres connection string
+  password: …                   # optional: replaces the URL's password
+projects:                       # optional: the projects the plane serves
+  - project_id: mintswarm       # required, unique
+    repo: mintswarm/mintswarm   # required: owner/name
+    host: github                # optional: github, the only host for now
+    installation_id: 12345678   # required: the GitHub App installation
+    weight: 1                   # optional: a positive integer, 1 by default
+```
+
+Any other key is refused. On each start, an entry without a row is added, and a row whose `repo`, `host`, `installation_id` or `weight` changed is updated. A row whose entry was removed from the file is left as it is.
+
+These variables override keys of the file, and a key given only by its variable need not be in the file:
+
+| Variable | Key |
+| --- | --- |
+| `MINTSWARM_LISTEN` | `listen` |
+| `MINTSWARM_DATABASE_URL` | `database.url` |
+| `MINTSWARM_DATABASE_PASSWORD` | `database.password` |
+
+Each also has a `_FILE` form, such as `MINTSWARM_DATABASE_PASSWORD_FILE`, that names a file holding the value, for secrets mounted as files. One trailing newline is removed from the file's text. Setting both forms of one variable, an empty value, or a file that cannot be read or is empty is an error that names the variable. The database URL and password are never printed, in errors either.
+
+## Applying the migrations
+
+```sh
+mintswarm-server migrate --config mintswarm.yaml
+```
+
+It applies the migrations built into the binary to the database of the settings, prints how many it applied, and exits 0, or 1 with the error on stderr. It uses only `database`, but the whole file must load, `listen` included, with the same overrides as `serve`. Two runs at once, or a run beside `serve`, are safe: each takes the migration lock in turn. `migrate new <name>` creates an empty migration in the source tree instead.
 
 ## Receiving webhooks
 
