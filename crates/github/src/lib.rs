@@ -1,6 +1,7 @@
-//! GitHub access for the runner: it acts as the runner App with an RS256 App JWT and
-//! installation tokens narrowed to one repository and the permissions each use asks for, each at
-//! read or write level.
+//! GitHub access as the App whose configuration or token its caller passes: the bee for the
+//! runner, the keeper for the control plane. It acts with an RS256 App JWT and installation
+//! tokens narrowed to one repository and the permissions each use asks for, each at read or
+//! write level.
 //! The App's private key is read from the key store its configuration names, for each JWT, and
 //! dropped after signing. [`FieldClient`] and [`GitHubFieldCatalogue`] read and write a role's
 //! issue field or labels with a token their caller passes in.

@@ -57,7 +57,7 @@ mintswarm/
 │   ├── core/               # control plane library
 │   │   └── migrations/     # append-only SQL migrations
 │   ├── server/             # `mintswarm-server` binary
-│   ├── steward/            # `mintswarm-steward` signing-key binary
+│   ├── keeper/             # `mintswarm-keeper` signing-key binary
 │   ├── runner/             # `mintswarm-runner` daemon, `tool pr-labels`
 │   ├── console-mcp/        # console MCP server (library)
 │   └── cli/                # `mintswarm` CLI binary
@@ -147,7 +147,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
   - `console-mcp` ← `server`
   - `console-mcp` ← `cli`
 
-  `core` and `runner` never depend on each other; anything they share goes down a level. `proto` never depends on `github`. `steward` stands apart and depends on no workspace crate.
+  `core` and `runner` never depend on each other; anything they share goes down a level. `proto` never depends on `github`. `keeper` stands apart and depends on no workspace crate.
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.

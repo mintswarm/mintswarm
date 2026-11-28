@@ -142,7 +142,7 @@ fn all_requires_both() {
 const TRACKER: &str = "/tracker";
 
 /// The App the repository trusts to merge, and only to merge.
-const STEWARD: &str = "mintswarm-dev-steward";
+const KEEPER: &str = "mintswarm-dev-keeper";
 
 /// The row the repository's own config gives `action`.
 fn repository_row(action: Action) -> ActionTrust {
@@ -157,7 +157,7 @@ fn repository_row(action: Action) -> ActionTrust {
         },
         Action::Merge => ActionTrust {
             people: People::None,
-            apps: vec![STEWARD.to_owned()],
+            apps: vec![KEEPER.to_owned()],
         },
     }
 }
@@ -295,11 +295,11 @@ fn row_keys_are_checked() {
         for apps in [
             json!([1]),
             json!([""]),
-            json!([format!("{STEWARD}[bot]")]),
-            json!(["Mintswarm-Dev-Steward"]),
+            json!([format!("{KEEPER}[bot]")]),
+            json!(["Mintswarm-Dev-Keeper"]),
             json!(["mintswarm dev"]),
             json!(["mintswarm_dev"]),
-            json!([STEWARD, STEWARD]),
+            json!([KEEPER, KEEPER]),
         ] {
             let text = with_actions(|actions| {
                 row(actions, action).insert("apps".to_owned(), apps.clone());
@@ -317,12 +317,12 @@ fn row_keys_are_checked() {
 fn app_outside_merge_is_refused() {
     for action in Action::ALL {
         let text = with_actions(|actions| {
-            row(actions, action).insert("apps".to_owned(), json!([STEWARD]));
+            row(actions, action).insert("apps".to_owned(), json!([KEEPER]));
         });
         if action == Action::Merge {
             load_repo_config(&text).expect("merge may trust an App");
             let text = with_actions(|actions| {
-                row(actions, action).insert("apps".to_owned(), json!([STEWARD, "other-app-2"]));
+                row(actions, action).insert("apps".to_owned(), json!([KEEPER, "other-app-2"]));
             });
             load_repo_config(&text).expect("merge may trust several Apps");
         } else {
@@ -373,7 +373,7 @@ fn action_names_follow_the_variants() {
 }
 
 #[test]
-fn live_actions_trust_only_the_steward_to_merge() {
+fn live_actions_trust_only_the_keeper_to_merge() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.mintswarm/config.yaml");
     let text = std::fs::read_to_string(&path).expect("the repository config is readable");
@@ -381,7 +381,7 @@ fn live_actions_trust_only_the_steward_to_merge() {
     for action in Action::ALL {
         let row = config.actions().get(action);
         if action == Action::Merge {
-            assert_eq!(row.apps, [STEWARD], "{}", action.as_str());
+            assert_eq!(row.apps, [KEEPER], "{}", action.as_str());
         } else {
             assert!(row.apps.is_empty(), "{}", action.as_str());
         }

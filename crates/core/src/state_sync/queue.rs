@@ -2,7 +2,7 @@
 //! (design #548 §5): one queue per repository, never one per evaluator.
 //!
 //! [`StateSync`] is the hand-off: it holds no tracker, so [`StateSync::on_delivery`] cannot call
-//! one. It reduces the event for state-sync and for approvals and the steward, merges the
+//! one. It reduces the event for state-sync and for approvals and the keeper, merges the
 //! entries into a set of issue and pull request numbers kept in arrival order, and wakes the
 //! worker. A number already queued absorbs the new causes and keeps its place.
 //!
@@ -51,7 +51,7 @@ pub struct Entry {
     pub cause: Option<Cause>,
     /// Why approvals evaluate the issue; `None` when they do not.
     pub approvals: Option<ApprovalCause>,
-    /// Whether the number is a pull request the steward evaluates.
+    /// Whether the number is a pull request the keeper evaluates.
     pub pull: bool,
     /// Set when the issue itself was closed or reopened: the worker first queues the issues it
     /// blocks, each with the issue's close or reopen as its blocker change, as the issue's
@@ -260,7 +260,7 @@ impl StateSync {
         (handle, worker)
     }
 
-    /// Reduces `event` for state-sync and for approvals and the steward, and queues the
+    /// Reduces `event` for state-sync and for approvals and the keeper, and queues the
     /// entries, without waiting and without any tracker call.
     pub fn on_delivery(&self, event: &WatchEvent) {
         let state_sync = trigger::reduce(event, &self.repository);

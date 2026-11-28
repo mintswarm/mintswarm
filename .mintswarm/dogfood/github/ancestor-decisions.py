@@ -71,9 +71,13 @@ A decision on an ancestor is one of:
 - a comment by a login that matches an entry of
   `tracker.ingest.trusted.authors` case-insensitively, or by that
   ancestor's owner when the owner is trusted (`via: account`);
-- a mintswarm-dev[bot] comment holding the line `<!-- mintswarm: steer -->`
-  (`via: marker`), tested as collect-facts.py tests it: CRLF becomes LF,
-  each line is trimmed of whitespace, then compared;
+- a comment by the bee, the runner App, holding the line
+  `<!-- mintswarm: steer -->` (`via: marker`), tested as collect-facts.py
+  tests it: CRLF becomes LF, each line is trimmed of whitespace, then
+  compared. The bee's login, `<slug>[bot]`, is derived from its config
+  ($MSW_APP_CONFIG or ~/.config/mintswarm/bee-app.json), read only when a
+  comment with the marker is met; a missing or malformed config, or a slug
+  that is not a non-empty string of [A-Za-z0-9-], is unusable input;
 - a section of the ancestor's body, when its owner is trusted, under an ATX
   heading whose text starts with `Decision`, found outside ``` and ~~~
   fenced blocks, up to the next heading of the same or a higher level
@@ -104,6 +108,7 @@ assemble, on any unusable input, leaving no file. Standard library only,
 apart from running bot-gh.sh (fetch), git and yq (assemble).
 """
 
+import functools
 import json
 import os
 import re
@@ -122,7 +127,7 @@ REPO = "repos/{owner}/{repo}"
 PER_PAGE = 100
 MAX_PAGES = 30
 MAX_ANCESTORS = 10
-BOT = "mintswarm-dev[bot]"
+SLUG = re.compile(r"[A-Za-z0-9-]+")
 MARKER = "<!-- mintswarm: steer -->"
 WRITE_PERMISSIONS = {"admin", "write"}
 WRITE_ROLES = {"admin", "maintain", "write"}
@@ -149,6 +154,20 @@ class InputError(Exception):
 
 class FetchError(Exception):
     """A GitHub read failed or could not be saved: exit 1."""
+
+
+@functools.lru_cache(maxsize=None)
+def bee_login() -> str:
+    """The bee's bot login, <slug>[bot], from its config; read at the first comparison that needs it, never at import."""
+    path = Path(os.environ.get("MSW_APP_CONFIG") or Path.home() / ".config" / "mintswarm" / "bee-app.json")
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise InputError(f"cannot read the bee's config {path}: {exc} (see README.md, Roles)") from exc
+    slug = config.get("slug") if isinstance(config, dict) else None
+    if not isinstance(slug, str) or not SLUG.fullmatch(slug):
+        raise InputError(f"the bee's config {path} has no usable slug ({slug!r}; see README.md, Roles)")
+    return f"{slug}[bot]"
 
 
 # --- common ---------------------------------------------------------------
@@ -531,7 +550,7 @@ def comment_decisions(number: int, comments: list, owner, trusted: bool, authors
             continue
         if not isinstance(login, str):
             raise InputError(f"{url} has an unreadable author")
-        if login == BOT and has_marker(body):
+        if has_marker(body) and login == bee_login():
             via = "marker"
         elif person(user) is None:
             continue

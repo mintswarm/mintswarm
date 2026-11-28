@@ -31,7 +31,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const TOKEN: &str = "ghs_tr4ckerT0kenV4lue";
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-keeper[bot]";
 const ISSUE: IssueNumber = IssueNumber(7);
 const VALUES_PATH: &str = "/repos/acme/widgets/issues/7/issue-field-values";
 const ORG_FIELDS_PATH: &str = "/orgs/acme/issue-fields?per_page=100&page=1";
@@ -91,7 +91,7 @@ const PARENT_NONE: &str = include_str!("../../github/tests/fixtures/reads/parent
 const COMMENT_ID: u64 = 7_202_074_597;
 const CREATED: &str = r#"{
   "id": 9001, "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-9001",
-  "user": {"login": "mintswarm-dev[bot]", "type": "Bot"},
+  "user": {"login": "mintswarm-dev-keeper[bot]", "type": "Bot"},
   "body": "<!-- mintswarm: note -->\n<!-- mintswarm: blockers open=12 -->\nBlocked by #12.",
   "created_at": "2026-11-26T12:00:02Z", "updated_at": "2026-11-26T12:00:02Z"
 }"#;
@@ -585,7 +585,8 @@ async fn reacts_plus_one_to_a_comment() {
 async fn edits_a_comment_and_returns_it() {
     let responder = Responder::start().await;
     responder.reply(200, COMMENT_EDITED);
-    let body = "<!-- mintswarm: note -->\nScratch comment by mintswarm-dev, edited by the steward.";
+    let body =
+        "<!-- mintswarm: note -->\nScratch comment by mintswarm-dev-bee, edited by the keeper.";
     let comment = tracker(&responder)
         .edit_comment(COMMENT_ID, body.to_owned())
         .await
@@ -601,7 +602,7 @@ async fn edits_a_comment_and_returns_it() {
         &format!("/repos/acme/widgets/issues/comments/{COMMENT_ID}"),
     );
     assert!(
-        requests[0].body.contains("edited by the steward"),
+        requests[0].body.contains("edited by the keeper"),
         "{}",
         requests[0].body
     );
@@ -611,7 +612,7 @@ async fn edits_a_comment_and_returns_it() {
 async fn updates_an_artifact_by_its_number() {
     let responder = Responder::start().await;
     responder.reply(200, ARTIFACT_UPDATED);
-    let body = "# Scratch artefact\n\nVersion 2, by the steward.";
+    let body = "# Scratch artefact\n\nVersion 2, by the keeper.";
     let artifact = tracker(&responder)
         .update_artifact(ISSUE, 1, body.to_owned())
         .await

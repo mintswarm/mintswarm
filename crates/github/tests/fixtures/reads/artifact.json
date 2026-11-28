@@ -8,7 +8,7 @@
     "body": "# Plan\n\nA GET-only client.",
     "body_html": "<h1>Plan</h1><p>A GET-only client.</p>",
     "html_url": "https://github.com/acme/widgets/issues/180/artifacts/2",
-    "creator": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot" },
+    "creator": { "login": "mintswarm-dev-bee[bot]", "id": 7, "type": "Bot" },
     "created_at": "2026-11-22T09:00:00Z",
     "updated_at": "2026-11-23T09:00:00Z",
     "updated_by_actor": { "login": "maintainer", "id": 1, "type": "User" }

@@ -160,7 +160,7 @@ enum Event {
   EVENT_MERGED = 26;
   // The PR's head moved away from the recorded head before the merge.
   EVENT_HEAD_MOVED = 27;
-  // The steward refused the merge.
+  // The keeper refused the merge.
   EVENT_MERGE_REFUSED = 28;
   // `releasing` released the assignments.
   EVENT_RELEASED = 29;
@@ -205,7 +205,7 @@ enum EscalationCause {
   ESCALATION_CAUSE_OUT_OF_FOOTPRINT = 5;
   // A deterministic step's input is unusable.
   ESCALATION_CAUSE_INPUT_UNUSABLE = 6;
-  // The steward refused the merge.
+  // The keeper refused the merge.
   ESCALATION_CAUSE_MERGE_REFUSED = 7;
   // `file_children` refused the parent's issue type.
   ESCALATION_CAUSE_PARENT_TYPE_REFUSED = 8;

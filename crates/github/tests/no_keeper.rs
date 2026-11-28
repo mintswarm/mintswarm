@@ -1,5 +1,5 @@
-//! The runner acts as the runner App only: nothing in this crate names the steward App's
-//! configuration file, so no code path can read it.
+//! Nothing in this crate names the keeper App's configuration file: its callers pass the path or
+//! the token of the App they act as, so no code path here reads the keeper's configuration.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use mintswarm_github::AppConfig;
 
 /// Built from two halves so that this file does not contain it.
-const NEEDLE: &str = concat!("steward", "-app.json");
+const NEEDLE: &str = concat!("keeper", "-app.json");
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -22,7 +22,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn no_source_names_the_steward_config() {
+fn no_source_names_the_keeper_config() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = vec![root.join("Cargo.toml")];
     files(&root.join("src"), &mut paths);
@@ -32,7 +32,7 @@ fn no_source_names_the_steward_config() {
         "{paths:?}"
     );
     assert!(
-        paths.iter().any(|p| p.ends_with("tests/no_steward.rs")),
+        paths.iter().any(|p| p.ends_with("tests/no_keeper.rs")),
         "{paths:?}"
     );
     let needle = NEEDLE.as_bytes();
@@ -50,7 +50,7 @@ fn no_source_names_the_steward_config() {
 fn the_default_config_is_the_runner_apps() {
     let path = AppConfig::default_path(Path::new("/home/runner"));
     assert!(
-        path.ends_with(".config/mintswarm/dev-app.json"),
+        path.ends_with(".config/mintswarm/bee-app.json"),
         "{}",
         path.display()
     );

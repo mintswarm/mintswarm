@@ -21,11 +21,12 @@ struct Claims {
 fn config() -> AppConfig {
     AppConfig {
         app_id: 1,
-        slug: String::from("mintswarm-dev"),
+        slug: String::from("mintswarm-dev-bee"),
         client_id: String::from("Iv23liJwtTest"),
-        keychain_service: String::from("mintswarm-dev"),
+        keychain_service: String::from("mintswarm-dev-bee"),
         key_store: Some(KeyStore::File),
         key_fingerprint: None,
+        bot_user_id: None,
     }
 }
 

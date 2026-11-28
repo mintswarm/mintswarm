@@ -17,7 +17,7 @@ use mintswarm_domain::tracker::{Comment, Issue, IssueType, Login, RepoRole};
 use mintswarm_rules::command::PackageKind;
 use mintswarm_rules::render::decision::{Marker, Ruling};
 
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-keeper[bot]";
 const OWNER: &str = "zmij";
 const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

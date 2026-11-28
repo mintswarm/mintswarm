@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Create a GitHub App from its manifest, or rotate an App's private key.
+# Create a GitHub App from its manifest, record its bot user id, or rotate an App's
+# private key.
 #
-#   store-credentials.sh create MANIFEST
-#       Run the whole manifest flow for the App that MANIFEST (a JSON file, see
-#       manifests/) describes. Its name picks the App's profile in common.sh
-#       (msw_app_profile): its own config file, key service and key label.
-#       Before anything is shown it checks the manifest (a known name, public
+#   store-credentials.sh create ROLE MANIFEST
+#       Run the whole manifest flow for the App of ROLE (bee or keeper; see
+#       README.md, Roles) that MANIFEST (a JSON file, see manifests/) describes.
+#       ROLE picks the profile in common.sh (msw_app_profile): the role's own
+#       config file. The key's service and label are derived from the
+#       manifest's name, which GitHub must return as the slug:
+#       <slug>-private-key and "<slug> GitHub App private key".
+#       Before anything is shown it checks the manifest (a plain name, public
 #       false, redirect_url http://127.0.0.1:PORT/ with PORT from 1024 to
-#       65535), that the App's config does not exist yet and is not the other
-#       App's, that MSW_MANIFEST_TIMEOUT (seconds, default 600) is valid and
+#       65535), that the role's config does not exist yet and is not the other
+#       role's, that MSW_MANIFEST_TIMEOUT (seconds, default 600) is valid and
 #       that a key store is available. It then writes
 #       ~/.config/mintswarm/create-NAME.html (removed on exit), which posts the
 #       manifest to GitHub with a random state, and starts manifest-listener.py
@@ -17,20 +21,31 @@
 #       listener takes the first redirect whose state matches and hands the code over on a pipe; curl
 #       exchanges it for the App's credentials, reading the URL from its stdin
 #       (-K -). The App must come back with the manifest's name as slug and
-#       the organisation as owner, or nothing is stored. The private key goes
-#       to the App's own key-store item (key-store.sh put: $MSW_KEY_STORE, or
-#       the first available), without per-use confirmation, and the public
-#       identifiers to the App's own config, with key_confirm none. The
-#       client secret and webhook secret are discarded.
+#       the organisation as owner, or nothing is stored. The App's bot user
+#       id is then looked up as bot-id does, and nothing is stored when that
+#       fails. The private key goes to the App's own key-store item
+#       (key-store.sh put: $MSW_KEY_STORE, or the first available), without
+#       per-use confirmation, and the public
+#       identifiers, bot_user_id included, to the role's config, with
+#       key_confirm none. The client secret and webhook secret are discarded.
+#   store-credentials.sh bot-id
+#       Record the bot user id of the App whose config $MSW_APP_CONFIG names
+#       (default ~/.config/mintswarm/bee-app.json) as bot_user_id in that
+#       config, changing nothing else. The id is read from the public
+#       https://api.github.com/users/<slug>%5Bbot%5D, with no credential, and
+#       kept only when the answer's type is Bot, its login <slug>[bot] and its
+#       id all digits; otherwise nothing is stored. The bot's noreply e-mail
+#       is derived from it (common.sh, msw_bot_email).
 #   store-credentials.sh rotate PEM_PATH [--keep]
 #       Store a private key downloaded from the App's settings under the same
 #       service and account, for the App whose config $MSW_APP_CONFIG names
-#       (default ~/.config/mintswarm/dev-app.json), in $MSW_KEY_STORE when set
+#       (default ~/.config/mintswarm/bee-app.json), in $MSW_KEY_STORE when set
 #       and otherwise in the key store recorded there; update key_fingerprint,
 #       key_store and key_confirm (none) and delete the downloaded file unless
-#       --keep. The label comes from the App's profile, found by the config's
-#       slug. The key is stored without per-use confirmation; a config whose
-#       key_confirm is neither none nor absent is refused, storing nothing.
+#       --keep. The service is the config's keychain_service, and the label
+#       is derived from the config's slug. The key is stored without per-use
+#       confirmation; a config whose key_confirm is neither none nor absent is
+#       refused, storing nothing.
 #       Moving to another key store leaves the old item where it is.
 #
 # The code passes only through a pipe, a shell variable and curl's stdin; it is
@@ -40,8 +55,9 @@
 # curl runs with -q first, so ~/.curlrc cannot trace the conversion response.
 # An App's config holds no secret: app_id, slug, client_id, keychain_service
 # (the key's service name in every key store), key_store, key_fingerprint,
-# key_confirm (always none: no App's key needs per-use confirmation; a config
-# without it means none).
+# bot_user_id (the number in the bot's noreply e-mail), key_confirm (always
+# none: no App's key needs per-use confirmation; a config without it means
+# none).
 set -euo pipefail
 
 # shellcheck source=common.sh
@@ -50,7 +66,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-  printf '%s\n' "usage: store-credentials.sh create MANIFEST | rotate PEM_PATH [--keep]" >&2
+  printf '%s\n' "usage: store-credentials.sh create ROLE MANIFEST | bot-id | rotate PEM_PATH [--keep]" >&2
   exit 2
 }
 
@@ -58,6 +74,25 @@ check_word() {  # check_word WHAT VALUE: VALUE must be a plain word
   case "$2" in
     ''|*[!A-Za-z0-9._-]*) msw_die "unexpected $1: '$2'" ;;
   esac
+}
+
+key_label() { printf '%s GitHub App private key\n' "$1"; }  # key_label SLUG
+
+BOT_USER_ID=""
+lookup_bot_id() {  # lookup_bot_id SLUG: sets BOT_USER_ID from GitHub's public answer for SLUG[bot]
+  local slug="$1" answer id
+  BOT_USER_ID=""
+  check_word "slug" "$slug"
+  answer="$(curl -q -fsS -H "Accept: application/vnd.github+json" "https://api.github.com/users/$slug%5Bbot%5D")" \
+    || msw_die "cannot read the bot user ${slug}[bot] from GitHub: nothing was stored"
+  printf '%s' "$answer" | jq -e --arg login "${slug}[bot]" \
+      'type == "object" and .login == $login and .type == "Bot"' >/dev/null 2>&1 \
+    || msw_die "GitHub's answer for ${slug}[bot] is not that bot user: nothing was stored"
+  id="$(printf '%s' "$answer" | jq -r '.id | numbers | tostring' 2>/dev/null)" || id=""
+  case "$id" in
+    ''|*[!0-9]*) msw_die "GitHub's answer for ${slug}[bot] holds no numeric id: nothing was stored" ;;
+  esac
+  BOT_USER_ID="$id"
 }
 
 fingerprint() {  # stdin: a PEM private key; stdout: base64 SHA-256 of its DER public key
@@ -111,17 +146,23 @@ on_exit() {
 }
 
 create() {
-  local manifest="$1"
-  local name redirect port cfg other timeout state compact
+  local role="$1" manifest="$2"
+  local name redirect port cfg other timeout state compact service label
   local code conv id slug owner client_id pem perms_ok events_ok store
 
   # Everything that can fail before GitHub is involved fails here.
+  case "$role" in
+    bee|keeper) msw_app_profile "$role" ;;
+    *) msw_die "no profile for the role '$role' (known: bee, keeper; envoy is reserved)" ;;
+  esac
   [ -f "$manifest" ] || msw_die "no such manifest: $manifest"
   jq -e 'type == "object"' "$manifest" >/dev/null 2>&1 || msw_die "$manifest is not a JSON object"
   name="$(jq -r '.name // empty | strings' "$manifest")"
-  check_word "App name in $manifest" "$name"
-  msw_app_profile "$name" \
-    || msw_die "no profile for the App '$name' in common.sh (known: mintswarm-dev, mintswarm-dev-steward)"
+  case "$name" in
+    ''|*[!A-Za-z0-9-]*) msw_die "unexpected App name in $manifest: '$name' (a slug: letters, digits and -)" ;;
+  esac
+  service="$name-private-key"
+  label="$(key_label "$name")"
   redirect="$(jq -r '.redirect_url // empty | strings' "$manifest")"
   case "$redirect" in
     http://127.0.0.1:*/) port="${redirect#http://127.0.0.1:}"; port="${port%/}" ;;
@@ -135,18 +176,18 @@ create() {
   jq -e '.public == false' "$manifest" >/dev/null || msw_die "$manifest must say \"public\": false"
 
   cfg="$MSW_PROFILE_CONFIG"
-  case "$name" in
-    mintswarm-dev-steward)
-      for other in "$MSW_APP_CONFIG" "$MSW_CONFIG_DIR/dev-app.json"; do
+  case "$role" in
+    keeper)
+      for other in "$MSW_APP_CONFIG" "$MSW_CONFIG_DIR/bee-app.json"; do
         [ "$(canon "$cfg")" != "$(canon "$other")" ] \
-          || msw_die "the steward's config $cfg is mintswarm-dev's config: set MSW_STEWARD_CONFIG to a file of its own"
+          || msw_die "the keeper's config $cfg is the bee's config: set MSW_KEEPER_CONFIG to a file of its own"
       done ;;
     *)
-      [ "$(canon "$cfg")" != "$(canon "$MSW_STEWARD_CONFIG")" ] \
-        || msw_die "$name's config $cfg is the steward's config: set MSW_APP_CONFIG to a file of its own" ;;
+      [ "$(canon "$cfg")" != "$(canon "$MSW_KEEPER_CONFIG")" ] \
+        || msw_die "the bee's config $cfg is the keeper's config: set MSW_APP_CONFIG to a file of its own" ;;
   esac
   if [ -e "$cfg" ] || [ -L "$cfg" ]; then
-    msw_die "$cfg exists: $name has been created already (move the file aside to create it again)"
+    msw_die "$cfg exists: the $role's App has been created already (move the file aside to create it again)"
   fi
 
   timeout="${MSW_MANIFEST_TIMEOUT:-600}"
@@ -220,45 +261,58 @@ create() {
   [ "$events_ok" = true ] \
     || printf '%s\n' "warning: $slug's events differ from the manifest's; check them in the App's settings" >&2
 
-  store="$("$MSW_HERE/key-store.sh" backend "$MSW_PROFILE_SERVICE" "$client_id")" || exit 1
-  import_key "$MSW_PROFILE_SERVICE" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL"
+  lookup_bot_id "$slug"
+
+  store="$("$MSW_HERE/key-store.sh" backend "$service" "$client_id")" || exit 1
+  import_key "$service" "$client_id" "$pem" "$store" "$label"
   pem=""
 
   mkdir -p "$(dirname "$cfg")"
   # noclobber: the config was checked to be absent before the flow started.
   ( set -C
     jq -n --arg id "$id" --arg slug "$slug" --arg client_id "$client_id" \
-          --arg keychain_service "$MSW_PROFILE_SERVICE" --arg key_store "$store" \
-          --arg fingerprint "SHA256:$KEY_FINGERPRINT" --arg key_confirm none \
-          '{app_id: ($id|tonumber), slug: $slug, client_id: $client_id, keychain_service: $keychain_service, key_store: $key_store, key_fingerprint: $fingerprint, key_confirm: $key_confirm}' \
+          --arg keychain_service "$service" --arg key_store "$store" \
+          --arg fingerprint "SHA256:$KEY_FINGERPRINT" --arg key_confirm none --arg bot_user_id "$BOT_USER_ID" \
+          '{app_id: ($id|tonumber), slug: $slug, client_id: $client_id, keychain_service: $keychain_service, key_store: $key_store, key_fingerprint: $fingerprint, bot_user_id: ($bot_user_id|tonumber), key_confirm: $key_confirm}' \
       > "$cfg"
   ) || msw_die "cannot write $cfg"
   PENDING=""
 
-  printf '%s\n' "created: app $slug (id $id, client $client_id)"
+  printf '%s\n' "created: app $slug (id $id, client $client_id, bot user $BOT_USER_ID)"
   printf '%s\n' "key in the $store key store, confirmation: none"
   printf '%s\n' "key fingerprint SHA256:$KEY_FINGERPRINT (compare with the App's settings page)"
   printf '%s\n' "identifiers: $cfg"
-  case "$name" in
-    mintswarm-dev-steward)
-      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Steward (install it; the bypass on master)" ;;
+  case "$role" in
+    keeper)
+      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Keeper (install it; the bypass on master)" ;;
     *)
       printf '%s\n' "next: install the App ($MSW_HERE/README.md, Setup)" ;;
   esac
 }
 
+# --- bot-id ------------------------------------------------------------------
+
+bot_id() {
+  local slug updated
+  slug="$(msw_config_slug "$MSW_APP_CONFIG")" || exit 1
+  lookup_bot_id "$slug"
+  updated="$(jq --arg id "$BOT_USER_ID" '.bot_user_id = ($id|tonumber)' "$MSW_APP_CONFIG")" \
+    || msw_die "cannot read $MSW_APP_CONFIG"
+  printf '%s\n' "$updated" > "$MSW_APP_CONFIG"
+  printf '%s\n' "recorded: ${slug}[bot] is bot user $BOT_USER_ID in $MSW_APP_CONFIG"
+}
+
 # --- rotate ------------------------------------------------------------------
 
 rotate() {
-  local path="$1" keep="$2" pem service client_id slug confirm updated store old
+  local path="$1" keep="$2" pem service client_id slug confirm updated store old label
   [ -f "$path" ] || msw_die "no such file: $path"
   [ -f "$MSW_APP_CONFIG" ] || msw_die "no App config at $MSW_APP_CONFIG: rotate needs an existing App"
-  slug="$(jq -r '.slug // empty' "$MSW_APP_CONFIG")"
-  msw_app_profile "$slug" \
-    || msw_die "$MSW_APP_CONFIG names no known App (slug '$slug'; known: mintswarm-dev, mintswarm-dev-steward)"
-  service="$(jq -r '.keychain_service // empty' "$MSW_APP_CONFIG")"
-  [ "$service" = "$MSW_PROFILE_SERVICE" ] \
-    || msw_die "$MSW_APP_CONFIG gives the keychain service '$service', but $slug's is $MSW_PROFILE_SERVICE"
+  slug="$(msw_config_slug "$MSW_APP_CONFIG")" \
+    || msw_die "$MSW_APP_CONFIG is no role's App config (roles: bee, keeper; see README.md, Roles)"
+  label="$(key_label "$slug")"
+  service="$(jq -r '.keychain_service // empty | strings' "$MSW_APP_CONFIG")"
+  check_word "keychain_service in $MSW_APP_CONFIG" "$service"
   client_id="$(jq -r '.client_id // empty' "$MSW_APP_CONFIG")"
   confirm="$(jq -r '.key_confirm // empty' "$MSW_APP_CONFIG")"
   case "$confirm" in
@@ -272,7 +326,7 @@ rotate() {
   fi
   pem="$(cat "$path")"
 
-  import_key "$service" "$client_id" "$pem" "$store" "$MSW_PROFILE_LABEL"
+  import_key "$service" "$client_id" "$pem" "$store" "$label"
   pem=""
 
   updated="$(jq --arg fp "SHA256:$KEY_FINGERPRINT" --arg ks "$store" --arg kc none \
@@ -296,9 +350,12 @@ rotate() {
 
 case "${1:-}" in
   create)
-    [ $# -eq 2 ] || usage
+    [ $# -eq 3 ] || usage
     trap on_exit EXIT
-    create "$2" ;;
+    create "$2" "$3" ;;
+  bot-id)
+    [ $# -eq 1 ] || usage
+    bot_id ;;
   rotate)
     case "$#:${3:-}" in
       2:) rotate "$2" 0 ;;

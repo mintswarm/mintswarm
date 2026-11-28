@@ -1,4 +1,4 @@
-//! From a normalised delivery to the issues and pull requests approvals and the steward
+//! From a normalised delivery to the issues and pull requests approvals and the keeper
 //! evaluate, design #548 §5.
 //!
 //! The reduction is pure: it reads only the event, never the tracker. Its entries go on the
@@ -15,8 +15,8 @@ use mintswarm_domain::ids::IssueNumber;
 use mintswarm_proto::watch::v1;
 use mintswarm_rules::command;
 
+use crate::keeper::checks::HOLD_LABEL;
 use crate::state_sync::queue::Entry;
-use crate::steward::checks::HOLD_LABEL;
 use crate::watch::WEBHOOK_KIND;
 
 /// Why an issue's approvals are evaluated; the later cause is the stronger one.
@@ -40,7 +40,7 @@ impl ApprovalCause {
 }
 
 /// The queue entries `event` gives in `repository` (`owner/name`, compared ASCII
-/// case-insensitively) for approvals and the steward; empty for any event that concerns
+/// case-insensitively) for approvals and the keeper; empty for any event that concerns
 /// neither there.
 ///
 /// `plan_approved_label` is the label of the `plan approved` value in labels mode, and `None`

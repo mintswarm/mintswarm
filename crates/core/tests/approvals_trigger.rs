@@ -9,9 +9,9 @@ use std::path::PathBuf;
 
 use mintswarm_config::load_repo_config;
 use mintswarm_core::approvals::trigger::{ApprovalCause, reduce};
+use mintswarm_core::keeper::checks::HOLD_LABEL;
 use mintswarm_core::state_sync::queue::Entry;
 use mintswarm_core::state_sync::trigger::reduce as state_sync_reduce;
-use mintswarm_core::steward::checks::HOLD_LABEL;
 use mintswarm_core::watch::{Senders, WEBHOOK_KIND, normalise, untrusted};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::Login;
@@ -376,10 +376,17 @@ fn fixture(name: &str) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// `payload` as delivery `event`, normalised with `mintswarm-dev[bot]` as the plane.
+/// `payload` as delivery `event`, normalised with `mintswarm-dev-keeper[bot]` as the plane and
+/// `mintswarm-dev-bee[bot]` as its runner.
 fn normalised(event: &str, payload: &Value) -> WatchEvent {
     let config = load_repo_config(CONFIG).unwrap();
-    let senders = Senders::new(config.trust(), vec![Login("mintswarm-dev[bot]".to_owned())]);
+    let senders = Senders::new(
+        config.trust(),
+        vec![
+            Login("mintswarm-dev-keeper[bot]".to_owned()),
+            Login("mintswarm-dev-bee[bot]".to_owned()),
+        ],
+    );
     let body = serde_json::to_vec(payload).unwrap();
     normalise(
         "00000000-0000-4000-8000-000000000001",
@@ -437,7 +444,7 @@ fn recorded_deliveries_queue_through_the_normaliser() {
 
     // A package the plane posts opens its issue.
     let mut package_comment = fixture("issue_comment.created");
-    package_comment["sender"]["login"] = json!("mintswarm-dev[bot]");
+    package_comment["sender"]["login"] = json!("mintswarm-dev-keeper[bot]");
     package_comment["sender"]["type"] = json!("Bot");
     package_comment["comment"]["body"] = json!(package(PackageKind::Design));
     assert_eq!(

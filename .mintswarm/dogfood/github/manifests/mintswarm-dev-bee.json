@@ -1,7 +1,7 @@
 {
-  "name": "mintswarm-dev",
+  "name": "mintswarm-dev-bee",
   "url": "https://github.com/mintswarm/mintswarm",
-  "description": "mintswarm's own control plane while dogfooding: pushes branches and opens PRs, issues and artifacts in mintswarm/mintswarm.",
+  "description": "mintswarm's runner while dogfooding: pushes branches and opens PRs, issues and artifacts in mintswarm/mintswarm.",
   "redirect_url": "http://127.0.0.1:8765/",
   "public": false,
   "default_permissions": {

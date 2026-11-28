@@ -265,7 +265,7 @@ named_enum! {
         Merged => "merged",
         /// The PR's head moved away from the recorded head before the merge.
         HeadMoved => "head_moved",
-        /// The steward refused the merge.
+        /// The keeper refused the merge.
         MergeRefused => "merge_refused",
         /// `releasing` released the assignments.
         Released => "released",
@@ -364,7 +364,7 @@ named_enum! {
         OutOfFootprint => "out_of_footprint",
         /// A deterministic step's input is unusable.
         InputUnusable => "input_unusable",
-        /// The steward refused the merge.
+        /// The keeper refused the merge.
         MergeRefused => "merge_refused",
         /// `file_children` refused the parent's issue type.
         ParentTypeRefused => "parent_type_refused",

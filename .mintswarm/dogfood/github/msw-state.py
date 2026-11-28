@@ -13,7 +13,7 @@
 
 Dogfooding stand-in for the runner's tracker effects that show where an issue
 is in the pipeline and what the approval stages judged. Every GitHub call goes
-through bot-gh.sh, so as mintswarm-dev[bot]. VALUE is one of the coarse phases
+through bot-gh.sh, so as the bee, the runner App. VALUE is one of the coarse phases
 named in tracker.state.options at --base; the README's `## msw-state` section
 maps every runner state and every Pipeline state wording to one of them.
 

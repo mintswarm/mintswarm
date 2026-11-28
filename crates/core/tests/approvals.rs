@@ -16,7 +16,7 @@ use serde_json::Value;
 
 /// The owner cases the rules crate's walk is tested on, shared so both crates check the same.
 const OWNER_CASES: &str = include_str!("../../rules/tests/fixtures/issue_owner.json");
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-keeper[bot]";
 
 fn login(name: &str) -> Login {
     Login(name.to_owned())

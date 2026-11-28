@@ -213,14 +213,15 @@ fn a_later_rule_gives_a_subdirectory_its_own_owner() {
 
 #[test]
 fn users_teams_and_emails_are_owners() {
-    let owners = rules("* @Octo-Cat @MintSwarm/Core-Team docs@example.com @mintswarm-dev[bot]\n");
+    let owners =
+        rules("* @Octo-Cat @MintSwarm/Core-Team docs@example.com @mintswarm-dev-bee[bot]\n");
     assert_eq!(
         owners.rules()[0].owners,
         [
             user("Octo-Cat"),
             Owner::Team(Team::new("mintswarm", "core-team")),
             Owner::Email("docs@example.com".to_owned()),
-            user("mintswarm-dev[bot]"),
+            user("mintswarm-dev-bee[bot]"),
         ]
     );
 }

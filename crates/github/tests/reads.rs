@@ -33,7 +33,7 @@ const PARENT_NONE: &str = include_str!("fixtures/reads/parent-none.json");
 const PERMISSION_PATH: &str = "/repos/acme/widgets/collaborators/zmij/permission";
 const ISSUE: IssueNumber = IssueNumber(180);
 const ISSUE_PATH: &str = "/repos/acme/widgets/issues/180";
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-bee[bot]";
 
 fn token() -> Token {
     Token::new(TOKEN.to_owned(), 0)
@@ -465,7 +465,7 @@ fn steers_and_notes_are_classified() {
     assert_eq!(mark("MAINTAINER", "any text"), Some(CommentMark::Steer));
     assert_eq!(mark(BOT, &steer), Some(CommentMark::Steer));
     assert_eq!(
-        mark("MintSwarm-Dev[bot]", &format!("  {STEER_MARKER}  ")),
+        mark("MintSwarm-Dev-Bee[bot]", &format!("  {STEER_MARKER}  ")),
         Some(CommentMark::Steer)
     );
     assert_eq!(mark(BOT, &note), Some(CommentMark::Note));
@@ -1215,7 +1215,7 @@ fn full_query() -> IssueQuery {
         state: IssueState::All,
         since: Some("2026-11-26T09:00:00Z".to_owned()),
         labels: vec!["mintswarm".to_owned(), "component:domain".to_owned()],
-        creator: Some(Login("mintswarm-dev[bot]".into())),
+        creator: Some(Login("mintswarm-dev-bee[bot]".into())),
     }
 }
 
@@ -1250,7 +1250,7 @@ async fn the_listing_sends_its_query_follows_pages_and_drops_pull_requests() {
 
     let requests = responder.requests();
     let query = "state=all&since=2026-11-26T09%3A00%3A00Z&labels=mintswarm,component%3Adomain\
-                 &creator=mintswarm-dev%5Bbot%5D";
+                 &creator=mintswarm-dev-bee%5Bbot%5D";
     assert_eq!(
         paths(&requests),
         vec![

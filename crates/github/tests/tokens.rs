@@ -16,7 +16,7 @@ use serde::Deserialize;
 use support::{Capture, Fakes, Home, Responder};
 
 const CLIENT_ID: &str = "Iv23liTokenTest";
-const SERVICE: &str = "mintswarm-dev";
+const SERVICE: &str = "mintswarm-dev-bee";
 const NOW: u64 = 1_800_000_000; // 2027-01-15T08:00:00Z
 const EXPIRES_AT: &str = "2027-01-15T09:00:00Z";
 const TOKEN: &str = "ghs_T0kenSecretValue0123456789abcdef";

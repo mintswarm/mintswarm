@@ -9,7 +9,7 @@
 Dogfooding stand-in for the control plane's "waiting on human" assignee. NUMBER
 is an issue or a PR: the issues endpoints serve both. REASON is one of plan,
 needs_input, pr and external_steps. Every GitHub call goes through bot-gh.sh,
-so as mintswarm-dev[bot].
+so as the bee, the runner App (README.md, Roles).
 
 Code owners decide a PR only. For `pr` and `owners` the approvers are a
 minimal covering set of the user code owners of the touched paths, read from
@@ -69,9 +69,12 @@ posted login missing from the response is named and the script fails.
 release takes the item's current assignees and its event history
 (`--paginate --slurp`), sorted by created_at and then id (events without them
 keep their order). For each assignee, the latest `assigned` event for that
-login decides: it is the bot's when actor.login or assigner.login is
-mintswarm-dev[bot], or performed_via_github_app.slug is mintswarm-dev. Only
-those assignees are removed, with
+login decides: it is the bot's when actor.login or assigner.login is the
+bee's login, <slug>[bot], or performed_via_github_app.slug is the bee's slug.
+The slug is read from the bee's config, $MSW_APP_CONFIG or
+~/.config/mintswarm/bee-app.json, only when release first needs it; a missing
+or malformed config, or a slug that is not a non-empty string of [A-Za-z0-9-],
+fails with exit 1. Only those assignees are removed, with
 `bot-gh.sh api --method DELETE repos/{owner}/{repo}/issues/N/assignees --input -`;
 an assignment a person made, or one with no assigned event, is left alone.
 It keeps no state.
@@ -85,7 +88,9 @@ when nobody is left to assign. Standard library only.
 """
 
 import argparse
+import functools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -99,12 +104,29 @@ BOT_OWNER = re.compile(r"^@[A-Za-z0-9-]+\[bot\]$", re.IGNORECASE)
 TEAM = re.compile(r"^@[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
 REASONS = ("plan", "needs_input", "pr", "external_steps")
-BOT_LOGIN = "mintswarm-dev[bot]"
-BOT_SLUG = "mintswarm-dev"
+SLUG = re.compile(r"[A-Za-z0-9-]+")
 
 
 class UsageError(Exception):
     pass
+
+
+@functools.lru_cache(maxsize=None)
+def bee_slug() -> str:
+    """The bee's slug from its config, read at the first comparison that needs it, never at import."""
+    path = Path(os.environ.get("MSW_APP_CONFIG") or Path.home() / ".config" / "mintswarm" / "bee-app.json")
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read the bee's config {path}: {exc} (see README.md, Roles)") from exc
+    slug = config.get("slug") if isinstance(config, dict) else None
+    if not isinstance(slug, str) or not SLUG.fullmatch(slug):
+        raise RuntimeError(f"the bee's config {path} has no usable slug ({slug!r}; see README.md, Roles)")
+    return slug
+
+
+def bee_login() -> str:
+    return f"{bee_slug()}[bot]"
 
 
 def run(argv: list, data: str = None) -> str:
@@ -324,7 +346,7 @@ def by_bot(event: dict) -> bool:
     actor = (event.get("actor") or {}).get("login")
     assigner = (event.get("assigner") or {}).get("login")
     app = (event.get("performed_via_github_app") or {}).get("slug")
-    return BOT_LOGIN in (actor, assigner) or app == BOT_SLUG
+    return bee_login() in (actor, assigner) or app == bee_slug()
 
 
 def lowered(logins: list) -> set:

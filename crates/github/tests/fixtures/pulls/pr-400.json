@@ -8,7 +8,7 @@
     "state": "open",
     "locked": false,
     "title": "feat(domain): GitHub REST reads",
-    "user": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot", "site_admin": false },
+    "user": { "login": "mintswarm-dev-bee[bot]", "id": 7, "type": "Bot", "site_admin": false },
     "body": "Closes #180.",
     "labels": [
       { "id": 11, "node_id": "LA_kwDOAbCdEs8AAAAB", "name": "mintswarm", "color": "0e8a16", "default": false },
@@ -82,7 +82,7 @@
     {
       "id": 79,
       "node_id": "PRR_kwDOAbCdEs4AAABP",
-      "user": { "login": "mintswarm-dev[bot]", "id": 7, "type": "Bot", "site_admin": false },
+      "user": { "login": "mintswarm-dev-bee[bot]", "id": 7, "type": "Bot", "site_admin": false },
       "body": "",
       "state": "CHANGES_REQUESTED",
       "html_url": "https://github.com/acme/widgets/pull/400#pullrequestreview-79",

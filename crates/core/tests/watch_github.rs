@@ -38,10 +38,17 @@ pipeline:
     footprint: { lines_factor: 1.5 }
 ";
 
-/// The senders of [`CONFIG`], with `mintswarm-dev[bot]` as the plane.
+/// The senders of [`CONFIG`], with `mintswarm-dev-keeper[bot]` as the plane and
+/// `mintswarm-dev-bee[bot]` as its runner.
 fn senders() -> Senders {
     let config = load_repo_config(CONFIG).expect("the minimal config loads");
-    Senders::new(config.trust(), vec![Login("mintswarm-dev[bot]".to_owned())])
+    Senders::new(
+        config.trust(),
+        vec![
+            Login("mintswarm-dev-keeper[bot]".to_owned()),
+            Login("mintswarm-dev-bee[bot]".to_owned()),
+        ],
+    )
 }
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -677,7 +684,11 @@ fn classifier_classes_senders() {
         ActorClass::Maintainer
     );
     assert_eq!(
-        senders.classify("mintswarm-dev[bot]", true),
+        senders.classify("mintswarm-dev-keeper[bot]", true),
+        ActorClass::Self_
+    );
+    assert_eq!(
+        senders.classify("mintswarm-dev-bee[bot]", true),
         ActorClass::Self_
     );
     assert_eq!(

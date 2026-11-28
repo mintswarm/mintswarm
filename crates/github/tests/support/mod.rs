@@ -147,12 +147,12 @@ impl Home {
         file
     }
 
-    /// Writes `dev-app.json` for a file-store key and returns its path.
+    /// Writes `bee-app.json` for a file-store key and returns its path.
     pub fn put_app_config(&self, client_id: &str, service: &str) -> PathBuf {
-        let path = self.config_dir().join("dev-app.json");
+        let path = self.config_dir().join("bee-app.json");
         let config = serde_json::json!({
             "app_id": 1,
-            "slug": "mintswarm-dev",
+            "slug": "mintswarm-dev-bee",
             "client_id": client_id,
             "keychain_service": service,
             "key_store": "file",

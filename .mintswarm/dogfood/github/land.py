@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
-"""Land one mintswarm PR as mintswarm-dev-steward, at the head the maintainer approved.
+"""Land one mintswarm PR as the keeper, at the head the maintainer approved.
 
-    land.py PR --sha SHA [--dry-run]
+    land.py PR --sha SHA --base REF [--dry-run]
 
-The session runs it when the maintainer approves a PR in the session
-(README.md, "Session procedure", step 13). It acts only as
-mintswarm-dev-steward: the App config is $MSW_STEWARD_CONFIG, or
-~/.config/mintswarm/steward-app.json when that is unset, and it must name the
-slug mintswarm-dev-steward and the key service
-mintswarm-dev-steward-private-key, or the script exits 1 before anything is
-minted. The key is read from the key store recorded in that config, without
-per-use confirmation, so the script needs no GUI session and asks nobody
+The session runs it from the main checkout, with --base origin/master, when the
+maintainer approves a PR in the session (README.md, "Session procedure", step
+13). It acts only as the keeper, the control plane's App (README.md, Roles):
+the App config is $MSW_KEEPER_CONFIG, or ~/.config/mintswarm/keeper-app.json
+when that is unset. land.py reads the config of the repository it runs in:
+tracker.actions.merge.apps from REF:.mintswarm/config.yaml, through git show
+and yq. The keeper's config is refused, and the script exits 1 before anything
+is minted, when it is the bee's config file, when its slug is missing,
+malformed, equal to the bee's or not in that merge.apps, or when it names no
+keychain_service.
+
+The bee's login, <slug>[bot], is derived from the bee's config,
+$MSW_APP_CONFIG or ~/.config/mintswarm/bee-app.json, read before anything
+else, since the subprocesses get MSW_APP_CONFIG set to the keeper's config.
+The keeper's key is read from the key store recorded in the keeper's config,
+without per-use confirmation, so the script needs no GUI session and asks nobody
 anything: it works on a remote runner.
 
 Token: one installation token is minted with mint-token.sh token (with
-MSW_APP_CONFIG set to the steward's config) and the permissions contents and
+MSW_APP_CONFIG set to the keeper's config) and the permissions contents and
 pull_requests write, checks (check runs and suites), statuses and metadata
 read. It must start with
 ghs_. It is held in a variable and passed to every bot-gh.sh call as MSW_TOKEN
 in the child's environment only; it is never printed and never in any argv.
 
-The approval steer is a comment on the PR by mintswarm-dev[bot], posted by the
+The approval steer is a comment on the PR by the bee, posted by the
 session right before this script runs, that opens with exactly these three
 lines, the maintainer's quoted words and the time following them:
 
@@ -31,7 +39,7 @@ lines, the maintainer's quoted words and the time following them:
 A steer is counted as .mintswarm/dogfood/landing/collect-facts.py counts one:
 any comment, inline review comment or submitted review by an account that is
 not a bot (user.type is not Bot and the login does not end in [bot]), and any
-comment or review by mintswarm-dev[bot] with a line that, trimmed of
+comment or review by the bee with a line that, trimmed of
 whitespace, is exactly the steer marker. The latest approval steer naming SHA
 (by created_at, then id) is the approval, and any other steer withdraws it: a
 comment created after it (by created_at, then id), a comment whose updated_at
@@ -43,9 +51,9 @@ created_at (reviews in state PENDING or without submitted_at are skipped;
 reviews have no updated_at, so an edited review body is not seen). So any
 later steer, relayed or the maintainer's own, a "Request changes" or comment
 review included, withdraws an approval. The approval itself is strict: the
-three lines count only at the top of a comment by mintswarm-dev[bot].
+three lines count only at the top of a comment by the bee.
 
-Checks, all made with the steward's token; every failure is collected and
+Checks, all made with the keeper's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
 
 - pulls/PR: open, not a draft, base master, head ref mintswarm/*, head repo
@@ -80,7 +88,7 @@ and merged_by.
 
 Exit codes: 0 when merged, or when --dry-run passes every check; 1 on any
 refusal or GitHub failure, including a refused merge call, which is what
-removing the steward from the master ruleset's bypass list (the kill switch)
+removing the keeper from the master ruleset's bypass list (the kill switch)
 causes; 2 on bad arguments. Standard library only.
 """
 
@@ -101,9 +109,6 @@ REPO = "mintswarm/mintswarm"
 OWNER, NAME = REPO.split("/")
 BASE = "master"
 BRANCH_PREFIX = "mintswarm/"
-STEWARD_SLUG = "mintswarm-dev-steward"
-STEWARD_SERVICE = "mintswarm-dev-steward-private-key"
-BOT_LOGIN = "mintswarm-dev[bot]"
 HOLD_LABEL = "hold"
 REQUIRED_CHECK = "gates-matrix"
 ACTIONS_APP = "github-actions"
@@ -118,6 +123,8 @@ PERMISSIONS = {
 }
 MERGEABLE_RETRIES = 5
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SLUG_RE = re.compile(r"[A-Za-z0-9-]+")
+CONFIG_DIR = Path.home() / ".config" / "mintswarm"
 
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -141,25 +148,81 @@ class Refused(Exception):
     pass
 
 
-def steward_config() -> Path:
-    path = Path(os.environ.get("MSW_STEWARD_CONFIG") or Path.home() / ".config" / "mintswarm" / "steward-app.json")
+def read_role_config(path: Path, role: str) -> dict:
+    """The role's App config at path, with a checked slug: a non-empty string of [A-Za-z0-9-] only."""
     if not path.is_file():
-        raise Refused(f"no steward config at {path} (see README.md, Steward)")
+        raise Refused(f"no {role} config at {path} (see README.md, Roles)")
     try:
         config = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as err:
-        raise Refused(f"cannot read {path}: {err}")
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as err:
+        raise Refused(f"cannot read the {role} config {path}: {err} (see README.md, Roles)")
     if not isinstance(config, dict):
-        raise Refused(f"{path} is not a JSON object")
-    if config.get("slug") != STEWARD_SLUG:
+        raise Refused(f"the {role} config {path} is not a JSON object (see README.md, Roles)")
+    slug = config.get("slug")
+    if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
+        raise Refused(f"the {role} config {path} has no usable slug ({slug!r}; see README.md, Roles)")
+    return config
+
+
+def bee_path() -> Path:
+    return Path(os.environ.get("MSW_APP_CONFIG") or CONFIG_DIR / "bee-app.json")
+
+
+BEE = {}
+
+
+def bee_login() -> str:
+    """The bee's bot login, <slug>[bot], from its config; read once, before any subprocess env names the keeper's."""
+    if "login" not in BEE:
+        BEE["slug"] = read_role_config(bee_path(), "bee")["slug"]
+        BEE["login"] = f"{BEE['slug']}[bot]"
+    return BEE["login"]
+
+
+def merge_apps(base: str) -> list:
+    """tracker.actions.merge.apps in base:.mintswarm/config.yaml of the repository in the current directory."""
+    try:
+        shown = subprocess.run(["git", "show", f"{base}:.mintswarm/config.yaml"], capture_output=True)
+    except OSError as err:
+        raise Refused(f"cannot run git: {err}")
+    if shown.returncode != 0:
+        raise Refused(f"cannot read .mintswarm/config.yaml at {base!r} in {Path.cwd()}")
+    try:
+        proc = subprocess.run(["yq", "-p=yaml", "-o=json", "."], input=shown.stdout, capture_output=True)
+    except OSError as err:
+        raise Refused(f"cannot run yq: {err}")
+    if proc.returncode != 0:
+        raise Refused(f"yq cannot read .mintswarm/config.yaml at {base}")
+    try:
+        config = json.loads(proc.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+        raise Refused(f"yq gave no JSON for .mintswarm/config.yaml at {base}: {err}")
+    node = config
+    for key in ("tracker", "actions", "merge", "apps"):
+        node = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(node, list) or not all(isinstance(app, str) for app in node):
+        raise Refused(f"tracker.actions.merge.apps in .mintswarm/config.yaml at {base} is not a list of slugs")
+    return node
+
+
+def keeper_config(base: str) -> Path:
+    path = Path(os.environ.get("MSW_KEEPER_CONFIG") or CONFIG_DIR / "keeper-app.json")
+    bee_login()
+    if path.resolve() == bee_path().resolve():
+        raise Refused(f"the keeper config {path} is the bee's config: land.py acts only as the keeper")
+    config = read_role_config(path, "keeper")
+    slug = config["slug"]
+    if slug == BEE["slug"]:
+        raise Refused(f"{path} names the App {slug!r}, which is the bee's: land.py acts only as the keeper")
+    apps = merge_apps(base)
+    if slug not in apps:
         raise Refused(
-            f"{path} names the App {config.get('slug')!r}, not {STEWARD_SLUG}: land.py acts only as the steward"
+            f"{path} names the App {slug!r}, which is not in tracker.actions.merge.apps {apps} at {base}: "
+            "land.py acts only as the keeper"
         )
-    if config.get("keychain_service") != STEWARD_SERVICE:
-        raise Refused(
-            f"{path} gives the key service {config.get('keychain_service')!r}, not {STEWARD_SERVICE}: "
-            "land.py uses only the steward's key"
-        )
+    service = config.get("keychain_service")
+    if not isinstance(service, str) or not service:
+        raise Refused(f"{path} names no keychain_service: land.py uses only the keeper's key")
     return path
 
 
@@ -174,14 +237,14 @@ def mint(config: Path) -> str:
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"minting the steward's token failed: {proc.stderr.strip()}")
+        raise RuntimeError(f"minting the keeper's token failed: {proc.stderr.strip()}")
     token = proc.stdout.strip()
     if not token.startswith("ghs_") or len(token) <= 4:
         raise RuntimeError("mint-token.sh gave no installation token (expected ghs_...)")
     return token
 
 
-class Steward:
+class Keeper:
     def __init__(self, config: Path, token: str):
         self.env = dict(os.environ)
         self.env["MSW_APP_CONFIG"] = str(config)
@@ -208,20 +271,20 @@ class Steward:
         return pages
 
 
-def pull(steward: Steward, pr: int) -> dict:
-    data = steward.gh([f"repos/{{owner}}/{{repo}}/pulls/{pr}"])
+def pull(keeper: Keeper, pr: int) -> dict:
+    data = keeper.gh([f"repos/{{owner}}/{{repo}}/pulls/{pr}"])
     if not isinstance(data, dict):
         raise RuntimeError(f"pulls/{pr} is not an object")
     return data
 
 
-def pull_settled(steward: Steward, pr: int, delay: float) -> dict:
-    data = pull(steward, pr)
+def pull_settled(keeper: Keeper, pr: int, delay: float) -> dict:
+    data = pull(keeper, pr)
     for _ in range(MERGEABLE_RETRIES):
         if data.get("mergeable") is not None or data.get("state") != "open":
             break
         time.sleep(delay)
-        data = pull(steward, pr)
+        data = pull(keeper, pr)
     return data
 
 
@@ -262,13 +325,13 @@ def suite_id(run: dict):
     return (run.get("check_suite") or {}).get("id")
 
 
-def check_runs(steward: Steward, sha: str) -> list:
+def check_runs(keeper: Keeper, sha: str) -> list:
     reasons = []
     runs = []
-    for page in steward.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?filter=latest&per_page=100"):
+    for page in keeper.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?filter=latest&per_page=100"):
         runs.extend(run for run in (page or {}).get("check_runs") or [] if isinstance(run, dict))
     suites = []
-    for page in steward.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-suites?per_page=100"):
+    for page in keeper.pages(f"repos/{{owner}}/{{repo}}/commits/{sha}/check-suites?per_page=100"):
         suites.extend(suite for suite in (page or {}).get("check_suites") or [] if isinstance(suite, dict))
     suites_by_id = {suite.get("id"): suite for suite in suites}
 
@@ -305,9 +368,9 @@ def check_runs(steward: Steward, sha: str) -> list:
     return reasons
 
 
-def check_statuses(steward: Steward, sha: str) -> list:
+def check_statuses(keeper: Keeper, sha: str) -> list:
     reasons = []
-    combined = steward.gh([f"repos/{{owner}}/{{repo}}/commits/{sha}/status?per_page=100"]) or {}
+    combined = keeper.gh([f"repos/{{owner}}/{{repo}}/commits/{sha}/status?per_page=100"]) or {}
     statuses = combined.get("statuses") or []
     total = combined.get("total_count", len(statuses))
     if total > 100 or total > len(statuses):
@@ -318,7 +381,7 @@ def check_statuses(steward: Steward, sha: str) -> list:
     return reasons
 
 
-def check_threads(steward: Steward, pr: int) -> list:
+def check_threads(keeper: Keeper, pr: int) -> list:
     unresolved = 0
     after = None
     while True:
@@ -326,7 +389,7 @@ def check_threads(steward: Steward, pr: int) -> list:
         args += ["-F", f"number={pr}"]
         if after:
             args += ["-f", f"after={after}"]
-        data = steward.gh(args) or {}
+        data = keeper.gh(args) or {}
         pull_request = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
         if not pull_request:
             return [f"GraphQL found no pull request #{pr}"]
@@ -357,11 +420,11 @@ def is_steer(comment: dict) -> bool:
     """A steer as collect-facts.py counts one: any comment by a person, or a bot comment with the marker on a line."""
     if not is_bot(comment):
         return True
-    return author(comment) == BOT_LOGIN and any(line.strip() == STEER_MARKER for line in body_lines(comment))
+    return author(comment) == bee_login() and any(line.strip() == STEER_MARKER for line in body_lines(comment))
 
 
 def is_approval(comment: dict, sha: str) -> bool:
-    return author(comment) == BOT_LOGIN and body_lines(comment)[:3] == [
+    return author(comment) == bee_login() and body_lines(comment)[:3] == [
         STEER_MARKER,
         APPROVAL_MARKER,
         f"Approved head: {sha}",
@@ -373,18 +436,18 @@ def steer_order(comment: dict):
     return (str(comment.get("created_at") or ""), cid if isinstance(cid, int) else 0)
 
 
-def check_steer(steward: Steward, pr: int, sha: str) -> list:
+def check_steer(keeper: Keeper, pr: int, sha: str) -> list:
     comments, inline, reviews = [], [], []
-    for page in steward.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
+    for page in keeper.pages(f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"):
         comments.extend(page or [])
-    for page in steward.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"):
+    for page in keeper.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"):
         inline.extend(page or [])
-    for page in steward.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"):
+    for page in keeper.pages(f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"):
         reviews.extend(page or [])
     steers = [comment for comment in comments if isinstance(comment, dict) and is_steer(comment)]
     approvals = [steer for steer in steers if is_approval(steer, sha)]
     if not approvals:
-        return [f"no approval steer by {BOT_LOGIN} names the head {sha}"]
+        return [f"no approval steer by {bee_login()} names the head {sha}"]
     approval = max(approvals, key=steer_order)
     approved_at = str(approval.get("created_at") or "")
     withdraw = f"withdraws the approval of {sha}: post the approval steer again"
@@ -430,28 +493,28 @@ def snapshot(data: dict) -> dict:
     }
 
 
-def recheck(steward: Steward, pr: int, sha: str, before: dict) -> list:
+def recheck(keeper: Keeper, pr: int, sha: str, before: dict) -> list:
     """Read the PR, its checks, threads and steers again right before the merge: a bypass actor's merge is not re-checked."""
-    after = pull(steward, pr)
+    after = pull(keeper, pr)
     reasons = check_pull(after, sha)
     old, new = snapshot(before), snapshot(after)
     for field in old:
         if old[field] != new[field]:
             reasons.append(f"the PR's {field} changed during the checks, from {old[field]!r} to {new[field]!r}")
-    reasons += check_runs(steward, sha)
-    reasons += check_statuses(steward, sha)
-    reasons += check_threads(steward, pr)
-    reasons += check_steer(steward, pr, sha)
+    reasons += check_runs(keeper, sha)
+    reasons += check_statuses(keeper, sha)
+    reasons += check_threads(keeper, pr)
+    reasons += check_steer(keeper, pr, sha)
     return reasons
 
 
-def merge(steward: Steward, pr: int, sha: str, title: str) -> dict:
+def merge(keeper: Keeper, pr: int, sha: str, title: str) -> dict:
     body = {"merge_method": "squash", "sha": sha, "commit_title": f"{title} (#{pr})"}
     try:
-        steward.gh(["--method", "PUT", f"repos/{{owner}}/{{repo}}/pulls/{pr}/merge"], body=body)
+        keeper.gh(["--method", "PUT", f"repos/{{owner}}/{{repo}}/pulls/{pr}/merge"], body=body)
     except RuntimeError as err:
         raise RuntimeError(f"{err}; nothing was merged")
-    data = pull(steward, pr)
+    data = pull(keeper, pr)
     if data.get("merged") is not True:
         raise RuntimeError(f"the merge call answered, but #{pr} is not merged")
     return data
@@ -465,9 +528,16 @@ def refuse(pr: int, reasons: list) -> int:
 
 
 def main(argv: list) -> int:
-    parser = argparse.ArgumentParser(description="Land a PR as mintswarm-dev-steward at the approved head.")
+    parser = argparse.ArgumentParser(
+        description="Land a PR as the keeper at the approved head. land.py reads the config of the repository it runs in."
+    )
     parser.add_argument("pr", type=int, help="pull request number")
     parser.add_argument("--sha", required=True, help="the head commit the maintainer approved (40 hex characters)")
+    parser.add_argument(
+        "--base",
+        required=True,
+        help="the revision whose .mintswarm/config.yaml gives tracker.actions.merge.apps, for example origin/master",
+    )
     parser.add_argument("--dry-run", action="store_true", help="check everything, merge nothing")
     args = parser.parse_args(argv)
 
@@ -483,23 +553,26 @@ def main(argv: list) -> int:
         if delay < 0:
             raise UsageError("MSW_LAND_RETRY_DELAY must not be negative")
 
-        config = steward_config()
-        steward = Steward(config, mint(config))
-        data = pull_settled(steward, args.pr, delay)
+        if args.base.startswith("-") or not args.base:
+            raise UsageError("--base must name a revision")
+        bee_login()
+        config = keeper_config(args.base)
+        keeper = Keeper(config, mint(config))
+        data = pull_settled(keeper, args.pr, delay)
         reasons = check_pull(data, args.sha)
-        reasons += check_runs(steward, args.sha)
-        reasons += check_statuses(steward, args.sha)
-        reasons += check_threads(steward, args.pr)
-        reasons += check_steer(steward, args.pr, args.sha)
+        reasons += check_runs(keeper, args.sha)
+        reasons += check_statuses(keeper, args.sha)
+        reasons += check_threads(keeper, args.pr)
+        reasons += check_steer(keeper, args.pr, args.sha)
         if reasons:
             return refuse(args.pr, reasons)
         if args.dry_run:
             print(f"#{args.pr} at {args.sha} passes every check; nothing merged (--dry-run)")
             return 0
-        reasons = recheck(steward, args.pr, args.sha, data)
+        reasons = recheck(keeper, args.pr, args.sha, data)
         if reasons:
             return refuse(args.pr, reasons)
-        merged = merge(steward, args.pr, args.sha, str(data.get("title") or ""))
+        merged = merge(keeper, args.pr, args.sha, str(data.get("title") or ""))
         print(f"merged #{args.pr} at {args.sha}")
         print(f"merge_commit_sha: {merged.get('merge_commit_sha')}")
         print(f"merged_by: {(merged.get('merged_by') or {}).get('login')}")

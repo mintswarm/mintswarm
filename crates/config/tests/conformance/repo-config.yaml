@@ -87,7 +87,7 @@ tracker:
     approve_design:        { people: issue_owner, apps: [] }
     approve_decomposition: { people: issue_owner, apps: [] }
     approve_pr:            { people: codeowners,  apps: [] }
-    merge:                 { people: none,        apps: [mintswarm-dev-steward] }
+    merge:                 { people: none,        apps: [mintswarm-dev-keeper] }
 
 design:
   store: issue_artifacts             # where design documents live
@@ -103,7 +103,7 @@ components:
     paths: ["crates/domain/**", "crates/config/**", "crates/rules/**", "crates/github/**"]
   core:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
-    paths: ["crates/core/**", "crates/server/**", "crates/steward/**"]
+    paths: ["crates/core/**", "crates/server/**", "crates/keeper/**"]
   runner:
     description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
     paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
