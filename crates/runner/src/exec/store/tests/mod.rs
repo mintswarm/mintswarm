@@ -1,4 +1,4 @@
-//! Tests of the runner's local store: the state directory, its lock and opening it.
+//! Tests of the runner's local store: the runner directory, its lock and opening it.
 
 mod blobs;
 mod leases;
@@ -6,7 +6,6 @@ mod outbox;
 mod schema;
 mod unrecognised;
 
-use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -15,10 +14,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
-use mintswarm_domain::ids::RunnerId;
 use tempfile::TempDir;
 
-use super::{Clock, OutboxMode, Store, StoreError, SystemClock, state_dir};
+use super::{Clock, OutboxMode, Store, StoreError, SystemClock};
 
 /// A clock the test sets by hand.
 #[derive(Debug, Default)]
@@ -42,7 +40,7 @@ impl Clock for ManualClock {
     }
 }
 
-/// A fresh state directory path inside a temporary directory; the directory does not exist.
+/// A fresh runner directory path inside a temporary directory; the directory does not exist.
 pub(super) fn fresh_state() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let state = tmp.path().join("state");
@@ -80,49 +78,6 @@ pub(super) fn mode_of(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-fn runner(id: &str) -> RunnerId {
-    RunnerId(id.to_owned())
-}
-
-#[test]
-fn state_dir_prefers_an_absolute_xdg_state_home() {
-    let dir = state_dir(
-        &runner("r1"),
-        Some(OsStr::new("/xdg")),
-        Some(OsStr::new("/home/ada")),
-    )
-    .unwrap();
-    assert_eq!(dir, Path::new("/xdg/mintswarm/r1"));
-}
-
-#[test]
-fn state_dir_falls_back_to_home_for_an_empty_or_relative_xdg_state_home() {
-    for xdg in [
-        None,
-        Some(OsStr::new("")),
-        Some(OsStr::new("relative/state")),
-    ] {
-        let dir = state_dir(&runner("r1"), xdg, Some(OsStr::new("/home/ada"))).unwrap();
-        assert_eq!(dir, Path::new("/home/ada/.local/state/mintswarm/r1"));
-    }
-}
-
-#[test]
-fn state_dir_needs_an_absolute_home_without_xdg_state_home() {
-    for home in [None, Some(OsStr::new("")), Some(OsStr::new("home"))] {
-        let err = state_dir(&runner("r1"), None, home).unwrap_err();
-        assert!(matches!(err, StoreError::NoStateHome), "{err:?}");
-    }
-}
-
-#[test]
-fn state_dir_refuses_a_runner_id_that_is_not_one_plain_component() {
-    for id in ["", ".", "..", ".hidden", "a/b", "/abs", "nul\0"] {
-        let err = state_dir(&runner(id), Some(OsStr::new("/xdg")), None).unwrap_err();
-        assert!(matches!(err, StoreError::RunnerId(_)), "{id:?}: {err:?}");
-    }
-}
-
 #[test]
 fn open_creates_the_layout_with_mode_0700() {
     let (_tmp, state) = fresh_state();
@@ -145,7 +100,7 @@ fn open_creates_the_layout_with_mode_0700() {
 }
 
 #[test]
-fn open_refuses_a_state_directory_with_another_mode() {
+fn open_refuses_a_runner_directory_with_another_mode() {
     let (_tmp, state) = fresh_state();
     std::fs::DirBuilder::new()
         .mode(0o755)
@@ -160,7 +115,7 @@ fn open_refuses_a_state_directory_with_another_mode() {
 }
 
 #[test]
-fn open_refuses_a_file_in_place_of_the_state_directory() {
+fn open_refuses_a_file_in_place_of_the_runner_directory() {
     let (_tmp, state) = fresh_state();
     std::fs::write(&state, b"").unwrap();
     let err = open(&state, OutboxMode::Live).unwrap_err();
@@ -168,7 +123,7 @@ fn open_refuses_a_file_in_place_of_the_state_directory() {
 }
 
 #[test]
-fn open_refuses_a_symlink_in_place_of_the_state_directory() {
+fn open_refuses_a_symlink_in_place_of_the_runner_directory() {
     let (tmp, state) = fresh_state();
     let target = tmp.path().join("target");
     std::fs::DirBuilder::new()
@@ -178,6 +133,35 @@ fn open_refuses_a_symlink_in_place_of_the_state_directory() {
     std::os::unix::fs::symlink(&target, &state).unwrap();
     let err = open(&state, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::NotADirectory { .. }), "{err:?}");
+}
+
+#[test]
+fn open_creates_the_layout_inside_the_runner_directory_only() {
+    let parent = TempDir::new().unwrap();
+    let existing = parent.path().join("existing");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&existing)
+        .unwrap();
+    let missing = parent.path().join("missing");
+    for runner_dir in [&existing, &missing] {
+        let store = open_once(runner_dir, OutboxMode::Suppressed).unwrap();
+        assert_eq!(mode_of(runner_dir), 0o700, "{}", runner_dir.display());
+        for dir in ["blobs", "repos", "snapshots", "worktrees", "tmp"] {
+            let path = runner_dir.join(dir);
+            assert!(path.is_dir(), "{}", path.display());
+            assert_eq!(mode_of(&path), 0o700, "{}", path.display());
+        }
+        let err = open_once(runner_dir, OutboxMode::Suppressed).unwrap_err();
+        assert!(matches!(err, StoreError::Locked { .. }), "{err:?}");
+        drop(store);
+    }
+    let mut names: Vec<_> = std::fs::read_dir(parent.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["existing", "missing"]);
 }
 
 #[test]
@@ -207,7 +191,7 @@ fn a_second_open_in_the_same_process_is_locked_out() {
     open(&state, OutboxMode::Live).unwrap();
 }
 
-/// The environment variable that turns [`lock_holder_child`] on, naming the state directory.
+/// The environment variable that turns [`lock_holder_child`] on, naming the runner directory.
 const HOLDER_ENV: &str = "MINTSWARM_TEST_STORE_LOCK_HOLDER";
 
 /// The line the child writes once it holds the store.

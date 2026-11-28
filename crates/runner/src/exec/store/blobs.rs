@@ -1,6 +1,6 @@
-//! The content-addressed blob store: `<state>/blobs/sha256/<2>/<62>`, each file mode 0444.
+//! The content-addressed blob store: `<runner directory>/blobs/sha256/<2>/<62>`, each file mode 0444.
 //!
-//! A stage running as the same OS user can reach the state directory (design §13), so file
+//! A stage running as the same OS user can reach the runner directory (design §13), so file
 //! modes are only a convention: every read re-hashes the content and refuses a blob that no
 //! longer matches its id.
 
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
-use super::{StoreError, ensure_dir, io};
+use super::{BLOBS_DIR, SHA256_DIR, StoreError, TMP_DIR, ensure_dir, io};
 
 /// The mode of a stored blob.
 const BLOB_MODE: u32 = 0o444;
@@ -68,10 +68,13 @@ impl fmt::Display for BlobId {
     }
 }
 
-/// The path of blob `id` under the state directory `root`.
+/// The path of blob `id` under the runner directory `root`.
 pub(super) fn blob_path(root: &Path, id: &BlobId) -> PathBuf {
     let (fan_out, rest) = id.0.split_at(2);
-    root.join("blobs").join("sha256").join(fan_out).join(rest)
+    root.join(BLOBS_DIR)
+        .join(SHA256_DIR)
+        .join(fan_out)
+        .join(rest)
 }
 
 /// Store `content` and return its id.
@@ -91,7 +94,7 @@ pub(super) fn put(root: &Path, content: &[u8]) -> Result<BlobId, StoreError> {
         }
         Err(err) => return Err(err),
     }
-    let tmp = root.join("tmp").join(format!(
+    let tmp = root.join(TMP_DIR).join(format!(
         "{id}.{}.{}",
         std::process::id(),
         TMP_COUNTER.fetch_add(1, Ordering::Relaxed)

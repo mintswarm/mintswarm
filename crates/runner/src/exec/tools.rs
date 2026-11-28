@@ -2,7 +2,7 @@
 //! system temp directory, mode 0700, holding the `msw-vcs` client and the Unix socket `s`, mode
 //! 0600, that a server thread answers on. The directory is the stage's `PATH` entry; the client
 //! finds the socket next to its own executable, so no environment variable or argument given to
-//! the stage names the runner's state directory or the store.
+//! the stage names the runner directory or the store.
 //!
 //! The server is scoped to the job: it runs the same pipeline as `mintswarm-runner tool msw-vcs`
 //! ([`crate::tool::msw_vcs`]) over the job's base and head, and passes every request to a

@@ -42,11 +42,13 @@ pub struct Checkout {
 /// The store of `repository` under the runner's state directory: `<state>/repos/<repository>.git`.
 ///
 /// The name must be one path component that does not start with `.`.
-pub fn store_path(state_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
+pub fn store_path(runner_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
     if repository.is_empty() || repository.starts_with('.') || repository.contains(['/', '\0']) {
         return Err(GitError::StoreName(repository.to_owned()));
     }
-    Ok(state_dir.join("repos").join(format!("{repository}.git")))
+    Ok(runner_dir
+        .join(crate::exec::store::REPOS_DIR)
+        .join(format!("{repository}.git")))
 }
 
 impl GitStore {
