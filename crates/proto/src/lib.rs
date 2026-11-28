@@ -2,6 +2,11 @@
 //! `Secret`, the runner protocol, the job vocabulary, the watch protocol and
 //! the authentication contract.
 //!
+//! It also generates the eight vendored OTLP packages under `api/proto/opentelemetry/`:
+//! `opentelemetry.proto.{common,resource,trace,logs,metrics}.v1` and
+//! `opentelemetry.proto.collector.{trace,logs,metrics}.v1`, at [`opentelemetry`]. Only
+//! [`otlp`] uses them.
+//!
 //! `build.rs` compiles every `.proto` there into `OUT_DIR`; nothing generated
 //! is committed. The messages carry prost's binary encoding; their proto3 JSON
 //! mapping goes through [`json`]. The well-known types, such as
@@ -89,6 +94,81 @@ pub mod auth {
     /// constructor: build one with `AuthServiceClient::new(channel)`.
     pub mod v1 {
         tonic::include_proto!("mintswarm.auth.v1");
+    }
+}
+
+/// The vendored OTLP packages, `opentelemetry.proto.*`, mounted at their package path so the
+/// generated cross-package paths resolve. Only [`otlp`] uses them; no other crate names them.
+pub mod opentelemetry {
+    /// The `opentelemetry.proto` packages.
+    pub mod proto {
+        /// The `opentelemetry.proto.common` package.
+        pub mod common {
+            /// `AnyValue`, `KeyValue` and `InstrumentationScope` (`common.proto`).
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.common.v1");
+            }
+        }
+
+        /// The `opentelemetry.proto.resource` package.
+        pub mod resource {
+            /// `Resource` (`resource.proto`).
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.resource.v1");
+            }
+        }
+
+        /// The `opentelemetry.proto.trace` package.
+        pub mod trace {
+            /// Spans and their resource and scope groupings (`trace.proto`).
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.trace.v1");
+            }
+        }
+
+        /// The `opentelemetry.proto.logs` package.
+        pub mod logs {
+            /// Log records and their resource and scope groupings (`logs.proto`).
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.logs.v1");
+            }
+        }
+
+        /// The `opentelemetry.proto.metrics` package.
+        pub mod metrics {
+            /// Metrics and their resource and scope groupings (`metrics.proto`).
+            pub mod v1 {
+                tonic::include_proto!("opentelemetry.proto.metrics.v1");
+            }
+        }
+
+        /// The `opentelemetry.proto.collector` packages: the export services.
+        pub mod collector {
+            /// The `opentelemetry.proto.collector.trace` package.
+            pub mod trace {
+                /// `TraceService` and `ExportTraceServiceRequest` (`trace_service.proto`).
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.trace.v1");
+                }
+            }
+
+            /// The `opentelemetry.proto.collector.logs` package.
+            pub mod logs {
+                /// `LogsService` and `ExportLogsServiceRequest` (`logs_service.proto`).
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.logs.v1");
+                }
+            }
+
+            /// The `opentelemetry.proto.collector.metrics` package.
+            pub mod metrics {
+                /// `MetricsService` and `ExportMetricsServiceRequest`
+                /// (`metrics_service.proto`).
+                pub mod v1 {
+                    tonic::include_proto!("opentelemetry.proto.collector.metrics.v1");
+                }
+            }
+        }
     }
 }
 
