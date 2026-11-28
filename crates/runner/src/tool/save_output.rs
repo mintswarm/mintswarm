@@ -16,6 +16,7 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use mintswarm_rules::exit::{Outcome, Unusable, Verdict};
+use mintswarm_rules::io_phrase;
 use mintswarm_rules::markdown::py_rstrip;
 use mintswarm_rules::output::{capture, capture_transcript};
 
@@ -156,25 +157,15 @@ fn unusable(stderr: &mut impl Write, message: &str) -> Outcome {
     Err(Unusable::new(message))
 }
 
-/// The text of the file at `path`, or why it cannot be had, in this module's words.
+/// The text of the file at `path`, or why it cannot be had, in [`io_phrase`]'s words.
 fn read_text(path: &Path) -> Result<String, &'static str> {
-    let bytes = fs::read(path).map_err(|error| match error.kind() {
-        ErrorKind::NotFound => "no such file",
-        ErrorKind::PermissionDenied => "permission denied",
-        _ => "read failed",
-    })?;
-    String::from_utf8(bytes).map_err(|_| "not UTF-8 text")
+    let bytes = fs::read(path).map_err(|error| io_phrase::read_phrase(error.kind()))?;
+    String::from_utf8(bytes).map_err(|_| io_phrase::NOT_UTF8)
 }
 
-/// Why OUTPUT or its record cannot be written, in this module's words.
+/// Why OUTPUT or its record cannot be written, in [`io_phrase`]'s words.
 fn write_failure(error: &io::Error) -> &'static str {
-    match error.kind() {
-        ErrorKind::PermissionDenied => "permission denied",
-        ErrorKind::NotADirectory | ErrorKind::AlreadyExists => "a parent is not a directory",
-        ErrorKind::IsADirectory | ErrorKind::DirectoryNotEmpty => "a directory is in the way",
-        ErrorKind::NotFound => "no such directory",
-        _ => "write failed",
-    }
+    io_phrase::write_phrase(error.kind())
 }
 
 #[cfg(test)]
