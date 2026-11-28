@@ -2,6 +2,9 @@
 //!
 //! Each is a newtype that serialises as its inner value.
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 macro_rules! id {
@@ -91,3 +94,84 @@ id!(
     /// `bigint` hold it.
     GitHubUserId(i64)
 );
+
+/// The key a runner names a repository's store, snapshots and job refs by, such as
+/// `mintswarm--mintswarm`.
+///
+/// It is one path component: never empty, never starting with `.`, and with no `/` or NUL. The
+/// field is private, so every key held has been checked.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RepoKey(String);
+
+impl RepoKey {
+    /// The key `key`; one that is not a single path component is rejected.
+    pub fn new(key: impl Into<String>) -> Result<Self, RepoKeyError> {
+        let key = key.into();
+        let message = if key.is_empty() {
+            "the key is empty"
+        } else if key.starts_with('.') {
+            "the key starts with `.`"
+        } else if key.contains('/') {
+            "the key holds `/`"
+        } else if key.contains('\0') {
+            "the key holds NUL"
+        } else {
+            return Ok(RepoKey(key));
+        };
+        Err(RepoKeyError {
+            key,
+            message: message.to_owned(),
+        })
+    }
+
+    /// The key as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RepoKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A string that is not a repo key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoKeyError {
+    /// The string as given.
+    pub key: String,
+    /// What is wrong.
+    pub message: String,
+}
+
+impl fmt::Display for RepoKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} is not a repo key: {}", self.key, self.message)
+    }
+}
+
+impl std::error::Error for RepoKeyError {}
+
+impl FromStr for RepoKey {
+    type Err = RepoKeyError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        RepoKey::new(text)
+    }
+}
+
+impl TryFrom<String> for RepoKey {
+    type Error = RepoKeyError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        RepoKey::new(text)
+    }
+}
+
+impl From<RepoKey> for String {
+    fn from(key: RepoKey) -> Self {
+        key.0
+    }
+}

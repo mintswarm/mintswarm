@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use mintswarm_config::{RepoConfig, load_repo_config, parse_yaml};
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::vcs::{RefOrId, Remote, Vcs};
 use mintswarm_rules::binding::digest;
 use serde_json::{Value, json};
@@ -406,7 +406,7 @@ impl Repo {
             ],
             b"",
         );
-        let path = store_path(&dir.path().join("state"), "repo").unwrap();
+        let path = store_path(&dir.path().join("state"), &RepoKey::new("repo").unwrap());
         let mut store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
         store.allow_file_remote();
         Repo {

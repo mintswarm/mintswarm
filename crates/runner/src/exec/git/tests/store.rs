@@ -6,13 +6,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{JobId, RepoKey, RevId};
 use mintswarm_domain::plane::Credential;
 use mintswarm_domain::probe::ProbeValue;
 use mintswarm_domain::vcs::{RefOrId, Remote, Vcs};
 
 use super::super::fetch::credential_command;
-use super::super::{GIT_REQUIREMENT, GitError, GitStore, store_path};
+use super::super::{
+    GIT_REQUIREMENT, GitError, GitStore, Snapshots, job_head_ref, snapshots_path, store_path,
+};
 use super::{Fixture, fixture_command, fixture_git, git_probe, run_fixture, script, text};
 
 fn mode(path: &Path) -> u32 {
@@ -50,16 +52,83 @@ fn create_is_bare_with_mode_0700() {
 }
 
 #[test]
-fn store_path_refuses_names_that_are_not_one_component() {
-    let state = Path::new("/state");
+fn store_path_is_keyed_by_repo_key() {
     assert_eq!(
-        store_path(state, "mintswarm").unwrap(),
-        Path::new("/state/repos/mintswarm.git")
+        store_path(Path::new("/runner"), &key("mintswarm")),
+        Path::new("/runner/repos/mintswarm.git")
     );
-    for name in ["", ".", "..", ".hidden", "a/b", "/abs", "a\0b"] {
+}
+
+fn key(text: &str) -> RepoKey {
+    RepoKey::new(text).unwrap()
+}
+
+/// Every file under `dir`, sorted.
+fn sorted_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    files(dir, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+fn repo_keys_with_one_name_keep_stores_and_snapshots_apart() {
+    let fx = Fixture::new();
+    let runner = fx.dir.path().join("state");
+    let (a, b) = (key("a--repo"), key("b--repo"));
+    assert_ne!(store_path(&runner, &a), store_path(&runner, &b));
+    assert_ne!(snapshots_path(&runner, &a), snapshots_path(&runner, &b));
+
+    let a_store = fx.store("a--repo");
+    let b_store = fx.store("b--repo");
+    assert_eq!(a_store.path(), store_path(&runner, &a));
+    assert_eq!(b_store.path(), store_path(&runner, &b));
+    let refs = |store: &GitStore| text(&fixture_git(store.path(), &["for-each-ref"]));
+    let b_refs = refs(&b_store);
+    let b_objects = sorted_files(&b_store.path().join("objects"));
+    let wants = [RefOrId::Ref("refs/heads/main".to_owned())];
+    a_store.fetch(&fx.remote(), &wants, None).unwrap();
+    assert_ne!(
+        refs(&a_store),
+        b_refs,
+        "the fetch reached the a--repo store"
+    );
+    assert_eq!(refs(&b_store), b_refs);
+    assert_eq!(sorted_files(&b_store.path().join("objects")), b_objects);
+
+    let a_snapshots = Snapshots::open(&snapshots_path(&runner, &a)).unwrap();
+    let b_snapshots = Snapshots::open(&snapshots_path(&runner, &b)).unwrap();
+    let pinned = a_snapshots.snapshot(&a_store, &fx.main).unwrap();
+    assert!(pinned.path.starts_with(a_snapshots.root()));
+    assert!(pinned.path.is_dir());
+    assert_eq!(std::fs::read_dir(b_snapshots.root()).unwrap().count(), 0);
+}
+
+#[test]
+fn job_head_ref_is_keyed_by_repo_and_job() {
+    let job = |id: &str| JobId(id.to_owned());
+    assert_eq!(
+        job_head_ref(&key("a--repo"), &job("job-1")).unwrap(),
+        "refs/mintswarm/jobs/a--repo/job-1/head"
+    );
+    for refused in [
+        "", ".x", "x.", "a..b", "x.lock", "a@{b", "@", "a b", "a/b", "a~1", "a\tb",
+    ] {
         assert!(
-            matches!(store_path(state, name), Err(GitError::StoreName(_))),
-            "{name:?}"
+            matches!(
+                job_head_ref(&key("a--repo"), &job(refused)),
+                Err(GitError::RefName(_))
+            ),
+            "{refused:?}"
+        );
+    }
+    for refused in ["a b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a^b"] {
+        assert!(
+            matches!(
+                job_head_ref(&key(refused), &job("job-1")),
+                Err(GitError::RefName(_))
+            ),
+            "{refused:?}"
         );
     }
 }

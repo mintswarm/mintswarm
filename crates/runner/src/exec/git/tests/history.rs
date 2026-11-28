@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::vcs::{
     ChangeKind, CommitInfo, DiffOpts, RefOrId, Remote, RepoPath, RevRange, Vcs,
 };
@@ -106,7 +106,8 @@ impl History {
             fixture_git(&self.source, &["update-ref", &branch, &tip.0]);
             wants.push(RefOrId::Ref(branch));
         }
-        let path = super::super::store_path(&self.dir.path().join("state"), name).unwrap();
+        let key = RepoKey::new(name).unwrap();
+        let path = super::super::store_path(&self.dir.path().join("state"), &key);
         let mut store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
         store.allow_file_remote();
         let remote = Remote {
