@@ -3,7 +3,7 @@ syntax = "proto3";
 package mintswarm.runner.v1;
 
 import "google/protobuf/timestamp.proto";
-import "mintswarm/runner/v1/common.proto";
+import "mintswarm/common/v1/secret.proto";
 import "mintswarm/runner/v1/connect.proto";
 
 // The service a runner calls on the control plane.
@@ -61,7 +61,7 @@ service RunnerService {
 // The registration call's request (design §9.1, step 4).
 message RegisterRequest {
   // The one-time registration token from the connection string.
-  Secret registration_token = 1;
+  mintswarm.common.v1.Secret registration_token = 1;
   // The runner's Ed25519 public key, as the raw 32 bytes.
   bytes public_key = 2;
   // The repository the runner serves, checked against the project.
@@ -107,13 +107,13 @@ message AuthenticateRequest {
   // Always `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`.
   string client_assertion_type = 1;
   // The JWT signed with the runner key; a bearer credential until its `exp`.
-  Secret client_assertion = 2;
+  mintswarm.common.v1.Secret client_assertion = 2;
 }
 
 // The access-token exchange's response (design §9.2).
 message AuthenticateResponse {
   // The opaque access token, sent as `authorization: Bearer <token>`.
-  Secret access_token = 1;
+  mintswarm.common.v1.Secret access_token = 1;
   // When the access token expires.
   google.protobuf.Timestamp expires_at = 2;
 }

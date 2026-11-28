@@ -9,14 +9,15 @@
 
 #![cfg(test)]
 
+use mintswarm_proto::common::v1::Secret;
 use mintswarm_proto::runner::v1::{
     Ack, CancelClaim, CapabilitiesUpdate, Claim, ClaimRefusalReason, ClaimRefused, ClaimResult,
     ConnectRequest, ConnectResponse, Directive, EventBatch, GoAway, GoAwayReason, Goodbye,
     GoodbyeReason, Harness, Heartbeat, HeartbeatAck, HeldAttempt, Hello, HelloAccepted, HelloAck,
     HelloRejected, HelloRejectionStatus, HelloRepository, HostMetrics, LeaseState, LoadSummary,
     NeedBlobs, NoWork, PlaneAttemptState, PlaneHeldAttempt, ProbeResult, Reauthenticate,
-    Reauthenticated, Resend, RunnerMode, RunnerState, Secret, SessionLimits, SessionTimings,
-    StepKind, claim_result, connect_request, connect_response, directive, hello_ack, lease_state,
+    Reauthenticated, Resend, RunnerMode, RunnerState, SessionLimits, SessionTimings, StepKind,
+    claim_result, connect_request, connect_response, directive, hello_ack, lease_state,
     probe_result,
 };
 use prost::Message;

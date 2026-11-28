@@ -3,11 +3,12 @@
 
 #![cfg(test)]
 
+use mintswarm_proto::common::v1::Secret;
 use mintswarm_proto::json;
 use mintswarm_proto::runner::v1::{
     AuthenticateRequest, AuthenticateResponse, ConnectRequest, ConnectResponse, GetBlobHeader,
     GetBlobRequest, GetBlobResponse, PutBlobHeader, PutBlobRequest, PutBlobResponse,
-    Reauthenticate, RegisterRequest, RegisterResponse, Repository, Secret, StatBlobsRequest,
+    Reauthenticate, RegisterRequest, RegisterResponse, Repository, StatBlobsRequest,
     StatBlobsResponse, connect_request, get_blob_response, put_blob_request, runner_service_client,
     runner_service_server,
 };
@@ -148,6 +149,65 @@ fn secret_is_never_read_from_json() {
     let parsed: RegisterRequest = json::deserialize(register).expect("parses");
     assert_eq!(parsed.registration_token, None);
     assert_eq!(parsed.host, "build-1");
+}
+
+/// `Secret` is defined in `mintswarm.common.v1` only (design #634, B18): the
+/// runner package defines none, and each runner field that holds a secret
+/// is typed with the shared message.
+#[test]
+fn secret_lives_in_common_v1() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api/proto");
+    let files = [
+        "mintswarm/runner/v1/runner.proto",
+        "mintswarm/runner/v1/connect.proto",
+        "mintswarm/runner/v1/events.proto",
+        "mintswarm/runner/v1/steps.proto",
+    ];
+    let fds = protox::compile(files.map(|file| root.join(file)), [&root])
+        .expect("the runner protos compile");
+    let runner: Vec<_> = fds
+        .file
+        .iter()
+        .filter(|file| file.package() == "mintswarm.runner.v1")
+        .collect();
+    assert_eq!(runner.len(), files.len());
+    for file in &runner {
+        assert!(
+            file.message_type
+                .iter()
+                .all(|message| message.name() != "Secret"),
+            "{} defines a Secret",
+            file.name()
+        );
+    }
+
+    let field_type = |message: &str, field: &str| {
+        runner
+            .iter()
+            .flat_map(|file| &file.message_type)
+            .find(|candidate| candidate.name() == message)
+            .and_then(|found| {
+                found
+                    .field
+                    .iter()
+                    .find(|candidate| candidate.name() == field)
+            })
+            .unwrap_or_else(|| panic!("no field {message}.{field}"))
+            .type_name()
+            .to_owned()
+    };
+    for (message, field) in [
+        ("RegisterRequest", "registration_token"),
+        ("AuthenticateRequest", "client_assertion"),
+        ("AuthenticateResponse", "access_token"),
+        ("Reauthenticate", "access_token"),
+    ] {
+        assert_eq!(
+            field_type(message, field),
+            ".mintswarm.common.v1.Secret",
+            "{message}.{field}"
+        );
+    }
 }
 
 /// Builds every message with full struct literals, so a field of design §8.2,

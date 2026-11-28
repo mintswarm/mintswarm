@@ -1,15 +1,23 @@
 //! Compiles every `.proto` under `api/proto/` with `protox` and generates
 //! the Rust code with `tonic-prost-build` into `OUT_DIR`.
 //!
-//! `mintswarm.runner.v1.Secret` is generated without a derived `Debug`:
+//! `mintswarm.common.v1.Secret` is generated without a derived `Debug`:
 //! `src/lib.rs` implements one that prints `Secret(<redacted>)`, so no secret
-//! is ever logged (design §9.5).
+//! is ever logged (the runner protocol design on #156, §9.5).
 //!
 //! Every message implements `prost::Name` with its full proto name, and the
-//! descriptor set `protox` returns is written to `OUT_DIR/descriptors.bin`.
-//! `src/lib.rs` builds the proto3 JSON mapping on the two, through
-//! `prost-reflect`. The well-known types, such as `google.protobuf.Timestamp`,
-//! are `prost-reflect`'s re-export of `prost-types`.
+//! full descriptor set `protox` returns is written to
+//! `OUT_DIR/descriptors.bin`. `src/lib.rs` builds the proto3 JSON mapping on
+//! the two, through `prost-reflect`. The set holds `prost_types` descriptors,
+//! which carry no extension options, so `google.api.http` annotations are not
+//! in it. The well-known types, such as `google.protobuf.Timestamp`, are
+//! `prost-reflect`'s re-export of `prost-types`.
+//!
+//! The vendored `google.api` files under `api/proto/google/api/` stay in
+//! `descriptors.bin`, so the descriptor pool resolves the imports of the
+//! protos that use them, but they are dropped from the set given to code
+//! generation: no Rust module is generated for `google.api`, since no
+//! generated type refers to one; only method options do.
 //!
 //! `ProbeResult.Known.facts` is generated as a `BTreeMap`, the map type of
 //! `domain::probe`.
@@ -43,9 +51,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rerun-if-changed={}", file.display());
     }
 
-    let fds = protox::compile(&files, [&root])?;
+    let mut fds = protox::compile(&files, [&root])?;
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
     fs::write(out_dir.join("descriptors.bin"), fds.encode_to_vec())?;
+    // Only the HTTP annotations, which are method options, refer to
+    // `google.api`; see the module doc.
+    fds.file.retain(|file| file.package() != "google.api");
 
     let mut config = tonic_prost_build::Config::new();
     // `prost::Name` gives `src/lib.rs` each message's descriptor in the set.
@@ -59,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // `RunnerServiceClient::connect(dst)` would clash with the `Connect`
         // RPC's `connect` method; see the module doc.
         .build_transport(false)
-        .skip_debug([".mintswarm.runner.v1.Secret"])
+        .skip_debug([".mintswarm.common.v1.Secret"])
         // A `BTreeMap`, the map type of `domain::probe`, so the keys keep the
         // same order.
         .btree_map(".mintswarm.runner.v1.ProbeResult.Known.facts")

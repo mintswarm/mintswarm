@@ -1,5 +1,6 @@
-//! Rust code generated from the protos under `api/proto/`: the runner protocol,
-//! the job vocabulary and the watch protocol.
+//! Rust code generated from the protos under `api/proto/`: the shared
+//! `Secret`, the runner protocol, the job vocabulary, the watch protocol and
+//! the authentication contract.
 //!
 //! `build.rs` compiles every `.proto` there into `OUT_DIR`; nothing generated
 //! is committed. The messages carry prost's binary encoding; their proto3 JSON
@@ -11,22 +12,15 @@
 /// they are the same types that [`json`] serialises.
 pub use prost_reflect::prost_types;
 
-/// The `mintswarm.runner.v1` package.
-pub mod runner {
-    /// Version 1 of the runner protocol: `RunnerService`, its messages and
-    /// `Secret` (`runner.proto` and `common.proto`), with the generated tonic
-    /// client and server; the `Connect` stream's envelopes, `ConnectRequest`
-    /// and `ConnectResponse`, and the messages they carry (`connect.proto`);
-    /// `StepKind` (`steps.proto`); and the runner events, `RunnerEvent` and
-    /// `EventBatch` (`events.proto`).
-    ///
-    /// The client has no `connect(dst)` constructor, since it would clash
-    /// with the `Connect` RPC's method: build one with
-    /// `RunnerServiceClient::new(channel)`.
+/// The `mintswarm.common.v1` package.
+pub mod common {
+    /// Version 1 of the types the other packages share: `Secret`
+    /// (`secret.proto`), which `runner::v1` and `auth::v1` hold.
     pub mod v1 {
-        tonic::include_proto!("mintswarm.runner.v1");
+        tonic::include_proto!("mintswarm.common.v1");
 
-        /// Prints `Secret(<redacted>)`, never the value (design §9.5).
+        /// Prints `Secret(<redacted>)`, never the value (the runner protocol
+        /// design on #156, §9.5).
         ///
         /// `build.rs` skips prost's derived `Debug` for `Secret`, so every
         /// message that contains one redacts it through its own derived
@@ -36,6 +30,23 @@ pub mod runner {
                 f.write_str("Secret(<redacted>)")
             }
         }
+    }
+}
+
+/// The `mintswarm.runner.v1` package.
+pub mod runner {
+    /// Version 1 of the runner protocol: `RunnerService` and its messages
+    /// (`runner.proto`), with the generated tonic client and server; the
+    /// `Connect` stream's envelopes, `ConnectRequest` and `ConnectResponse`,
+    /// and the messages they carry (`connect.proto`); `StepKind`
+    /// (`steps.proto`); and the runner events, `RunnerEvent` and `EventBatch`
+    /// (`events.proto`). Its secrets are `common::v1::Secret`.
+    ///
+    /// The client has no `connect(dst)` constructor, since it would clash
+    /// with the `Connect` RPC's method: build one with
+    /// `RunnerServiceClient::new(channel)`.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.runner.v1");
     }
 }
 
@@ -62,6 +73,22 @@ pub mod watch {
     /// constructor: build one with `WatchServiceClient::new(channel)`.
     pub mod v1 {
         tonic::include_proto!("mintswarm.watch.v1");
+    }
+}
+
+/// The `mintswarm.auth.v1` package.
+pub mod auth {
+    /// Version 1 of the authentication contract (design #634, §13): the
+    /// availability types, `ActionAvailability` with `ActionKind`,
+    /// `AvailabilityState` and `AvailabilityReason` (`availability.proto`);
+    /// and `AuthService`, its messages, `ClientKind` and `LinkState`
+    /// (`auth.proto`), with the generated tonic client and server. Its
+    /// secrets are `common::v1::Secret`.
+    ///
+    /// Like every client in this crate, the client has no `connect(dst)`
+    /// constructor: build one with `AuthServiceClient::new(channel)`.
+    pub mod v1 {
+        tonic::include_proto!("mintswarm.auth.v1");
     }
 }
 
@@ -99,7 +126,7 @@ pub mod json {
     use serde::ser::Error as _;
     use serde::{Deserializer, Serialize as _, Serializer};
 
-    use crate::runner::v1::Secret;
+    use crate::common::v1::Secret;
 
     /// What a `Secret`'s value is replaced with.
     const REDACTED: &str = "<redacted>";

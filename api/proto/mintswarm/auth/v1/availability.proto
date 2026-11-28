@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package mintswarm.auth.v1;
+
+// The availability types: the one source of what a person may do with an
+// action on an item (design #634, §5 and §13). The plane computes an
+// `ActionAvailability` for each action on each item and returns it in
+// Control API responses; `watch.v1` does not carry it.
+//
+// This file imports nothing and defines no service, so Control API messages
+// can import it without `AuthService`. Adding actions, states or reasons is
+// a minor change; a breaking change gets a `v2/` package beside this one.
+
+// An action a person performs on GitHub through the plane, or that
+// availability reports: one value per action of design #634, §12.
+enum ActionKind {
+  // Not set; never sent.
+  ACTION_KIND_UNSPECIFIED = 0;
+  // Comment on an issue or PR (§12).
+  ACTION_KIND_COMMENT = 1;
+  // Edit the person's own comment (§12, "Edit own comment, react").
+  ACTION_KIND_EDIT_COMMENT = 2;
+  // React to a comment (§12, "Edit own comment, react").
+  ACTION_KIND_REACT = 3;
+  // Update a design artefact (§12).
+  ACTION_KIND_UPDATE_ARTEFACT = 4;
+  // Add a label, `mintswarm` included (§12, "Add or remove a label").
+  ACTION_KIND_ADD_LABEL = 5;
+  // Remove a label, `mintswarm` included (§12, "Add or remove a label").
+  ACTION_KIND_REMOVE_LABEL = 6;
+  // Set an issue field (§12).
+  ACTION_KIND_SET_FIELD = 7;
+  // Review a PR (§12).
+  ACTION_KIND_REVIEW = 8;
+  // Approve a design (§12, "Approve a plan, design or decomposition").
+  ACTION_KIND_APPROVE_DESIGN = 9;
+  // Approve a plan (§12, "Approve a plan, design or decomposition").
+  ACTION_KIND_APPROVE_PLAN = 10;
+  // Approve a decomposition (§12, "Approve a plan, design or
+  // decomposition").
+  ACTION_KIND_APPROVE_DECOMPOSITION = 11;
+  // Write to the settings branch (§12, "Settings-branch write").
+  ACTION_KIND_SETTINGS_WRITE = 12;
+  // Change branch protection (§12, "Branch protection, rulesets").
+  ACTION_KIND_BRANCH_PROTECTION = 13;
+  // Change rulesets (§12, "Branch protection, rulesets").
+  ACTION_KIND_RULESETS = 14;
+  // Change repository settings (§12).
+  ACTION_KIND_REPOSITORY_SETTINGS = 15;
+  // Change the organisation's issue types (§12, "Issue types, issue
+  // fields").
+  ACTION_KIND_ISSUE_TYPES = 16;
+  // Change the organisation's issue fields (§12, "Issue types, issue
+  // fields").
+  ACTION_KIND_ISSUE_FIELDS = 17;
+  // Merge a PR (§12). Not offered to people (N2): availability reports it,
+  // and a person never performs it.
+  ACTION_KIND_MERGE = 18;
+}
+
+// What a client offers for an action (§5).
+enum AvailabilityState {
+  // Not set; never sent.
+  AVAILABILITY_STATE_UNSPECIFIED = 0;
+  // The plane performs the action as the person (§5).
+  AVAILABILITY_STATE_ACT = 1;
+  // The admin window is closed, so a fresh sign-in is needed first (§5).
+  AVAILABILITY_STATE_CONFIRM = 2;
+  // The person performs the action on GitHub, at `url` (§5).
+  AVAILABILITY_STATE_OPEN_ON_GITHUB = 3;
+  // The action is not offered (§5).
+  AVAILABILITY_STATE_HIDDEN = 4;
+}
+
+// Why an action is not `act` (§5).
+enum AvailabilityReason {
+  // Not set; never sent.
+  AVAILABILITY_REASON_UNSPECIFIED = 0;
+  // The person has no GitHub link (§5).
+  AVAILABILITY_REASON_NO_LINK = 1;
+  // The GitHub link is `refresh_failed` or `revoked` (§5).
+  AVAILABILITY_REASON_LINK_BROKEN = 2;
+  // The person's role on the repository does not allow the action (§5).
+  AVAILABILITY_REASON_INSUFFICIENT_ROLE = 3;
+  // The trust table does not count the person for the action (§5).
+  AVAILABILITY_REASON_NOT_TRUSTED = 4;
+  // The App lacks the permission the action needs on the repository (§5).
+  AVAILABILITY_REASON_APP_PERMISSION_MISSING = 5;
+  // The action's endpoint does not accept a user token (§5, §12).
+  AVAILABILITY_REASON_ENDPOINT_REFUSES_USER_TOKEN = 6;
+  // The session is not interactive, as a token-provider session is (§5).
+  AVAILABILITY_REASON_NON_INTERACTIVE_SESSION = 7;
+  // Acting as the user is switched off on the plane (§5).
+  AVAILABILITY_REASON_ACTING_DISABLED = 8;
+}
+
+// The availability of one action on one item (§5, §13).
+message ActionAvailability {
+  // The action.
+  ActionKind action = 1;
+  // What a client offers for it.
+  AvailabilityState state = 2;
+  // The GitHub page to open, set for `open_on_github`.
+  string url = 3;
+  // Why the state is not `act`; unspecified for `act`.
+  AvailabilityReason reason = 4;
+}
