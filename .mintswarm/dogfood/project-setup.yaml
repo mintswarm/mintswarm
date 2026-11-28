@@ -1,0 +1,8 @@
+# The project's setup while mintswarm is dogfooded: the factory's branches. It stands in for the
+# setting the plane stores with a project's setup, and is read from the checkout, never at a
+# ref. Its schema is crates/config's load_project_setup, and .mintswarm/dogfood/project-setup.py
+# is its one reader outside Rust.
+branches:
+  # The work branch: the branch the factory integrates into. Config is read at its head, work
+  # is based on it and lands into it.
+  work: master
