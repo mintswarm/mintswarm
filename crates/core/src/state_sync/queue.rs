@@ -219,7 +219,7 @@ impl<T> Worker<T>
 where
     T: Issues + Links + Fields + Statuses + Comments,
 {
-    /// The worker writing each evaluation's line to `sink` instead of standard error.
+    /// The worker writing each evaluation's line to `sink` instead of the default `tracing` event.
     #[must_use]
     pub fn with_sink(mut self, sink: Sink) -> Self {
         self.sink = sink;
