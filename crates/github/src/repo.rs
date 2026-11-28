@@ -1,6 +1,6 @@
-//! Repository reads without a clone, design §9.4: the default branch's head and a file's bytes
-//! at a commit, through the contents, repository and branch endpoints, and on top of them a
-//! file's text and the CODEOWNERS file in force at a commit.
+//! Repository reads without a clone, design §9.4: a branch's head, the repository's default
+//! branch and a file's bytes at a commit, through the contents, repository and branch endpoints,
+//! and on top of them a file's text and the CODEOWNERS file in force at a commit.
 //!
 //! Every request goes through [`GitHubReads`]' GET path, so it shares its ETag cache, its retry
 //! layer and policy, and its rate-limit pause. A file is read inline from the contents API; a
@@ -17,7 +17,7 @@ use serde_json::Value;
 use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
 use mintswarm_domain::retry::{Exhausted, Failure};
-use mintswarm_domain::vcs::RepoPath;
+use mintswarm_domain::vcs::{BranchName, RepoPath};
 
 use crate::key_store::decode_base64;
 use crate::reads::{GitHubReads, ReadError};
@@ -25,12 +25,12 @@ use crate::rest::path_segment;
 use crate::secret::Token;
 use crate::token::Permissions;
 
-/// Reads of one repository's default-branch head and files at a commit, over a borrowed
+/// Reads of one repository's branch heads and files at a commit, over a borrowed
 /// [`GitHubReads`] and a token its caller minted with [`GitHubRepoReads::permissions`].
 ///
 /// GitHub answers 404 for a file that is missing, but also for a commit it does not know and a
 /// repository the token cannot see, so [`RepoReads::read_file`] reads all of these as `None`.
-/// Pin the revision with [`RepoReads::default_branch_head`] through the same reader first: it
+/// Pin the revision with [`RepoReads::branch_head`] through the same reader first: it
 /// reports lost access as [`RepoReadError::Inaccessible`], and the commit it returns is known.
 #[derive(Clone, Copy, Debug)]
 pub struct GitHubRepoReads<'a> {
@@ -84,19 +84,15 @@ impl GitHubRepoReads<'_> {
         Ok(None)
     }
 
-    async fn head(&self) -> Result<RevId, RepoReadError> {
-        let repo_path = self.reads.repo_path();
-        let repo = self
-            .reads
-            .get(self.token, &repo_path)
-            .await
-            .map_err(head_error)?;
-        let branch = repo
-            .get("default_branch")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .ok_or(RepoReadError::Unexpected)?;
-        let branch_path = format!("{repo_path}/branches/{}", encode_segments(branch));
+    async fn head(&self, branch: &BranchName) -> Result<RevId, RepoReadError> {
+        if !BranchName::is_valid(&branch.0) {
+            return Err(RepoReadError::InvalidBranch);
+        }
+        let branch_path = format!(
+            "{}/branches/{}",
+            self.reads.repo_path(),
+            encode_segments(&branch.0)
+        );
         let body = self
             .reads
             .get(self.token, &branch_path)
@@ -109,6 +105,19 @@ impl GitHubRepoReads<'_> {
             .filter(|sha| is_commit_id(sha))
             .ok_or(RepoReadError::Unexpected)?;
         Ok(RevId(sha.to_owned()))
+    }
+
+    async fn default_name(&self) -> Result<BranchName, RepoReadError> {
+        let repo = self
+            .reads
+            .get(self.token, &self.reads.repo_path())
+            .await
+            .map_err(head_error)?;
+        repo.get("default_branch")
+            .and_then(Value::as_str)
+            .filter(|name| BranchName::is_valid(name))
+            .map(|name| BranchName(name.to_owned()))
+            .ok_or(RepoReadError::Unexpected)
     }
 
     async fn file(&self, rev: &RevId, path: &RepoPath) -> Result<Option<Vec<u8>>, RepoReadError> {
@@ -132,8 +141,15 @@ impl GitHubRepoReads<'_> {
 }
 
 impl RepoReads for GitHubRepoReads<'_> {
-    fn default_branch_head(&self) -> impl Future<Output = Result<RevId, RepoReadError>> + Send {
-        self.head()
+    fn branch_head(
+        &self,
+        branch: &BranchName,
+    ) -> impl Future<Output = Result<RevId, RepoReadError>> + Send {
+        self.head(branch)
+    }
+
+    fn default_branch(&self) -> impl Future<Output = Result<BranchName, RepoReadError>> + Send {
+        self.default_name()
     }
 
     fn read_file(
@@ -211,7 +227,8 @@ fn file_bytes(body: &Value) -> Result<Option<Vec<u8>>, RepoReadError> {
     Ok(Some(bytes))
 }
 
-/// A head read's error: a missing repository or branch is [`RepoReadError::Inaccessible`].
+/// A head or repository read's error: a missing repository or branch is
+/// [`RepoReadError::Inaccessible`].
 fn head_error(error: ReadError) -> RepoReadError {
     match error {
         ReadError::NotFound { .. } => RepoReadError::Inaccessible,

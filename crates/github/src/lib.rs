@@ -13,8 +13,9 @@
 //! comments, review threads (a read-only GraphQL query), requested reviewers and changed files,
 //! and the check runs, check suites and statuses on a commit, paged, revalidated with ETags and
 //! paused by `retry-after`. [`comment_mark`] tells steers and notes from other comments.
-//! [`GitHubRepoReads`] reads the default branch's head, a file's bytes or text and the
-//! CODEOWNERS file in force at a commit through the same GET path, so the plane needs no clone.
+//! [`GitHubRepoReads`] reads a branch's head, the default branch's name, a file's bytes or text
+//! and the CODEOWNERS file in force at a commit through the same GET path, so the plane needs no
+//! clone.
 //!
 //! [`MergeClient`] squash-merges a pull request pinned to a head sha with a token its caller
 //! passes in; its PUT is never sent again after an attempt that may have landed, and GitHub's

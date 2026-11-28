@@ -6,7 +6,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::ids::RevId;
-use crate::vcs::RepoPath;
+use crate::vcs::{BranchName, RepoPath};
 
 /// Why a repository read failed. Every host maps its own errors into these classes, with this
 /// type's text, so a caller can tell a rate limit from any other failure without knowing the
@@ -18,9 +18,11 @@ pub enum RepoReadError {
         /// The delay the host asked for, if any.
         retry_after: Option<Duration>,
     },
-    /// The repository or its default branch is missing or not shown to the credential, or the
+    /// The repository or its branch is missing or not shown to the credential, or the
     /// credential is refused or lacks the permission to read it.
     Inaccessible,
+    /// The branch name is not valid, as [`BranchName::is_valid`] reads it, so it is not sent.
+    InvalidBranch,
     /// The path cannot be named on the host: not UTF-8, empty, with an empty, `.` or `..`
     /// segment, or with a leading or trailing `/`.
     InvalidPath,
@@ -44,6 +46,7 @@ impl fmt::Display for RepoReadError {
             } => write!(f, "rate limited; retry after {}s", delay.as_secs()),
             Self::RateLimited { retry_after: None } => f.write_str("rate limited"),
             Self::Inaccessible => f.write_str("the repository or its branch is not accessible"),
+            Self::InvalidBranch => f.write_str("the branch name is not valid"),
             Self::InvalidPath => f.write_str("the path cannot be read from the host"),
             Self::InvalidRev => f.write_str("the revision is not a full commit id"),
             Self::TooLarge => f.write_str("the file is too large to read inline"),
@@ -85,8 +88,16 @@ pub struct CodeOwnersFile {
 
 /// Reads of one hosted repository at a commit, without a clone.
 pub trait RepoReads: Send + Sync {
-    /// The commit at the head of the repository's default branch.
-    fn default_branch_head(&self) -> impl Future<Output = Result<RevId, RepoReadError>> + Send;
+    /// The commit at the head of `branch`, such as the work branch
+    /// ([`ProjectSetup::work_branch`](crate::setup::ProjectSetup::work_branch)). An invalid
+    /// name is refused as [`RepoReadError::InvalidBranch`] before any request.
+    fn branch_head(
+        &self,
+        branch: &BranchName,
+    ) -> impl Future<Output = Result<RevId, RepoReadError>> + Send;
+
+    /// The repository's default branch, which setup offers as the work branch's default.
+    fn default_branch(&self) -> impl Future<Output = Result<BranchName, RepoReadError>> + Send;
 
     /// The bytes of the file at `path` in commit `rev`, which must be a full commit id or the
     /// read fails with [`RepoReadError::InvalidRev`]. `None` means there is no file at the path,
@@ -94,7 +105,7 @@ pub trait RepoReads: Send + Sync {
     ///
     /// A host may also answer `None` when it does not show the commit or the repository at
     /// all: one it does not know, or one the credential can no longer see. A caller should pin
-    /// `rev` with [`default_branch_head`](Self::default_branch_head) through the same reader
+    /// `rev` with [`branch_head`](Self::branch_head) through the same reader
     /// first, which reports lost access as [`RepoReadError::Inaccessible`], before it treats
     /// `None` as an absent file.
     fn read_file(
@@ -110,9 +121,10 @@ mod tests {
 
     use super::RepoReadError;
 
-    fn others() -> [RepoReadError; 7] {
+    fn others() -> [RepoReadError; 8] {
         [
             RepoReadError::Inaccessible,
+            RepoReadError::InvalidBranch,
             RepoReadError::InvalidPath,
             RepoReadError::InvalidRev,
             RepoReadError::TooLarge,
