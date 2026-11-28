@@ -1,4 +1,4 @@
-//! `principles`: the principle packs the repository uses, how each is pinned and its overrides.
+//! `tenets`: the tenet packs the repository uses, how each is pinned and its overrides.
 //! The variants are built from yq's JSON for the repository config snapshot.
 
 #![cfg(test)]
@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 
 const REPO_JSON: &str = include_str!("conformance/repo-config.json");
 
-/// The snapshot config with `principles` set to `principles`.
-fn with_principles(principles: Value) -> Value {
+/// The snapshot config with `tenets` set to `tenets`.
+fn with_tenets(tenets: Value) -> Value {
     let mut config: Value = serde_json::from_str(REPO_JSON).expect("repo-config.json is JSON");
     config
         .as_object_mut()
         .expect("the config is a mapping")
-        .insert("principles".to_owned(), principles);
+        .insert("tenets".to_owned(), tenets);
     config
 }
 
@@ -23,9 +23,9 @@ fn load(config: Value) -> Result<RepoConfig, mintswarm_config::Error> {
     load_repo_config(&text)
 }
 
-/// The error path for `principles` holding `sources: [source]`.
+/// The error path for `tenets` holding `sources: [source]`.
 fn refused(source: Value) -> String {
-    match load(with_principles(json!({ "sources": [source] }))) {
+    match load(with_tenets(json!({ "sources": [source] }))) {
         Ok(_) => panic!("the config loads"),
         Err(error) => error.path().to_owned(),
     }
@@ -52,22 +52,17 @@ fn absent_means_no_packs() {
     config
         .as_object_mut()
         .expect("the config is a mapping")
-        .remove("principles");
-    assert!(
-        load(config)
-            .expect("the config loads")
-            .principles()
-            .is_empty()
-    );
+        .remove("tenets");
+    assert!(load(config).expect("the config loads").tenets().is_empty());
 }
 
 #[test]
 fn sources_load_typed() {
-    let config = with_principles(json!({ "sources": [
+    let config = with_tenets(json!({ "sources": [
         source(|s| {
             s.insert("bias".to_owned(), json!(0.8));
             s.insert("parameters".to_owned(), json!({ "max_width": 100, "edition": "2024" }));
-            s.insert("principles".to_owned(), json!({
+            s.insert("tenets".to_owned(), json!({
                 "clippy-clean": { "strength": "must" },
                 "public-items-documented": { "strength": "may", "reason": "internal crates" },
                 "api-guidelines": { "skip": true, "reason": "generated bindings" },
@@ -79,10 +74,10 @@ fn sources_load_typed() {
             "hash": "0123456789abcdef0123456789abcdef01234567",
             "enabled": false,
         },
-        { "pack": "@mintswarm/mintswarm:rust", "from": "repo:.mintswarm/principles/rust" },
+        { "pack": "@mintswarm/mintswarm:rust", "from": "repo:.mintswarm/tenets/rust" },
     ]}));
     let loaded = load(config).expect("the config loads");
-    let [rust, misra, local] = loaded.principles() else {
+    let [rust, misra, local] = loaded.tenets() else {
         panic!("three sources load");
     };
     assert_eq!(rust.pack, "@mintswarm/tenets:rust");
@@ -127,7 +122,7 @@ fn sources_load_typed() {
     assert_eq!(
         local.source,
         PackSource::Local {
-            path: ".mintswarm/principles/rust".to_owned()
+            path: ".mintswarm/tenets/rust".to_owned()
         }
     );
 }
@@ -135,91 +130,91 @@ fn sources_load_typed() {
 #[test]
 fn malformed_sources_are_refused_at_their_key() {
     let cases: Vec<(Value, &str)> = vec![
-        (json!("rust"), "principles.sources[0]"),
+        (json!("rust"), "tenets.sources[0]"),
         (
             source(|s| {
                 s.remove("pack");
             }),
-            "principles.sources[0].pack",
+            "tenets.sources[0].pack",
         ),
         (
             source(|s| {
                 s.insert("pack".to_owned(), json!("mintswarm/tenets:rust"));
             }),
-            "principles.sources[0].pack",
+            "tenets.sources[0].pack",
         ),
         (
             source(|s| {
                 s.insert("from".to_owned(), json!("http://example.com/p.tgz"));
             }),
-            "principles.sources[0].from",
+            "tenets.sources[0].from",
         ),
         (
             source(|s| {
                 s.insert("extra".to_owned(), json!(1));
             }),
-            "principles.sources[0].extra",
+            "tenets.sources[0].extra",
         ),
         (
             source(|s| {
                 s.remove("tag");
             }),
-            "principles.sources[0]",
+            "tenets.sources[0]",
         ),
         (
             source(|s| {
                 s.insert("hash".to_owned(), json!("a".repeat(40)));
             }),
-            "principles.sources[0]",
+            "tenets.sources[0]",
         ),
         (
             source(|s| {
                 s.remove("tag");
                 s.insert("hash".to_owned(), json!("abc"));
             }),
-            "principles.sources[0].hash",
+            "tenets.sources[0].hash",
         ),
         (
             source(|s| {
                 s.insert("tag".to_owned(), json!(""));
             }),
-            "principles.sources[0].tag",
+            "tenets.sources[0].tag",
         ),
         (
-            json!({ "pack": "@mintswarm/mintswarm:rust", "from": "repo:.mintswarm/principles/rust", "tag": "v1" }),
-            "principles.sources[0]",
+            json!({ "pack": "@mintswarm/mintswarm:rust", "from": "repo:.mintswarm/tenets/rust", "tag": "v1" }),
+            "tenets.sources[0]",
         ),
         (
             json!({ "pack": "@mintswarm/mintswarm:rust", "from": "repo:../elsewhere" }),
-            "principles.sources[0].from",
+            "tenets.sources[0].from",
         ),
         (
             json!({ "pack": "@mintswarm/mintswarm:rust", "from": "repo:" }),
-            "principles.sources[0].from",
+            "tenets.sources[0].from",
         ),
         (
             source(|s| {
                 s.insert("enabled".to_owned(), json!("yes"));
             }),
-            "principles.sources[0].enabled",
+            "tenets.sources[0].enabled",
         ),
         (
             source(|s| {
                 s.insert("bias".to_owned(), json!(1.5));
             }),
-            "principles.sources[0].bias",
+            "tenets.sources[0].bias",
         ),
         (
             source(|s| {
                 s.insert("parameters".to_owned(), json!({ "Max": 1 }));
             }),
-            "principles.sources[0].parameters.Max",
+            "tenets.sources[0].parameters.Max",
         ),
         (
             source(|s| {
                 s.insert("parameters".to_owned(), json!({ "max_width": [100] }));
             }),
-            "principles.sources[0].parameters.max_width",
+            "tenets.sources[0].parameters.max_width",
         ),
     ];
     for (source, path) in cases {
@@ -231,41 +226,41 @@ fn malformed_sources_are_refused_at_their_key() {
 fn malformed_overrides_are_refused_at_their_key() {
     let with = |overrides: Value| {
         source(|s| {
-            s.insert("principles".to_owned(), overrides);
+            s.insert("tenets".to_owned(), overrides);
         })
     };
     let cases: Vec<(Value, &str)> = vec![
         (
             json!({ "Clippy": { "strength": "must" } }),
-            "principles.sources[0].principles.Clippy",
+            "tenets.sources[0].tenets.Clippy",
         ),
         (
             json!({ "clippy-clean": { "strength": "always" } }),
-            "principles.sources[0].principles.clippy-clean.strength",
+            "tenets.sources[0].tenets.clippy-clean.strength",
         ),
         (
             json!({ "clippy-clean": {} }),
-            "principles.sources[0].principles.clippy-clean",
+            "tenets.sources[0].tenets.clippy-clean",
         ),
         (
             json!({ "clippy-clean": { "skip": true } }),
-            "principles.sources[0].principles.clippy-clean.reason",
+            "tenets.sources[0].tenets.clippy-clean.reason",
         ),
         (
             json!({ "clippy-clean": { "skip": false, "reason": "x" } }),
-            "principles.sources[0].principles.clippy-clean.skip",
+            "tenets.sources[0].tenets.clippy-clean.skip",
         ),
         (
             json!({ "clippy-clean": { "skip": true, "strength": "may", "reason": "x" } }),
-            "principles.sources[0].principles.clippy-clean",
+            "tenets.sources[0].tenets.clippy-clean",
         ),
         (
             json!({ "clippy-clean": { "strength": "may", "reason": "" } }),
-            "principles.sources[0].principles.clippy-clean.reason",
+            "tenets.sources[0].tenets.clippy-clean.reason",
         ),
         (
             json!({ "clippy-clean": { "strength": "must", "why": "x" } }),
-            "principles.sources[0].principles.clippy-clean.why",
+            "tenets.sources[0].tenets.clippy-clean.why",
         ),
     ];
     for (overrides, path) in cases {
@@ -275,17 +270,17 @@ fn malformed_overrides_are_refused_at_their_key() {
 
 #[test]
 fn a_pack_is_listed_once() {
-    let config = with_principles(json!({ "sources": [tenets(), tenets()] }));
+    let config = with_tenets(json!({ "sources": [tenets(), tenets()] }));
     let Err(error) = load(config) else {
         panic!("the config loads");
     };
-    assert_eq!(error.path(), "principles.sources[1].pack");
+    assert_eq!(error.path(), "tenets.sources[1].pack");
 }
 
 #[test]
-fn principles_holds_only_sources() {
-    let Err(error) = load(with_principles(json!({ "packs": [] }))) else {
+fn tenets_holds_only_sources() {
+    let Err(error) = load(with_tenets(json!({ "packs": [] }))) else {
         panic!("the config loads");
     };
-    assert_eq!(error.path(), "principles.packs");
+    assert_eq!(error.path(), "tenets.packs");
 }

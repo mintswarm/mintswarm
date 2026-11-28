@@ -1,9 +1,9 @@
-//! `principles` in the repository config: the principle packs the repository uses, how each is
-//! pinned, and its overrides of single principles.
+//! `tenets` in the repository config: the tenet packs the repository uses, how each is
+//! pinned, and its overrides of single tenets.
 //!
 //! The section follows `schemas/settings.schema.yaml` in mintswarm/tenets, where the format is
 //! defined while it settles. What needs the pack itself is not checked here: that an override
-//! lowering a principle's declared strength gives a reason, that an overridden principle exists,
+//! lowering a tenet's declared strength gives a reason, that an overridden tenet exists,
 //! and that a parameter set here is not one the pack derives from the repository.
 
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::schema::{kind, known, mapping, string};
 use crate::{Error, Path};
 
-/// A principle's strength, which sets what breaking it costs.
+/// A tenet's strength, which sets what breaking it costs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strength {
     /// A blocker finding in review and a hard trigger at landing.
@@ -58,27 +58,27 @@ pub enum Pin {
     Hash(String),
 }
 
-/// One principle's override.
+/// One tenet's override.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Override {
-    /// The principle applies at this strength; `reason` is required when it is lower than the
-    /// declared one, which the principles check verifies against the pack.
+    /// The tenet applies at this strength; `reason` is required when it is lower than the
+    /// declared one, which the tenets check verifies against the pack.
     Strength {
         /// The strength it applies at.
         strength: Strength,
         /// Why, if given.
         reason: Option<String>,
     },
-    /// The principle is not applied at all.
+    /// The tenet is not applied at all.
     Skip {
         /// Why.
         reason: String,
     },
 }
 
-/// One entry of `principles.sources`.
+/// One entry of `tenets.sources`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PrincipleSource {
+pub struct TenetSource {
     /// The qualified pack name, `@<org>/<repo>:<pack>`.
     pub pack: String,
     /// Where it comes from.
@@ -89,15 +89,12 @@ pub struct PrincipleSource {
     pub bias: Option<f64>,
     /// Values for the pack's parameters that the repository records nowhere else.
     pub parameters: Map<String, Value>,
-    /// Overrides, keyed by the principle's slug within the pack.
+    /// Overrides, keyed by the tenet's slug within the pack.
     pub overrides: BTreeMap<String, Override>,
 }
 
-/// Validate `principles`, absent meaning no packs.
-pub(crate) fn check_principles(
-    value: Option<&Value>,
-    path: &Path,
-) -> Result<Vec<PrincipleSource>, Error> {
+/// Validate `tenets`, absent meaning no packs.
+pub(crate) fn check_tenets(value: Option<&Value>, path: &Path) -> Result<Vec<TenetSource>, Error> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
@@ -110,7 +107,7 @@ pub(crate) fn check_principles(
     let list = sources
         .as_array()
         .ok_or_else(|| Error::schema(&path, format!("must be a list, not {}", kind(sources))))?;
-    let mut checked: Vec<PrincipleSource> = Vec::with_capacity(list.len());
+    let mut checked: Vec<TenetSource> = Vec::with_capacity(list.len());
     for (index, entry) in list.iter().enumerate() {
         let source = check_source(entry, &path.index(index))?;
         if checked.iter().any(|earlier| earlier.pack == source.pack) {
@@ -124,7 +121,7 @@ pub(crate) fn check_principles(
     Ok(checked)
 }
 
-fn check_source(value: &Value, path: &Path) -> Result<PrincipleSource, Error> {
+fn check_source(value: &Value, path: &Path) -> Result<TenetSource, Error> {
     let map = mapping(value, path)?;
     known(
         map,
@@ -137,7 +134,7 @@ fn check_source(value: &Value, path: &Path) -> Result<PrincipleSource, Error> {
             "enabled",
             "bias",
             "parameters",
-            "principles",
+            "tenets",
         ],
     )?;
     let pack_path = path.key("pack");
@@ -224,11 +221,11 @@ fn check_source(value: &Value, path: &Path) -> Result<PrincipleSource, Error> {
         None => Map::new(),
         Some(value) => check_parameters(value, &path.key("parameters"))?,
     };
-    let overrides = match map.get("principles") {
+    let overrides = match map.get("tenets") {
         None => BTreeMap::new(),
-        Some(value) => check_overrides(value, &path.key("principles"))?,
+        Some(value) => check_overrides(value, &path.key("tenets"))?,
     };
-    Ok(PrincipleSource {
+    Ok(TenetSource {
         pack: pack.to_owned(),
         source,
         enabled,
@@ -272,7 +269,7 @@ fn check_overrides(value: &Value, path: &Path) -> Result<BTreeMap<String, Overri
         if !is_identifier(slug, b'-') {
             return Err(Error::schema(
                 &entry,
-                "a principle slug is lower-case letters, digits and -, starting with a letter",
+                "a tenet slug is lower-case letters, digits and -, starting with a letter",
             ));
         }
         let fields = mapping(value, &entry)?;
@@ -309,16 +306,13 @@ fn check_overrides(value: &Value, path: &Path) -> Result<BTreeMap<String, Overri
         };
         let checked = match (skip, strength, reason) {
             (true, Some(_), _) => {
-                return Err(Error::schema(
-                    &entry,
-                    "a skipped principle takes no strength",
-                ));
+                return Err(Error::schema(&entry, "a skipped tenet takes no strength"));
             }
             (true, None, Some(reason)) => Override::Skip { reason },
             (true, None, None) => {
                 return Err(Error::schema(
                     &entry.key("reason"),
-                    "is missing: skipping a principle needs a reason",
+                    "is missing: skipping a tenet needs a reason",
                 ));
             }
             (false, Some(strength), reason) => Override::Strength { strength, reason },

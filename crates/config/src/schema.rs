@@ -43,7 +43,7 @@
 //! `activity` module checks with the same schema as the runner's default activity rules,
 //! described on [`ActivityRule`].
 //!
-//! The `principles` check is the loader's own too, in the `principles` module: the packs the
+//! The `tenets` check is the loader's own too, in the `tenets` module: the packs the
 //! repository uses, how each is pinned and its overrides, following `schemas/settings.schema.yaml`
 //! in mintswarm/tenets.
 
@@ -57,8 +57,8 @@ use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
 use crate::activity::check_activity;
-use crate::principles::{PrincipleSource, check_principles};
 use crate::state::check_options;
+use crate::tenets::{TenetSource, check_tenets};
 use crate::{
     Action, ActionTable, ActionTrust, ActivityRule, Error, Path, People, Stage, StateSettings,
     StatusMode, Trust, TrustMatch, parse_yaml,
@@ -217,7 +217,7 @@ pub struct RepoConfig {
     state: Option<StateSettings>,
     actions: ActionTable,
     activity_rules: Vec<ActivityRule>,
-    principles: Vec<PrincipleSource>,
+    tenets: Vec<TenetSource>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -279,7 +279,7 @@ impl RepoConfig {
                 "pipeline",
                 "gates",
                 "metrics",
-                "principles",
+                "tenets",
             ],
         )?;
         let (trust, state, actions) = match top.get("tracker") {
@@ -319,7 +319,7 @@ impl RepoConfig {
             formatters,
         } = check_gates(top.get("gates"), &root.key("gates"))?;
         let activity_rules = check_metrics(top.get("metrics"), &root.key("metrics"))?;
-        let principles = check_principles(top.get("principles"), &root.key("principles"))?;
+        let tenets = check_tenets(top.get("tenets"), &root.key("tenets"))?;
 
         Ok(RepoConfig {
             value,
@@ -334,7 +334,7 @@ impl RepoConfig {
             state,
             actions,
             activity_rules,
-            principles,
+            tenets,
         })
     }
 
@@ -398,9 +398,9 @@ impl RepoConfig {
         &self.activity_rules
     }
 
-    /// The principle packs from `principles.sources`, in order; empty when there are none.
-    pub fn principles(&self) -> &[PrincipleSource] {
-        &self.principles
+    /// The tenet packs from `tenets.sources`, in order; empty when there are none.
+    pub fn tenets(&self) -> &[TenetSource] {
+        &self.tenets
     }
 
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
