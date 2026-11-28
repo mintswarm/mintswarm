@@ -25,10 +25,13 @@
 //!   misses, and the digest an approval package binds.
 //! - [`approver`]: the tracker issue's owner up its parent chain, whether a sender is its
 //!   approver, and whether a pull request's approvals cover its CODEOWNERS approval groups.
+//! - [`activity`]: the activity a tool call belongs to, by the default and project activity
+//!   rules, with the shell normaliser that finds a command's program.
 //!
 //! Nothing here does I/O or records anything; callers supply what was read and act on the
 //! result.
 
+pub mod activity;
 pub mod approver;
 pub mod binding;
 pub mod command;
