@@ -9,11 +9,14 @@ publish = false
 fakes = []
 
 [dependencies]
+# `otlp` encodes and decodes `domain::facts::Fact`.
+mintswarm-domain = { path = "../domain" }
 prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
-# For the generated JSON Schemas in `schema`.
-serde_json = { workspace = true }
+# For the generated JSON Schemas in `schema` and the OTLP/JSON lines of `otlp`;
+# `float_roundtrip` reads a 17-digit double back exactly.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 
@@ -23,12 +26,11 @@ tonic-prost = { workspace = true }
 # workspace-wide test and lint runs build every crate against proto with
 # `fakes`, so each crate that uses the fakes must declare the feature itself.
 mintswarm-proto = { path = ".", features = ["fakes"] }
-# Serves only `tests/job_v1.rs`, the temporary parity test against
-# `domain::job`; job-in-proto removes it together with that test.
-mintswarm-domain = { path = "../domain" }
 # Compiles the protos for the descriptor-based contract tests in
 # `tests/job_v1.rs`, `tests/runner_v1.rs` and `tests/auth_v1.rs`.
 protox = { workspace = true }
+# Hashes the vendored OTLP files in `tests/otlp_vendor.rs`.
+sha2 = { workspace = true }
 
 [build-dependencies]
 # For `Message::encode_to_vec`, which writes the descriptor set to `OUT_DIR`.

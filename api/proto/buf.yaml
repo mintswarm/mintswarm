@@ -6,6 +6,7 @@ lint:
     - STANDARD
   ignore:
     - google
+    - opentelemetry
 breaking:
   use:
     - WIRE_JSON

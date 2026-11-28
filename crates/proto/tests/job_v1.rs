@@ -3,8 +3,9 @@
 //! followed by the variant's name in upper snake case, and the proto enum has
 //! no other value besides `<PREFIX>_UNSPECIFIED = 0`.
 //!
-//! Temporary: job-in-proto removes this test, together with the
-//! `mintswarm-domain` and `protox` dev-dependencies it uses.
+//! Temporary: job-in-proto removes this test, and with it this test's use of
+//! the `protox` dev-dependency. `mintswarm-domain` stays a normal dependency,
+//! for `otlp`.
 
 use std::collections::BTreeSet;
 use std::path::Path;

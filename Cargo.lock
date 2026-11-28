@@ -1231,6 +1231,7 @@ dependencies = [
  "protox",
  "serde",
  "serde_json",
+ "sha2",
  "tonic",
  "tonic-build",
  "tonic-prost",
