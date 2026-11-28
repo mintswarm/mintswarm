@@ -11,6 +11,7 @@
 //! the readiness probe, and gives the [`Leader`], whose [`lost`](Leader::lost) resolves when the
 //! lock's session ends.
 
+use std::future::Future;
 use std::time::Duration;
 
 use deadpool_postgres::{Manager, Object, Pool, Runtime};
@@ -30,6 +31,10 @@ pub const LEADER_LOCK_KEY: i64 = 0x6d73_776d_6c65_6164;
 
 /// How long the leader lock's connection may be idle before TCP keepalives probe it.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
+
+/// How many lock intervals one session check may take before the leader gives up its lead: a
+/// slow answer is waited for, and only a check that has not answered by then counts as a loss.
+const CHECK_INTERVALS: u32 = 3;
 
 /// The bound on each readiness check.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -220,7 +225,9 @@ impl Leader {
     /// The lock is held on a dedicated connection with TCP keepalives on, apart from any pool.
     /// A connection that fails or is lost while waiting is made again at the next interval, so
     /// this never fails; it ends only once the lock is held. Once held, the session is checked
-    /// with `SELECT 1` every `interval`, each check bounded by `interval`.
+    /// with `SELECT 1` every `interval`. The lock counts as lost when its connection ends, a
+    /// check fails, or a check has not answered within three intervals; a slower answer that
+    /// comes in time keeps the lead.
     pub async fn acquire(
         config: &Config,
         interval: Duration,
@@ -323,28 +330,53 @@ async fn try_lock(config: &Config, interval: Duration) -> Attempt {
     }
 }
 
-/// Checks the lock's session every `interval` until it ends or a check fails, then reports the
-/// loss on `lost` and in `readiness`. It owns the client, so the session lasts as long as it
-/// runs.
+/// Watches the lock's session until it is lost, then reports the loss on `lost` and in
+/// `readiness`. It owns the client, so the session lasts as long as it runs.
 async fn heartbeat(
     client: Client,
-    mut closed: tokio::sync::oneshot::Receiver<()>,
+    closed: tokio::sync::oneshot::Receiver<()>,
     interval: Duration,
     lost: watch::Sender<bool>,
     readiness: watch::Sender<Readiness>,
 ) {
-    loop {
-        tokio::select! {
-            _ = &mut closed => break,
-            () = tokio::time::sleep(interval) => {}
-        }
-        match tokio::time::timeout(interval, client.simple_query("SELECT 1")).await {
-            Ok(Ok(_)) => {}
-            _ => break,
-        }
-    }
+    let client = &client;
+    watch_session(closed, interval, || async move {
+        client
+            .simple_query("SELECT 1")
+            .await
+            .map(drop)
+            .map_err(drop)
+    })
+    .await;
     readiness.send_modify(|state| state.leader = false);
     let _ = lost.send(true);
+}
+
+/// Runs `check` every `interval` and returns once the session is lost: when `closed` resolves,
+/// when a check fails, or when a check has not answered within [`CHECK_INTERVALS`] intervals.
+/// A check that is slow but answers in time keeps the lead.
+async fn watch_session<F, C>(
+    mut closed: tokio::sync::oneshot::Receiver<()>,
+    interval: Duration,
+    mut check: C,
+) where
+    C: FnMut() -> F,
+    F: Future<Output = Result<(), ()>>,
+{
+    loop {
+        tokio::select! {
+            _ = &mut closed => return,
+            () = tokio::time::sleep(interval) => {}
+        }
+        tokio::select! {
+            _ = &mut closed => return,
+            answered = tokio::time::timeout(interval * CHECK_INTERVALS, check()) => {
+                if !matches!(answered, Ok(Ok(()))) {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// What one readiness probe found.
@@ -473,4 +505,83 @@ pub async fn start(
         readiness.clone(),
     ));
     Ok(leader)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    use tokio::sync::oneshot;
+
+    use super::{CHECK_INTERVALS, watch_session};
+
+    const INTERVAL: Duration = Duration::from_secs(1);
+
+    /// One call of a fake session check.
+    type Answer = std::pin::Pin<Box<dyn Future<Output = Result<(), ()>> + Send>>;
+
+    /// A check whose `n`th call, counting from 0, takes `delay(n)` and then gives `answer(n)`.
+    fn check(
+        delay: impl Fn(u32) -> Duration,
+        answer: impl Fn(u32) -> Result<(), ()>,
+    ) -> (Arc<AtomicU32>, impl FnMut() -> Answer) {
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&calls);
+        let check = move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let (delay, answer) = (delay(n), answer(n));
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                answer
+            }) as Answer
+        };
+        (calls, check)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_single_slow_check_keeps_the_lead() {
+        let (_closed_tx, closed) = oneshot::channel::<()>();
+        // The first check takes two intervals, longer than the interval but within the bound.
+        let (calls, check) = check(
+            |n| if n == 0 { INTERVAL * 2 } else { Duration::ZERO },
+            |_| Ok(()),
+        );
+        let watched =
+            tokio::time::timeout(INTERVAL * 20, watch_session(closed, INTERVAL, check)).await;
+        assert!(watched.is_err(), "the session is still held");
+        assert!(calls.load(Ordering::SeqCst) > 5, "later checks ran");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_that_never_answers_loses_the_lead_after_the_bound() {
+        let (_closed_tx, closed) = oneshot::channel::<()>();
+        let (_, check) = check(|_| Duration::from_secs(3600), |_| Ok(()));
+        let started = tokio::time::Instant::now();
+        watch_session(closed, INTERVAL, check).await;
+        assert_eq!(started.elapsed(), INTERVAL + INTERVAL * CHECK_INTERVALS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_check_loses_the_lead_at_once() {
+        let (_closed_tx, closed) = oneshot::channel::<()>();
+        let (_, check) = check(|_| Duration::ZERO, |n| if n < 2 { Ok(()) } else { Err(()) });
+        let started = tokio::time::Instant::now();
+        watch_session(closed, INTERVAL, check).await;
+        assert_eq!(started.elapsed(), INTERVAL * 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_connection_loses_the_lead_during_a_check() {
+        let (closed_tx, closed) = oneshot::channel::<()>();
+        let (_, check) = check(|_| Duration::from_secs(3600), |_| Ok(()));
+        let watching = tokio::spawn(watch_session(closed, INTERVAL, check));
+        tokio::time::sleep(INTERVAL + INTERVAL / 2).await;
+        closed_tx.send(()).expect("the watcher listens");
+        tokio::time::timeout(INTERVAL / 4, watching)
+            .await
+            .expect("the watcher returns at once")
+            .expect("the watcher completes");
+    }
 }
