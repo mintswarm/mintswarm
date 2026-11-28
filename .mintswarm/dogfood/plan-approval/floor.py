@@ -1106,9 +1106,10 @@ def footprint_json(block: str):
     except json.JSONDecodeError as exc:
         if deep is None or exc.pos < deep:
             raise FootprintError(prefix + decode_failure(exc)) from exc
-        # At the cut: the deep container is the error when a value may stand there, as with `0` in its place.
+        # At the cut: the deep container is the error when a value may stand there, as with `[]` in its place,
+        # which no token before the cut can run on into, as a number would run on into `0`.
         try:
-            strict_footprint(block[:deep] + "0")
+            strict_footprint(block[:deep] + "[]")
         except json.JSONDecodeError as cut:
             if cut.pos > deep:
                 line, column = errors.text_position(block, deep)

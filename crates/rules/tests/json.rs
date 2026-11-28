@@ -422,6 +422,20 @@ fn the_first_error_comes_first_around_deep_nesting() {
             "not valid JSON: line 1 column 10",
         ),
         (
+            format!(
+                r#"{{"a": {}1{}{}{}}}"#,
+                "[".repeat(511),
+                "[".repeat(10),
+                "]".repeat(10),
+                "]".repeat(511)
+            ),
+            "not valid JSON: line 1 column 519",
+        ),
+        (
+            format!(r#"{{"a": {}1e5[]}}"#, "[".repeat(511)),
+            "not valid JSON: line 1 column 521",
+        ),
+        (
             format!("{{{}", "[".repeat(600)),
             "not valid JSON: line 1 column 2",
         ),
