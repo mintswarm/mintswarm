@@ -156,6 +156,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1430,6 +1431,18 @@ def check_binary_content(r: Runner, sb: Sandbox) -> None:
             undo()
 
 
+def first_gate_word_under(directory: str) -> str:
+    """The first word of the live config's gate commands under DIRECTORY/, in gates.run order and with `./`
+    stripped, as the floor lists its gate words: the protected target a single entry for DIRECTORY stands for."""
+    for gate in yq_json(CONFIG)["gates"]["run"]:
+        for word in shlex.split(gate["command"]):
+            while word.startswith("./"):
+                word = word[2:]
+            if word.startswith(directory + "/"):
+                return word
+    raise AssertionError(f"no gate command names a path under {directory}/")
+
+
 def check_protected_entries(r: Runner) -> None:
     """A single entry (symlink or gitlink) standing in for a protected directory, under no require_human."""
     base = r.commits["no-rh"]
@@ -1458,7 +1471,7 @@ def check_protected_entries(r: Runner) -> None:
             (SYMLINK, b"../elsewhere"),
             {},
             ".mintswarm/dogfood is a single entry standing in for a directory above the protected "
-            ".mintswarm/dogfood/render-agents.py",
+            + first_gate_word_under(".mintswarm/dogfood"),
         ),
         (
             "docs",
