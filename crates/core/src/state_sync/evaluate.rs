@@ -84,9 +84,10 @@ impl Outcome {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
     pub outcome: Outcome,
-    /// `evaluator` (`state_sync`), `issue`, `causes` (each blocker named `#N` in the repository, `owner/name#N` otherwise),
-    /// `fan_out`, `value_before`, `value_after`, `wrote`, `status_before`,
-    /// `status_after`, `reported` and `outcome`, with a `detail` on a skip, deferral or failure.
+    /// `evaluator` (`state_sync`), `issue`, `causes` (each blocker named `#N` in the
+    /// repository, `owner/name#N` otherwise), `fan_out`, `value_before`, `value_after`,
+    /// `wrote`, `status_before`, `status_after`, `reported` and `outcome`, with a `detail` on a
+    /// skip, deferral or failure.
     pub line: Value,
 }
 
