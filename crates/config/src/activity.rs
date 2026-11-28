@@ -32,8 +32,12 @@ use crate::{Error, Path, parse_yaml};
 /// - `activity` matches `[a-z][a-z0-9_-]*`;
 /// - every other key is an error, at every level.
 ///
-/// Patterns are globs, matched by the classifier in `mintswarm-rules`; an absent `rules` reads
-/// as no rules.
+/// Patterns are the plan floor's path globs, matched by the classifier in `mintswarm-rules`:
+/// `*` matches any run of characters and `?` one character, neither crossing `/`; `**` matches
+/// any run, `/` included; every other character is literal. A pattern matches the whole name or
+/// argument, case-sensitively, so `*.py` does not match `scripts/x.py`, while `**.py` does.
+///
+/// An absent `rules` reads as no rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityRule {
     /// What the rule matches.

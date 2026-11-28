@@ -409,3 +409,19 @@ fn a_harness_filter_skips_other_harnesses() {
         classified(OTHER, ActivitySource::None)
     );
 }
+
+#[test]
+fn argument_globs_follow_the_documented_syntax() {
+    let rules = Rules::new(
+        &rules(&[
+            "{ command: python3, args: [\"*.py\"], activity: running }",
+            "{ command: python3, args: [\"**.py\"], activity: testing }",
+        ]),
+        &[],
+    );
+    let classify = |command| rules.classify(Harness::Claude, &shell(command)).activity;
+    // the rules tie up to file order, so the earlier wins where both match
+    assert_eq!(classify("python3 x.py"), "running");
+    assert_eq!(classify("python3 scripts/x.py"), "testing");
+    assert_eq!(classify("python3 X.PY"), OTHER);
+}
