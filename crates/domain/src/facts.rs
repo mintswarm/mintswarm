@@ -9,9 +9,11 @@
 //! - [`kinds`] holds one attribute type per kind, and [`catalogue`] the attribute groups shared
 //!   by several kinds and their value sets. Field serde names are the attribute keys.
 //! - [`ids`] holds the item key and the trace, span and fact id derivations.
+//! - [`envelope`] is the single source of the envelope keys, which carry in an OTLP record the
+//!   envelope parts its ids only hash.
 //!
 //! Keys are frozen once written: new keys and values only add, and [`CATALOGUE_VERSION`]
-//! increases with each addition.
+//! increases with each addition from the first written fact on.
 
 use std::borrow::Cow;
 
@@ -156,12 +158,14 @@ macro_rules! attributes {
 }
 
 pub mod catalogue;
+pub mod envelope;
 pub mod ids;
 pub mod kinds;
 
 use ids::{FactId, ItemKey, SpanId, SpanKind, TraceId};
 
-/// The catalogue's version: the scope version of every fact, raised with each addition.
+/// The catalogue's version: the scope version of every fact, raised with each addition from the
+/// first written fact on.
 pub const CATALOGUE_VERSION: u32 = 1;
 
 /// The OTLP instrumentation scope name of every fact.
