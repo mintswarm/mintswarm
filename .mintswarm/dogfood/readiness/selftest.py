@@ -819,7 +819,7 @@ GAP_CASES = [
         {
             "gate-scripts-named": 'gate unit: it holds "\'", which the check does not read',
             "gate-tools": "its tools are unknown",
-            "plan-approval-config": "command does not split",
+            "plan-approval-config": "does not split",
         },
     ),
     (
@@ -1886,7 +1886,7 @@ def check_unusable(sb: Sandbox, ready: str) -> None:
     unusable(sb, "a missing ref", ["--ref", "no-such-ref"], "ref 'no-such-ref' does not resolve to a commit")
     unusable(sb, "an unborn HEAD", ["--ref", "HEAD"], "ref 'HEAD' does not resolve to a commit")
     rejected = sb.fixture(m_file(CONFIG, b"tracker: [\n"))
-    unusable(sb, "YAML yq rejects", ["--ref", rejected], "yq")
+    unusable(sb, "YAML yq rejects", ["--ref", rejected], "is not valid YAML")
     listed = sb.fixture(m_file(CONFIG, b"- tracker\n- gates\n"))
     unusable(sb, "YAML that is a list", ["--ref", listed], "is not a mapping")
     linked = sb.fixture(m_file(CONFIG, (SYMLINK, b"other.yaml")))

@@ -124,8 +124,8 @@ Checks:
   and a CTRF test without a name, a failed check run, a human comment
   after the approval and a request re-made after a change request give
   `gates` (an unnamed gate), `checks`, `steers` and `review-requests` hits;
-- the plan floor's own verdict is left alone, and a copy of both scripts
-  elsewhere gives the same verdict;
+- the plan floor's own verdict is left alone, and a copy of both scripts,
+  with the errors.py the plan floor loads, elsewhere gives the same verdict;
 - historic replays: the squash commits bb7f812 and 4e7ba0a, rebuilt from the
   checkout's objects, against plan-approval/fixtures/plan-{20,19}.md give
   their recorded verdicts with no evidence, and are clean under a human
@@ -2445,6 +2445,7 @@ def check_isolation(r: Runner, sb: Sandbox) -> None:
     for name, source in (("landing", FLOOR), ("plan-approval", PLAN_FLOOR)):
         (copy_root / name).mkdir(parents=True)
         shutil.copy2(source, copy_root / name / "floor.py")
+    shutil.copy2(PLAN_FLOOR.parent.parent / "errors.py", copy_root / "errors.py")  # the plan floor loads it
     plan = sb.write_plan("copied scripts", plan_text(fp))
     head = sb.child(r.commits["real"], {**appended("docs/guide.md", 1), "CLAUDE.md": text(1)})
     facts = sb.write_facts("copied scripts", clean_facts(r.commits["real"], head))

@@ -31,8 +31,9 @@ Python either way. Under Rust the `--components` reasons are expected after
 `plan-floor: ` instead of `floor.py: `, and the checks of Python internals or
 wording are skipped, each printing the Rust test that covers it and failing
 unless that `#[test]` fn exists in the file it names: the two missing-`yq`
-checks, the git-logging object store check, the catch-all's `unexpected
-error` wording (its exit 2 and one line still checked), and the glob
+checks, the git-logging object store check, the catch-all's `internal
+error` line (its exit 2 and one line still checked), the forged fetch's
+exact line (its exit 2 and `fetch` still checked), and the glob
 semantics, authority triggers and span checks, which load the scripts.
 
 Checks:
@@ -60,7 +61,10 @@ Checks:
   `agents` among two components is one `require-human-components` reason;
 - footprint unusable: missing, misplaced, malformed and badly shaped
   footprints, and each bad path form, are `footprint` hits with the
-  footprint rules not evaluated and the document rules evaluated;
+  footprint rules not evaluated and the document rules evaluated; each
+  footprint that is not strict JSON (invalid, a trailing comma, reported at
+  the comma, a duplicate key, NaN, extra data, a control character, a
+  double comma and nesting deeper than 512) has its exact reason;
 - base ref: with a worktree config and a HEAD commit that drop a
   require_human path, `--base` at the earlier commit still gives the hit;
 - historic fixtures: fixtures/plan-{9,12,14,19,20,10}.md, with a
@@ -142,11 +146,18 @@ Checks:
   `new_dependencies` limit in `limits` or in limits_by_component), screen
   records (missing, unreadable, not UTF-8, given twice or with an empty
   value), result records beside the analysis or the plan (a directory, not
-  UTF-8) and a missing `yq`, exit 2 and leave no verdict file, even a stale
-  one;
+  UTF-8), gate commands with an open quote or a trailing backslash, a
+  config that is not YAML and a missing `yq`, exit 2 and leave no verdict
+  file, even a stale one; each missing, unreadable or not UTF-8 plan,
+  document or result record, the base without a config, each split gate
+  command and the config that is not YAML with its exact reason, the same
+  under Rust; the configs that do not load are commits kept aside under
+  refs/selftest/, so HEAD stays at `dropped`;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
-  error and no traceback;
+  error and no traceback; with a stale verdict the line names it, and
+  without one it is the catch-all's `floor.py: internal error: unexpected
+  PermissionError`;
 - glob semantics: floor.py's glob_to_regex matches a pinned table of
   patterns by paths, and pinned edge cases;
 - decision record shape, on every decision run that exits 0 or 1: the
@@ -250,7 +261,9 @@ Checks:
   verdict; a copy of the repository at a path holding `%41`, next to a
   decoy repository at the path git would decode that to, gives the
   untampered verdict; a repository with extensions.partialClone exits 2; and no
-  `msw-floor-objects-*` store is left after clean and exit 2 runs;
+  `msw-floor-objects-*` store is left after clean and exit 2 runs; under
+  Python, the forged fetch's line is the command and its exit status, with
+  no git error output after it;
 - sizes, of size.py: the lines floor at every boundary of design §5's
   bands; in `plan` mode, a plan judged S with production_lines 300 prints
   `size: L` and the raised-size line, one judged XL or L only its size, a
@@ -269,6 +282,9 @@ Checks:
   `## Size` section after the footprint is clean on every floor rule;
 - standard library: every import of floor.py, decision.py, size.py and
   selftest.py is in the standard library.
+- source: floor.py's source has no `{exc}`, `{exc!`, `exc.msg`,
+  `str(exc)` or `.stderr.decode`, so no exception's text or program's
+  error output reaches what it prints.
 
 Prints one `ok` or `FAIL` line per check and exits 0 only when all passed.
 """
@@ -326,6 +342,12 @@ RUST = os.environ.get("MSW_IMPL", "") == "rust"
 RUST_BIN = resolve_command()
 RUST_TOOLS = {FLOOR: "plan-floor", DECISION: "plan-decision"}
 FLOOR_PREFIX = "plan-floor: " if RUST else "floor.py: "
+# floor.py's line for a failed fetch into the object store: no git error output after it.
+FETCH_FAILED = re.compile(
+    r"floor\.py: the fetch from the job repository into a fresh object store failed \([^)]*, exit \d+\)"
+)
+# Exception text floor.py must never print: what an exception would put into a message.
+EXCEPTION_TEXT = (r"\{exc\}", r"\{exc!", r"exc\.msg", r"str\(exc\)", r"\.stderr\.decode")
 
 
 def tool_argv(script: Path, args: list) -> list:
@@ -552,6 +574,14 @@ class Sandbox:
         self.git("add", CONFIG_PATH)
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")
+
+    def commit_config_aside(self, data: bytes, name: str) -> str:
+        """A config commit on top of HEAD, kept under refs/selftest/<name>, with HEAD and the worktree put back."""
+        head = self.git("rev-parse", "HEAD")
+        commit = self.commit_config(data, name)
+        self.git("update-ref", f"refs/selftest/{name}", commit)
+        self.git("reset", "-q", "--hard", head)
+        return commit
 
     def commit_empty(self, message: str) -> str:
         self.git("commit", "-q", "--allow-empty", "-m", message)
@@ -1505,6 +1535,10 @@ def unusable_footprints() -> list:
             ),
         ),
         ("NaN", plan_text(block=replaced(block, '"estimated_lines": 6', '"estimated_lines": NaN'))),
+        ("extra data", plan_text(block=block + "\n[]")),
+        ("control character", plan_text(block=replaced(block, '"files"', '"fi\tles"'))),
+        ("double comma", plan_text(block=replaced(block, '"external_steps": []', '"external_steps": ["x",,]'))),
+        ("nested too deep", plan_text(block=replaced(block, '"external_steps": []', f'"external_steps": {DEEP}'))),
     ]
     reordered = {"new_files": CLEAN_BASE["new_files"], **{k: v for k, v in CLEAN_BASE.items() if k != "new_files"}}
     missing = {k: v for k, v in CLEAN_BASE.items() if k != "gate_changes"}
@@ -1547,9 +1581,40 @@ def unusable_footprints() -> list:
     return cases
 
 
+# Nested deeper than 512 inside the footprint's two objects: the 511th `[` is the 513th container.
+DEEP = "[" * 600 + "]" * 600
+
+
+def position(text: str, needle: str, offset: int = 0) -> str:
+    """`line L column C` of the character offset characters into the first needle in text, both 1-based."""
+    at = text.index(needle) + offset
+    return f"line {text.count(chr(10), 0, at) + 1} column {at - (text.rfind(chr(10), 0, at) + 1) + 1}"
+
+
+def footprint_json_reasons() -> dict:
+    """The exact `footprint` reason of each footprint case that is not strict JSON, by case name."""
+    block = footprint_block(CLEAN_BASE)
+    trailing = replaced(block, '"overridden_assumptions": []', '"overridden_assumptions": [],')
+    control = replaced(block, '"files"', '"fi\tles"')
+    double = replaced(block, '"external_steps": []', '"external_steps": ["x",,]')
+    deep = replaced(block, '"external_steps": []', f'"external_steps": {DEEP}')
+    prefix = "the footprint is not strict JSON: "
+    return {
+        "invalid json": prefix + "not valid JSON: line 1 column 3",
+        "trailing comma": prefix + "not valid JSON: " + position(trailing, '"overridden_assumptions": [],', 28),
+        "duplicate key": prefix + "duplicate key 'estimated_lines'",
+        "NaN": prefix + "NaN is not allowed",
+        "extra data": prefix + f"not valid JSON: line {block.count(chr(10)) + 2} column 1",
+        "control character": prefix + "not valid JSON: " + position(control, "\t"),
+        "double comma": prefix + "not valid JSON: " + position(double, '["x",,]', 5),
+        "nested too deep": prefix + "nested deeper than 512: " + position(deep, '"external_steps": [', 18 + 510),
+    }
+
+
 def check_unusable_footprints(r: Runner) -> None:
     # An unclosed fence runs to the end of the plan, so Verification and Questions are inside it.
     fenced = {"no closing fence": {"blocking-questions", "acceptance-criteria"}}
+    reasons = footprint_json_reasons()
     for name, text in unusable_footprints():
         proc, verdict = r.run(name, text)
         hits = fenced.get(name, set())
@@ -1563,6 +1628,12 @@ def check_unusable_footprints(r: Runner) -> None:
             ok,
             f"exit {proc.returncode}: {proc.stdout.strip()} {proc.stderr.strip()}",
         )
+        if name in reasons:
+            T.check(
+                f"{name}: the reason",
+                reasons_of(verdict, "footprint") == [reasons[name]],
+                str(reasons_of(verdict, "footprint")),
+            )
 
 
 def check_base_ref(r: Runner, sb: Sandbox) -> None:
@@ -2300,6 +2371,9 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         *MIN_CONFIDENCE_INVALID,
         *SIZE_INVALID,
         *REMOVED_LIMIT,
+        "gate-open-quote",
+        "gate-trailing-backslash",
+        "not-yaml",
     ):
         cases.append((f"config {variant}", ["--plan", good, "--components", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
@@ -2331,23 +2405,47 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             write_record(sb.repo / path, record)
         args = plain + ["--analysis", analysis]
         proc, verdict = sb.floor(args)
+        case = f"unusable {label} result record {'unreadable' if record is None else 'not UTF-8'}"
         T.check(
-            f"unusable {label} result record {'unreadable' if record is None else 'not UTF-8'}: exit 2, no verdict",
+            f"{case}: exit 2, no verdict",
             proc.returncode == 2 and verdict is None and len(proc.stderr.strip().splitlines()) == 1,
             f"exit {proc.returncode}, verdict {'left' if verdict is not None else 'gone'}: {proc.stderr.strip()}",
+        )
+        why = "read failed" if record is None else "it is not UTF-8 at byte 17"
+        T.check(
+            f"{case}: the reason",
+            proc.stderr.strip() == f"{FLOOR_PREFIX}cannot read the result record {target.relative_to(sb.repo)}: {why}",
+            proc.stderr.strip(),
         )
         if record is None:
             target.rmdir()
         else:
             target.unlink()
-    # The --components refusals, by case: floor.py's own wording.
+    # The exact reasons, by case: the floor's own wording, the same in floor.py and in rules::plan_floor.
+    gate = len(yq_json(CONFIG)["gates"]["run"])  # the index of the gate the gate-* configs append
     messages = {
+        "missing plan": "cannot read the plan cases/missing.md: no such file",
+        "plan not UTF-8": f"cannot read the plan {not_utf8}: it is not UTF-8 at byte 8",
+        "base without config": f"no {CONFIG_PATH} at {commits['noconfig']}",
         "unknown component": "--components 'nope' is not a component in the config",
         "empty component name": "--components has an empty name",
         "leading empty component name": "--components has an empty name",
         "repeated component name": "--components names 'docs' twice",
         "unknown second component": "--components 'nope' is not a component in the config",
+        "config gate-open-quote": f"config: gates.run[{gate}].command: does not split: a quote is not closed",
+        "config gate-trailing-backslash": (
+            f"config: gates.run[{gate}].command: does not split: a backslash ends the command"
+        ),
+        "config not-yaml": f"config: {CONFIG_PATH} at the base is not valid YAML",
     }
+    for flag, what in (
+        ("--issue-document", "issue document"),
+        ("--analysis", "analysis"),
+        ("--screen", "screen record"),
+    ):
+        messages[f"{flag[2:]} missing"] = f"cannot read the {what} cases/missing.md: no such file"
+        messages[f"{flag[2:]} unreadable"] = f"cannot read the {what} cases: read failed"
+        messages[f"{flag[2:]} not UTF-8"] = f"cannot read the {what} {not_utf8}: it is not UTF-8 at byte 8"
     for name, args in cases:
         proc, verdict = sb.floor(args)
         T.check(
@@ -2395,21 +2493,23 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
     verdict = sb.repo / VERDICT
     outputs = verdict.parent
 
-    def exit_2(name: str, proc, unexpected: bool = False) -> None:
+    def exit_2(name: str, proc, line: str = None) -> None:
         lines = proc.stderr.strip().splitlines()
         ok = (
             proc.returncode == 2
             and len(lines) == 1
             and "Traceback" not in proc.stderr
-            and (not unexpected or "unexpected error" in proc.stderr)
+            and (line is None or lines[0] == line)
         )
         T.check(name, ok, f"exit {proc.returncode}: {proc.stderr.strip()}")
+
+    stale = f"{FLOOR_PREFIX}cannot delete the stale verdict {VERDICT}"
 
     outputs.mkdir(parents=True, exist_ok=True)
     verdict.unlink(missing_ok=True)
     verdict.mkdir()
     proc = sb.exec(["--plan", good, *args])
-    exit_2("verdict a directory: exit 2, one-line error", proc)
+    exit_2("verdict a directory: exit 2, one-line error naming the stale verdict", proc, stale)
     T.check(
         "verdict a directory: no verdict written",
         verdict.is_dir() and not any(verdict.iterdir()) and not list(outputs.glob(".floor.*")),
@@ -2424,17 +2524,18 @@ def check_verdict_errors(sb: Sandbox, commits: dict) -> None:
     outputs.chmod(0o555)
     try:
         proc = sb.exec(["--plan", nofootprint, *args])
-        exit_2("read-only outputs, stale verdict: exit 2, one-line error", proc)
+        exit_2("read-only outputs, stale verdict: exit 2, one-line error naming the stale verdict", proc, stale)
     finally:
         outputs.chmod(0o755)
     verdict.unlink()
     outputs.chmod(0o555)
     try:
         proc = sb.exec(["--plan", good, *args])
-        exit_2("read-only outputs, no stale verdict: exit 2 from the catch-all", proc, unexpected=not RUST)
+        crash = None if RUST else "floor.py: internal error: unexpected PermissionError"
+        exit_2("read-only outputs, no stale verdict: exit 2 from the catch-all", proc, crash)
         if RUST:
             skip_under_rust(
-                "read-only outputs, no stale verdict: the unexpected error wording",
+                "read-only outputs, no stale verdict: the internal error wording",
                 "a_failed_write_is_one_line_exit_2",
                 "crates/runner/tests/plan_approval.rs",
             )
@@ -4046,6 +4147,12 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
             proc.returncode == 2 and verdict is None and len(lines) == 1 and "fetch" in lines[0],
             f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
         )
+        if not RUST:
+            T.check(
+                "object store, forged object: the fetch is named by its command and exit status only",
+                len(lines) == 1 and FETCH_FAILED.fullmatch(lines[0]) is not None,
+                proc.stderr.strip(),
+            )
         T.check("object store: no store is left after an exit 2 run", not stores_left(sb), str(stores_left(sb)))
         record = sb.repo / RECORD
         record.write_text('{"stale": true}\n', encoding="utf-8")
@@ -4292,6 +4399,13 @@ def check_stdlib() -> None:
         )
 
 
+def check_no_exception_text_in_source() -> None:
+    """floor.py puts no exception's text and no program's error output into what it prints."""
+    source = FLOOR.read_text(encoding="utf-8")
+    found = [pattern for pattern in EXCEPTION_TEXT if re.search(pattern, source)]
+    T.check("source: floor.py embeds no exception text or error output", not found, f"found {found}")
+
+
 # --- sizes ----------------------------------------------------------------
 
 
@@ -4528,6 +4642,12 @@ def build_commits(sb: Sandbox) -> tuple:
     sb.git("tag", "base")
     sb.commit_empty("feat(cli): seen after base")
     variant("dropped", lambda c: approval(c)["require_human"]["paths"].remove(".mintswarm/dogfood/github/**"))
+    # Configs that do not load, kept aside from HEAD, which stays at `dropped`.
+    for name, command in (("gate-open-quote", "python3 'x"), ("gate-trailing-backslash", "python3 x\\")):
+        config = copy.deepcopy(real)
+        config["gates"]["run"].append({"name": name, "command": command})
+        commits[name] = sb.commit_config_aside(as_json(config), name)
+    commits["not-yaml"] = sb.commit_config_aside(b"a: [1\n", "not-yaml")
     return commits, approval(real)["limits"]
 
 
@@ -4572,6 +4692,7 @@ def main() -> int:
         check_span()
     check_size_bands()
     check_stdlib()
+    check_no_exception_text_in_source()
     print(f"{T.passed} passed, {T.failed} failed")
     return 0 if T.failed == 0 else 1
 
