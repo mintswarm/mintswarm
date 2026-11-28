@@ -18,6 +18,7 @@ path = "src/main.rs"
 axum = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hmac = { workspace = true }
+mintswarm-config = { path = "../config" }
 mintswarm-core = { path = "../core" }
 mintswarm-domain = { path = "../domain" }
 mintswarm-github = { path = "../github" }

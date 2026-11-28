@@ -1273,6 +1273,7 @@ dependencies = [
  "axum",
  "clap",
  "hmac",
+ "mintswarm-config",
  "mintswarm-core",
  "mintswarm-domain",
  "mintswarm-github",

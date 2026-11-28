@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mintswarm-server");
 
-/// clap's exit code for a usage error, which it gives before `webhooks` runs.
+/// clap's exit code for a usage error, which it gives before a subcommand runs.
 const USAGE: i32 = 2;
 
-/// The exit code of a `webhooks` or `migrate new` run that fails, `ExitCode::FAILURE`.
+/// The exit code of a `serve`, `migrate`, `webhooks` or `migrate new` run that fails,
+/// `ExitCode::FAILURE`.
 const FAILURE: i32 = 1;
 
 fn code(status: ExitStatus) -> Option<i32> {
@@ -29,15 +30,101 @@ fn help_lists_serve_and_migrate() {
     assert!(stdout.contains("migrate"), "help lists migrate: {stdout}");
 }
 
-#[test]
-fn each_subcommand_exits_zero() {
-    for subcommand in ["serve", "migrate"] {
-        let status = Command::new(BIN)
-            .arg(subcommand)
-            .status()
-            .expect("mintswarm-server runs");
-        assert!(status.success(), "{subcommand} exits 0");
+/// Every variable that overrides a key of `mintswarm.yaml`, in both forms.
+const OVERRIDES: [&str; 6] = [
+    "MINTSWARM_LISTEN",
+    "MINTSWARM_LISTEN_FILE",
+    "MINTSWARM_DATABASE_URL",
+    "MINTSWARM_DATABASE_URL_FILE",
+    "MINTSWARM_DATABASE_PASSWORD",
+    "MINTSWARM_DATABASE_PASSWORD_FILE",
+];
+
+/// A command for the binary run in `dir`, with none of the overrides set.
+fn in_dir(dir: &std::path::Path) -> Command {
+    let mut command = Command::new(BIN);
+    command.current_dir(dir);
+    for name in OVERRIDES {
+        command.env_remove(name);
     }
+    command
+}
+
+/// A loopback port nothing listens on.
+fn closed_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    listener.local_addr().expect("bound").port()
+}
+
+/// Writes `mintswarm.yaml` in `dir` listening on `listen`, with a database nothing serves.
+fn write_config(dir: &std::path::Path, listen: &str) -> std::path::PathBuf {
+    let path = dir.join("mintswarm.yaml");
+    let text = format!(
+        "listen: {listen}\ndatabase:\n  url: postgres://mintswarm@127.0.0.1:{}/mintswarm\n",
+        closed_port()
+    );
+    std::fs::write(&path, text).expect("the settings are written");
+    path
+}
+
+#[test]
+fn serve_and_migrate_without_a_config_file_fail_as_a_run() {
+    for subcommand in ["serve", "migrate"] {
+        let dir = tempfile::TempDir::new().expect("a temporary directory");
+        let output = in_dir(dir.path())
+            .arg(subcommand)
+            .output()
+            .expect("mintswarm-server runs");
+        assert_eq!(
+            code(output.status),
+            Some(FAILURE),
+            "{subcommand} without mintswarm.yaml fails as a run, not as usage"
+        );
+    }
+}
+
+#[test]
+fn serve_refuses_a_non_loopback_address() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let config = write_config(dir.path(), "0.0.0.0:0");
+    let mut child = in_dir(dir.path())
+        .arg("serve")
+        .arg("--config")
+        .arg(&config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("mintswarm-server starts");
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let status = wait_bounded(&mut child, Duration::from_secs(5)).expect("serve exits at once");
+    assert_eq!(code(status), Some(FAILURE));
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut text).expect("stderr reads");
+    assert!(text.contains("no auth provider is configured"), "{text}");
+}
+
+#[test]
+fn serve_waiting_for_the_database_stops_on_sigterm() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    write_config(dir.path(), "127.0.0.1:0");
+    let mut child = in_dir(dir.path())
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("mintswarm-server starts");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
+    let mut first = String::new();
+    stderr
+        .read_line(&mut first)
+        .expect("the start line is read");
+    assert!(first.contains("listening on"), "{first}");
+    send_signal(&child, "-TERM");
+    let status =
+        wait_bounded(&mut child, Duration::from_secs(5)).expect("serve stops within 5 seconds");
+    assert_eq!(code(status), Some(0), "a stop exits 0");
 }
 
 fn stdout_of(args: &[&str]) -> String {
