@@ -868,6 +868,8 @@ fi
 check "project-setup.py exits 2 on a usage error" exits_2 python3 -I "$PS"
 rm -f "$ps_dir/project-setup.yaml"
 check "project-setup.py exits 2 without its setup file" exits_2 python3 -I "$ps_dir/project-setup.py" work-branch
+check "diff-check exits 2 without its setup file" exits_2 python3 -I "$ps_dir/project-setup.py" diff-check
+check "packs-check exits 2 without its setup file" exits_2 python3 -I "$ps_dir/project-setup.py" packs-check
 no_secret_redirections() {
   local f
   for f in "$here"/*.sh "$here"/linux/*.sh; do

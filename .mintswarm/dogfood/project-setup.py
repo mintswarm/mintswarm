@@ -2,6 +2,8 @@
 """Read the project setup: the factory's branches, starting with the work branch.
 
     project-setup.py work-branch    print the work branch
+    project-setup.py diff-check     git diff --check origin/<work branch>...HEAD
+    project-setup.py packs-check    packs/pack.py check --base origin/<work branch>
 
 The setup is project-setup.yaml beside this script, read from the checkout
 and never at a ref, with `yq -o=json . FILE`. It is a mapping with one key,
@@ -15,13 +17,17 @@ load_project_setup is its schema; the case table
 crates/config/tests/conformance/project-setup.json holds both to the same
 rules, and .mintswarm/dogfood/github/selftest.sh runs it against this script.
 
-The gates call it in a command substitution guarded by `&&`, common.sh wraps
-it as msw_work_branch, and the Python tools load it by path with
+The whitespace and packs-check gates run diff-check and packs-check, which
+read the work branch and then run the check against origin/<work branch> from
+the current directory, the repository root; common.sh wraps work-branch as
+msw_work_branch; and the Python tools load this script by path with
 importlib.util, without writing bytecode, and call work_branch(), which raises
 SetupError naming the key path on any failure.
 
-Exits 0 with the name on stdout; 2 on a usage error or when the setup cannot
-be read, with `project-setup: <path>: <what>` on stderr.
+work-branch exits 0 with the name on stdout. diff-check and packs-check exit
+with the check's status, or 1 when it cannot be started. All three exit 2 on a
+usage error or when the setup cannot be read, with
+`project-setup: <path>: <what>` on stderr, and then run nothing.
 """
 
 import json
@@ -30,7 +36,8 @@ import sys
 from pathlib import Path
 
 SETUP = Path(__file__).with_name("project-setup.yaml")
-USAGE = "usage: project-setup.py work-branch"
+USAGE = "usage: project-setup.py work-branch|diff-check|packs-check"
+PACK = Path(__file__).with_name("packs") / "pack.py"
 
 
 class SetupError(Exception):
@@ -106,8 +113,15 @@ def work_branch(path: Path = SETUP) -> str:
     return name
 
 
+def check_command(action: str, name: str) -> list:
+    """The argv of the check ACTION names, against origin/NAME."""
+    if action == "diff-check":
+        return ["git", "diff", "--check", f"origin/{name}...HEAD"]
+    return [sys.executable, str(PACK), "check", "--base", f"origin/{name}"]
+
+
 def main(argv: list) -> int:
-    if argv != ["work-branch"]:
+    if len(argv) != 1 or argv[0] not in ("work-branch", "diff-check", "packs-check"):
         sys.stderr.write(USAGE + "\n")
         return 2
     try:
@@ -115,8 +129,15 @@ def main(argv: list) -> int:
     except SetupError as e:
         sys.stderr.write(f"project-setup: {e}\n")
         return 2
-    sys.stdout.write(name + "\n")
-    return 0
+    if argv[0] == "work-branch":
+        sys.stdout.write(name + "\n")
+        return 0
+    sys.stdout.flush()
+    try:
+        return subprocess.run(check_command(argv[0], name)).returncode
+    except OSError:
+        sys.stderr.write(f"project-setup: cannot run the {argv[0]} check\n")
+        return 1
 
 
 if __name__ == "__main__":

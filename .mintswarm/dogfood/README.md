@@ -6,7 +6,7 @@ The scripts here run mintswarm's pipeline by hand while the Rust runner is being
 
 `project-setup.yaml` stands in for the setting the plane stores with a project's setup: the factory's branches, starting with `branches.work`, the work branch the factory integrates into (`master` here). It is read from the checkout, never at a ref, and is not part of `.mintswarm/config.yaml`, which itself lives on the work branch.
 
-- `project-setup.py work-branch` is its one reader outside Rust. The `whitespace` and `packs-check` gates call it, `github/common.sh` wraps it as `msw_work_branch` for `push.sh`, and the Python tools in `github/` load it by path for their `--base` defaults and `land.py`'s base.
+- `project-setup.py work-branch` is its one reader outside Rust. The `whitespace` and `packs-check` gates run its `diff-check` and `packs-check` subcommands, which check against `origin/<work branch>`, `github/common.sh` wraps it as `msw_work_branch` for `push.sh`, and the Python tools in `github/` load it by path for their `--base` defaults and `land.py`'s base.
 - `load_project_setup` in `crates/config` is its schema: `branches` and `branches.work` are required, any other key is refused, and the name must be a valid branch name (`git check-ref-format refs/heads/<name>` accepts it, it does not start with `-` and it is not `HEAD`).
 - Both readers run the case table `crates/config/tests/conformance/project-setup.json`: the Rust one in `crates/config/tests/setup.rs`, the Python one in `github/selftest.sh`.
 
