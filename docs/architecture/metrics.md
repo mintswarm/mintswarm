@@ -45,3 +45,12 @@ Ids are derived, never stored or allocated, so every writer in every language co
   - an intervention given in the session has no URL and keys on its `time` instead, so two interventions of one kind on the same run or root stay apart;
   - `picked_up` is written once per item, at its first dispatch, so it keys on the item and the event name only.
 - **The shared fixture** [`crates/domain/tests/fixtures/fact-ids.json`](../../crates/domain/tests/fixtures/fact-ids.json) lists item keys with their trace, root and per-kind span ids, and one example fact per kind with its span and fact ids. Its expected ids were computed independently of the Rust code; the domain tests derive every id and match it exactly, and other implementations check themselves against the same file.
+
+## Activity rules
+
+A tool call's activity (`mintswarm.activity`) comes from rules applied to the call, never from the agent labelling itself.
+
+- **Two sources, one schema.** The runner's defaults, [`defaults/activity/rules.yaml`](../../defaults/activity/rules.yaml), are embedded in `crates/runner` (`activity` module). A project adds its own under `metrics.activity.rules` in `.mintswarm/config.yaml`. `crates/config` parses both with the same checker; the schema and its validation are documented on `ActivityRule` in [`crates/config/src/activity.rs`](../../crates/config/src/activity.rs) (`cargo doc -p mintswarm-config` renders it). The defaults use the base set of activities; a project may name its own.
+- **Matching** is in `crates/rules` (`activity` module, pure). A harness tool is matched by `tool` rules on its name, a shell command by `command` rules on its program and leading arguments, and an MCP call (Claude Code's `mcp__<server>__<tool>`) by `mcp` rules on its server and tool, all with globs. A rule may be limited to some harnesses.
+- **Shell normalisation** finds a command's program: it splits the command into words and commands, drops leading `cd` commands and variable assignments, unwraps `env`, `command`, `time` and `bash`/`sh`/`zsh -c`, and takes the basename of the first word. A command it cannot read, such as a subshell, a command substitution, a heredoc or unbalanced quotes, is `other` with source `unparsed`.
+- **Precedence.** Of the rules that match, the first difference decides: more argument patterns, then more exact (non-glob) patterns, then project over default, then earlier in its file. The winner's origin is the source, `default` or `project`; a call no rule matches is `other` with source `none`.
