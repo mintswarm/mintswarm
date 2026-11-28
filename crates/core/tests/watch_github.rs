@@ -77,6 +77,7 @@ fn webhook(event: &WatchEvent) -> &GitHubWebhook {
     match &event.body {
         Some(watch_event::Body::GithubWebhook(webhook)) => webhook,
         None => panic!("no github.webhook body"),
+        Some(other) => panic!("not a github.webhook body: {other:?}"),
     }
 }
 

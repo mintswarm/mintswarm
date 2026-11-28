@@ -15,15 +15,18 @@ import "mintswarm/watch/v1/github.proto";
 // `GetServerInfoResponse.protocol_minor`. A breaking change gets a `v2/`
 // package beside this one.
 //
-// `UNAUTHENTICATED` and `PERMISSION_DENIED` are reserved for the later
-// authentication design and are never returned for now; clients treat them
-// as unrecoverable. Every RPC returns `UNAVAILABLE` when the server is
-// shutting down or its database is unreachable; the client reconnects.
+// Every RPC returns `UNAUTHENTICATED` for a call with no session, or with an
+// unknown, expired, revoked or no longer admitted one, and
+// `PERMISSION_DENIED` for a known session that lacks the right the call
+// needs. Both are unrecoverable without a new session or a new right, so
+// clients do not retry them. Every RPC returns `UNAVAILABLE` when the server
+// is shutting down or its database is unreachable; the client reconnects.
 service WatchService {
   // Returns the store epoch, the kinds the server produces, its retention
   // bounds with the oldest cursor, the protocol minor and the server version.
   //
-  // Errors: `UNAVAILABLE` as for every RPC.
+  // Errors: `UNAUTHENTICATED`, `PERMISSION_DENIED` and `UNAVAILABLE` as for
+  // every RPC.
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
 
   // Sends the filter and the start point once, then streams the stored
@@ -32,20 +35,26 @@ service WatchService {
   // filter, a client closes the stream and reopens it with `after` set to
   // the last cursor it handled.
   //
+  // The plane ends an open stream with `UNAUTHENTICATED` when its session
+  // reaches its absolute limit, is revoked or fails admission. Link changes
+  // never end a stream: they arrive as `availability.link_changed` events.
+  //
   // Errors: `INVALID_ARGUMENT` for an empty `filter.kinds`, a malformed
   // filter or an `after` cursor that does not parse; `RESOURCE_EXHAUSTED`
-  // when the server already has 64 open streams; `UNAVAILABLE` as for every
-  // RPC, and when the client has not read from the stream for 10 minutes, in
-  // which case the client resumes from its cursor. A cursor that parses but
-  // points before pruned events is not an error: it gets a `GAP` mark.
+  // when the server already has 64 open streams; `UNAUTHENTICATED` and
+  // `PERMISSION_DENIED` as for every RPC; `UNAVAILABLE` as for every RPC, and
+  // when the client has not read from the stream for 10 minutes, in which
+  // case the client resumes from its cursor. A cursor that parses but points
+  // before pruned events is not an error: it gets a `GAP` mark.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 
   // Returns one page of stored events after a cursor; the pull path.
   //
   // Errors: `INVALID_ARGUMENT` for an empty `filter.kinds`, a malformed
-  // filter or an `after` cursor that does not parse; `UNAVAILABLE` as for
-  // every RPC. A cursor that parses but points before
-  // pruned events is not an error: the response carries a `GAP` mark.
+  // filter or an `after` cursor that does not parse; `UNAUTHENTICATED`,
+  // `PERMISSION_DENIED` and `UNAVAILABLE` as for every RPC. A cursor that
+  // parses but points before pruned events is not an error: the response
+  // carries a `GAP` mark.
   rpc ListWatchEvents(ListWatchEventsRequest) returns (ListWatchEventsResponse);
 }
 
@@ -86,14 +95,47 @@ message WatchEvent {
   string summary = 9;
   // The forwarding verdict; unset in phase 1.
   Forwarding forwarding = 10;
+  // The plane action this event echoes; unset when the event echoes none.
+  ActionRef action = 11;
   // The kind-specific body. A client sees `body` unset for a kind it does not
   // know, and renders such an event from the envelope. Each new kind adds a
   // field here and a kind name, in the same change.
   oneof body {
     // Kind `github.webhook`.
     GitHubWebhook github_webhook = 20;
+    // Kind `availability.link_changed`.
+    LinkChanged link_changed = 21;
+    // Kind `availability.role_changed`.
+    RoleChanged role_changed = 22;
+    // Kind `availability.item_changed`.
+    ItemChanged item_changed = 23;
   }
 }
+
+// A reference to the plane action an event echoes.
+message ActionRef {
+  // The plane's action id, the same text the Control API's write responses
+  // return.
+  string action_id = 1;
+}
+
+// The body of `availability.link_changed`: an identity's links changed, so
+// what it may see or do may have changed. It carries the identity id and
+// nothing else. Both `Subscribe` and `ListWatchEvents` leave out events whose
+// identity is not the caller's session identity.
+message LinkChanged {
+  // The identity whose links changed.
+  string identity_id = 1;
+}
+
+// The body of `availability.role_changed`: the roles on a repository changed.
+// The repository is `subject.repository`; the body carries nothing else.
+message RoleChanged {}
+
+// The body of `availability.item_changed`: an item's availability changed.
+// The item is `subject.repository`, `subject.item_kind` and `subject.number`;
+// the body carries nothing else.
+message ItemChanged {}
 
 // What an event is about.
 message Subject {

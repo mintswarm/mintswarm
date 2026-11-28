@@ -85,6 +85,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             ".mintswarm.watch.v1.SubscribeResponse.message",
             "#[allow(clippy::large_enum_variant)]",
         )
+        // One event per message, so `GitHubWebhook` stays unboxed beside the
+        // small invalidation bodies.
+        .enum_attribute(
+            ".mintswarm.watch.v1.WatchEvent.body",
+            "#[allow(clippy::large_enum_variant)]",
+        )
         .compile_fds_with_config(fds, config)?;
     Ok(())
 }

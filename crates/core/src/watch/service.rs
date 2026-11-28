@@ -34,7 +34,7 @@ pub const PRUNE_INTERVAL: Duration = Duration::from_secs(600);
 
 /// The protocol's minor version within `v1`, raised by each minor change: a kind, field, enum
 /// value, attribute, party role or mark kind added (watch.proto, the minor-version rule).
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 
 /// The watch service's RPCs, `Subscribe`, `ListWatchEvents` and `GetServerInfo`, over the store
 /// `S` with the retention bounds it reports. At most [`SUBSCRIBE_STREAMS_MAX`] `Subscribe`
