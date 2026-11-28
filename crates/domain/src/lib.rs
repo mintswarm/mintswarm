@@ -2,6 +2,7 @@
 //! tools.
 
 pub mod approval;
+pub mod auth;
 pub mod codeowners;
 pub mod cost;
 pub mod facts;
