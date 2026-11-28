@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run gh as mintswarm-dev[bot] against mintswarm/mintswarm.
+# Run gh as mintswarm-dev[bot] against $MSW_REPO (owner/name, mintswarm/mintswarm by default).
 #
 #   bot-gh.sh ARGS...      for example: bot-gh.sh api repos/{owner}/{repo} --jq .full_name
 #
@@ -7,8 +7,8 @@
 # is not run at all when minting fails, so it never falls back to the maintainer's
 # stored login. The token reaches gh only as GH_TOKEN in the environment.
 # GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are removed;
-# GH_HOST=github.com and GH_REPO=mintswarm/mintswarm are set, so gh api fills
-# {owner} and {repo} with mintswarm/mintswarm. Prompts are disabled.
+# GH_HOST=github.com and GH_REPO=$MSW_REPO are set, so gh api fills
+# {owner} and {repo} with that repository. Prompts are disabled.
 #
 # Open PRs with "bot-gh.sh api repos/{owner}/{repo}/pulls ...", never with
 # "gh pr create", which may push the branch through origin itself.

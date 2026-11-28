@@ -37,9 +37,16 @@
 
 MSW_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-MSW_REPO_OWNER=mintswarm
-MSW_REPO_NAME=mintswarm
-MSW_REPO_URL=https://github.com/mintswarm/mintswarm.git
+# The repository the helpers act on, as owner/name; mintswarm/mintswarm unless
+# MSW_REPO names another repository the App is installed on.
+MSW_REPO="${MSW_REPO:-mintswarm/mintswarm}"
+if ! [[ "$MSW_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]]; then
+  printf '%s: MSW_REPO must be owner/name, not %s\n' "$(basename "$0")" "$MSW_REPO" >&2
+  exit 1
+fi
+MSW_REPO_OWNER="${MSW_REPO%%/*}"
+MSW_REPO_NAME="${MSW_REPO#*/}"
+MSW_REPO_URL="https://github.com/$MSW_REPO.git"
 
 MSW_BOT_NAME='mintswarm-dev[bot]'
 MSW_BOT_EMAIL='359856778+mintswarm-dev[bot]@users.noreply.github.com'
