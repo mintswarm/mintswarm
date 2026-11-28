@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Mint a GitHub App credential for mintswarm-dev without the key touching disk.
+# Mint a GitHub App credential for mintswarm-dev-bee without the key touching disk.
 #
 #   mint-token.sh jwt                  print an App JWT (10 minutes; for /app endpoints)
 #   mint-token.sh token [PERMS_JSON]   print an installation token for $MSW_REPO (1 hour)
 #
-# Identifiers come from $MSW_APP_CONFIG (default ~/.config/mintswarm/dev-app.json),
+# Identifiers come from $MSW_APP_CONFIG (default ~/.config/mintswarm/bee-app.json),
 # the private key from the key store recorded there as key_store (keychain when
 # the field is missing on macOS; see key-store.sh). $MSW_KEY_STORE is ignored
 # here, so the key is never read from a different store than it was written to.

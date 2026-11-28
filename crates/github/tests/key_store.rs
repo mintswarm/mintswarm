@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use mintswarm_github::{KeyStore, KeyStoreError, read_key};
 use support::{Fakes, Home, MARKER, MARKER_BASE64};
 
-const SERVICE: &str = "mintswarm-dev";
+const SERVICE: &str = "mintswarm-dev-bee";
 const ACCOUNT: &str = "Iv23liTest";
 
 fn assert_not_in_argv(fakes: &Fakes) {

@@ -42,7 +42,7 @@ set -euo pipefail
 G="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # .mintswarm/dogfood/github
 SELF="$G/linux/check.sh"
 W=/srv/msw-check                                       # throwaway keys and traces; not searched in F
-SERVICE=mintswarm-dev-private-key
+SERVICE=mintswarm-dev-bee-private-key
 CLIENT_ID=Iv23liLinuxCheck01
 PATH_SAFE=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 MSW_HOME=/home/msw
@@ -100,12 +100,12 @@ verify_jwt() {  # verify_jwt PUBKEY: mint-token.sh jwt gives a JWT that verifies
   b64url_decode "$p" > "$d/payload"
   eq "$(jq -r .iss "$d/payload")" "$CLIENT_ID"
 }
-new_app_config() {  # new_app_config NAME: a dev-app.json without key_store, as copied from macOS
-  MSW_APP_CONFIG="$HOME/.config/mintswarm/dev-app.$1.json"
+new_app_config() {  # new_app_config NAME: a bee-app.json without key_store, as copied from macOS
+  MSW_APP_CONFIG="$HOME/.config/mintswarm/bee-app.$1.json"
   export MSW_APP_CONFIG
   mkdir -p "$HOME/.config/mintswarm"
   jq -n --arg client_id "$CLIENT_ID" --arg service "$SERVICE" \
-    '{app_id: 1, slug: "mintswarm-dev", client_id: $client_id, keychain_service: $service, key_fingerprint: "SHA256:unset"}' \
+    '{app_id: 1, slug: "mintswarm-dev-bee", client_id: $client_id, keychain_service: $service, key_fingerprint: "SHA256:unset"}' \
     > "$MSW_APP_CONFIG"
 }
 # Values read back are compared on a pipe, never saved, so phase F finds no copy.

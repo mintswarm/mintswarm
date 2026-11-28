@@ -9,7 +9,7 @@
 Dogfooding stand-in for the control plane's "waiting on human" assignee. NUMBER
 is an issue or a PR: the issues endpoints serve both. REASON is one of plan,
 needs_input, pr and external_steps. Every GitHub call goes through bot-gh.sh,
-so as mintswarm-dev[bot].
+so as mintswarm-dev-bee[bot].
 
 Code owners decide a PR only. For `pr` and `owners` the approvers are a
 minimal covering set of the user code owners of the touched paths, read from
@@ -70,7 +70,7 @@ release takes the item's current assignees and its event history
 (`--paginate --slurp`), sorted by created_at and then id (events without them
 keep their order). For each assignee, the latest `assigned` event for that
 login decides: it is the bot's when actor.login or assigner.login is
-mintswarm-dev[bot], or performed_via_github_app.slug is mintswarm-dev. Only
+mintswarm-dev-bee[bot], or performed_via_github_app.slug is mintswarm-dev-bee. Only
 those assignees are removed, with
 `bot-gh.sh api --method DELETE repos/{owner}/{repo}/issues/N/assignees --input -`;
 an assignment a person made, or one with no assigned event, is left alone.
@@ -99,8 +99,8 @@ BOT_OWNER = re.compile(r"^@[A-Za-z0-9-]+\[bot\]$", re.IGNORECASE)
 TEAM = re.compile(r"^@[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
 REASONS = ("plan", "needs_input", "pr", "external_steps")
-BOT_LOGIN = "mintswarm-dev[bot]"
-BOT_SLUG = "mintswarm-dev"
+BOT_LOGIN = "mintswarm-dev-bee[bot]"
+BOT_SLUG = "mintswarm-dev-bee"
 
 
 class UsageError(Exception):

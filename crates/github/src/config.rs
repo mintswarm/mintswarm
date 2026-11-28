@@ -1,5 +1,5 @@
-//! The runner App's configuration, `~/.config/mintswarm/dev-app.json`. It holds no secret: the
-//! private key stays in the key store the configuration names.
+//! The runner App's (the bee's) configuration, `~/.config/mintswarm/bee-app.json`. It holds no
+//! secret: the private key stays in the key store the configuration names.
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +42,7 @@ impl KeyStore {
 pub struct AppConfig {
     /// The App's numeric id.
     pub app_id: u64,
-    /// The App's slug, for example `mintswarm-dev`.
+    /// The App's slug, for example `mintswarm-dev-bee`.
     pub slug: String,
     /// The App's client id: the JWT's issuer, and the key's account name in every key store.
     pub client_id: String,
@@ -93,9 +93,10 @@ pub enum ConfigError {
 }
 
 impl AppConfig {
-    /// The runner App's configuration file below `home`: `home/.config/mintswarm/dev-app.json`.
+    /// The bee's (the runner App's) configuration file below `home`:
+    /// `home/.config/mintswarm/bee-app.json`.
     pub fn default_path(home: &Path) -> PathBuf {
-        home.join(".config").join("mintswarm").join("dev-app.json")
+        home.join(".config").join("mintswarm").join("bee-app.json")
     }
 
     /// Reads and checks the configuration at `path`.
@@ -158,8 +159,8 @@ mod tests {
 
     use super::{AppConfig, ConfigError, KeyStore, ParseError, valid_name};
 
-    const FULL: &str = r#"{"app_id": 123, "slug": "mintswarm-dev", "client_id": "Iv23liAbc",
-        "keychain_service": "mintswarm-dev", "key_store": "secret-service",
+    const FULL: &str = r#"{"app_id": 123, "slug": "mintswarm-dev-bee", "client_id": "Iv23liAbc",
+        "keychain_service": "mintswarm-dev-bee", "key_store": "secret-service",
         "key_fingerprint": "SHA256:abc"}"#;
 
     fn parse(text: &str) -> Result<AppConfig, ParseError> {
@@ -170,9 +171,9 @@ mod tests {
     fn reads_every_field() {
         let config = parse(FULL).ok().unwrap();
         assert_eq!(config.app_id, 123);
-        assert_eq!(config.slug, "mintswarm-dev");
+        assert_eq!(config.slug, "mintswarm-dev-bee");
         assert_eq!(config.client_id, "Iv23liAbc");
-        assert_eq!(config.keychain_service, "mintswarm-dev");
+        assert_eq!(config.keychain_service, "mintswarm-dev-bee");
         assert_eq!(config.key_store, Some(KeyStore::SecretService));
         assert_eq!(config.key_fingerprint.as_deref(), Some("SHA256:abc"));
         assert_eq!(config.key_store().unwrap(), KeyStore::SecretService);
@@ -241,7 +242,7 @@ mod tests {
 
     #[test]
     fn name_rule() {
-        for good in ["a", "A1", "mintswarm-dev", "Iv23li.x_y-z", "0"] {
+        for good in ["a", "A1", "mintswarm-dev-bee", "Iv23li.x_y-z", "0"] {
             assert!(valid_name(good), "{good}");
         }
         for bad in ["", "-a", "_a", ".a", "a b", "a/b", "a@b", "é"] {
@@ -253,13 +254,13 @@ mod tests {
     fn default_path_is_below_home() {
         assert_eq!(
             AppConfig::default_path(Path::new("/home/u")),
-            Path::new("/home/u/.config/mintswarm/dev-app.json")
+            Path::new("/home/u/.config/mintswarm/bee-app.json")
         );
     }
 
     #[test]
     fn load_reports_the_path() {
-        let missing = Path::new("/nonexistent/mintswarm/dev-app.json");
+        let missing = Path::new("/nonexistent/mintswarm/bee-app.json");
         let error = AppConfig::load(missing).unwrap_err();
         assert!(matches!(error, ConfigError::Read { .. }));
         assert!(error.to_string().contains("/nonexistent/mintswarm"));

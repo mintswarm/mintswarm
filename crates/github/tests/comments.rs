@@ -21,7 +21,7 @@ use support::{Request, Responder};
 const TOKEN: &str = "ghs_c0mmentT0kenV4lue";
 const CREATED: &str = include_str!("fixtures/comments/created.json");
 const SINCE: &str = include_str!("fixtures/comments/since.json");
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-bee[bot]";
 const KEY: &str = "<!-- mintswarm: blockers open=12 unreadable= -->";
 /// 2026-11-26T12:00:00Z.
 const NOW: u64 = 1_795_694_400;

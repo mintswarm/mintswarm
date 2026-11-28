@@ -1,4 +1,5 @@
-//! Notes posted on issues as the runner App, design §9 "Reads and writes": each attempt of a post
+//! Notes posted on issues as the App whose token the caller passes (the bee for the runner, the
+//! keeper for the control plane), design §9 "Reads and writes": each attempt of a post
 //! is one content-creating request, budgeted by a [`ContentLimiter`], and a post is sent as a
 //! create with a probe so an attempt that may have landed is never posted twice.
 //!

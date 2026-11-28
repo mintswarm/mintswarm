@@ -7,7 +7,7 @@ members = [
     "crates/rules",
     "crates/core",
     "crates/server",
-    "crates/steward",
+    "crates/keeper",
     "crates/runner",
     "xtask",
 ]

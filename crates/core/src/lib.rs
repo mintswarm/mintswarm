@@ -2,10 +2,10 @@
 //! adapters that the server binary wires together, and the plane's start under its leader lock.
 
 pub mod approvals;
+pub mod keeper;
 pub mod migrations;
 pub mod plane;
 pub mod state_sync;
-pub mod steward;
 pub mod store;
 pub mod testing;
 pub mod tracker;

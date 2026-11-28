@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push a factory branch to GitHub as mintswarm-dev[bot].
+# Push a factory branch to GitHub as mintswarm-dev-bee[bot].
 #
 #   push.sh BRANCH [--force-with-lease=EXPECTED_SHA]
 #
@@ -12,7 +12,7 @@
 #   - a branch outside mintswarm/, master, or a branch that does not exist locally;
 #   - a missing refs/remotes/origin/master (fetch first) or an empty origin/master..BRANCH;
 #   - any commit in origin/master..BRANCH whose author or committer is not exactly
-#     mintswarm-dev[bot] <359856778+mintswarm-dev[bot]@users.noreply.github.com>;
+#     mintswarm-dev-bee[bot] <359856778+mintswarm-dev-bee[bot]@users.noreply.github.com>;
 #   - repository config matching url.*, credential.*, http.* or remote.<URL>.*
 #     (a remote section named after a URL applies to a push to that URL, so its
 #     url or pushurl would redirect it), which could change where the push goes

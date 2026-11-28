@@ -77,7 +77,7 @@ Inputs are checked before anything is written:
   so the checks belong to the head commit. The PR's `base.sha` is not used:
   the base is the job's.
 - --approver is a GitHub login, ^[A-Za-z0-9-]+$, or an App's bot login,
-  the same followed by `[bot]` (mintswarm-dev[bot] for a plan approved
+  the same followed by `[bot]` (mintswarm-dev-bee[bot] for a plan approved
   without a human); --approved-at is a UTC time, YYYY-MM-DDTHH:MM:SSZ;
   --approval-url starts with https://; --approval-id is a positive integer;
   request.json's fetched_at is a UTC time of the same form.
@@ -179,7 +179,7 @@ is a steer when:
 
 - its author is not a bot (user.type is not Bot and the login does not end
   in [bot]; a deleted user is login `ghost`): via "account";
-- or its author is mintswarm-dev[bot] and some line of its body, split at
+- or its author is mintswarm-dev-bee[bot] and some line of its body, split at
   LF and trimmed of whitespace, is exactly `<!-- mintswarm: steer -->`:
   via "marker". The session puts this marker on every decision it posts on
   the maintainer's behalf, as .mintswarm/dogfood/plan-approval/README.md,
@@ -220,7 +220,7 @@ DECISION_TOOL = "mintswarm-approval-decision"
 REPO = "repos/{owner}/{repo}"
 PER_PAGE = 100
 MAX_PAGES = 30
-BOT = "mintswarm-dev[bot]"
+BOT = "mintswarm-dev-bee[bot]"
 MARKER = "<!-- mintswarm: steer -->"
 SEVERITIES = ("blocker", "major", "minor", "nit")
 REVIEW_VERDICTS = ("pass", "changes_required")

@@ -1,5 +1,5 @@
 //! Reactions, comment edits and artifact updates against a scripted local server answering with
-//! fixtures trimmed from live recordings of the steward App changing `mintswarm-dev`'s comment
+//! fixtures trimmed from live recordings of the keeper App changing `mintswarm-dev-bee`'s comment
 //! and artifact; only the refusal is hand-written, as none was recorded.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
@@ -29,8 +29,8 @@ const REACTIONS_PATH: &str = "/repos/mintswarm/mintswarm/issues/comments/7202074
 const COMMENT_PATH: &str = "/repos/mintswarm/mintswarm/issues/comments/7202074597";
 const ARTIFACT_PATH: &str = "/repos/mintswarm/mintswarm/issues/593/artifacts/1";
 const EDITED: &str =
-    "<!-- mintswarm: note -->\nScratch comment by mintswarm-dev, edited by the steward.";
-const UPDATED: &str = "# Scratch artefact\n\nVersion 2, by the steward.";
+    "<!-- mintswarm: note -->\nScratch comment by mintswarm-dev-bee, edited by the keeper.";
+const UPDATED: &str = "# Scratch artefact\n\nVersion 2, by the keeper.";
 /// 2026-11-26T12:00:00Z.
 const NOW: u64 = 1_795_694_400;
 
@@ -91,7 +91,7 @@ fn body(request: &Request) -> serde_json::Value {
 fn edited_comment() -> Comment {
     Comment {
         id: COMMENT_ID,
-        author: Login("mintswarm-dev[bot]".to_owned()),
+        author: Login("mintswarm-dev-bee[bot]".to_owned()),
         author_is_bot: true,
         body: EDITED.to_owned(),
         created_at: "2026-11-26T19:53:51Z".to_owned(),
@@ -143,7 +143,7 @@ async fn edit_comment_as_another_app_returns_the_edited_comment() {
     let responder = Responder::start().await;
     responder.reply(200, COMMENT_EDITED);
     let (client, _) = client(&responder, single_attempt());
-    // The comment is mintswarm-dev's; the recording's token was the steward's.
+    // The comment is mintswarm-dev-bee's; the recording's token was the keeper's.
     assert_eq!(
         client.edit_comment(&token(), COMMENT_ID, EDITED).await,
         Ok(edited_comment())

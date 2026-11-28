@@ -169,7 +169,7 @@
       "merge": {
         "people": "none",
         "apps": [
-          "mintswarm-dev-steward"
+          "mintswarm-dev-keeper"
         ]
       }
     }
@@ -199,7 +199,7 @@
       "paths": [
         "crates/core/**",
         "crates/server/**",
-        "crates/steward/**"
+        "crates/keeper/**"
       ]
     },
     "runner": {

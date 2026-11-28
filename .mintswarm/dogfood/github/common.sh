@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # the constants are used by the scripts that source this file
-# Shared constants and helpers for the mintswarm-dev tooling. Sourced, never run.
+# Shared constants and helpers for the mintswarm-dev-bee tooling. Sourced, never run.
 #
 # Contract:
 #   - The repository, bot identity and config locations are defined here and
@@ -29,8 +29,8 @@
 #       MSW_PROFILE_CONFIG   the App's own config file
 #       MSW_PROFILE_SERVICE  the key's service name in every key store
 #       MSW_PROFILE_LABEL    the key's label
-#     for mintswarm-dev ($MSW_APP_CONFIG) and mintswarm-dev-steward
-#     ($MSW_STEWARD_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
+#     for mintswarm-dev-bee ($MSW_APP_CONFIG) and mintswarm-dev-keeper
+#     ($MSW_KEEPER_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
 #     for any other name.
 #
 # bash 3.2 compatible.
@@ -48,16 +48,16 @@ MSW_REPO_OWNER="${MSW_REPO%%/*}"
 MSW_REPO_NAME="${MSW_REPO#*/}"
 MSW_REPO_URL="https://github.com/$MSW_REPO.git"
 
-MSW_BOT_NAME='mintswarm-dev[bot]'
-MSW_BOT_EMAIL='359856778+mintswarm-dev[bot]@users.noreply.github.com'
+MSW_BOT_NAME='mintswarm-dev-bee[bot]'
+MSW_BOT_EMAIL='359856778+mintswarm-dev-bee[bot]@users.noreply.github.com'
 
 MSW_BRANCH_PREFIX=mintswarm/
 
-MSW_KEYCHAIN_SERVICE=mintswarm-dev-private-key
+MSW_KEYCHAIN_SERVICE=mintswarm-dev-bee-private-key
 MSW_CONFIG_DIR="$HOME/.config/mintswarm"
-MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/dev-app.json}"
-MSW_STEWARD_KEYCHAIN_SERVICE=mintswarm-dev-steward-private-key
-MSW_STEWARD_CONFIG="${MSW_STEWARD_CONFIG:-$MSW_CONFIG_DIR/steward-app.json}"
+MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/bee-app.json}"
+MSW_KEEPER_KEYCHAIN_SERVICE=mintswarm-dev-keeper-private-key
+MSW_KEEPER_CONFIG="${MSW_KEEPER_CONFIG:-$MSW_CONFIG_DIR/keeper-app.json}"
 MSW_KEY_FILE_DIR="$MSW_CONFIG_DIR/keys"
 MSW_CREDSTORE_DIR="$MSW_CONFIG_DIR/credstore"
 MSW_KEY_STORES="keychain, secret-service, pass, systemd-creds, file"
@@ -106,14 +106,14 @@ MSW_PROFILE_SERVICE=""
 MSW_PROFILE_LABEL=""
 msw_app_profile() {  # msw_app_profile NAME: set MSW_PROFILE_*; 1 for an unknown NAME
   case "$1" in
-    mintswarm-dev)
+    mintswarm-dev-bee)
       MSW_PROFILE_CONFIG="$MSW_APP_CONFIG"
       MSW_PROFILE_SERVICE="$MSW_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev GitHub App private key' ;;
-    mintswarm-dev-steward)
-      MSW_PROFILE_CONFIG="$MSW_STEWARD_CONFIG"
-      MSW_PROFILE_SERVICE="$MSW_STEWARD_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev-steward GitHub App private key' ;;
+      MSW_PROFILE_LABEL='mintswarm-dev-bee GitHub App private key' ;;
+    mintswarm-dev-keeper)
+      MSW_PROFILE_CONFIG="$MSW_KEEPER_CONFIG"
+      MSW_PROFILE_SERVICE="$MSW_KEEPER_KEYCHAIN_SERVICE"
+      MSW_PROFILE_LABEL='mintswarm-dev-keeper GitHub App private key' ;;
     *)
       MSW_PROFILE_CONFIG=""
       MSW_PROFILE_SERVICE=""

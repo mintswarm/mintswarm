@@ -1,4 +1,4 @@
-//! The steward's merge-ready check against `land.py`'s refusals and the approval rule of the
+//! The keeper's merge-ready check against `land.py`'s refusals and the approval rule of the
 //! 2026-11-27 answers: one passing world, changed one thing per case. Cases check reason
 //! classes only, never wording.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use mintswarm_config::{AWAITING_MERGE, ActionTrust, People, Trust, TrustMatch};
-use mintswarm_core::steward::checks::{
+use mintswarm_core::keeper::checks::{
     ApproveHint, Facts, LinkedIssue, Outcome, Reason, evaluate, linked_issue,
 };
 use mintswarm_domain::approval::{ApprovalGroup, Eligibility, GroupKey};
@@ -21,7 +21,7 @@ use mintswarm_domain::vcs::BranchName;
 
 const REPO: &str = "mintswarm/mintswarm";
 const OWNER: &str = "zmij";
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-bee[bot]";
 const PR_URL: &str = "https://github.com/mintswarm/mintswarm/pull/568";
 /// The approval's time; later facts come after it.
 const APPROVED_AT: &str = "2026-11-27T10:00:00Z";
@@ -138,11 +138,11 @@ fn passing() -> World {
         pull: PullDetail {
             number: PrNumber(700),
             url: PR_URL.to_owned(),
-            title: "feat(core): steward checks".to_owned(),
+            title: "feat(core): keeper checks".to_owned(),
             state: "open".to_owned(),
             draft: false,
             base: BranchName("master".to_owned()),
-            branch: BranchName("mintswarm/568-steward-approvals".to_owned()),
+            branch: BranchName("mintswarm/568-keeper-approvals".to_owned()),
             head: head(),
             head_repo: Some(REPO.to_owned()),
             labels: vec!["mintswarm".to_owned()],
@@ -154,7 +154,7 @@ fn passing() -> World {
         },
         issue: Some(Issue {
             number: IssueNumber(568),
-            title: "feat(core): steward checks".to_owned(),
+            title: "feat(core): keeper checks".to_owned(),
             body: String::new(),
             state: "open".to_owned(),
             labels: vec!["mintswarm".to_owned()],
@@ -422,7 +422,7 @@ fn land_py_refusals() {
         ),
         (
             "a head that is not a mintswarm/* branch",
-            |w| w.pull.branch = BranchName("feat/568-steward-approvals".to_owned()),
+            |w| w.pull.branch = BranchName("feat/568-keeper-approvals".to_owned()),
             &[Reason::NotFactoryBranch],
         ),
         (
@@ -462,7 +462,7 @@ fn land_py_refusals() {
         ),
         (
             "a branch that names no issue",
-            |w| w.pull.branch = BranchName("mintswarm/steward-approvals".to_owned()),
+            |w| w.pull.branch = BranchName("mintswarm/keeper-approvals".to_owned()),
             &[Reason::NoLinkedIssue],
         ),
         (
@@ -572,14 +572,14 @@ fn a_commented_review_makes_a_request_no_rerequest() {
 fn linked_issue_reads_factory_branches_only() {
     let read = |name: &str| linked_issue(&BranchName(name.to_owned()));
     assert_eq!(
-        read("mintswarm/568-steward-approvals"),
+        read("mintswarm/568-keeper-approvals"),
         Some(IssueNumber(568))
     );
     assert_eq!(read("mintswarm/568-"), None);
     assert_eq!(read("mintswarm/-slug"), None);
     assert_eq!(read("mintswarm/56a-slug"), None);
     assert_eq!(read("mintswarm/568"), None);
-    assert_eq!(read("feat/568-steward-approvals"), None);
+    assert_eq!(read("feat/568-keeper-approvals"), None);
 }
 
 #[test]

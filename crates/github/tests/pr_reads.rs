@@ -41,7 +41,7 @@ fn client(responder: &Responder) -> GitHubReads {
         "widgets",
         Kinds::issue_types([(IssueType::Plan, "Plan".to_owned())]),
         Vec::new(),
-        Login("mintswarm-dev[bot]".into()),
+        Login("mintswarm-dev-bee[bot]".into()),
     )
     .unwrap()
     // A single attempt per read, so each read takes one scripted reply.
@@ -136,7 +136,7 @@ async fn reviews_carry_state_commit_and_bot_author() {
             ),
             (
                 79,
-                "mintswarm-dev[bot]",
+                "mintswarm-dev-bee[bot]",
                 "CHANGES_REQUESTED",
                 Some(HEAD),
                 true

@@ -25,7 +25,7 @@
 #   store-credentials.sh rotate PEM_PATH [--keep]
 #       Store a private key downloaded from the App's settings under the same
 #       service and account, for the App whose config $MSW_APP_CONFIG names
-#       (default ~/.config/mintswarm/dev-app.json), in $MSW_KEY_STORE when set
+#       (default ~/.config/mintswarm/bee-app.json), in $MSW_KEY_STORE when set
 #       and otherwise in the key store recorded there; update key_fingerprint,
 #       key_store and key_confirm (none) and delete the downloaded file unless
 #       --keep. The label comes from the App's profile, found by the config's
@@ -121,7 +121,7 @@ create() {
   name="$(jq -r '.name // empty | strings' "$manifest")"
   check_word "App name in $manifest" "$name"
   msw_app_profile "$name" \
-    || msw_die "no profile for the App '$name' in common.sh (known: mintswarm-dev, mintswarm-dev-steward)"
+    || msw_die "no profile for the App '$name' in common.sh (known: mintswarm-dev-bee, mintswarm-dev-keeper)"
   redirect="$(jq -r '.redirect_url // empty | strings' "$manifest")"
   case "$redirect" in
     http://127.0.0.1:*/) port="${redirect#http://127.0.0.1:}"; port="${port%/}" ;;
@@ -136,14 +136,14 @@ create() {
 
   cfg="$MSW_PROFILE_CONFIG"
   case "$name" in
-    mintswarm-dev-steward)
-      for other in "$MSW_APP_CONFIG" "$MSW_CONFIG_DIR/dev-app.json"; do
+    mintswarm-dev-keeper)
+      for other in "$MSW_APP_CONFIG" "$MSW_CONFIG_DIR/bee-app.json"; do
         [ "$(canon "$cfg")" != "$(canon "$other")" ] \
-          || msw_die "the steward's config $cfg is mintswarm-dev's config: set MSW_STEWARD_CONFIG to a file of its own"
+          || msw_die "the keeper's config $cfg is mintswarm-dev-bee's config: set MSW_KEEPER_CONFIG to a file of its own"
       done ;;
     *)
-      [ "$(canon "$cfg")" != "$(canon "$MSW_STEWARD_CONFIG")" ] \
-        || msw_die "$name's config $cfg is the steward's config: set MSW_APP_CONFIG to a file of its own" ;;
+      [ "$(canon "$cfg")" != "$(canon "$MSW_KEEPER_CONFIG")" ] \
+        || msw_die "$name's config $cfg is the keeper's config: set MSW_APP_CONFIG to a file of its own" ;;
   esac
   if [ -e "$cfg" ] || [ -L "$cfg" ]; then
     msw_die "$cfg exists: $name has been created already (move the file aside to create it again)"
@@ -240,8 +240,8 @@ create() {
   printf '%s\n' "key fingerprint SHA256:$KEY_FINGERPRINT (compare with the App's settings page)"
   printf '%s\n' "identifiers: $cfg"
   case "$name" in
-    mintswarm-dev-steward)
-      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Steward (install it; the bypass on master)" ;;
+    mintswarm-dev-keeper)
+      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Keeper (install it; the bypass on master)" ;;
     *)
       printf '%s\n' "next: install the App ($MSW_HERE/README.md, Setup)" ;;
   esac
@@ -255,7 +255,7 @@ rotate() {
   [ -f "$MSW_APP_CONFIG" ] || msw_die "no App config at $MSW_APP_CONFIG: rotate needs an existing App"
   slug="$(jq -r '.slug // empty' "$MSW_APP_CONFIG")"
   msw_app_profile "$slug" \
-    || msw_die "$MSW_APP_CONFIG names no known App (slug '$slug'; known: mintswarm-dev, mintswarm-dev-steward)"
+    || msw_die "$MSW_APP_CONFIG names no known App (slug '$slug'; known: mintswarm-dev-bee, mintswarm-dev-keeper)"
   service="$(jq -r '.keychain_service // empty' "$MSW_APP_CONFIG")"
   [ "$service" = "$MSW_PROFILE_SERVICE" ] \
     || msw_die "$MSW_APP_CONFIG gives the keychain service '$service', but $slug's is $MSW_PROFILE_SERVICE"

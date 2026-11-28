@@ -19,7 +19,7 @@ use mintswarm_domain::tracker::{
 use mintswarm_domain::vcs::{BranchName, RepoPath};
 use mintswarm_github::{NOTE_MARKER, Token};
 
-const BOT: &str = "mintswarm-dev[bot]";
+const BOT: &str = "mintswarm-dev-keeper[bot]";
 const ISSUE: IssueNumber = IssueNumber(7);
 const KEY: &str = "<!-- mintswarm: blockers open=12 -->";
 

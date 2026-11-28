@@ -29,7 +29,7 @@ repos/{owner}/{repo}/issues/N/comments`) and, in labels mode, the events (the
 same for `issues/N/events`). Comments and events are ordered by created_at,
 then id.
 
-The current approval package is the latest mintswarm-dev[bot] comment whose
+The current approval package is the latest mintswarm-dev-bee[bot] comment whose
 first line is `<!-- mintswarm: plan approval package -->` and whose second is
 `Plan sha256: <64 hex digits>`; PKG is its html_url and SHA that digest. A
 comment's first line is taken with CRLF normalised and whitespace trimmed.
@@ -42,10 +42,10 @@ with text, up to the next blank line or fence, is the quote's lazy
 continuation and is quoted too. Only that first command line counts; the
 comment's other lines are a note. A line holding a token and more text, such as
 `/approve-plan please` or `/tmp/x`, is not a command line. Comments by
-mintswarm-dev[bot] have no command.
+mintswarm-dev-bee[bot] have no command.
 
 A comment whose command is `/approve-plan` is an approval command. It is
-answered when a mintswarm-dev[bot] comment holds a line
+answered when a mintswarm-dev-bee[bot] comment holds a line
 that is exactly `<!-- mintswarm: approve-plan ID -->`, and answered with an
 approval when that comment also opens with `<!-- mintswarm: plan approved -->`
 (the session's record). An answered command is not checked again: it prints
@@ -65,7 +65,7 @@ order, and the first check that fails is its reason:
 An unanswered approval command prints `approve #N comment ID by LOGIN package PKG
 sha256 SHA` or `refuse #N comment ID by LOGIN: REASON`.
 
-When the value is `plan approved` and no mintswarm-dev[bot] comment opening
+When the value is `plan approved` and no mintswarm-dev-bee[bot] comment opening
 with `<!-- mintswarm: plan approved -->` (the session's record) follows the
 current package, or exists at all when there is none, the value was set by
 hand. Its actor is the actor of the latest `labeled` event for the
@@ -73,7 +73,7 @@ hand. Its actor is the actor of the latest `labeled` event for the
 cannot be read. The first reason that applies:
 
     who set it cannot be read; comment /approve-plan instead
-    it was set without a recorded approval   (set by mintswarm-dev[bot])
+    it was set without a recorded approval   (set by mintswarm-dev-bee[bot])
     LOGIN is not a trusted approver
     #N has no current approval package
     it predates the current approval package
@@ -82,7 +82,7 @@ prints `set-back #N by LOGIN: REASON` (LOGIN `unknown` when it cannot be read);
 otherwise it prints `hand-set #N by LOGIN package PKG sha256 SHA`.
 
 Any other command gets a reply, once: a help or hint is answered when a
-mintswarm-dev[bot] comment holds a line that is exactly
+mintswarm-dev-bee[bot] comment holds a line that is exactly
 `<!-- mintswarm: command-reply ID -->`, and an answered one prints nothing.
 Comments by bots get no reply and print nothing. An unanswered `/help` prints
 `help #N comment ID by LOGIN commands CONTEXT`; any other token prints
@@ -93,7 +93,7 @@ in any order and case, else the closest one by difflib.get_close_matches with
 cutoff 0.6 on the lowercased names without `/`, else `none`; so `/approve`
 under a decomposition package suggests `approve`. CONTEXT is `plan`,
 `decomposition` or `design` when the msw-state is `awaiting approval` and the
-latest mintswarm-dev[bot] comment opening with
+latest mintswarm-dev-bee[bot] comment opening with
 `<!-- mintswarm: plan approval package -->`,
 `<!-- mintswarm: decomposition approval package -->` or
 `<!-- mintswarm: design approval package -->` is of that kind, and `none`
@@ -128,7 +128,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # no __pycache__ next to the scripts it loads
 
 HERE = Path(__file__).resolve().parent
-BOT_LOGIN = "mintswarm-dev[bot]"
+BOT_LOGIN = "mintswarm-dev-bee[bot]"
 COMMAND = "/approve-plan"
 HELP = "/help"
 PACKAGE = "<!-- mintswarm: plan approval package -->"

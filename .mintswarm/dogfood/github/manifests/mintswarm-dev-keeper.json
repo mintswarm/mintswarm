@@ -1,0 +1,28 @@
+{
+  "name": "mintswarm-dev-keeper",
+  "url": "https://github.com/mintswarm/mintswarm",
+  "description": "mintswarm's control plane while dogfooding: receives the webhook and merges approved pull requests into master in mintswarm/mintswarm.",
+  "redirect_url": "http://127.0.0.1:8765/",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "read",
+    "statuses": "read",
+    "metadata": "read"
+  },
+  "default_events": [
+    "check_run",
+    "check_suite",
+    "issue_comment",
+    "issue_dependencies",
+    "issues",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "push",
+    "status",
+    "sub_issues"
+  ]
+}

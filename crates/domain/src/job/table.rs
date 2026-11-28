@@ -210,7 +210,7 @@ pub enum Action {
     MarkPrReady,
     /// Re-requests review from the reviewer who requested changes.
     ReRequestReview,
-    /// Writes the merge-ready record (PR, head, approval) for the steward.
+    /// Writes the merge-ready record (PR, head, approval) for the keeper.
     WriteMergeReadyRecord,
     /// Posts the external-steps comment.
     PostExternalStepsComment,

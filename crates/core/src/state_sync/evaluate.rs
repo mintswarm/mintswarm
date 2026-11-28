@@ -33,7 +33,7 @@ pub struct Settings {
     pub repository: String,
     /// The plane's login, whose notes are its own.
     pub bot: Login,
-    /// The plane's other own logins, such as the steward's; never `bot` again.
+    /// The plane's other own logins, such as the runner's; never `bot` again.
     pub peer_logins: Vec<Login>,
     /// `tracker.ingest`: which issues the plane evaluates.
     pub trust: Trust,

@@ -109,7 +109,7 @@ The root `compose.yaml` runs the receiver as the service `webhooks` and an ngrok
 
 It reads three files on the host at run time; none is copied into the repository or an image:
 
-- `~/.config/mintswarm/webhook-secret`, read as an env file: its line `mintswarm-dev-secret=<value>` sets the variable the receiver reads with `--secret-env mintswarm-dev-secret`. As with any environment variable, anyone who can run `docker inspect` on the machine can see it.
+- `~/.config/mintswarm/webhook-secret`, read as an env file: its line `mintswarm-dev-keeper-secret=<value>` sets the variable the receiver reads with `--secret-env mintswarm-dev-keeper-secret`. As with any environment variable, anyone who can run `docker inspect` on the machine can see it.
 - `~/.config/mintswarm/ngrok-domain`: the reserved domain, mounted into the ngrok container.
 - ngrok's own `ngrok.yml`, which holds the auth token, mounted read-only into the ngrok container. Its default path is the macOS one, `~/Library/Application Support/ngrok/ngrok.yml`; elsewhere set `NGROK_CONFIG` to its path, such as `~/.config/ngrok/ngrok.yml` on Linux.
 
@@ -155,7 +155,9 @@ GitHub must reach the receiver over HTTPS. Use one of these forwarders.
 
 ## Setting up the GitHub App
 
-In the App's settings (**Settings → Developer settings → GitHub Apps → the App → General**):
+The webhook goes to the keeper App, the control plane's identity (`mintswarm-dev-keeper` while dogfooding). The runner App has no webhook.
+
+In the keeper App's settings (**Settings → Developer settings → GitHub Apps → the App → General**):
 
 1. Tick **Active** under **Webhook**.
 2. Set **Webhook URL** to the forwarder's URL ending in `/github/webhook`.
@@ -170,8 +172,9 @@ In the App's settings (**Settings → Developer settings → GitHub Apps → the
    - Check suite
    - Check run
    - Status
+   - Push
 
-   An event is offered only when the App has the matching read permission (Issues, Pull requests, Checks, Commit statuses).
+   An event is offered only when the App has the matching read permission (Issues, Pull requests, Checks, Commit statuses, Contents). The keeper needs the Issues permission for the issue and issue comment events.
 
 GitHub Apps always send `application/json`. A webhook whose content type is `application/x-www-form-urlencoded` is still logged, with the body as a string in `payload`, so set **Content type** to `application/json` where the setting exists.
 

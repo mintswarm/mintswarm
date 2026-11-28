@@ -17,7 +17,7 @@ itself when the PR opens.
 
 Unless --dry-run, the reviewers are requested with
 `bot-gh.sh api --method POST repos/{owner}/{repo}/pulls/PR/requested_reviewers --input -`,
-so as mintswarm-dev[bot], and the logins GitHub reports as requested are printed.
+so as mintswarm-dev-bee[bot], and the logins GitHub reports as requested are printed.
 With --dry-run the chosen logins are printed, one per line, and nothing is sent.
 Reviewers are never filtered by earlier reviews or by requests already
 pending: a reviewer who has approved or requested changes is requested again,

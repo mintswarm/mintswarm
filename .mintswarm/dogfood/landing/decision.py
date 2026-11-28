@@ -41,7 +41,7 @@ as they are:
 5. run this script from the same base-ref copy, in the worktree, with
    --landing-model set to the model the landing stage was dispatched with;
 6. publish landing.md and .mintswarm/job/outputs/landing.json as issue
-   artifacts, and post this script's stdout on the PR as mintswarm-dev[bot]
+   artifacts, and post this script's stdout on the PR as mintswarm-dev-bee[bot]
    through .mintswarm/dogfood/github/bot-gh.sh (`-F body=@<file>`), with
    one appended line holding the artifact URLs.
 
