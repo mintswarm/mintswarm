@@ -14,6 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use mintswarm_config::PLAN_APPROVED;
+use mintswarm_domain::field::{FieldSource, LabelPattern};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{Comments, Direction, Fields, Issues, Links, Statuses};
 use mintswarm_proto::watch::v1::WatchEvent;
@@ -23,6 +25,7 @@ use tokio::time::Instant;
 use super::evaluate::{Outcome, Settings, evaluate};
 use super::rule::{BlockerChange, BlockerChangeKind, Cause};
 use super::trigger;
+use crate::approvals::trigger::{self as approvals_trigger, ApprovalCause};
 
 /// How long after a triggered evaluation the issue is evaluated once more.
 pub const SETTLE: Duration = Duration::from_secs(60);
@@ -30,11 +33,18 @@ pub const SETTLE: Duration = Duration::from_secs(60);
 /// Where each evaluation's JSON line goes; by default a `tracing` event of target `state_sync`.
 pub type Sink = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// One queued issue's reasons to be evaluated.
+/// One queued number's reasons to be evaluated, by each evaluator that runs on it.
+///
+/// The queue is shared: an issue may carry a state-sync cause, an approvals cause or both, and
+/// a pull request carries the PR cause. The worker runs state-sync first, then approvals.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// Why the issue is evaluated.
-    pub cause: Cause,
+    /// Why state-sync evaluates the issue; `None` when it does not.
+    pub cause: Option<Cause>,
+    /// Why approvals evaluate the issue; `None` when they do not.
+    pub approvals: Option<ApprovalCause>,
+    /// Whether the number is a pull request the steward evaluates.
+    pub pull: bool,
     /// Set when the issue itself was closed or reopened: the worker first queues the issues it
     /// blocks, each with the issue's close or reopen as its blocker change, as the issue's
     /// state read at fan-out time gives it.
@@ -51,10 +61,36 @@ impl Entry {
         Self::of(Cause::Triggered { blocker_changes })
     }
 
-    /// An entry with `cause`, unmarked.
+    /// An entry with the state-sync `cause`, unmarked.
     pub fn of(cause: Cause) -> Self {
         Self {
-            cause,
+            cause: Some(cause),
+            ..Self::none()
+        }
+    }
+
+    /// An entry with the approvals `cause` only.
+    pub fn approvals(cause: ApprovalCause) -> Self {
+        Self {
+            approvals: Some(cause),
+            ..Self::none()
+        }
+    }
+
+    /// An entry with the PR cause only.
+    pub fn pull() -> Self {
+        Self {
+            pull: true,
+            ..Self::none()
+        }
+    }
+
+    /// An entry with no cause.
+    fn none() -> Self {
+        Self {
+            cause: None,
+            approvals: None,
+            pull: false,
             fan_out: false,
             repeat: false,
             requeued: false,
@@ -63,47 +99,56 @@ impl Entry {
 
     /// Absorbs `other` into this entry.
     ///
-    /// Blocker changes are a set union by blocker, repository and change, kept in arrival
-    /// order. A triggered cause absorbs a
+    /// A side without a state-sync cause leaves the other's. Blocker changes are a set union by
+    /// blocker, repository and change, kept in arrival order. A triggered cause absorbs a
     /// sweep. A fan-out mark survives. The merged entry is a repeat when either side is one and
     /// neither is a triggered non-repeat, so a repeat absorbed by a sweep stays a repeat, and
-    /// `requeued` is set when either is.
+    /// `requeued` is set when either is. The approvals cause is the stronger of the two, and
+    /// the PR cause is kept when either side has it.
     pub fn merge(&mut self, other: Entry) {
-        let fresh = |entry: &Entry| matches!(entry.cause, Cause::Triggered { .. }) && !entry.repeat;
+        let fresh =
+            |entry: &Entry| matches!(entry.cause, Some(Cause::Triggered { .. })) && !entry.repeat;
         let repeat = (self.repeat || other.repeat) && !fresh(self) && !fresh(&other);
-        self.cause = match (
-            std::mem::replace(&mut self.cause, Cause::Sweep),
-            other.cause,
-        ) {
-            (Cause::Sweep, Cause::Sweep) => Cause::Sweep,
-            (Cause::Sweep, triggered @ Cause::Triggered { .. })
-            | (triggered @ Cause::Triggered { .. }, Cause::Sweep) => triggered,
-            (
-                Cause::Triggered {
-                    blocker_changes: mut ours,
-                },
-                Cause::Triggered {
-                    blocker_changes: theirs,
-                },
-            ) => {
-                for change in theirs {
-                    let known = ours.iter().any(|known| {
-                        known.blocker == change.blocker
-                            && known.change == change.change
-                            && known.repository.eq_ignore_ascii_case(&change.repository)
-                    });
-                    if !known {
-                        ours.push(change);
-                    }
-                }
-                Cause::Triggered {
-                    blocker_changes: ours,
-                }
-            }
+        self.cause = match (self.cause.take(), other.cause) {
+            (None, cause) | (cause, None) => cause,
+            (Some(ours), Some(theirs)) => Some(merge_causes(ours, theirs)),
         };
+        self.approvals = self.approvals.max(other.approvals);
+        self.pull = self.pull || other.pull;
         self.fan_out = self.fan_out || other.fan_out;
         self.repeat = repeat;
         self.requeued = self.requeued || other.requeued;
+    }
+}
+
+/// Two state-sync causes as one.
+fn merge_causes(ours: Cause, theirs: Cause) -> Cause {
+    match (ours, theirs) {
+        (Cause::Sweep, Cause::Sweep) => Cause::Sweep,
+        (Cause::Sweep, triggered @ Cause::Triggered { .. })
+        | (triggered @ Cause::Triggered { .. }, Cause::Sweep) => triggered,
+        (
+            Cause::Triggered {
+                blocker_changes: mut ours,
+            },
+            Cause::Triggered {
+                blocker_changes: theirs,
+            },
+        ) => {
+            for change in theirs {
+                let known = ours.iter().any(|known| {
+                    known.blocker == change.blocker
+                        && known.change == change.change
+                        && known.repository.eq_ignore_ascii_case(&change.repository)
+                });
+                if !known {
+                    ours.push(change);
+                }
+            }
+            Cause::Triggered {
+                blocker_changes: ours,
+            }
+        }
     }
 }
 
@@ -168,6 +213,8 @@ impl Shared {
 #[derive(Clone, Debug)]
 pub struct StateSync {
     repository: String,
+    /// The `plan approved` label in labels mode; `None` in field mode.
+    plan_approved: Option<String>,
     shared: Arc<Shared>,
 }
 
@@ -175,8 +222,15 @@ impl StateSync {
     /// The hand-off for `settings.repository` and the worker that drains it with `tracker`.
     pub fn new<T>(tracker: Arc<T>, settings: Settings) -> (Self, Worker<T>) {
         let shared = Arc::new(Shared::default());
+        let plan_approved = match &settings.state.source {
+            FieldSource::Labels { label } => {
+                LabelPattern::new(label).map(|pattern| pattern.label(PLAN_APPROVED))
+            }
+            FieldSource::Field { .. } => None,
+        };
         let handle = Self {
             repository: settings.repository.clone(),
+            plan_approved,
             shared: Arc::clone(&shared),
         };
         let worker = Worker {
@@ -189,9 +243,13 @@ impl StateSync {
         (handle, worker)
     }
 
-    /// Reduces `event` and queues its entries, without waiting and without any tracker call.
+    /// Reduces `event` for state-sync and for approvals and the steward, and queues the
+    /// entries, without waiting and without any tracker call.
     pub fn on_delivery(&self, event: &WatchEvent) {
-        self.shared.push(trigger::reduce(event, &self.repository));
+        let state_sync = trigger::reduce(event, &self.repository);
+        let approvals =
+            approvals_trigger::reduce(event, &self.repository, self.plan_approved.as_deref());
+        self.shared.push(state_sync.into_iter().chain(approvals));
     }
 
     /// Queues `issue` with `cause`, merged into its entry when it is already queued.
@@ -282,13 +340,15 @@ where
 
     /// Fans out, evaluates and logs one entry, then queues its requeue or settle repeat.
     async fn process(&mut self, issue: IssueNumber, entry: Entry) {
+        let Some(cause) = entry.cause.clone() else {
+            return;
+        };
         let fan_out = if entry.fan_out {
             Some(self.fan_out(&issue).await)
         } else {
             None
         };
-        let mut evaluation =
-            evaluate(&*self.tracker, &self.settings, issue.clone(), &entry.cause).await;
+        let mut evaluation = evaluate(&*self.tracker, &self.settings, issue.clone(), &cause).await;
         evaluation.line["fan_out"] = match &fan_out {
             None => serde_json::Value::Null,
             Some(Ok(())) => "done".into(),
@@ -304,7 +364,7 @@ where
         let keep_mark = matches!(fan_out, Some(Err(_)));
         if evaluation.outcome == Outcome::Deferred {
             if !entry.requeued {
-                let mut again = Entry::of(entry.cause);
+                let mut again = Entry::of(cause);
                 again.fan_out = keep_mark;
                 again.repeat = entry.repeat;
                 again.requeued = true;
@@ -312,7 +372,7 @@ where
             }
             return;
         }
-        if matches!(entry.cause, Cause::Triggered { .. }) && !entry.repeat {
+        if matches!(cause, Cause::Triggered { .. }) && !entry.repeat {
             self.settle
                 .push_back((Instant::now() + SETTLE, issue, keep_mark));
         }

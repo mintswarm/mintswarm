@@ -307,10 +307,10 @@ fn a_merge_removes_duplicate_changes() {
     ours.merge(theirs);
     assert_eq!(
         ours.cause,
-        triggered(&[
+        Some(triggered(&[
             (3, BlockerChangeKind::Added),
             (4, BlockerChangeKind::Removed)
-        ])
+        ]))
     );
     assert!(ours.fan_out);
     assert!(!ours.repeat);
@@ -318,9 +318,9 @@ fn a_merge_removes_duplicate_changes() {
 
     let mut sweep = Entry::of(Cause::Sweep);
     sweep.merge(Entry::of(Cause::Sweep));
-    assert_eq!(sweep.cause, Cause::Sweep);
+    assert_eq!(sweep.cause, Some(Cause::Sweep));
     sweep.merge(entry(triggered(&[]), false));
-    assert_eq!(sweep.cause, triggered(&[]));
+    assert_eq!(sweep.cause, Some(triggered(&[])));
     assert!(!sweep.repeat);
 }
 
@@ -336,7 +336,7 @@ fn a_repeat_merged_with_a_sweep_stays_a_repeat() {
         (repeat(), Entry::of(Cause::Sweep)),
     ] {
         ours.merge(theirs);
-        assert_eq!(ours.cause, triggered(&[]));
+        assert_eq!(ours.cause, Some(triggered(&[])));
         assert!(ours.repeat);
     }
 
