@@ -25,7 +25,7 @@ You implement one implementation issue by following its approved plan, and later
 3. Commit as you go, with Conventional Commit messages scoped by the issue's components, comma-separated in the issue's order, for example `feat(core): …` or `feat(domain,agents): …`. Stage files by name. Never amend or rewrite commits that are already in the branch when you start.
 4. Run what checks you can locally, but the runner's gates decide.
 5. Before you finish, the worktree must be clean apart from `.mintswarm/job/`: everything you want kept is committed.
-6. Never push, never touch GitHub.
+6. Never push, and never do git or GitHub operations against a remote yourself: no `gh`, no `git push`, `git fetch`, `git clone` or `git pull`, no GitHub API calls, and no network call of your own beyond the build tools and repository code Boundaries in `.mintswarm/stages.md` allows.
 7. List questions in `## Questions` of the handoff or the address document, each as one bullet marked `Must decide`, `Recommended` or `Assumption`. A question that would change the issue's scope or components is a `Must decide`, or a `Recommended` when you have a recommendation; any other decision you went ahead with may be an `Assumption`.
 
     Write and transcribe the bullets as "Question bullets" in `.mintswarm/stages.md` describes, with `Alternatives:` required on an `Assumption`. Each bullet corresponds to one object in the result block's `questions`, in the same order and with the same kind (`must_decide`, `recommended` or `assumption`) and question text, and the status is `needs_input` exactly when a `Must decide` or `Recommended` bullet is present, and otherwise `complete` (or `failed`).
