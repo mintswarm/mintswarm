@@ -249,8 +249,11 @@ fn a_forged_loose_object_names_only_the_fetch() {
         panic!("{message}");
     };
     let (command, status) = named.split_once(", ").expect("the command and its status");
+    let exit_code = status
+        .strip_prefix("exit code ")
+        .is_some_and(|code| !code.is_empty() && code.bytes().all(|b| b.is_ascii_digit()));
     assert!(
-        !command.is_empty() && !command.contains(' ') && !status.contains(['(', ')', ':', '\n']),
+        !command.is_empty() && !command.contains(' ') && (exit_code || status == "no exit code"),
         "{message}"
     );
 }

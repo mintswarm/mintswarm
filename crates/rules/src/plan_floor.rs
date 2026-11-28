@@ -14,7 +14,8 @@
 //!
 //! A footprint that is not strict JSON is reported from [`crate::json`]'s structured error, the
 //! same reason `floor.py` computes from the decoder's position, its own hooks and its own scan
-//! for nesting deeper than [`crate::json::MAX_DEPTH`].
+//! for the first container nested deeper than [`crate::json::MAX_DEPTH`], before which alone it
+//! decodes, so both report the first error in the text.
 
 pub mod config;
 pub mod documents;

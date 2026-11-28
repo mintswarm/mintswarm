@@ -12,9 +12,10 @@
 //!   `parse_int` hook;
 //! - a `\u` escape of a lone surrogate, which a Rust string cannot hold, is
 //!   [`ReadErrorKind::LoneSurrogate`];
-//! - nesting deeper than [`MAX_DEPTH`] containers is [`ReadErrorKind::TooDeep`], which
-//!   `floor.py` finds for the footprint with a scan of its own when the decoder succeeds or runs
-//!   out of recursion, so the first error is the one reported on both sides.
+//! - nesting deeper than [`MAX_DEPTH`] containers is [`ReadErrorKind::TooDeep`], at the first
+//!   container past it, where reading stops. For the footprint, `floor.py` scans for that
+//!   container and decodes only the text before it, so an earlier error comes first and nothing
+//!   after the container is read, and the first error is the one reported on both sides.
 //!
 //! The kinds are only those Python can tell apart without reading its decoder's message: every
 //! `JSONDecodeError` is [`ReadErrorKind::Syntax`], at the position Python gives it. A comma

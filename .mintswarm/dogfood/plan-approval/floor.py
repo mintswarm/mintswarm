@@ -659,6 +659,11 @@ def resolve_id(label: str, ref: str) -> str:
     return oid
 
 
+def exit_status(returncode: int) -> str:
+    """A program's exit status in the runner's words: `exit code N`, or `no exit code` when a signal ended it."""
+    return f"exit code {returncode}" if returncode >= 0 else "no exit code"
+
+
 def fetch(argv: list) -> None:
     """Run one step of filling the object store; a failure is the fetch's, named by its command and exit status."""
     try:
@@ -668,7 +673,7 @@ def fetch(argv: list) -> None:
     if proc.returncode != 0:
         raise InputError(
             "the fetch from the job repository into a fresh object store failed "
-            f"({command_name(argv)}, exit {proc.returncode})"
+            f"({command_name(argv)}, {exit_status(proc.returncode)})"
         )
 
 
@@ -1030,10 +1035,9 @@ def check_entries(value: list, key: str, fields: tuple) -> None:
                 raise FootprintError(f"{key}.{field} must be a string")
 
 
-def check_depth(text: str) -> None:
-    """Raise JsonError at the first `[` or `{` nested deeper than MAX_DEPTH, outside strings, as rules::json finds
-    it. Run only on text the decoder read, or read up to where it ran out of recursion, so no earlier error is
-    passed over."""
+def too_deep(text: str):
+    """The offset of the first `[` or `{` outside strings nested deeper than MAX_DEPTH, where rules::json stops if
+    nothing before it is wrong, or None when there is none."""
     depth = 0
     in_string = False
     i = 0
@@ -1049,11 +1053,11 @@ def check_depth(text: str) -> None:
         elif c in "[{":
             depth += 1
             if depth > MAX_DEPTH:
-                line, column = errors.text_position(text, i)
-                raise JsonError(f"nested deeper than {MAX_DEPTH}: line {line} column {column}")
+                return i
         elif c in "]}":
             depth -= 1
         i += 1
+    return None
 
 
 def decode_failure(exc: json.JSONDecodeError) -> str:
@@ -1078,32 +1082,41 @@ def _bounded_int(digits: str) -> int:
     raise JsonError("an integer is out of range")
 
 
+def strict_footprint(text: str):
+    """text read as strict JSON with the footprint's hooks: no duplicate key, constant or integer outside i64 and
+    u64."""
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constant, parse_int=_bounded_int)
+
+
 def footprint_json(block: str):
     """The footprint block read as strict JSON; a FootprintError with a fixed cause when it is not.
 
-    The first error in the text is the one reported, as rules::json reads it in one pass: the decoder's or a
-    hook's, and nesting deeper than MAX_DEPTH only once the decoder has read the text or run out of recursion
-    inside the deep part."""
+    The first error in the text is the one reported, as rules::json reads it in one pass. Past a container nested
+    deeper than MAX_DEPTH, only the text before it is decoded: an error of the decoder or a hook there comes first;
+    an error at the cut, where the deep container stands as a value, is the depth error; and a cut where no value
+    may stand, or after a whole document, is a syntax error there, as rules::json reports it."""
     prefix = "the footprint is not strict JSON: "
+    deep = too_deep(block)
     try:
-        document = json.loads(
-            block, object_pairs_hook=_no_duplicates, parse_constant=_no_constant, parse_int=_bounded_int
-        )
+        if deep is None:
+            return strict_footprint(block)
+        strict_footprint(block[:deep])
     except JsonError as error:
         raise FootprintError(prefix + str(error)) from error
     except json.JSONDecodeError as exc:
-        raise FootprintError(prefix + decode_failure(exc)) from exc
-    except RecursionError as exc:
+        if deep is None or exc.pos < deep:
+            raise FootprintError(prefix + decode_failure(exc)) from exc
+        # At the cut: the deep container is the error when a value may stand there, as with `0` in its place.
         try:
-            check_depth(block)
-        except JsonError as error:
-            raise FootprintError(prefix + str(error)) from exc
-        raise FootprintError(prefix + "not valid JSON") from exc
-    try:
-        check_depth(block)
-    except JsonError as error:
-        raise FootprintError(prefix + str(error)) from error
-    return document
+            strict_footprint(block[:deep] + "0")
+        except json.JSONDecodeError as cut:
+            if cut.pos > deep:
+                line, column = errors.text_position(block, deep)
+                raise FootprintError(prefix + f"nested deeper than {MAX_DEPTH}: line {line} column {column}") from exc
+        except JsonError:
+            pass
+    line, column = errors.text_position(block, deep)
+    raise FootprintError(prefix + f"not valid JSON: line {line} column {column}")
 
 
 def parse_footprint(text: str) -> dict:

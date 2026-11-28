@@ -65,8 +65,9 @@ Checks:
   footprint that is not strict JSON (invalid, a trailing comma, reported at
   the comma, a duplicate key, NaN, extra data, a control character, a
   double comma, nesting deeper than 512, a syntax error before such
-  nesting, which is the one reported, an integer outside u64 and one of
-  5000 digits) has its exact reason;
+  nesting, which is the one reported, one after it, where the nesting is
+  reported, an integer outside u64 and one of 5000 digits) has its exact
+  reason;
 - base ref: with a worktree config and a HEAD commit that drop a
   require_human path, `--base` at the earlier commit still gives the hit;
 - historic fixtures: fixtures/plan-{9,12,14,19,20,10}.md, with a
@@ -265,8 +266,9 @@ Checks:
   decoy repository at the path git would decode that to, gives the
   untampered verdict; a repository with extensions.partialClone exits 2; and no
   `msw-floor-objects-*` store is left after clean and exit 2 runs; under
-  Python, the forged fetch's line is the command and its exit status, with
-  no git error output after it;
+  Python, the forged fetch's line is the command and its exit status
+  (`exit code N` or `no exit code`, as the runner words it), with no git
+  error output after it;
 - sizes, of size.py: the lines floor at every boundary of design §5's
   bands; in `plan` mode, a plan judged S with production_lines 300 prints
   `size: L` and the raised-size line, one judged XL or L only its size, a
@@ -347,7 +349,8 @@ RUST_TOOLS = {FLOOR: "plan-floor", DECISION: "plan-decision"}
 FLOOR_PREFIX = "plan-floor: " if RUST else "floor.py: "
 # floor.py's line for a failed fetch into the object store: no git error output after it.
 FETCH_FAILED = re.compile(
-    r"floor\.py: the fetch from the job repository into a fresh object store failed \([^)]*, exit \d+\)"
+    r"floor\.py: the fetch from the job repository into a fresh object store failed "
+    r"\([^)]*, (?:exit code \d+|no exit code)\)"
 )
 # Exception text floor.py must never print: what an exception would put into a message.
 EXCEPTION_TEXT = (r"\{exc\}", r"\{exc!", r"exc\.msg", r"str\(exc\)", r"\.stderr\.decode")
@@ -1543,6 +1546,7 @@ def unusable_footprints() -> list:
         ("double comma", plan_text(block=replaced(block, '"external_steps": []', '"external_steps": ["x",,]'))),
         ("nested too deep", plan_text(block=replaced(block, '"external_steps": []', f'"external_steps": {DEEP}'))),
         ("fault before deep nesting", plan_text(block=replaced(block, '"external_steps": []', BEFORE_DEEP))),
+        ("fault after deep nesting", plan_text(block=replaced(block, '"external_steps": []', AFTER_DEEP))),
         ("integer out of range", plan_text(footprint=base(estimated_lines=10**25))),
         ("integer past the digit limit", plan_text(block=replaced(block, '"estimated_lines": 6', LONG_INTEGER))),
     ]
@@ -1591,6 +1595,8 @@ def unusable_footprints() -> list:
 DEEP = "[" * 600 + "]" * 600
 # A syntax error before the deep part: the first error is the one reported.
 BEFORE_DEEP = f'"external_steps": [x, {DEEP}]'
+# A syntax error after the deep part: rules::json stops at the deep part first.
+AFTER_DEEP = f'"external_steps": [{DEEP}, x]'
 # More digits than Python's int() reads by default.
 LONG_INTEGER = '"estimated_lines": ' + "9" * 5000
 
@@ -1621,6 +1627,9 @@ def footprint_json_reasons() -> dict:
         "fault before deep nesting": prefix
         + "not valid JSON: "
         + position(replaced(block, '"external_steps": []', BEFORE_DEEP), '"external_steps": [x', 19),
+        "fault after deep nesting": prefix
+        + "nested deeper than 512: "
+        + position(replaced(block, '"external_steps": []', AFTER_DEEP), '"external_steps": [', 19 + 509),
         "integer out of range": prefix + "an integer is out of range",
         "integer past the digit limit": prefix + "an integer is out of range",
     }

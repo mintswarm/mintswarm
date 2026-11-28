@@ -398,3 +398,43 @@ fn every_record_type_is_written_as_the_python_tools_write_it() {
         .count();
     assert!(escaped > 0, "some record has non-ASCII text to escape");
 }
+
+/// The first error in the text is the one reported, around nesting deeper than [`MAX_DEPTH`], as
+/// `floor.py`'s footprint reader reports it.
+#[test]
+fn the_first_error_comes_first_around_deep_nesting() {
+    let deep = format!("{}{}", "[".repeat(600), "]".repeat(600));
+    let cases = [
+        (
+            format!(r#"{{"a": [{deep}, x]}}"#),
+            "nested deeper than 512: line 1 column 518",
+        ),
+        (
+            format!(r#"{{"a": [{deep}, NaN]}}"#),
+            "nested deeper than 512: line 1 column 518",
+        ),
+        (
+            format!(r#"{{"a": [x, {deep}]}}"#),
+            "not valid JSON: line 1 column 8",
+        ),
+        (
+            format!(r#"{{"a": [1 {deep}]}}"#),
+            "not valid JSON: line 1 column 10",
+        ),
+        (
+            format!("{{{}", "[".repeat(600)),
+            "not valid JSON: line 1 column 2",
+        ),
+        (
+            format!(r#"{{"a": {{"k":1,"k":2}}, "b": {deep}}}"#),
+            "duplicate key 'k'",
+        ),
+        (
+            format!("{{}} {}", "[".repeat(600)),
+            "not valid JSON: line 1 column 4",
+        ),
+    ];
+    for (text, reason) in cases {
+        assert_eq!(at(&text).to_string(), reason, "{}", &text[..20]);
+    }
+}
