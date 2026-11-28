@@ -104,7 +104,7 @@ fn hello() -> Hello {
         workers_total: 2,
         repository: Some(HelloRepository {
             remote: "https://github.com/mintswarm/mintswarm.git".to_owned(),
-            default_branch_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            work_branch_head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
         }),
         mode: RunnerMode::Worker.into(),
         held_attempts: vec![held()],
@@ -405,10 +405,10 @@ fn hello_carries_the_design_fields() {
     assert_eq!(workers_total, 2);
     let HelloRepository {
         remote,
-        default_branch_head,
+        work_branch_head,
     } = repository.expect("repository is set");
     assert!(remote.ends_with(".git"));
-    assert_eq!(default_branch_head.len(), 40);
+    assert_eq!(work_branch_head.len(), 40);
     assert_eq!(mode, i32::from(RunnerMode::Worker));
     let [
         HeldAttempt {

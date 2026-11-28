@@ -9,7 +9,9 @@ publish = false
 fakes = []
 
 [dependencies]
-# `otlp` encodes and decodes `domain::facts::Fact`.
+# `otlp` encodes and decodes `domain::facts::Fact`; the receive checks call
+# `BranchName::is_valid`, the branch-name rule; also serves `tests/job_v1.rs`,
+# the temporary parity test against `domain::job`.
 mintswarm-domain = { path = "../domain" }
 prost = { workspace = true }
 prost-reflect = { workspace = true, features = ["serde"] }

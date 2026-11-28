@@ -18,6 +18,7 @@
 
 use std::fmt;
 
+use mintswarm_domain::vcs::BranchName;
 use prost::Name;
 
 use crate::common::v1::Secret;
@@ -87,6 +88,9 @@ pub enum Rule {
     /// A runner event sets some of its fence fields (`job_id`, `attempt_id`,
     /// `lease_epoch`) but not all of them.
     PartialFence,
+    /// A branch name, such as `RegisterResponse.work_branch`, is not a valid
+    /// branch name, as `BranchName::is_valid` reads it.
+    InvalidBranch,
     /// A question of a stage result, or the result's status, breaks the stage
     /// contract.
     Question(QuestionViolation),
@@ -103,6 +107,7 @@ impl fmt::Display for Rule {
             Rule::MalformedSha256 => f.write_str("is not a sha256 of 64 lowercase hex characters"),
             Rule::Zero => f.write_str("is zero"),
             Rule::PartialFence => f.write_str("is empty while other fence fields are set"),
+            Rule::InvalidBranch => f.write_str("is not a valid branch name"),
             Rule::Question(violation) => violation.fmt(f),
         }
     }
@@ -207,6 +212,16 @@ impl<'a> At<'a> {
     fn non_zero(&self, name: &str, value: u64) -> Result<(), ReceiveError> {
         if value == 0 {
             return Err(self.fail(name, Rule::Zero));
+        }
+        Ok(())
+    }
+
+    /// `Missing` when the required branch name `value` is empty, and
+    /// `InvalidBranch` when it is not a valid branch name.
+    fn branch(&self, name: &str, value: &str) -> Result<(), ReceiveError> {
+        self.text(name, value)?;
+        if !BranchName::is_valid(value) {
+            return Err(self.fail(name, Rule::InvalidBranch));
         }
         Ok(())
     }

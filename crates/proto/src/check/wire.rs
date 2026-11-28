@@ -285,7 +285,8 @@ fn runner_fence(at: &At<'_>, m: &RunnerEvent) -> Checked {
 fn register_response(at: &At<'_>, m: &RegisterResponse) -> Checked {
     at.id("runner_id", &m.runner_id)?;
     at.text("project", &m.project)?;
-    at.text("audience", &m.audience)
+    at.text("audience", &m.audience)?;
+    at.branch("work_branch", &m.work_branch)
 }
 
 fn authenticate_response(at: &At<'_>, m: &AuthenticateResponse) -> Checked {
