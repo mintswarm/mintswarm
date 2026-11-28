@@ -15,7 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::probe::{ProbeResult, ProbeValue};
 use mintswarm_domain::vcs::{DiffOpts, RefOrId, Remote, RepoPath, RevRange, Vcs};
 use tempfile::TempDir;
@@ -271,9 +271,10 @@ impl Fixture {
         }
     }
 
-    /// A new store under the fixture's state directory, created with git 2.45.0.
+    /// A new store under the fixture's runner directory, keyed `name`, created with git 2.45.0.
     pub(super) fn store(&self, name: &str) -> GitStore {
-        let path = super::store_path(&self.dir.path().join("state"), name).unwrap();
+        let key = RepoKey::new(name).unwrap();
+        let path = super::store_path(&self.dir.path().join("state"), &key);
         let mut store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
         store.allow_file_remote();
         store
@@ -617,7 +618,7 @@ fn hostile_child(done: &Path) {
     assert!(!dir.join("external-ran").exists(), "the external diff ran");
     assert!(!dir.join("trace").exists(), "git traced to a file");
     // A store created here still has the files ref format.
-    let created = super::store_path(&dir.join("state"), "created").unwrap();
+    let created = super::store_path(&dir.join("state"), &RepoKey::new("created").unwrap());
     GitStore::create(&created, &git_probe(Some("2.45.0"))).unwrap();
     assert!(created.join("refs/heads").is_dir());
     assert!(!created.join("reftable").exists());

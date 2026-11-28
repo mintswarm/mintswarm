@@ -33,8 +33,8 @@ pub use bundle::{BundleError, Documents, plan_floor_bundle};
 pub use diff::{DIFF_OPTIONS, PATCH_OPTIONS, PINNED_OPTIONS};
 pub use fresh_store::{FreshStore, FreshStoreError, STORE_PREFIX};
 pub use retry::{FetchFailure, UnrecognisedFailure};
-pub use snapshot::{Snapshots, snapshots_path};
-pub use store::{Checkout, GIT_REQUIREMENT, store_path};
+pub use snapshot::{Pinned, Snapshots, snapshots_path};
+pub use store::{Checkout, GIT_REQUIREMENT, job_head_ref, store_path};
 
 /// What went wrong in the git adapter.
 #[derive(Debug, thiserror::Error)]
@@ -90,12 +90,10 @@ pub enum GitError {
     /// A fetched ref or id that does not end at a commit, such as a tree, a blob or a tag of one.
     #[error("`{0}` is not a commit")]
     NotCommit(String),
-    /// A ref or remote name the adapter does not fetch.
-    #[error("`{0}` is not a full branch or tag name")]
+    /// A ref name the adapter refuses: one it does not fetch, as a ref or remote name, or one it
+    /// does not build, such as a job ref with a component git does not accept.
+    #[error("the ref name `{0}` is refused")]
     RefName(String),
-    /// A repository name that cannot name a store.
-    #[error("`{0}` cannot name a store")]
-    StoreName(String),
     /// A git command failed. The text is ours alone; what git wrote is kept in `stderr` for
     /// logs and diagnostics, never in the text.
     #[error("git {command} failed ({status})")]
@@ -148,9 +146,6 @@ pub enum GitError {
     /// A destination that already exists.
     #[error("{0} already exists")]
     Exists(PathBuf),
-    /// A release of a snapshot no job holds.
-    #[error("no job holds the snapshot of {0}")]
-    NotHeld(String),
     /// An operation this adapter does not implement yet.
     #[error("{0} is not supported by the git adapter yet")]
     Unsupported(&'static str),

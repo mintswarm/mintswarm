@@ -8,7 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{JobId, RepoKey, RevId};
 use mintswarm_domain::probe::{Check, ProbeResult, ProbeValue, VersionRequirement};
 use mintswarm_domain::retry::RetryPolicy;
 
@@ -39,16 +39,42 @@ pub struct Checkout {
     pub head: Option<RevId>,
 }
 
-/// The store of `repository` under the runner's state directory: `<state>/repos/<repository>.git`.
-///
-/// The name must be one path component that does not start with `.`.
-pub fn store_path(runner_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
-    if repository.is_empty() || repository.starts_with('.') || repository.contains(['/', '\0']) {
-        return Err(GitError::StoreName(repository.to_owned()));
-    }
-    Ok(runner_dir
+/// The store of `repo` under the runner directory: `<runner>/repos/<repo>.git`.
+pub fn store_path(runner_dir: &Path, repo: &RepoKey) -> PathBuf {
+    runner_dir
         .join(crate::exec::store::REPOS_DIR)
-        .join(format!("{repository}.git")))
+        .join(format!("{repo}.git"))
+}
+
+/// The ref that holds the head of job `job` on repository `repo`:
+/// `refs/mintswarm/jobs/<repo>/<job>/head`.
+///
+/// Both must be valid git ref components, or the name is refused with [`GitError::RefName`].
+pub fn job_head_ref(repo: &RepoKey, job: &JobId) -> Result<String, GitError> {
+    let name = format!("refs/mintswarm/jobs/{repo}/{}/head", job.0);
+    if ref_component(repo.as_str()) && ref_component(&job.0) {
+        Ok(name)
+    } else {
+        Err(GitError::RefName(name))
+    }
+}
+
+/// Whether `part` is one component git accepts in a ref name.
+fn ref_component(part: &str) -> bool {
+    !part.is_empty()
+        && !part.starts_with('.')
+        && !part.ends_with('.')
+        && !part.ends_with(".lock")
+        && !part.contains("..")
+        && !part.contains("@{")
+        && part != "@"
+        && !part.bytes().any(|byte| {
+            byte.is_ascii_control()
+                || matches!(
+                    byte,
+                    b' ' | b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\' | b'/'
+                )
+        })
 }
 
 impl GitStore {

@@ -1,11 +1,11 @@
-//! Read-only snapshots and their registry.
+//! Read-only snapshots and the runner's cache of them.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::vcs::{RefOrId, TreeMode, Vcs, Workspace};
 
 use super::super::{GitError, GitStore, Snapshots, snapshots_path};
@@ -295,16 +295,12 @@ fn hostile_trees_are_refused() {
 }
 
 #[test]
-fn snapshots_are_shared_and_evicted() {
+fn snapshots_are_kept_while_pinned_or_the_work_head() {
     let fx = Fixture::new();
     let store = fx.fetched_store("shared");
-    let state = fx.dir.path().join("state");
-    assert!(matches!(
-        snapshots_path(&state, "../x"),
-        Err(GitError::StoreName(_))
-    ));
-    let root = snapshots_path(&state, "shared").unwrap();
-    assert_eq!(root, state.join("snapshots/shared"));
+    let runner = fx.dir.path().join("state");
+    let root = snapshots_path(&runner, &RepoKey::new("shared").unwrap());
+    assert_eq!(root, runner.join("snapshots/shared"));
 
     // What an earlier run left: a read-only tree and a temporary.
     let leftover = root.join(&fx.main.0).join("dir");
@@ -325,50 +321,64 @@ fn snapshots_are_shared_and_evicted() {
         "the root's mode"
     );
 
-    // Two jobs on one commit share one snapshot.
-    let first = snapshots.acquire(&store, &fx.orphan).unwrap();
-    let second = snapshots.acquire(&store, &fx.orphan).unwrap();
-    assert_eq!(first, second);
+    // Two clones of one commit pin one snapshot; it is evicted when the last guard drops.
+    let first = snapshots.snapshot(&store, &fx.orphan).unwrap();
+    let second = snapshots.snapshot(&store, &fx.orphan).unwrap();
+    assert_eq!(*first, *second);
     assert_eq!(first.path, root.join(&fx.orphan.0));
+    assert_eq!(first.parent, fx.orphan);
     assert_eq!(first.mode, TreeMode::ReadOnly);
-    let inode = std::fs::metadata(&first.path).unwrap().ino();
-    assert_eq!(snapshots.count(&fx.orphan), 2);
-    snapshots.release(&fx.orphan).unwrap();
-    assert!(first.path.is_dir());
-    assert_eq!(std::fs::metadata(&first.path).unwrap().ino(), inode);
-    assert_eq!(snapshots.count(&fx.orphan), 1);
-    snapshots.release(&fx.orphan).unwrap();
-    assert!(!first.path.exists());
-    assert_eq!(snapshots.count(&fx.orphan), 0);
-    assert!(matches!(
-        snapshots.release(&fx.orphan),
-        Err(GitError::NotHeld(_))
-    ));
+    let path = first.path.clone();
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    assert_eq!(std::fs::metadata(&second.path).unwrap().ino(), inode);
+    drop(first);
+    assert!(path.is_dir());
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    drop(second);
+    assert!(!path.exists());
 
-    // The base head is kept at a count of 0, and evicted when the head moves away.
-    snapshots.set_base_head(&fx.orphan).unwrap();
-    let head = snapshots.acquire(&store, &fx.orphan).unwrap();
-    snapshots.release(&fx.orphan).unwrap();
-    assert!(head.path.is_dir());
-    assert_eq!(snapshots.count(&fx.orphan), 0);
-    snapshots.set_base_head(&fx.orphan).unwrap();
-    assert!(head.path.is_dir());
-    snapshots.set_base_head(&fx.main).unwrap();
-    assert!(!head.path.exists());
+    // The work head is kept with no pins, and evicted when the head moves away.
+    snapshots.set_work_head(&store, &fx.orphan).unwrap();
+    let head = snapshots.snapshot(&store, &fx.orphan).unwrap();
+    let head_path = head.path.clone();
+    drop(head);
+    assert!(head_path.is_dir());
+    snapshots.set_work_head(&store, &fx.orphan).unwrap();
+    assert!(head_path.is_dir());
 
-    // A held commit survives a move of the base head.
-    let held = snapshots.acquire(&store, &fx.main).unwrap();
-    snapshots.set_base_head(&fx.base).unwrap();
-    assert!(held.path.is_dir());
-    assert_eq!(snapshots.count(&fx.main), 1);
-    snapshots.release(&fx.main).unwrap();
-    assert!(!held.path.exists());
+    // A work head that is not a full id of a commit in the store is refused, and changes nothing.
+    let abbreviated = RevId(fx.main.0[..12].to_owned());
+    for refused in [&abbreviated, &RevId("HEAD".to_owned())] {
+        assert!(
+            matches!(
+                snapshots.set_work_head(&store, refused),
+                Err(GitError::RevisionSyntax(_))
+            ),
+            "{}",
+            refused.0
+        );
+    }
+    assert!(head_path.is_dir());
+    let probe = snapshots.snapshot(&store, &fx.orphan).unwrap();
+    drop(probe);
+    assert!(head_path.is_dir(), "the work head is still the orphan");
+
+    snapshots.set_work_head(&store, &fx.main).unwrap();
+    assert!(!head_path.exists());
+
+    // A pinned commit survives a move of the head, and is evicted when its guard drops.
+    let pinned = snapshots.snapshot(&store, &fx.main).unwrap();
+    snapshots.set_work_head(&store, &fx.base).unwrap();
+    let pinned_path = pinned.path.clone();
+    assert!(pinned_path.is_dir());
+    drop(pinned);
+    assert!(!pinned_path.exists());
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
 
-    // Only commits of the store are acquired.
+    // Only commits of the store are snapshotted.
     assert!(
         snapshots
-            .acquire(&store, &RevId("HEAD".to_owned()))
+            .snapshot(&store, &RevId("HEAD".to_owned()))
             .is_err()
     );
 }

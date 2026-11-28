@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::records::{BaseRef, Json};
 use mintswarm_domain::vcs::{RefOrId, Remote, Vcs};
 use mintswarm_rules::exit;
@@ -214,7 +214,8 @@ fn replay(recipe: &Json) -> Replayed {
     }
     let branch = format!("refs/heads/{}", string(get(recipe, "branch")));
     fixture_git(&source, &["update-ref", &branch, &ids[ids.len() - 1].0]);
-    let path = super::super::store_path(&dir.path().join("state"), "bundle").unwrap();
+    let path =
+        super::super::store_path(&dir.path().join("state"), &RepoKey::new("bundle").unwrap());
     let mut store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
     store.allow_file_remote();
     let remote = Remote {

@@ -6,13 +6,13 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{JobId, RepoKey, RevId};
 use tempfile::TempDir;
 
 use super::wire::{self, Reply};
 use super::{PREFIX, RequestRecord, RequestSink, ToolDir, ToolError, lock_new, sweep, try_lock};
 use crate::exec::git::tests::{fixture_command, fixture_git, git_probe, run_fixture, text};
-use crate::exec::git::{GitStore, store_path};
+use crate::exec::git::{GitStore, job_head_ref, store_path};
 
 /// A store holding a job and what lies outside it.
 struct Job {
@@ -26,16 +26,26 @@ struct Job {
     head: RevId,
     /// A child of `head`, not yet in the job.
     next: RevId,
-    /// Another job's head, `refs/mintswarm/jobs/other/head`, a child of `root`.
+    /// Another job's head, the job ref of `other` on `repo`, a child of `root`.
     other: RevId,
     /// A commit no ref reaches, a child of `root`.
     dangling: RevId,
 }
 
+/// The repository the job's store is keyed by.
+fn repo() -> RepoKey {
+    RepoKey::new("repo").unwrap()
+}
+
+/// The head ref of the job `job` on [`repo`].
+fn job_ref(job: &str) -> String {
+    job_head_ref(&repo(), &JobId(job.to_owned())).unwrap()
+}
+
 impl Job {
     fn new() -> Job {
         let dir = TempDir::new().unwrap();
-        let path = store_path(&dir.path().join("state"), "repo").unwrap();
+        let path = store_path(&dir.path().join("state"), &repo());
         let store = GitStore::create(&path, &git_probe(Some("2.45.0"))).unwrap();
         let git = |args: &[&str], input: &[u8]| {
             text(&run_fixture(fixture_command(Some(&path)), args, input))
@@ -64,12 +74,14 @@ impl Job {
         let next = commit(&tree("a.txt", "next\n"), Some(&head), "next");
         let other = commit(&tree("a.txt", "other\n"), Some(&root), "other");
         let dangling = commit(&tree("a.txt", "dangling\n"), Some(&root), "dangling");
+        let this_ref = job_ref("this");
+        let other_ref = job_ref("other");
         for (name, id) in [
             ("refs/heads/master", &base),
             ("refs/remotes/origin/master", &base),
             ("refs/tags/v1", &root),
-            ("refs/mintswarm/jobs/this/head", &next),
-            ("refs/mintswarm/jobs/other/head", &other),
+            (this_ref.as_str(), &next),
+            (other_ref.as_str(), &other),
         ] {
             fixture_git(&path, &["update-ref", name, &id.0]);
         }
@@ -340,15 +352,13 @@ fn a_directory_a_sweep_took_first_is_refused_and_kept() {
 fn refs_outside_the_job_are_refused_and_other_commits_unknown() {
     let job = Job::new();
     let tools = job.tools("scope", nowhere());
+    let other_ref = job_ref("other");
     for (args, arg) in [
         (["log", "master"], "master"),
         (["show", "v1"], "v1"),
         (["log", "origin/master"], "origin/master"),
         (["show", "HEAD"], "HEAD"),
-        (
-            ["log", "refs/mintswarm/jobs/other/head"],
-            "refs/mintswarm/jobs/other/head",
-        ),
+        (["log", other_ref.as_str()], other_ref.as_str()),
         (["log", "head~1"], "head~1"),
     ] {
         let reply = call(&tools, &args);

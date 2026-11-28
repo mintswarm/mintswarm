@@ -12,7 +12,7 @@ use std::process::{self, Command};
 use std::sync::Arc;
 use std::{env, fs};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::probe::{ProbeResult, ProbeValue};
 use mintswarm_domain::records::Json;
 use mintswarm_rules::json;
@@ -133,7 +133,7 @@ impl RequestSink for Discard {
 fn the_client_answers_with_only_its_path() {
     let dir = tempfile::TempDir::new().expect("a temporary directory");
     let state = dir.path().join("state");
-    let path = store_path(&state, "repo").expect("a store name");
+    let path = store_path(&state, &RepoKey::new("repo").expect("a repo key"));
     let probe = ProbeResult {
         namespace: "tool.git".parse().expect("a probe namespace"),
         value: ProbeValue::Unknown,

@@ -1,6 +1,6 @@
 //! Read-only snapshots, design §8 "Snapshots": a commit's tree written from the store's blobs,
-//! with no `.git`, files 0444 (0555 when executable) and directories 0555, and the registry that
-//! shares one snapshot per commit among the jobs on it.
+//! with no `.git`, files 0444 (0555 when executable) and directories 0555, and the runner's cache
+//! of them: one snapshot per commit, kept while a clone pins it or while it is the work head.
 //!
 //! The tree is written by the adapter itself, from `list_tree` and one `git cat-file --batch`, so
 //! its bytes are the blobs' bytes: no attributes, filters or umask apply. Every path component is
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::ops::Deref;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -18,11 +19,11 @@ use std::process::{Child, ChildStdin, ChildStdout, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use mintswarm_domain::ids::RevId;
+use mintswarm_domain::ids::{RepoKey, RevId};
 use mintswarm_domain::vcs::{TreeEntry, TreeMode, Workspace};
 
 use super::env::failure;
-use super::{GitError, GitStore, read, store_path};
+use super::{GitError, GitStore, read};
 
 /// The mode of a regular file in a snapshot.
 const FILE_MODE: u32 = 0o444;
@@ -408,46 +409,42 @@ pub(super) fn remove_tree(path: &Path) -> Result<(), GitError> {
     std::fs::remove_dir(path).map_err(io(format!("cannot remove {}", path.display())))
 }
 
-/// The snapshots of `repository` under the runner's state directory:
-/// `<state>/snapshots/<repository>`.
-///
-/// The name must be one path component that does not start with `.`, as for [`store_path`].
-pub fn snapshots_path(runner_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
-    store_path(runner_dir, repository)?;
-    Ok(runner_dir
+/// The snapshots of `repo` under the runner directory: `<runner>/snapshots/<repo>`.
+pub fn snapshots_path(runner_dir: &Path, repo: &RepoKey) -> PathBuf {
+    runner_dir
         .join(crate::exec::store::SNAPSHOTS_DIR)
-        .join(repository))
+        .join(repo.as_str())
 }
 
-/// One snapshot the registry holds.
+/// One snapshot the cache holds.
 #[derive(Debug)]
 struct Held {
     path: PathBuf,
-    count: usize,
+    /// How many [`Pinned`] guards are alive on it.
+    pins: usize,
 }
 
-/// What the registry's lock guards.
+/// What the cache's lock guards.
 #[derive(Debug, Default)]
 struct State {
     held: HashMap<String, Held>,
-    base_head: Option<String>,
+    work_head: Option<String>,
 }
 
-/// The read-only snapshots of one repository: one per commit, shared by the jobs on it, and
-/// evicted when no job holds it and it is not the base head.
+/// The runner's cache of one repository's read-only snapshots: one per commit, kept while a
+/// clone pins it through a [`Pinned`] guard or while it is the work head, and evicted otherwise.
 ///
-/// The counts are kept in memory: [`Snapshots::open`] removes every snapshot a previous run left,
-/// and jobs acquire theirs again.
+/// The pins are kept in memory: [`Snapshots::open`] removes every snapshot a previous run left.
 #[derive(Debug)]
 pub struct Snapshots {
     root: PathBuf,
-    /// One lock serialises acquire, release and materialisation, so a second job on a commit
+    /// One lock serialises pinning, unpinning and materialisation, so a second clone of a commit
     /// waits for the first to write its snapshot and then shares it.
     state: Mutex<State>,
 }
 
 impl Snapshots {
-    /// The registry over `root`, created with mode 0700 when missing; everything already under it
+    /// The cache over `root`, created with mode 0700 when missing; everything already under it
     /// is removed.
     pub fn open(root: &Path) -> Result<Snapshots, GitError> {
         DirBuilder::new()
@@ -483,66 +480,56 @@ impl Snapshots {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The snapshot of `rev` for one more job: written from `store` on first use, and shared
-    /// afterwards.
-    pub fn acquire(&self, store: &GitStore, rev: &RevId) -> Result<Workspace, GitError> {
+    /// The snapshot of the commit `rev`, pinned until the guard drops: written from `store` when
+    /// the cache does not hold it, and shared otherwise.
+    pub fn snapshot(&self, store: &GitStore, rev: &RevId) -> Result<Pinned<'_>, GitError> {
         let id = read::commit(store, rev)?.to_owned();
-        let mut state = self.state();
-        let path = match state.held.get_mut(&id) {
-            Some(held) => {
-                held.count += 1;
-                held.path.clone()
-            }
-            None => {
-                let path = self.root.join(&id);
-                // Not held, so whatever is there is left over from a failed eviction.
-                remove_tree(&path)?;
-                materialise(store, rev, &path, TreeMode::ReadOnly)?;
-                state.held.insert(
-                    id,
-                    Held {
-                        path: path.clone(),
-                        count: 1,
-                    },
-                );
-                path
+        let path = {
+            let mut state = self.state();
+            match state.held.get_mut(&id) {
+                Some(held) => {
+                    held.pins += 1;
+                    held.path.clone()
+                }
+                None => {
+                    let path = self.root.join(&id);
+                    // Not held, so whatever is there is left over from a failed eviction.
+                    remove_tree(&path)?;
+                    materialise(store, rev, &path, TreeMode::ReadOnly)?;
+                    state.held.insert(
+                        id.clone(),
+                        Held {
+                            path: path.clone(),
+                            pins: 1,
+                        },
+                    );
+                    path
+                }
             }
         };
-        Ok(Workspace {
+        // The lock is released, so the guard may drop, and take it, from here on.
+        let workspace = Workspace {
             path,
-            parent: rev.clone(),
+            parent: RevId(id.clone()),
             mode: TreeMode::ReadOnly,
+        };
+        Ok(Pinned {
+            snapshots: self,
+            id,
+            workspace,
         })
     }
 
-    /// One job is done with the snapshot of `rev`; at a count of 0 it is evicted unless it is the
-    /// base head.
-    pub fn release(&self, rev: &RevId) -> Result<(), GitError> {
+    /// The repository's work head is now the commit `rev`, which must be a full id of a commit in
+    /// `store`; the previous head's snapshot is evicted when nothing pins it. Nothing is written:
+    /// the head's snapshot is written by the first [`Snapshots::snapshot`] of it, and kept after
+    /// its guards drop.
+    pub fn set_work_head(&self, store: &GitStore, rev: &RevId) -> Result<(), GitError> {
+        let id = read::commit(store, rev)?.to_owned();
         let mut state = self.state();
-        let is_head = state.base_head.as_deref() == Some(rev.0.as_str());
-        let held = match state.held.get_mut(&rev.0) {
-            Some(held) if held.count > 0 => held,
-            _ => return Err(GitError::NotHeld(rev.0.clone())),
-        };
-        held.count -= 1;
-        if held.count == 0 && !is_head {
-            evict(&mut state, &rev.0)?;
-        }
-        Ok(())
-    }
-
-    /// The repository's base head is now `rev`; the previous head's snapshot is evicted when no
-    /// job holds it.
-    pub fn set_base_head(&self, rev: &RevId) -> Result<(), GitError> {
-        let mut state = self.state();
-        let previous = state.base_head.replace(rev.0.clone());
-        match previous {
-            Some(previous) if previous != rev.0 => {
-                if state
-                    .held
-                    .get(&previous)
-                    .is_some_and(|held| held.count == 0)
-                {
+        match state.work_head.replace(id.clone()) {
+            Some(previous) if previous != id => {
+                if state.held.get(&previous).is_some_and(|held| held.pins == 0) {
                     evict(&mut state, &previous)?;
                 }
                 Ok(())
@@ -550,10 +537,47 @@ impl Snapshots {
             _ => Ok(()),
         }
     }
+}
 
-    /// How many jobs hold the snapshot of `rev`.
-    pub fn count(&self, rev: &RevId) -> usize {
-        self.state().held.get(&rev.0).map_or(0, |held| held.count)
+/// A snapshot pinned in its [`Snapshots`] cache while a clone reads from it; it derefs to the
+/// snapshot's [`Workspace`].
+///
+/// When the last guard on a commit drops and the commit is not the work head, the snapshot is
+/// evicted. A failed eviction is logged and left for the next snapshot of the commit to clear.
+#[derive(Debug)]
+pub struct Pinned<'a> {
+    snapshots: &'a Snapshots,
+    /// The full commit id the snapshot is held under.
+    id: String,
+    workspace: Workspace,
+}
+
+impl Deref for Pinned<'_> {
+    type Target = Workspace;
+
+    fn deref(&self) -> &Workspace {
+        &self.workspace
+    }
+}
+
+impl Drop for Pinned<'_> {
+    fn drop(&mut self) {
+        let mut state = self.snapshots.state();
+        let is_head = state.work_head.as_deref() == Some(self.id.as_str());
+        let Some(held) = state.held.get_mut(&self.id) else {
+            return;
+        };
+        held.pins = held.pins.saturating_sub(1);
+        if held.pins == 0
+            && !is_head
+            && let Err(error) = evict(&mut state, &self.id)
+        {
+            tracing::warn!(
+                commit = %self.id,
+                error = %error,
+                "cannot evict the snapshot; the next snapshot of the commit removes it"
+            );
+        }
     }
 }
 
