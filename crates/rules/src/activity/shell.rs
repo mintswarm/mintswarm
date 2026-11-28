@@ -3,16 +3,18 @@
 //! [`normalise`] follows five steps:
 //!
 //! 1. Split the command into POSIX words, honouring single quotes, double quotes and backslash
-//!    escapes. A `#` that starts a word starts a comment, up to the end of the line.
+//!    escapes. A backslash before a newline continues the line, and a `#` that starts a word
+//!    starts a comment, up to the end of the line.
 //! 2. Split commands on `&&`, `||`, `;`, `|`, a lone `&` and an unquoted newline. Redirections
 //!    (`>`, `>>`, `<`, `>|`, `<>`, `>&`, `<&`, `&>` and `&>>`, with an optional file descriptor
 //!    number) and their targets are dropped.
-//! 3. Drop leading `cd` commands and leading `NAME=value` words. When only `cd` commands are
-//!    left, the first of them stays.
+//! 3. Drop leading `cd` commands, and a command's leading unquoted `!` (pipeline negation) and
+//!    `NAME=value` words. When only `cd` commands are left, the first of them stays.
 //! 4. Unwrap `env`, `command` and `time` with their options, and `env`'s `NAME=value` words, as
-//!    many as stand in a row; then unwrap `bash`, `sh` or `zsh` given `-c STRING` (or a short
-//!    option cluster ending in `c`, such as `-lc`) once, by normalising STRING again. A wrapper
-//!    with nothing after it is the program itself.
+//!    many as stand in a row. `command -v` and `command -V` look a program up rather than run
+//!    it, so they stay the program. Then unwrap `bash`, `sh` or `zsh` given `-c STRING` (or a
+//!    short option cluster ending in `c`, such as `-lc`) once, by normalising STRING again. A
+//!    wrapper with nothing after it is the program itself.
 //! 5. The program is the basename of the first word; the arguments are the words after it.
 //!
 //! A command it cannot read is [`ShellUnreadable`]: an unquoted `(` or `)`, a `$(` or backtick
@@ -74,6 +76,8 @@ struct Word {
     text: String,
     /// Whether the word is a `NAME=value` assignment, its name and `=` unquoted.
     assignment: bool,
+    /// Whether any part of the word was quoted or escaped.
+    quoted: bool,
 }
 
 /// The tokeniser's state while it reads one word.
@@ -110,6 +114,7 @@ impl Current {
         Some(Word {
             text: current.text,
             assignment,
+            quoted: current.literal.is_some(),
         })
     }
 
@@ -163,11 +168,14 @@ fn split(command: &str) -> Result<Vec<Vec<Word>>, ShellUnreadable> {
                 i = double_quoted(&chars, i + 1, &mut current.text)?;
             }
             '\\' => {
-                current.quoted();
                 match next {
                     None => return Err(ShellUnreadable),
+                    // a line continuation: both characters go, and no word starts
                     Some('\n') => {}
-                    Some(escaped) => current.text.push(escaped),
+                    Some(escaped) => {
+                        current.quoted();
+                        current.text.push(escaped);
+                    }
                 }
                 i += 2;
             }
@@ -285,12 +293,14 @@ fn double_quoted(
     Err(ShellUnreadable)
 }
 
-/// Step 3: the first command after leading `cd` commands, without its leading assignments.
+/// Step 3: the first command after leading `cd` commands, without its leading `!` and
+/// assignments.
 fn first_command(commands: Vec<Vec<Word>>) -> Result<Vec<Word>, ShellUnreadable> {
     let mut first_cd = None;
     for words in commands {
         let words: Vec<Word> = words
             .into_iter()
+            .skip_while(|word| !word.quoted && word.text == "!")
             .skip_while(|word| word.assignment)
             .collect();
         match words.first() {
@@ -325,6 +335,10 @@ fn unwrap_wrappers(mut words: Vec<Word>) -> Vec<Word> {
             if wrapper == "env" && word.assignment {
                 rest += 1;
             } else if text.starts_with('-') && text.len() > 1 {
+                if wrapper == "command" && !text.starts_with("--") && text.contains(['v', 'V']) {
+                    // `command -v` and `-V` look a program up rather than run it
+                    return words;
+                }
                 let takes_value = wrapper == "env"
                     && matches!(
                         text,

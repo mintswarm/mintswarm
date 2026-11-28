@@ -56,6 +56,16 @@ fn step_1_words_honour_quotes_and_escapes() {
     assert_eq!(program("ls # a comment"), normalised("ls", &[]));
 }
 
+#[test]
+fn step_1_a_line_continuation_starts_no_word() {
+    assert_eq!(program("cargo \\\n test"), normalised("cargo", &["test"]));
+    assert_eq!(
+        program("cd x && \\\n git commit"),
+        normalised("git", &["commit"])
+    );
+    assert_eq!(program("ec\\\nho a"), normalised("echo", &["a"]));
+}
+
 // Step 2: commands split on operators.
 
 #[test]
@@ -95,6 +105,16 @@ fn step_3_leading_cd_and_assignments_are_dropped() {
 }
 
 #[test]
+fn step_3_a_leading_negation_is_dropped() {
+    assert_eq!(program("! git commit"), normalised("git", &["commit"]));
+    assert_eq!(
+        program("cd x && ! FOO=1 grep a"),
+        normalised("grep", &["a"])
+    );
+    assert_eq!(program("'!' x"), normalised("!", &["x"]));
+}
+
+#[test]
 fn the_first_literal_example_gives_git_commit() {
     let result = program("cd /x && FOO=1 env git commit -m y");
     assert_eq!(result.program, "git");
@@ -117,6 +137,18 @@ fn step_4_wrappers_are_unwrapped() {
         normalised("python3", &["x.py"])
     );
     assert_eq!(program("env"), normalised("env", &[]));
+    assert_eq!(
+        program("command -v git"),
+        normalised("command", &["-v", "git"])
+    );
+    assert_eq!(
+        program("command -V git"),
+        normalised("command", &["-V", "git"])
+    );
+    assert_eq!(
+        program("env command -pv git"),
+        normalised("command", &["-pv", "git"])
+    );
     assert_eq!(program("sh -c 'ls -a'"), normalised("ls", &["-a"]));
     assert_eq!(
         program("bash -lc 'cargo test'"),
