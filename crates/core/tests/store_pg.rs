@@ -1,7 +1,7 @@
 //! The store specification, `mintswarm_core::testing::store`, run against `PgStore`, and the
 //! Postgres store's own guarantees: a dropped transaction never goes back to the pool, and a
-//! database error aborts the transaction. Runs only with `--features pg-tests` and a local
-//! Postgres or container image.
+//! database error or a call dropped part-way aborts the transaction. Runs only with
+//! `--features pg-tests` and a local Postgres or container image.
 
 #![cfg(all(test, feature = "pg-tests"))]
 
@@ -147,5 +147,46 @@ async fn a_postgres_error_aborts_the_transaction() {
 
     let mut tx = store.begin().await.unwrap();
     assert_eq!(tx.get::<Fixture>(&1).await.unwrap(), None);
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_call_dropped_part_way_aborts_the_transaction() {
+    let store = postgres().await;
+    let mut tx = store.begin().await.unwrap();
+    tx.insert(&Fixture::new(1, "one")).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut a = store.begin().await.unwrap();
+    a.update(&Fixture::new(1, "a"), RowVersion::FIRST)
+        .await
+        .unwrap();
+    let mut b = store.begin().await.unwrap();
+    // B's update waits on A's row lock, so the timeout drops its future part-way.
+    let record = Fixture::new(1, "b");
+    let update = b.update(&record, RowVersion::FIRST);
+    tokio::time::timeout(Duration::from_millis(200), update)
+        .await
+        .unwrap_err();
+    // Bounded, so a transaction left usable fails here instead of waiting on A's lock.
+    let error = tokio::time::timeout(Duration::from_secs(2), b.get::<Fixture>(&1))
+        .await
+        .expect("a poisoned transaction answers without the server")
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Aborted), "{error:?}");
+
+    // B's update is still queued on its connection behind A's lock, so A ends first.
+    a.rollback().await.unwrap();
+    let error = b.commit().await.unwrap_err();
+    assert!(matches!(error, StoreError::Aborted), "{error:?}");
+
+    let mut tx = store.begin().await.unwrap();
+    assert_eq!(
+        tx.get::<Fixture>(&1).await.unwrap(),
+        Some(Stored {
+            record: Fixture::new(1, "one"),
+            version: RowVersion::FIRST,
+        })
+    );
     tx.commit().await.unwrap();
 }
