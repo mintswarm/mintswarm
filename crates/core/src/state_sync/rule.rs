@@ -38,8 +38,11 @@ pub enum Cause {
 /// One change to a blocker of the issue, design §4 (B15).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockerChange {
-    /// The blocking issue.
+    /// The blocking issue's number, in `repository`.
     pub blocker: IssueNumber,
+    /// The blocking issue's repository, `owner/name`, which may be another than the blocked
+    /// issue's.
+    pub repository: String,
     /// What happened to it.
     pub change: BlockerChangeKind,
 }
