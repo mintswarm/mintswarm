@@ -291,7 +291,7 @@ tenets:
   sources:
     - pack: "@mintswarm/tenets:rust"
       from: "git+https://github.com/mintswarm/tenets"
-      tag: "rust/v0.1.3"
+      tag: "rust/v0.1.4"
       # docs/conventions/rust.md states these without exception, so mintswarm holds itself to must.
       tenets:
         edition-inherited: { strength: "must" }
@@ -313,7 +313,7 @@ tenets:
       tag: "engineering/v0.1.0"
     - pack: "@mintswarm/tenets:typescript"
       from: "git+https://github.com/mintswarm/tenets"
-      tag: "typescript/v0.1.0"
+      tag: "typescript/v0.1.1"
       # docs/conventions/typescript.md states these without exception (and prefers readonly).
       tenets:
         stricter-index-and-optional: { strength: "must" }
