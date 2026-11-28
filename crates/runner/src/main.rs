@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mintswarm_rules::exit;
-use mintswarm_runner::tool::{msw_vcs, plan_decision, plan_floor, save_output};
+use mintswarm_runner::tool::{msw_vcs, plan_decision, plan_floor, pr_labels, save_output};
 
 /// The mintswarm runner
 #[derive(Debug, Parser)]
@@ -69,6 +69,17 @@ enum Tool {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         operands: Vec<OsString>,
     },
+    /// Print the label changes for a PR from its diff at a base commit, without calling GitHub
+    #[command(
+        name = "pr-labels",
+        disable_help_flag = true,
+        override_usage = "mintswarm-runner tool pr-labels --base COMMIT --pr-labels PATH --repo-labels PATH [--head REV] [--band BAND]"
+    )]
+    PrLabels {
+        /// The tool's arguments, checked by the tool itself
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        operands: Vec<OsString>,
+    },
 }
 
 /// The arguments after `tool <name>`, exactly as given, and the working directory; an unreadable
@@ -114,6 +125,15 @@ fn main() -> ExitCode {
         Command::Tool(Tool::PlanDecision { .. }) => {
             let (argv, cwd) = operands_and_cwd();
             plan_decision::run(
+                &argv,
+                &cwd,
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            )
+        }
+        Command::Tool(Tool::PrLabels { .. }) => {
+            let (argv, cwd) = operands_and_cwd();
+            pr_labels::run(
                 &argv,
                 &cwd,
                 &mut io::stdout().lock(),
