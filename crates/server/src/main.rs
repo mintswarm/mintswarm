@@ -7,8 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::builder::RangedU64ValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mintswarm_core::migrations;
+use mintswarm_config::{PlaneConfig, load_plane_config};
+use mintswarm_core::{migrations, plane};
 use mintswarm_github::KeyStore;
+use mintswarm_server::serve;
 use mintswarm_server::webhooks::{
     self, DEFAULT_IN_FLIGHT, DEFAULT_QUEUED, DEFAULT_READ_TIMEOUT, DEFAULT_SECRET_ENV, DeliveryLog,
     Limits, PATH, Receiver, SecretSource, Stopped,
@@ -24,20 +26,34 @@ struct Cli {
     command: Command,
 }
 
-/// The subcommands. `serve` and bare `migrate` only parse for now.
+/// The subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the control-plane server
-    Serve,
+    Serve(ServeArgs),
     /// Apply the database migrations, or create a new one
     Migrate(MigrateArgs),
     /// Receive the GitHub App's webhooks and append each verified delivery to a log
     Webhooks(WebhooksArgs),
 }
 
+/// The default path of the plane's settings, in the current directory.
+const DEFAULT_CONFIG: &str = "mintswarm.yaml";
+
+/// The `serve` options.
+#[derive(Debug, Args)]
+struct ServeArgs {
+    /// The plane's settings file
+    #[arg(long, default_value = DEFAULT_CONFIG)]
+    config: PathBuf,
+}
+
 /// The `migrate` options.
 #[derive(Debug, Args)]
 struct MigrateArgs {
+    /// The plane's settings file, of which bare `migrate` uses the database
+    #[arg(long, default_value = DEFAULT_CONFIG)]
+    config: PathBuf,
     #[command(subcommand)]
     action: Option<MigrateAction>,
 }
@@ -149,20 +165,74 @@ enum MainError {
     Log(#[from] webhooks::LogError),
     #[error(transparent)]
     Serve(#[from] webhooks::ServeError),
+    #[error("cannot read {}: {source}", path.display())]
+    ReadConfig {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot load {}: {source}", path.display())]
+    Config {
+        path: PathBuf,
+        source: mintswarm_config::Error,
+    },
+    #[error(transparent)]
+    Plane(#[from] serve::ServeError),
+    #[error(transparent)]
+    Database(#[from] plane::DatabaseConfigError),
+    #[error(transparent)]
+    Migrate(#[from] migrations::ApplyError),
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::Serve => ExitCode::SUCCESS,
+        Command::Serve(args) => exit_code("serve", run_serve(&args)),
         Command::Migrate(args) => run_migrate(args),
-        Command::Webhooks(args) => exit_code(run_webhooks(&args)),
+        Command::Webhooks(args) => exit_code("webhooks", run_webhooks(&args)),
     }
 }
 
-/// Runs `migrate`: bare, it only parses for now; `new` mints a migration and prints its path.
+/// Reads and loads the plane's settings at `path`, with the process's environment as the
+/// overrides.
+fn load_config(path: &std::path::Path) -> Result<PlaneConfig, MainError> {
+    let text = std::fs::read_to_string(path).map_err(|source| MainError::ReadConfig {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    load_plane_config(&text, |name| std::env::var_os(name)).map_err(|source| MainError::Config {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// A multi-threaded runtime with every driver on.
+fn runtime() -> Result<tokio::runtime::Runtime, MainError> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| MainError::Runtime)
+}
+
+/// Loads the settings and runs the plane until SIGINT (Ctrl-C) or SIGTERM, or until it fails or
+/// loses the leader lock. The signals are watched before it listens, so a stop always takes the
+/// graceful path.
+fn run_serve(args: &ServeArgs) -> Result<(), MainError> {
+    let config = load_config(&args.config)?;
+    runtime()?.block_on(async {
+        let mut stop = Stop::watch()?;
+        let stopped = async move {
+            stop.next().await;
+            eprintln!("mintswarm-server serve: stopping");
+        };
+        serve::run(config, stopped).await?;
+        Ok(())
+    })
+}
+
+/// Runs `migrate`: bare, it applies the embedded migrations to the database of the settings
+/// and prints how many it applied; `new` mints a migration and prints its path.
 fn run_migrate(args: MigrateArgs) -> ExitCode {
     let Some(MigrateAction::New { name, tree }) = args.action else {
-        return ExitCode::SUCCESS;
+        return exit_code("migrate", apply_migrations(&args.config));
     };
     let minted = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => migrations::mint(&tree, &name, now.as_secs()).map_err(|error| error.to_string()),
@@ -180,12 +250,26 @@ fn run_migrate(args: MigrateArgs) -> ExitCode {
     }
 }
 
-/// Reports a failed run on stderr, and gives the exit code: 0 when it succeeded, 1 otherwise.
-fn exit_code(result: Result<(), MainError>) -> ExitCode {
+/// Applies the embedded migrations to the database the settings at `config` name. The whole
+/// file must load, though only `database` is used.
+fn apply_migrations(config: &std::path::Path) -> Result<(), MainError> {
+    let config = load_config(config)?;
+    let database = plane::database_config(&config.database)?;
+    let outcome = runtime()?.block_on(plane::migrate(&database))?;
+    for warning in &outcome.warnings {
+        eprintln!("mintswarm-server migrate: warning: {warning}");
+    }
+    println!("applied {} migration(s)", outcome.applied.len());
+    Ok(())
+}
+
+/// Reports a failed run of `subcommand` on stderr, and gives the exit code: 0 when it
+/// succeeded, 1 otherwise.
+fn exit_code(subcommand: &str, result: Result<(), MainError>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("mintswarm-server webhooks: {error}");
+            eprintln!("mintswarm-server {subcommand}: {error}");
             ExitCode::FAILURE
         }
     }
@@ -197,11 +281,7 @@ fn exit_code(result: Result<(), MainError>) -> ExitCode {
 /// failed, deliveries answered `202` may be lost, and the run fails with
 /// [`webhooks::ServeError::Writer`] instead.
 fn run_webhooks(args: &WebhooksArgs) -> Result<(), MainError> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| MainError::Runtime)?;
-    runtime.block_on(async {
+    runtime()?.block_on(async {
         let secret = webhooks::load_secret(&args.secret_source(), |var| std::env::var_os(var)).await?;
         let log = DeliveryLog::open(&args.log)?;
         let stop = Stop::watch()?;
@@ -237,8 +317,8 @@ fn stopped_line(stopped: Stopped, deadline: u64) -> String {
     format!("mintswarm-server webhooks: stopped; {how}; every queued delivery was handled")
 }
 
-/// The signals that stop the receiver, watched from before it listens, so a stop never kills
-/// it outright with deliveries still queued.
+/// The signals that stop `webhooks` or `serve`, watched from before either listens, so a stop
+/// always takes the subcommand's graceful path instead of killing it outright.
 struct Stop {
     interrupt: Signal,
     terminate: Signal,
@@ -315,7 +395,7 @@ mod tests {
         let failed = MainError::Serve(ServeError::Writer {
             reason: "it panicked",
         });
-        assert_eq!(exit_code(Err(failed)), ExitCode::FAILURE);
-        assert_eq!(exit_code(Ok(())), ExitCode::SUCCESS);
+        assert_eq!(exit_code("webhooks", Err(failed)), ExitCode::FAILURE);
+        assert_eq!(exit_code("webhooks", Ok(())), ExitCode::SUCCESS);
     }
 }
