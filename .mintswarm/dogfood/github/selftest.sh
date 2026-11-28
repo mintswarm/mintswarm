@@ -13,7 +13,9 @@
 # default. git runs without the system config, against repositories and a bare
 # "remote" inside the sandbox.
 #
-# Checks: shellcheck and py_compile; the per-App table; the manifests; App
+# Checks: shellcheck and py_compile; project-setup.py, the work branch's one
+# reader, on the shared project-setup.json cases the Rust loader also runs; the
+# per-App table; the manifests; App
 # creation with store-credentials.sh create, whose listener is driven over
 # 127.0.0.1 (matching and wrong states, loopback only, the timeout, a client that
 # trickles bytes, a held port) with the conversion answered by the curl stub;
@@ -34,8 +36,12 @@
 # analysis section read strictly, written only when the field or label is
 # empty, and the case-keeping fallback and sanitising rule); and the README's
 # msw-state section against tracker.state.options, whose checks run the shared
-# tracker-state.json cases as the Rust loader does. Secrets and the manifest code
-# must appear in no recorded argv, nothing may be left in TMPDIR, each create
+# tracker-state.json cases as the Rust loader does; push.sh, land.py and
+# assign-approvers.py run from a copy of this directory whose work branch is
+# develop; and a grep that no tool, gate or product source names master or
+# main as the factory's branch (skip without a git repository or crates/, as in
+# the Linux check, and the shared cases skip without crates/). Secrets and the
+# manifest code must appear in no recorded argv, nothing may be left in TMPDIR, each create
 # adds only its own App's config to HOME, and .git/config stays byte-identical
 # across pushes. Every background process runs in its own process group, every
 # wait is bounded, and any group still there is killed on exit. Waits on a
@@ -796,6 +802,72 @@ check "request-review.py compiles" \
 check "linux/yq compiles" \
   python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
   "$here/linux/yq" "$sandbox/yq.pyc"
+
+# --- project setup -----------------------------------------------------------
+
+PS="$here/../project-setup.py"
+check "project-setup.py compiles" \
+  python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  "$PS" "$sandbox/project-setup.pyc"
+check "project-setup.py prints master, the work branch in the repository's own setup" \
+  eq "$(python3 -I "$PS" work-branch)" master
+skip() { printf 'skip  %s\n' "$1"; }
+ps_dir="$sandbox/project-setup"
+mkdir -p "$ps_dir"
+cp "$PS" "$ps_dir/project-setup.py"
+ps_table="$here/../../../crates/config/tests/conformance/project-setup.json"
+ps_case() {  # ps_case: run the scratch reader on its project-setup.yaml; sets ps_rc and ps_out, stderr in ps.err
+  ps_rc=0
+  ps_out="$(python3 -I "$ps_dir/project-setup.py" work-branch 2>"$sandbox/ps.err")" || ps_rc=$?
+}
+ps_names() {  # ps_names LIST: every name of LIST in the shared table gives what the table says
+  local list="$1" count i=0 name bad=0
+  count="$(jq --arg l "$list" '.[$l] | length' "$ps_table")"
+  [ "$count" -gt 0 ] || { echo "$list is empty"; return 1; }
+  while [ "$i" -lt "$count" ]; do
+    name="$(jq -r --arg l "$list" --argjson i "$i" '.[$l][$i]' "$ps_table")"
+    # As a JSON string with every non-ASCII character escaped, so it reaches the name rule unchanged.
+    jq -n -a --arg n "$name" '{branches: {work: $n}}' > "$ps_dir/project-setup.yaml"
+    ps_case
+    if [ "$list" = valid_names ]; then
+      if [ "$ps_rc" -ne 0 ] || [ "$ps_out" != "$name" ]; then
+        printf '%s[%d]: exit %d, printed %s\n' "$list" "$i" "$ps_rc" "$ps_out"; cat "$sandbox/ps.err"; bad=1
+      fi
+    elif [ "$ps_rc" -ne 2 ] || ! grep -qF "project-setup: branches.work: " "$sandbox/ps.err"; then
+      printf '%s[%d]: exit %d, not refused at branches.work\n' "$list" "$i" "$ps_rc"; cat "$sandbox/ps.err"; bad=1
+    fi
+    i=$((i + 1))
+  done
+  return "$bad"
+}
+ps_documents() {  # every document in the shared table exits 2 naming its path
+  local count i=0 path bad=0
+  count="$(jq '.documents | length' "$ps_table")"
+  [ "$count" -gt 0 ] || { echo "documents is empty"; return 1; }
+  while [ "$i" -lt "$count" ]; do
+    jq -j --argjson i "$i" '.documents[$i].yaml' "$ps_table" > "$ps_dir/project-setup.yaml"
+    path="$(jq -r --argjson i "$i" '.documents[$i].path' "$ps_table")"
+    ps_case
+    if [ "$ps_rc" -ne 2 ]; then
+      printf 'documents[%d]: exit %d\n' "$i" "$ps_rc"; bad=1
+    elif [ -n "$path" ] && ! grep -qF "project-setup: $path: " "$sandbox/ps.err"; then
+      printf 'documents[%d]: not refused at %s\n' "$i" "$path"; cat "$sandbox/ps.err"; bad=1
+    fi
+    i=$((i + 1))
+  done
+  return "$bad"
+}
+if [ -f "$ps_table" ]; then
+  check "project-setup.py prints every valid name of the shared table" ps_names valid_names
+  check "project-setup.py refuses every name git refuses, at branches.work" ps_names invalid_names
+  check "project-setup.py refuses -x and HEAD, which git accepts, at branches.work" ps_names invalid_by_rule
+  check "project-setup.py refuses every document of the shared table at its path" ps_documents
+else
+  skip "the shared project-setup.json cases: no crates/ here"
+fi
+check "project-setup.py exits 2 on a usage error" exits_2 python3 -I "$PS"
+rm -f "$ps_dir/project-setup.yaml"
+check "project-setup.py exits 2 without its setup file" exits_2 python3 -I "$ps_dir/project-setup.py" work-branch
 no_secret_redirections() {
   local f
   for f in "$here"/*.sh "$here"/linux/*.sh; do
@@ -3857,6 +3929,96 @@ check "msw-state.py sets plan approved in labels mode, with In progress" \
   eq "$(ms set 86 'plan approved' --base "$labels_status_base" 2>&1) $(labels_of 86) $(status_of 86)" \
   "set #86 msw-state to plan approved (was awaiting approval)
 set #86 status to In progress (was In review) msw-state:plan approved In progress"
+
+# --- a work branch other than master ------------------------------------------
+
+# A copy of this directory and project-setup.py whose project-setup.yaml names
+# develop: push.sh, land.py and assign-approvers.py read the work branch from it.
+dev="$sandbox/dev-tools"
+mkdir -p "$dev"
+cp -R "$here" "$dev/github"
+cp "$here/../project-setup.py" "$dev/project-setup.py"
+printf 'branches:\n  work: develop\n' > "$dev/project-setup.yaml"
+check "the copy's project-setup.py prints develop" eq "$(python3 -I "$dev/project-setup.py" work-branch)" develop
+
+back="$PWD"
+dev_remote="$sandbox/dev-remote.git"
+dev_repo="$sandbox/dev-work"
+git init -q --bare "$dev_remote"
+git init -q -b master "$dev_repo"
+cd "$dev_repo"
+git config user.name Maintainer
+git config user.email maintainer@example.com
+printf '* @alice\n/d.txt @dora\n' > CODEOWNERS
+git add CODEOWNERS
+git commit -q -m base
+git checkout -q -b develop
+printf 'd\n' > d.txt
+git add d.txt
+git commit -q -m "develop moves"
+git push -q "$dev_remote" master develop
+git remote add origin "$dev_remote"
+git fetch -q origin
+as_bot() {
+  env GIT_AUTHOR_NAME='mintswarm-dev[bot]' GIT_AUTHOR_EMAIL='359856778+mintswarm-dev[bot]@users.noreply.github.com' \
+      GIT_COMMITTER_NAME='mintswarm-dev[bot]' GIT_COMMITTER_EMAIL='359856778+mintswarm-dev[bot]@users.noreply.github.com' "$@"
+}
+git checkout -q --no-track -b mintswarm/1-dev refs/remotes/origin/develop
+printf 'a\n' > a.txt
+git add a.txt
+as_bot git commit -q -m "bot commit on develop"
+git branch --no-track mintswarm/2-empty refs/remotes/origin/develop
+
+DP="$dev/github/push.sh"
+dev_push() { env MSW_TOKEN="$DUMMY" MSW_PUSH_URL="file://$dev_remote" "$DP" "$@"; }
+# origin/master..mintswarm/1-dev holds the maintainer's "develop moves", so only a range from develop passes.
+check "push.sh with work branch develop pushes a bot branch based on origin/develop" dev_push mintswarm/1-dev
+check "the pushed branch is at the local commit" \
+  eq "$(git --git-dir="$dev_remote" rev-parse --verify --quiet refs/heads/mintswarm/1-dev)" "$(git rev-parse mintswarm/1-dev)"
+check "push.sh refuses to push develop, the work branch" fails_saying "refusing to push develop" dev_push develop
+check "push.sh refuses an empty origin/develop.. range" \
+  fails_saying "nothing to push: origin/develop..mintswarm/2-empty is empty" dev_push mintswarm/2-empty
+dev_develop="$(git rev-parse refs/remotes/origin/develop)"
+git update-ref -d refs/remotes/origin/develop
+check "push.sh refuses without origin/develop" fails_saying "no refs/remotes/origin/develop: fetch first" dev_push mintswarm/1-dev
+git update-ref refs/remotes/origin/develop "$dev_develop"
+
+check "assign-approvers.py owners --branch diffs against origin/develop by default" \
+  eq "$(python3 -I "$dev/github/assign-approvers.py" owners --branch mintswarm/1-dev 2>/dev/null)" alice
+cd "$back"
+
+DL="$dev/github/land.py"
+dev_land() {  # dev_land N: the copy's land.py N --sha $(sha_of N) --dry-run, its output in dev-land.out
+  env MSW_LAND_RETRY_DELAY=0 "$DL" "$1" --sha "$(sha_of "$1")" --dry-run >"$sandbox/dev-land.out" 2>&1
+}
+fixture 160 '.[0].base.ref = "develop"'
+check "land.py with work branch develop passes a PR based on develop (--dry-run)" dev_land 160
+fixture 161
+dev_refused() {  # dev_refused TEXT N: the copy's land.py refuses N saying TEXT
+  local rc=0
+  dev_land "$2" || rc=$?
+  cat "$sandbox/dev-land.out"
+  eq "$rc" 1 && grep -qF -- "$1" "$sandbox/dev-land.out"
+}
+check "and refuses one based on master" dev_refused "the PR targets 'master', not develop" 161
+fixture 162 '.[0].base.ref = "develop" | .[0].mergeable_state = "dirty"'
+check "and names develop when the PR conflicts" dev_refused "the PR conflicts with develop" 162
+
+# --- no hard-coded branch names ------------------------------------------------
+
+root="$here/../../.."
+if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -d "$root/crates" ]; then
+  hard_coded() {  # the product code and tools that name master or main as the factory's branch
+    git -C "$root" grep -nE \
+      '(origin|refs/heads|refs/remotes/origin)/(master|main)|"(master|main)"|'"'"'(master|main)'"'"'|(^|[^[:alnum:]_])(master|main)\)' \
+      -- .mintswarm/dogfood .mintswarm/config.yaml api ':(glob)crates/*/src/**' \
+      ':!*selftest*' ':!**/tests/**' ':!**/fixtures/**' ':!*.md' \
+      | grep -vE '^\.mintswarm/dogfood/dependencies/prefetch\.py:[0-9]+: .*stem in \(' || true
+  }
+  check "no tool, gate or product source names master or main as the factory's branch" eq "$(hard_coded)" ""
+else
+  skip "no hard-coded branch names: no git repository or no crates/ here"
+fi
 
 # --- summary -----------------------------------------------------------------
 
