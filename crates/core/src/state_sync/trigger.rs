@@ -2,10 +2,9 @@
 //!
 //! The reduction is pure: it reads only the event, never the tracker. A close or reopen of an
 //! issue gives that issue, marked for fan-out, so the worker later reads the issues it blocks.
-//! A dependency change gives the blocked issue, with the blocker and the change as its cause;
-//! a blocker in another repository is not named in the cause, which holds only issue numbers of
-//! this repository, so the issue is evaluated without one. Only issues in the plane's own
-//! repository are kept.
+//! A dependency change gives the blocked issue, with the blocker, its repository and the change
+//! as its cause, so a blocker in another repository is named as one too. Only blocked issues in
+//! the plane's own repository are kept.
 
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_proto::watch::v1;
@@ -21,8 +20,8 @@ use crate::watch::WEBHOOK_KIND;
 ///   fan-out, with a triggered cause that carries no blocker change.
 /// - An `issue_dependencies` event with `blocked_by_added`, `blocked_by_removed`,
 ///   `blocking_added` or `blocking_removed` gives the blocked issue, with the blocking issue
-///   added or removed as its cause. A blocking issue in another repository gives the blocked
-///   issue with no blocker change, so its blockers still come from the fresh read.
+///   added or removed as its cause, named with its own repository, which is `repository` when
+///   the payload gives none.
 pub fn reduce(event: &v1::WatchEvent, repository: &str) -> Vec<(IssueNumber, Entry)> {
     if event.kind != WEBHOOK_KIND {
         return Vec::new();
@@ -76,14 +75,15 @@ fn dependency_event(webhook: &v1::GitHubWebhook, repository: &str) -> Option<(Is
     {
         return None;
     }
-    let changes = if blocking.repository.eq_ignore_ascii_case(repository) {
-        vec![BlockerChange {
-            blocker: IssueNumber(blocking.number),
-            change,
-        }]
+    let blocker_repository = if blocking.repository.is_empty() {
+        repository
     } else {
-        Vec::new()
+        &blocking.repository
     };
-    let entry = Entry::triggered(changes);
+    let entry = Entry::triggered(vec![BlockerChange {
+        blocker: IssueNumber(blocking.number),
+        repository: blocker_repository.to_owned(),
+        change,
+    }]);
     Some((IssueNumber(blocked.number), entry))
 }

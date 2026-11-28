@@ -38,14 +38,18 @@ fn names(blockers: &[Dependency], repository: &str) -> Vec<String> {
     sorted.dedup();
     sorted
         .into_iter()
-        .map(|(name, number)| {
-            if name.eq_ignore_ascii_case(repository) {
-                format!("#{number}")
-            } else {
-                format!("{name}#{number}")
-            }
-        })
+        .map(|(name, number)| name_of(&name, number, repository))
         .collect()
+}
+
+/// The name of blocker `number` in `blocker_repository`, as seen from `repository`: `#N` in the
+/// same repository (compared ASCII case-insensitively), `owner/name#N` otherwise, lowercased.
+pub fn name_of(blocker_repository: &str, number: u64, repository: &str) -> String {
+    if blocker_repository.eq_ignore_ascii_case(repository) {
+        format!("#{number}")
+    } else {
+        format!("{}#{number}", blocker_repository.to_ascii_lowercase())
+    }
 }
 
 /// The key of `bot`'s last blocker note among `comments`, if any.
@@ -89,7 +93,13 @@ impl Report<'_> {
         let changes: Vec<String> = self
             .changes
             .iter()
-            .map(|change| format!("#{} {}", change.blocker.0, verb(change.change)))
+            .map(|change| {
+                format!(
+                    "{} {}",
+                    name_of(&change.repository, change.blocker.0, self.repository),
+                    verb(change.change)
+                )
+            })
             .collect();
         let mut open = names(self.open, self.repository);
         if self.unreadable > 0 {

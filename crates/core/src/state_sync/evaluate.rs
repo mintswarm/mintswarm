@@ -69,7 +69,8 @@ impl Outcome {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
     pub outcome: Outcome,
-    /// `issue`, `causes`, `fan_out`, `value_before`, `value_after`, `wrote`, `status_before`,
+    /// `issue`, `causes` (each blocker named `#N` in the repository, `owner/name#N` otherwise),
+    /// `fan_out`, `value_before`, `value_after`, `wrote`, `status_before`,
     /// `status_after`, `reported` and `outcome`, with a `detail` on a skip, deferral or failure.
     pub line: Value,
 }
@@ -88,6 +89,7 @@ struct Line {
 impl Line {
     fn finish(
         self,
+        repository: &str,
         issue: &IssueNumber,
         cause: &Cause,
         outcome: Outcome,
@@ -98,7 +100,10 @@ impl Line {
             Cause::Triggered { blocker_changes } => blocker_changes
                 .iter()
                 .map(|change| {
-                    json!({ "blocker": change.blocker.0, "change": change_name(change.change) })
+                    json!({
+                        "blocker": report::name_of(&change.repository, change.blocker.0, repository),
+                        "change": change_name(change.change),
+                    })
                 })
                 .collect(),
         };
@@ -179,7 +184,7 @@ where
         Err(Stop::Skipped(detail)) => (Outcome::Skipped, Some(detail)),
         Err(Stop::Failed(detail)) => (Outcome::Failed, Some(detail)),
     };
-    line.finish(&issue, cause, outcome, detail)
+    line.finish(&settings.repository, &issue, cause, outcome, detail)
 }
 
 /// The evaluation's steps; `Ok(Some(_))` is a deferral, with its reason.

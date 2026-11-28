@@ -155,6 +155,7 @@ fn triggered(changes: &[(u64, BlockerChangeKind)]) -> Cause {
             .iter()
             .map(|(blocker, change)| BlockerChange {
                 blocker: IssueNumber(*blocker),
+                repository: REPO.to_owned(),
                 change: *change,
             })
             .collect(),
@@ -270,13 +271,25 @@ fn dependency_events_reduce_to_the_blocked_issue() {
         assert_eq!(reduce(&event, REPO), expected, "{event:?}");
     }
 
-    // A blocker in another repository still queues the issue here, but names no change: the
-    // cause holds only numbers of this repository, so `#3` would name the wrong issue.
-    for action in ["blocked_by_added", "blocked_by_removed"] {
+    // A blocker in another repository is a change named with its own repository, so it is
+    // never taken for `#3` here.
+    for (action, change) in [("blocked_by_added", added), ("blocked_by_removed", removed)] {
         let event = link(action, side(REPO, 6), side(OTHER, 3));
-        let expected = vec![(IssueNumber(6), entry(triggered(&[]), false))];
+        let cause = Cause::Triggered {
+            blocker_changes: vec![BlockerChange {
+                blocker: IssueNumber(3),
+                repository: OTHER.to_owned(),
+                change,
+            }],
+        };
+        let expected = vec![(IssueNumber(6), entry(cause, false))];
         assert_eq!(reduce(&event, REPO), expected, "{event:?}");
     }
+
+    // A blocking side without a repository is in this one.
+    let event = link("blocked_by_added", side(REPO, 6), side("", 3));
+    let expected = vec![(IssueNumber(6), entry(triggered(&[(3, added)]), false))];
+    assert_eq!(reduce(&event, REPO), expected, "{event:?}");
 }
 
 #[test]
@@ -535,8 +548,8 @@ async fn two_entries_for_one_issue_make_one_evaluation() {
     assert_eq!(
         lines[0]["causes"],
         json!([
-            { "blocker": 3, "change": "added" },
-            { "blocker": 4, "change": "added" },
+            { "blocker": "#3", "change": "added" },
+            { "blocker": "#4", "change": "added" },
         ])
     );
     assert_eq!(posts(&plane.fake.writes(), 7), 1);

@@ -240,6 +240,7 @@ fn change(blocker: u64, change: BlockerChangeKind) -> Cause {
     Cause::Triggered {
         blocker_changes: vec![BlockerChange {
             blocker: IssueNumber(blocker),
+            repository: REPO.to_owned(),
             change,
         }],
     }
@@ -356,12 +357,12 @@ async fn close_then_reopen_out_of_order_follows_the_facts() {
 }
 
 #[tokio::test]
-async fn a_blocker_in_another_repository_names_no_change() {
+async fn a_cross_repository_blocker_change_is_reported() {
     let fake = tracker();
     seed(&fake, 6, true, PLANNING, &[(3, true)], 0);
     let other = Dependency {
-        repository: "someone/else".to_owned(),
-        number: IssueNumber(3),
+        repository: "other/repo".to_owned(),
+        number: IssueNumber(4),
         open: true,
     };
     fake.set_dependencies(
@@ -371,22 +372,34 @@ async fn a_blocker_in_another_repository_names_no_change() {
     );
     fake.add_issue(issue(6, true, 2, 0));
     let mut plane = plane(fake, StatusMode::Off);
-    let mut link = linked("blocked_by", 6, 3);
+    let mut link = linked("blocked_by", 6, 4);
     if let Some(watch_event::Body::GithubWebhook(webhook)) = &mut link.body
         && let Some(dependency) = &mut webhook.dependency
         && let Some(blocking) = &mut dependency.blocking
     {
-        blocking.repository = "someone/else".to_owned();
+        blocking.repository = "other/repo".to_owned();
     }
     plane.sync.on_delivery(&link);
     plane.worker.drain().await;
 
-    // The issue is evaluated from its fresh blockers, but no `#3` change is reported.
+    // The change names the blocker with its repository, in the line and in the note.
     let lines = plane.lines.lock().unwrap().clone();
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["causes"], serde_json::json!([]));
-    assert_eq!(lines[0]["outcome"], "unchanged");
-    assert!(plane.fake.writes().is_empty());
+    assert_eq!(
+        lines[0]["causes"],
+        serde_json::json!([{ "blocker": "other/repo#4", "change": "added" }])
+    );
+    assert_eq!(lines[0]["outcome"], "written");
+    let writes = plane.fake.writes();
+    assert!(set_fields(&writes, 6).is_empty());
+    let notes = posts(&writes, 6);
+    assert_eq!(notes.len(), 1);
+    assert!(
+        notes[0].contains("Blockers changed: other/repo#4 added."),
+        "{}",
+        notes[0]
+    );
+    assert!(notes[0].contains("open=#3,other/repo#4 "), "{}", notes[0]);
 }
 
 #[tokio::test]

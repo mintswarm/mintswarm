@@ -63,7 +63,8 @@ impl Entry {
 
     /// Absorbs `other` into this entry.
     ///
-    /// Blocker changes are a set union, kept in arrival order. A triggered cause absorbs a
+    /// Blocker changes are a set union by blocker, repository and change, kept in arrival
+    /// order. A triggered cause absorbs a
     /// sweep. A fan-out mark survives. The merged entry is a repeat when either side is one and
     /// neither is a triggered non-repeat, so a repeat absorbed by a sweep stays a repeat, and
     /// `requeued` is set when either is.
@@ -86,7 +87,12 @@ impl Entry {
                 },
             ) => {
                 for change in theirs {
-                    if !ours.contains(&change) {
+                    let known = ours.iter().any(|known| {
+                        known.blocker == change.blocker
+                            && known.change == change.change
+                            && known.repository.eq_ignore_ascii_case(&change.repository)
+                    });
+                    if !known {
                         ours.push(change);
                     }
                 }
@@ -341,6 +347,7 @@ where
             .map(|dependency| {
                 let cause = vec![BlockerChange {
                     blocker: issue.clone(),
+                    repository: self.settings.repository.clone(),
                     change,
                 }];
                 (dependency.number, Entry::triggered(cause))

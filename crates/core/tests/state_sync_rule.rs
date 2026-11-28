@@ -52,6 +52,7 @@ fn change() -> Cause {
     Cause::Triggered {
         blocker_changes: vec![BlockerChange {
             blocker: IssueNumber(9),
+            repository: "mintswarm/mintswarm".to_owned(),
             change: BlockerChangeKind::Closed,
         }],
     }
