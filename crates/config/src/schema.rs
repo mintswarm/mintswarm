@@ -38,6 +38,10 @@
 //! checked through the role's [`RoleDescriptor`], found by name in a registry, so the check
 //! holds no rule for one role only. A tracker field is named, never given by id: its id is
 //! resolved from the name at the tracker edge, so a `field_id` key there is an unknown key.
+//!
+//! The `metrics` check is the loader's own as well: `metrics` holds only `activity`, which the
+//! `activity` module checks with the same schema as the runner's default activity rules,
+//! described on [`ActivityRule`].
 
 use std::collections::BTreeMap;
 
@@ -48,10 +52,11 @@ use mintswarm_domain::role::{Role, RoleDescriptor, roles};
 use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
+use crate::activity::check_activity;
 use crate::state::check_options;
 use crate::{
-    Action, ActionTable, ActionTrust, Error, Path, People, Stage, StateSettings, StatusMode, Trust,
-    TrustMatch, parse_yaml,
+    Action, ActionTable, ActionTrust, ActivityRule, Error, Path, People, Stage, StateSettings,
+    StatusMode, Trust, TrustMatch, parse_yaml,
 };
 
 /// The plan-approval and landing modes.
@@ -206,6 +211,7 @@ pub struct RepoConfig {
     trust: Trust,
     state: Option<StateSettings>,
     actions: ActionTable,
+    activity_rules: Vec<ActivityRule>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -266,6 +272,7 @@ impl RepoConfig {
                 "agents",
                 "pipeline",
                 "gates",
+                "metrics",
             ],
         )?;
         let (trust, state, actions) = match top.get("tracker") {
@@ -304,6 +311,7 @@ impl RepoConfig {
             summary: gates_summary,
             formatters,
         } = check_gates(top.get("gates"), &root.key("gates"))?;
+        let activity_rules = check_metrics(top.get("metrics"), &root.key("metrics"))?;
 
         Ok(RepoConfig {
             value,
@@ -317,6 +325,7 @@ impl RepoConfig {
             trust,
             state,
             actions,
+            activity_rules,
         })
     }
 
@@ -375,6 +384,11 @@ impl RepoConfig {
         &self.actions
     }
 
+    /// `metrics.activity.rules`, the project's activity rules in file order, empty when absent.
+    pub fn activity_rules(&self) -> &[ActivityRule] {
+        &self.activity_rules
+    }
+
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
     ///
     /// The entry was checked at load when the role was registered then; an entry that does not
@@ -412,13 +426,13 @@ pub(crate) fn known(map: &Map<String, Value>, path: &Path, allowed: &[&str]) -> 
     }
 }
 
-fn string<'a>(value: &'a Value, path: &Path) -> Result<&'a str, Error> {
+pub(crate) fn string<'a>(value: &'a Value, path: &Path) -> Result<&'a str, Error> {
     value
         .as_str()
         .ok_or_else(|| Error::schema(path, format!("must be a string, not {}", kind(value))))
 }
 
-fn string_list(value: &Value, path: &Path) -> Result<Vec<String>, Error> {
+pub(crate) fn string_list(value: &Value, path: &Path) -> Result<Vec<String>, Error> {
     let error = || Error::schema(path, "must be a list of strings");
     let items = value.as_array().ok_or_else(error)?;
     items
@@ -472,6 +486,19 @@ fn bounded(value: &Value, path: &Path, low: u64, high: Option<u64>) -> Result<u6
         .filter(|&n| n >= i128::from(low) && high.is_none_or(|high| n <= i128::from(high)))
         .and_then(|n| u64::try_from(n).ok())
         .ok_or_else(|| Error::schema(path, format!("{message}, not {value}")))
+}
+
+/// `metrics`: only `activity`, checked as the activity rules are; no rules when either is absent.
+fn check_metrics(value: Option<&Value>, path: &Path) -> Result<Vec<ActivityRule>, Error> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let map = mapping(value, path)?;
+    known(map, path, &["activity"])?;
+    match map.get("activity") {
+        Some(activity) => check_activity(activity, &path.key("activity")),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn check_tracker(
