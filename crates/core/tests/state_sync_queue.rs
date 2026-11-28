@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mintswarm_config::{
-    BLOCKED, DONE, PLANNING, QUEUED, REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
-    Trust, TrustMatch,
+    AWAITING_APPROVAL, Action, ActionTable, ActionTrust, BLOCKED, DONE, PLANNING, People, QUEUED,
+    REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode, Trust, TrustMatch,
 };
 use mintswarm_core::state_sync::queue::{Entry, SETTLE};
 use mintswarm_core::state_sync::rule::{BlockerChange, BlockerChangeKind, Cause};
@@ -19,8 +19,9 @@ use mintswarm_core::watch::WEBHOOK_KIND;
 use mintswarm_domain::field::{FieldError, FieldRead, FieldRef, FieldSource};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
-    Comment, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead, IssueType, Issues,
-    Link, Links, Login, Statuses, SubItem, TrackerBase,
+    Collaborators, Comment, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
+    IssueType, Issues, Link, LinkKind, Links, Login, ParentIssue, RepoRole, Statuses, SubItem,
+    TrackerBase,
 };
 use mintswarm_proto::watch::v1::{
     GitHubWebhook, IssueDependency, ItemKind, ItemRef, Subject, WatchEvent, watch_event,
@@ -31,6 +32,7 @@ const REPO: &str = "mintswarm/mintswarm";
 const OTHER: &str = "someone/else";
 const BOT: &str = "bee[bot]";
 const MAINTAINER: &str = "maintainer";
+const PEER: &str = "bee-keeper[bot]";
 
 fn field_source() -> FieldSource {
     FieldSource::Field {
@@ -42,8 +44,9 @@ fn settings() -> Settings {
     Settings {
         repository: REPO.to_owned(),
         bot: Login(BOT.to_owned()),
+        peer_logins: vec![Login(PEER.to_owned())],
         trust: Trust {
-            labels: Vec::new(),
+            labels: vec!["mintswarm".to_owned()],
             authors: vec![Login(MAINTAINER.to_owned())],
             r#match: TrustMatch::Any,
         },
@@ -58,7 +61,19 @@ fn settings() -> Settings {
                 })
                 .collect(),
         },
+        actions: owner_rows(),
     }
+}
+
+fn owner_rows() -> ActionTable {
+    let owner = ActionTrust {
+        people: People::IssueOwner,
+        apps: Vec::new(),
+    };
+    ActionTable::default()
+        .with(Action::ApprovePlan, owner.clone())
+        .with(Action::ApproveDesign, owner.clone())
+        .with(Action::ApproveDecomposition, owner)
 }
 
 fn dependency(repository: &str, number: u64, open: bool) -> Dependency {
@@ -307,10 +322,10 @@ fn a_merge_removes_duplicate_changes() {
     ours.merge(theirs);
     assert_eq!(
         ours.cause,
-        triggered(&[
+        Some(triggered(&[
             (3, BlockerChangeKind::Added),
             (4, BlockerChangeKind::Removed)
-        ])
+        ]))
     );
     assert!(ours.fan_out);
     assert!(!ours.repeat);
@@ -318,9 +333,9 @@ fn a_merge_removes_duplicate_changes() {
 
     let mut sweep = Entry::of(Cause::Sweep);
     sweep.merge(Entry::of(Cause::Sweep));
-    assert_eq!(sweep.cause, Cause::Sweep);
+    assert_eq!(sweep.cause, Some(Cause::Sweep));
     sweep.merge(entry(triggered(&[]), false));
-    assert_eq!(sweep.cause, triggered(&[]));
+    assert_eq!(sweep.cause, Some(triggered(&[])));
     assert!(!sweep.repeat);
 }
 
@@ -336,7 +351,7 @@ fn a_repeat_merged_with_a_sweep_stays_a_repeat() {
         (repeat(), Entry::of(Cause::Sweep)),
     ] {
         ours.merge(theirs);
-        assert_eq!(ours.cause, triggered(&[]));
+        assert_eq!(ours.cause, Some(triggered(&[])));
         assert!(ours.repeat);
     }
 
@@ -423,6 +438,16 @@ impl Comments for Stalling {
     }
 }
 
+impl Collaborators for Stalling {
+    async fn read_permission(&self, _: Login) -> Result<RepoRole, Self::Error> {
+        self.stall().await
+    }
+
+    async fn read_parent(&self, _: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
+        self.stall().await
+    }
+}
+
 impl Fields for Stalling {
     async fn read_field(&self, _: IssueNumber, _: &FieldRef) -> Result<FieldRead, FieldError> {
         self.stall().await
@@ -488,7 +513,7 @@ struct Plane<T> {
 
 fn plane<T>(fake: T) -> Plane<T>
 where
-    T: Issues + Links + Fields + Statuses + Comments,
+    T: Issues + Links + Fields + Statuses + Comments + Collaborators,
 {
     let fake = Arc::new(fake);
     let lines = Arc::new(Mutex::new(Vec::new()));
@@ -509,8 +534,29 @@ where
 }
 
 impl<T> Plane<T> {
+    /// State-sync's lines, in order.
     fn lines(&self) -> Vec<Value> {
-        self.lines.lock().unwrap().clone()
+        self.lines_where(|line| line["evaluator"] == "state_sync")
+    }
+
+    /// Approvals' lines, in order.
+    fn approvals_lines(&self) -> Vec<Value> {
+        self.lines_where(|line| line["evaluator"] == "approvals")
+    }
+
+    fn lines_where(&self, keep: impl Fn(&Value) -> bool) -> Vec<Value> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| keep(line))
+            .cloned()
+            .collect()
+    }
+
+    /// Every line, both evaluators', in order.
+    fn all_lines(&self) -> Vec<Value> {
+        self.lines_where(|_| true)
     }
 
     fn lines_of(&self, number: u64) -> Vec<Value> {
@@ -666,6 +712,16 @@ impl Comments for FailFirstBlocking {
     }
 }
 
+impl Collaborators for FailFirstBlocking {
+    async fn read_permission(&self, login: Login) -> Result<RepoRole, Self::Error> {
+        self.inner.read_permission(login).await
+    }
+
+    async fn read_parent(&self, issue: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
+        self.inner.read_parent(issue).await
+    }
+}
+
 impl Fields for FailFirstBlocking {
     async fn read_field(
         &self,
@@ -809,4 +865,183 @@ async fn run_hands_off_and_logs() {
     assert_eq!(line["issue"], 7);
     assert_eq!(line["reported"], true);
     running.abort();
+}
+
+const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// A comment on `number`, by `login`, at `minute`.
+fn comment_on(id: u64, number: u64, login: &str, minute: u32, body: &str) -> Comment {
+    let time = format!("2026-11-24T10:{minute:02}:00Z");
+    Comment {
+        id,
+        author: Login(login.to_owned()),
+        author_is_bot: login.ends_with("[bot]"),
+        body: body.to_owned(),
+        created_at: time.clone(),
+        updated_at: time,
+        url: format!("https://github.com/{REPO}/issues/{number}#issuecomment-{id}"),
+    }
+}
+
+/// The plane's plan package on `number`.
+fn plan_package(id: u64, number: u64) -> Comment {
+    let body = format!(
+        "{}\n{}\nPlease approve.",
+        mintswarm_rules::command::PackageKind::Plan.marker(),
+        mintswarm_rules::command::PackageKind::Plan.digest_line(SHA)
+    );
+    comment_on(id, number, BOT, 0, &body)
+}
+
+/// A person's comment delivery on issue `number`.
+fn comment_event(number: u64) -> WatchEvent {
+    webhook_event(
+        "issue_comment",
+        "created",
+        ItemKind::Issue,
+        side(REPO, number),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn state_sync_runs_before_approvals_for_one_number() {
+    let fake = tracker();
+    seed(&fake, 4, false, AWAITING_APPROVAL, &[]);
+    fake.set_role(Login(MAINTAINER.to_owned()), RepoRole::Write);
+    fake.add_comment(&IssueNumber(4), plan_package(10, 4));
+    fake.add_comment(&IssueNumber(4), comment_on(11, 4, MAINTAINER, 5, "approve"));
+    let mut plane = plane(fake);
+    plane.sync.on_delivery(&issues_event("closed", 4));
+    plane.sync.on_delivery(&comment_event(4));
+    assert_eq!(plane.sync.queued(), 1);
+    plane.worker.drain().await;
+
+    let lines: Vec<Value> = plane
+        .all_lines()
+        .into_iter()
+        .filter(|line| line["issue"] == 4)
+        .collect();
+    let evaluators: Vec<&Value> = lines.iter().map(|line| &line["evaluator"]).collect();
+    assert_eq!(evaluators, ["state_sync", "approvals"]);
+    assert_eq!(lines[0]["value_after"], DONE);
+    assert_eq!(lines[1]["state"], DONE);
+    assert_eq!(lines[1]["cause"], "triggered");
+    assert_eq!(lines[1]["outcome"], "judged");
+    assert_eq!(lines[1]["context"], "plan");
+    assert_eq!(lines[1]["sha256"], SHA);
+    assert_eq!(lines[1]["judged"][0]["comment"], 11);
+    assert_eq!(lines[1]["judged"][0]["verdict"], "refused");
+    assert_eq!(lines[1]["judged"][0]["check"], 5);
+}
+
+#[tokio::test]
+async fn an_awaiting_issue_with_an_approve_is_judged_without_writes() {
+    let fake = tracker();
+    seed(&fake, 4, true, AWAITING_APPROVAL, &[]);
+    fake.set_role(Login(MAINTAINER.to_owned()), RepoRole::Write);
+    fake.add_comment(&IssueNumber(4), plan_package(10, 4));
+    fake.add_comment(&IssueNumber(4), comment_on(11, 4, MAINTAINER, 5, "approve"));
+    let mut plane = plane(fake);
+    plane.sync.on_delivery(&comment_event(4));
+    plane.worker.drain().await;
+
+    assert!(plane.lines().is_empty());
+    let lines = plane.approvals_lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["state"], AWAITING_APPROVAL);
+    assert_eq!(lines[0]["package"], plan_package(10, 4).url);
+    assert_eq!(lines[0]["judged"][0]["verdict"], "approve");
+    assert!(plane.fake.writes().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deferred_entry_with_an_approvals_cause_is_judged_once() {
+    let fake = tracker();
+    seed(&fake, 5, true, BLOCKED, &[]);
+    // State-sync's four reads see the value move twice; the approvals step's read then finds
+    // it at rest at `queued`.
+    let moves = [DONE, BLOCKED, DONE, QUEUED, QUEUED]
+        .into_iter()
+        .map(|name| Some(name.to_owned()))
+        .collect();
+    fake.script_field_changes(&IssueNumber(5), field_source(), moves);
+    let mut plane = plane(fake);
+    plane.sync.on_delivery(&link_event("removed", 5, 3));
+    plane.sync.on_delivery(&comment_event(5));
+    assert_eq!(plane.sync.queued(), 1);
+    plane.worker.drain().await;
+
+    let outcomes: Vec<Value> = plane
+        .lines()
+        .into_iter()
+        .map(|line| line["outcome"].clone())
+        .collect();
+    assert_eq!(outcomes, vec![json!("deferred"), json!("unchanged")]);
+    let approvals = plane.approvals_lines();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0]["issue"], 5);
+    assert_eq!(approvals[0]["state"], QUEUED);
+    assert!(plane.fake.writes().is_empty());
+
+    // The settle repeat is state-sync's alone.
+    tokio::time::advance(SETTLE).await;
+    plane.worker.drain().await;
+    assert_eq!(plane.lines().len(), 3);
+    assert_eq!(plane.approvals_lines().len(), 1);
+}
+
+#[tokio::test]
+async fn the_owner_and_role_are_read_only_for_an_approve() {
+    let fake = tracker();
+    seed(&fake, 2, true, PLANNING, &[]);
+    seed(&fake, 9, true, AWAITING_APPROVAL, &[]);
+    // `#9` was filed by a bot, so its owner is its person-filed parent's author.
+    fake.add_issue(Issue {
+        number: IssueNumber(9),
+        title: "Issue 9".to_owned(),
+        body: String::new(),
+        state: "open".to_owned(),
+        labels: vec!["mintswarm".to_owned()],
+        issue_type: Some(IssueType::Implementation),
+        author: Login("helper[bot]".to_owned()),
+        author_is_bot: true,
+        url: format!("https://github.com/{REPO}/issues/9"),
+        sub_issues: 0,
+        blocked_by: 0,
+    });
+    fake.set_links(
+        &IssueNumber(9),
+        vec![Link {
+            kind: LinkKind::Parent,
+            number: 2,
+        }],
+    );
+    fake.set_role(Login(MAINTAINER.to_owned()), RepoRole::Write);
+    fake.add_comment(&IssueNumber(9), plan_package(10, 9));
+    fake.add_comment(&IssueNumber(9), comment_on(11, 9, MAINTAINER, 5, "help"));
+    let mut plane = plane(fake);
+    plane.sync.on_delivery(&comment_event(9));
+    plane.worker.drain().await;
+    assert_eq!(plane.approvals_lines()[0]["judged"][0]["verdict"], "help");
+    assert_eq!(plane.fake.permission_reads(), 0);
+    assert_eq!(plane.fake.parent_reads(), 0);
+
+    plane
+        .fake
+        .add_comment(&IssueNumber(9), comment_on(12, 9, MAINTAINER, 6, "approve"));
+    plane.sync.on_delivery(&comment_event(9));
+    plane.worker.drain().await;
+    let lines = plane.approvals_lines();
+    assert_eq!(lines[1]["judged"][1]["verdict"], "approve");
+    assert_eq!(plane.fake.permission_reads(), 1);
+    assert_eq!(plane.fake.parent_reads(), 1);
+}
+
+#[test]
+fn self_logins_are_the_bot_then_its_peers() {
+    assert_eq!(
+        settings().self_logins(),
+        [Login(BOT.to_owned()), Login(PEER.to_owned())]
+    );
 }

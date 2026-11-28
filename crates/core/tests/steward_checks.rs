@@ -81,6 +81,7 @@ fn comment(id: u64, author: &str, body: &str, created: &str, updated: &str) -> C
     Comment {
         id,
         author: Login(author.to_owned()),
+        author_is_bot: author.ends_with("[bot]"),
         body: body.to_owned(),
         created_at: created.to_owned(),
         updated_at: updated.to_owned(),

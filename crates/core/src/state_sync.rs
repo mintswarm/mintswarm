@@ -3,6 +3,9 @@
 //! [`trigger`] reduces a normalised delivery to the issues it concerns, [`queue`] holds them in
 //! one set per repository with one [`Worker`], [`evaluate`] evaluates one issue from fresh reads
 //! under the [`rule`], and [`report`] posts the blocker notes of active issues.
+//!
+//! The queue is the repository's only one: [`crate::approvals`] queues its issues and pull
+//! requests on it too, and the worker runs approvals after state-sync for the same number.
 
 pub mod evaluate;
 pub mod queue;

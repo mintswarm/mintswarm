@@ -90,6 +90,7 @@ fn comment(id: u64, created_at: &str) -> Comment {
     Comment {
         id,
         author: Login(BOT.to_owned()),
+        author_is_bot: true,
         body: note(),
         created_at: created_at.to_owned(),
         updated_at: created_at.to_owned(),

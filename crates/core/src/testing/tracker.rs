@@ -31,7 +31,7 @@ use mintswarm_domain::tracker::{
     Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
     IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, ParentIssue,
     PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
-    Reviews, Statuses, SubItem, TrackerBase,
+    Reviews, Statuses, SubItem, TrackerBase, is_bot,
 };
 use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{NOTE_MARKER, Token, is_commit_id};
@@ -171,6 +171,10 @@ struct State {
     now: String,
     next_comment: u64,
     writes: Vec<FakeWrite>,
+    /// How many times [`Collaborators::read_permission`] was called.
+    permission_reads: usize,
+    /// How many times [`Collaborators::read_parent`] was called.
+    parent_reads: usize,
 }
 
 impl State {
@@ -321,6 +325,8 @@ impl FakeTracker {
                 now: START.to_owned(),
                 next_comment: 1,
                 writes: Vec::new(),
+                permission_reads: 0,
+                parent_reads: 0,
             }),
         }
     }
@@ -539,6 +545,16 @@ impl FakeTracker {
         self.state().writes.clone()
     }
 
+    /// How many times [`Collaborators::read_permission`] was called.
+    pub fn permission_reads(&self) -> usize {
+        self.state().permission_reads
+    }
+
+    /// How many times [`Collaborators::read_parent`] was called.
+    pub fn parent_reads(&self) -> usize {
+        self.state().parent_reads
+    }
+
     /// The raw option name a role's field holds on `issue`.
     pub fn field(&self, issue: &IssueNumber, field: &FieldSource) -> Option<String> {
         self.state()
@@ -707,6 +723,7 @@ impl Comments for FakeTracker {
         let comment = Comment {
             id,
             author: self.bot.clone(),
+            author_is_bot: is_bot(&self.bot.0, None),
             body: body.clone(),
             created_at: state.now.clone(),
             updated_at: state.now.clone(),
@@ -777,8 +794,9 @@ impl CommentEdits for FakeTracker {
 
 impl Collaborators for FakeTracker {
     async fn read_permission(&self, login: Login) -> Result<RepoRole, Self::Error> {
-        Ok(self
-            .state()
+        let mut state = self.state();
+        state.permission_reads += 1;
+        Ok(state
             .roles
             .get(&login)
             .copied()
@@ -789,7 +807,8 @@ impl Collaborators for FakeTracker {
     /// with the seeded parent issue's author and bot flag. A parent link to an issue that is
     /// not seeded is [`FakeTrackerError::NoSuchIssue`].
     async fn read_parent(&self, issue: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
-        let state = self.state();
+        let mut state = self.state();
+        state.parent_reads += 1;
         state.issue(&issue)?;
         let Some(number) = state.links.get(&issue).and_then(|links| {
             links

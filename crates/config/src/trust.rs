@@ -175,4 +175,26 @@ impl ActionTable {
     pub(crate) fn get_mut(&mut self, action: Action) -> &mut ActionTrust {
         &mut self.rows[action as usize]
     }
+
+    /// The table with `action`'s row set to `row`, for a table built in code.
+    ///
+    /// Nothing here checks the row against its action: the loader of `tracker.actions` checks
+    /// [`People::allowed_in`] and the App rule, this builder does not.
+    ///
+    /// ```
+    /// use mintswarm_config::{Action, ActionTable, ActionTrust, People};
+    ///
+    /// let owner = ActionTrust { people: People::IssueOwner, apps: Vec::new() };
+    /// let table = ActionTable::default()
+    ///     .with(Action::ApprovePlan, owner.clone())
+    ///     .with(Action::ApproveDesign, owner.clone())
+    ///     .with(Action::ApproveDecomposition, owner);
+    /// assert_eq!(table.get(Action::ApproveDesign).people, People::IssueOwner);
+    /// assert_eq!(table.get(Action::Merge).people, People::None);
+    /// ```
+    #[must_use]
+    pub fn with(mut self, action: Action, row: ActionTrust) -> Self {
+        *self.get_mut(action) = row;
+        self
+    }
 }

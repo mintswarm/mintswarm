@@ -81,6 +81,9 @@ pub struct Issue {
 pub struct Comment {
     pub id: u64,
     pub author: Login,
+    /// Whether the author is a bot, as [`is_bot`] decides from the author's login and type.
+    #[serde(default)]
+    pub author_is_bot: bool,
     pub body: String,
     /// RFC 3339.
     pub created_at: String,

@@ -5,7 +5,8 @@
 //! GitHub-written string travels as [`v1::UntrustedText`]; the summary is built only from
 //! structured fields. An `issue_dependencies` delivery is about the issue in its `repository`,
 //! and its [`v1::IssueDependency`] names the blocked and the blocking issue with their
-//! repositories. [`Senders`] says who the sender is.
+//! repositories. A completed `check_suite` names its pull requests by number in the `detail`
+//! key `pull_requests`, since it has no subject number. [`Senders`] says who the sender is.
 
 use std::collections::HashMap;
 
@@ -343,8 +344,9 @@ fn body_source<'a>(
     }
 }
 
-/// The four detail values, each set only when the payload has it: `review_state`, `merged`,
-/// `label` and `check_conclusion`.
+/// The five detail values, each set only when the payload has it: `review_state`, `merged`,
+/// `label`, `check_conclusion` and, for a completed `check_suite`, `pull_requests`: the decimal
+/// numbers of `check_suite.pull_requests[].number` joined by `,`, set only when there is one.
 fn detail(
     event: &str,
     action: &str,
@@ -381,6 +383,19 @@ fn detail(
                 .get(event)
                 .and_then(|c| text_at(c.get("conclusion"))),
         );
+    }
+    if event == "check_suite" && action == "completed" {
+        let numbers: Vec<String> = payload
+            .get("check_suite")
+            .and_then(|suite| suite.get("pull_requests")?.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|pr| pr.get("number")?.as_u64())
+            .map(|number| number.to_string())
+            .collect();
+        if !numbers.is_empty() {
+            set("pull_requests", Some(&numbers.join(",")));
+        }
     }
     detail
 }
