@@ -3,7 +3,8 @@
 #
 #   push.sh BRANCH [--force-with-lease=EXPECTED_SHA]
 #
-# Pushes refs/heads/BRANCH to the same name at https://github.com/mintswarm/mintswarm.git,
+# Pushes refs/heads/BRANCH to the same name at https://github.com/$MSW_REPO.git (MSW_REPO is
+# owner/name, mintswarm/mintswarm by default; see common.sh),
 # never through a named remote: origin may be an SSH remote, which would
 # authenticate with the maintainer's key and record the push as theirs.
 #

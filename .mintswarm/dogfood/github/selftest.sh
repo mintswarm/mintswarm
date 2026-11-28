@@ -69,7 +69,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'printf "selftest: setup failed at line %s\n" "$LINENO" >&2' ERR
 
-unset MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN \
+unset MSW_REPO MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN \
       GH_REPO GH_HOST GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR \
       GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL \
       GIT_COMMITTER_DATE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG \
@@ -2158,6 +2158,11 @@ check "gh sees GH_TOKEN" eq "$(gh_env GH_TOKEN)" "$DUMMY"
 check "gh sees no GITHUB_TOKEN" eq "$(gh_env GITHUB_TOKEN)" "(unset)"
 check "gh sees no enterprise tokens" eq "$(gh_env GH_ENTERPRISE_TOKEN)$(gh_env GITHUB_ENTERPRISE_TOKEN)" "(unset)(unset)"
 check "gh sees GH_REPO=mintswarm/mintswarm" eq "$(gh_env GH_REPO)" "mintswarm/mintswarm"
+check "bot-gh.sh runs gh for another repository" env MSW_REPO=mintswarm/tenets MSW_TOKEN="$DUMMY" "$G" api 'repos/{owner}/{repo}'
+check "gh sees GH_REPO=\$MSW_REPO" eq "$(gh_env GH_REPO)" "mintswarm/tenets"
+for bad in mintswarm mintswarm/ /tenets mintswarm/a/b mintswarm/.hidden 'mint swarm/x' 'mintswarm/x;y'; do
+  refuses "bot-gh.sh refuses MSW_REPO=$bad" env MSW_REPO="$bad" MSW_TOKEN="$DUMMY" "$G" api 'repos/{owner}/{repo}'
+done
 check "gh sees GH_HOST=github.com" eq "$(gh_env GH_HOST)" "github.com"
 check "gh sees prompts disabled" eq "$(gh_env GH_PROMPT_DISABLED)" "1"
 check "the token is in no argv" absent "$DUMMY" "$argv_log"
