@@ -123,7 +123,7 @@ impl JobScope {
 }
 
 fn log_failure(error: &GitError) {
-    tracing::warn!(error = %error, "msw-vcs: the VCS failed");
+    tracing::warn!(error = %error, "the VCS failed");
 }
 
 /// `vcs failure`, after logging what failed.
@@ -268,8 +268,9 @@ fn read_base(path: &Path) -> Result<String, Setup> {
     }
 }
 
-/// `base` as the id of a commit, when it is a full lower-case id naming one.
-fn checked_base(store: &GitStore, base: &str) -> Result<RevId, Setup> {
+/// `base` as the id of a commit, when it is a full lower-case id naming one; shared with
+/// [`super::pr_labels`].
+pub(crate) fn checked_base(store: &GitStore, base: &str) -> Result<RevId, Setup> {
     let full = matches!(base.len(), 40 | 64)
         && base
             .bytes()
