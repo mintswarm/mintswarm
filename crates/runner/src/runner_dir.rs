@@ -63,8 +63,9 @@ pub enum RunnerDirError {
     /// The service file is in the runner directory already.
     #[error("{} exists already; remove it to write it again", .0.display())]
     ServiceExists(PathBuf),
-    /// A path a service file cannot hold: not UTF-8, with a control character, or, for the
-    /// unit's `WorkingDirectory=`, starting or ending with whitespace or ending with `\`.
+    /// A path a service file cannot hold: not UTF-8, with a control character, for the unit's
+    /// `WorkingDirectory=` starting or ending with whitespace or ending with `\`, or for the
+    /// unit's program holding `$`.
     #[error("{} cannot be written into a service file", .0.display())]
     UnrenderablePath(PathBuf),
     /// A file operation failed. The text is `context` alone; the underlying error is only the
@@ -266,12 +267,13 @@ fn renderable(path: &Path) -> Result<&str, RunnerDirError> {
 /// The systemd unit that runs `binary run` in the runner directory `dir`, both absolute.
 ///
 /// `%` starts a specifier everywhere in a unit, so it is written `%%`. `ExecStart=` quotes the
-/// binary in `"`, inside which `\` and `"` are escaped with `\`, and `$`, which starts a
-/// variable, is written `$$`. `WorkingDirectory=` takes the path unquoted: systemd strips
-/// leading and trailing whitespace from a value and a trailing `\` continues the line, so a
-/// directory that starts or ends with whitespace, or ends with `\`, is refused with
-/// [`RunnerDirError::UnrenderablePath`], and so is a path that is not UTF-8 or holds a control
-/// character.
+/// binary in `"`, inside which `\` and `"` are escaped with `\`. A binary path holding `$` is
+/// refused with [`RunnerDirError::UnrenderablePath`]: systemd expands variables in the
+/// arguments but not in the program path, so neither `$` nor `$$` reaches the program path
+/// intact. `WorkingDirectory=` takes the path unquoted: systemd strips leading and trailing
+/// whitespace from a value and a trailing `\` continues the line, so a directory that starts or
+/// ends with whitespace, or ends with `\`, is refused too, and so is a path that is not UTF-8 or
+/// holds a control character.
 pub fn render_unit(dir: &Path, binary: &Path) -> Result<String, RunnerDirError> {
     let directory = renderable(dir)?;
     if directory.starts_with(char::is_whitespace)
@@ -281,6 +283,9 @@ pub fn render_unit(dir: &Path, binary: &Path) -> Result<String, RunnerDirError> 
         return Err(RunnerDirError::UnrenderablePath(dir.to_path_buf()));
     }
     let program = renderable(binary)?;
+    if program.contains('$') {
+        return Err(RunnerDirError::UnrenderablePath(binary.to_path_buf()));
+    }
     let mut exec_start = String::from("\"");
     for c in program.chars() {
         match c {
@@ -289,7 +294,6 @@ pub fn render_unit(dir: &Path, binary: &Path) -> Result<String, RunnerDirError> 
                 exec_start.push(c);
             }
             '%' => exec_start.push_str("%%"),
-            '$' => exec_start.push_str("$$"),
             c => exec_start.push(c),
         }
     }
@@ -346,12 +350,14 @@ fn shell_quote(text: &str) -> String {
 /// The commands that load the service file `file` named `name`, as `add-service` prints them.
 ///
 /// For launchd the plist is copied into `~/Library/LaunchAgents`, where a new login session
-/// finds it, and the copy is bootstrapped; the copy has to be repeated whenever the file is
-/// written again. For systemd the unit is linked and enabled, with a note that a user unit stops
+/// finds it, and the copy is bootstrapped. Whenever the file is written again the loaded agent
+/// is booted out first, as a second bootstrap of a loaded label fails, and the copy and the
+/// bootstrap are repeated. For systemd the unit is linked and enabled, with a note that a user unit stops
 /// at logout unless lingering is on.
 pub fn instructions(kind: ServiceKind, file: &Path, name: &str) -> String {
     let file = shell_quote(&file.to_string_lossy());
-    let refresh = "If the binary moves, remove the file, run `mintswarm-runner add-service` again";
+    let refresh =
+        "If the binary moves, remove the file and run `mintswarm-runner add-service` again";
     match kind {
         ServiceKind::Systemd => format!(
             "To start the runner now and at every login:\n\
@@ -359,17 +365,21 @@ pub fn instructions(kind: ServiceKind, file: &Path, name: &str) -> String {
              \x20 systemctl --user enable --now {name}\n\
              A user unit stops when you log out unless lingering is on: \
              loginctl enable-linger\n\
-             {refresh}, then systemctl --user daemon-reload and restart {name}.\n"
+             {refresh}, then run systemctl --user daemon-reload and restart {name}.\n"
         ),
         ServiceKind::Launchd => {
             let agent = format!("~/Library/LaunchAgents/{name}.plist");
+            let copy = format!("cp {file} {agent}");
+            let bootstrap = format!("launchctl bootstrap gui/$(id -u) {agent}");
             format!(
                 "To start the runner now and at every login:\n\
-                 \x20 cp {file} {agent}\n\
-                 \x20 launchctl bootstrap gui/$(id -u) {agent}\n\
-                 launchd reads the copy: repeat the cp after `mintswarm-runner add-service` is \
-                 run again.\n\
-                 {refresh} and repeat both commands.\n"
+                 \x20 {copy}\n\
+                 \x20 {bootstrap}\n\
+                 launchd reads the copy. {refresh}; after `mintswarm-runner add-service` is run \
+                 again, boot the loaded agent out, then repeat the cp and the bootstrap:\n\
+                 \x20 launchctl bootout gui/$(id -u)/{name}\n\
+                 \x20 {copy}\n\
+                 \x20 {bootstrap}\n"
             )
         }
     }

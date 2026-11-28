@@ -320,8 +320,8 @@ fn unit_working_directory(unit: &str) -> String {
     unit_value(unit, "WorkingDirectory").replace("%%", "%")
 }
 
-/// `ExecStart=` read back as its words: a `"`-quoted word with `\` escapes, `%%` and `$$`, then
-/// plain words.
+/// `ExecStart=` read back as its words: a `"`-quoted word with `\` escapes and `%%`, then plain
+/// words. A `$` in the quoted word, which systemd would leave unexpanded, fails the reading.
 fn unit_exec_start(unit: &str) -> Vec<String> {
     let value = unit_value(unit, "ExecStart");
     let rest = value.strip_prefix('"').expect("a quoted program");
@@ -335,10 +335,7 @@ fn unit_exec_start(unit: &str) -> Vec<String> {
                 assert_eq!(chars.next(), Some('%'), "a lone % in {value}");
                 program.push('%');
             }
-            '$' => {
-                assert_eq!(chars.next(), Some('$'), "a lone $ in {value}");
-                program.push('$');
-            }
+            '$' => panic!("a $ in the program path of {value}"),
             c => program.push(c),
         }
     }
@@ -413,7 +410,7 @@ fn plist_has_working_directory_and_program_arguments() {
 
 /// A runner directory and a binary with a space, `%`, `&` and `<`, and more that needs escaping.
 const ODD_DIR: &str = "/srv/my runners/100% & <one>";
-const ODD_BINARY: &str = "/opt/a b/50%&<$\"\\/mintswarm-runner";
+const ODD_BINARY: &str = "/opt/a b/50%&<\"\\/mintswarm-runner";
 
 #[test]
 fn unit_escapes_special_characters() {
@@ -427,7 +424,7 @@ fn unit_escapes_special_characters() {
          [Service]\n\
          Type=simple\n\
          WorkingDirectory=/srv/my runners/100%% & <one>\n\
-         ExecStart=\"/opt/a b/50%%&<$$\\\"\\\\/mintswarm-runner\" run\n\
+         ExecStart=\"/opt/a b/50%%&<\\\"\\\\/mintswarm-runner\" run\n\
          Restart=on-failure\n\
          \n\
          [Install]\n\
@@ -452,7 +449,7 @@ fn plist_escapes_special_characters() {
          \t<string>{label}</string>\n\
          \t<key>ProgramArguments</key>\n\
          \t<array>\n\
-         \t\t<string>/opt/a b/50%&amp;&lt;$&quot;\\/mintswarm-runner</string>\n\
+         \t\t<string>/opt/a b/50%&amp;&lt;&quot;\\/mintswarm-runner</string>\n\
          \t\t<string>run</string>\n\
          \t</array>\n\
          \t<key>WorkingDirectory</key>\n\
@@ -507,6 +504,15 @@ fn unit_refuses_unsafe_working_directory_edges() {
         );
     }
     let err = render_unit(Path::new("/srv/one"), Path::new("/bin/a\u{7f}b")).unwrap_err();
+    assert!(
+        matches!(err, RunnerDirError::UnrenderablePath(_)),
+        "{err:?}"
+    );
+    let err = render_unit(
+        Path::new("/srv/one"),
+        Path::new("/opt/a$b/mintswarm-runner"),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, RunnerDirError::UnrenderablePath(_)),
         "{err:?}"
@@ -619,11 +625,23 @@ fn instructions_copy_before_bootstrap_and_mention_lingering() {
     );
     let copy = format!("cp '/srv/it'\\''s here/mintswarm-runner-0123456789ab.plist' {agent}\n");
     let bootstrap = format!("launchctl bootstrap gui/$(id -u) {agent}\n");
-    let copy_at = text.find(&copy).unwrap_or_else(|| panic!("{text}"));
-    let bootstrap_at = text.find(&bootstrap).unwrap_or_else(|| panic!("{text}"));
-    assert!(copy_at < bootstrap_at, "{text}");
+    let bootout = format!("launchctl bootout gui/$(id -u)/{name}\n");
+    let at = |needle: &str, from: usize| {
+        from + text[from..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} after {from} in {text}"))
+    };
+    // The first load: the copy, then the bootstrap.
+    let copy_at = at(&copy, 0);
+    let bootstrap_at = at(&bootstrap, copy_at);
+    // After add-service is run again: boot the agent out, copy again, bootstrap again.
+    let bootout_at = at(&bootout, bootstrap_at);
+    let recopy_at = at(&copy, bootout_at);
+    at(&bootstrap, recopy_at);
+    let note = &text[bootstrap_at..bootout_at];
     assert!(
-        text.contains("repeat the cp after `mintswarm-runner add-service` is run again"),
+        note.contains("after `mintswarm-runner add-service` is run again")
+            && note.contains("repeat the cp and the bootstrap"),
         "{text}"
     );
 
