@@ -257,12 +257,11 @@ fn every_selftest_call_equals_the_python() {
         }
     }
     assert!(failures.is_empty(), "differ from the Python: {failures:#?}");
-    for difference in [Difference::YqMissing] {
-        assert!(
-            seen.contains(&difference),
-            "{difference:?} is accepted but never seen"
-        );
-    }
+    assert!(
+        seen.contains(&Difference::YqMissing),
+        "{:?} is accepted but never seen",
+        Difference::YqMissing
+    );
 }
 
 /// The `git` on `PATH`.
