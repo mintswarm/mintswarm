@@ -9,6 +9,7 @@ mod activity;
 mod probes;
 mod runner;
 mod schema;
+mod shlex;
 mod state;
 mod trust;
 mod yaml;
@@ -25,6 +26,7 @@ pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
     RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
 };
+pub use shlex::{SplitError, shlex_split};
 pub use state::{
     AWAITING_APPROVAL, AWAITING_MERGE, BLOCKED, DONE, NONE, PLAN_APPROVED, PLANNING, QUEUED,
     REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
