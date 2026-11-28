@@ -118,7 +118,7 @@ components:
     paths: ["web/**"]
   agents:
     description: "stage agent definitions, stage conventions, local tenets, prompt templates and the dogfooding glue"
-    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/tenets/**", ".mintswarm/dogfood/**", "defaults/prompts/**", "defaults/packs/**", ".claude/skills/**"]
+    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/tenets.yaml", ".mintswarm/tenets/**", ".mintswarm/dogfood/**", "defaults/prompts/**", "defaults/packs/**", ".claude/skills/**"]
   distribution:
     description: "container image, compose files, service units and installers"
     paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
@@ -279,14 +279,15 @@ gates:
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
     #   sarif: { command: [python3, .mintswarm/reporters/ctrf-to-sarif.py], extension: sarif }
 
-# Tenet packs (#705): statements, facts and checks that steer the stages producing an artefact
-# and are the lenses of the stages reviewing it. Not read by any stage yet. The format and the
-# schema of this section are in mintswarm/tenets (FORMAT.md, schemas/settings.schema.yaml).
+# Tenet packs this repository imports (#705): statements, facts and checks that steer the stages
+# producing an artefact and are the lenses of the stages reviewing it. Not read by any stage yet.
+# The packs it exports are declared in .mintswarm/tenets.yaml. The format and the schema of this
+# section are in mintswarm/tenets (FORMAT.md, schemas/settings.schema.yaml).
 tenets:
   sources:
     - pack: "@mintswarm/tenets:rust"
       from: "git+https://github.com/mintswarm/tenets"
-      tag: "rust/v0.1.1"
+      tag: "rust/v0.1.2"
       # docs/conventions/rust.md states these without exception, so mintswarm holds itself to must.
       tenets:
         edition-inherited: { strength: "must" }
@@ -304,6 +305,6 @@ tenets:
         unit-tests-beside-code: { strength: "must" }
         integration-tests-in-tests-dir: { strength: "must" }
     - pack: "@mintswarm/mintswarm:repository"
-      from: "repo:.mintswarm/tenets/repository"
+      from: "self"
     - pack: "@mintswarm/mintswarm:rust"
-      from: "repo:.mintswarm/tenets/rust"
+      from: "self"
