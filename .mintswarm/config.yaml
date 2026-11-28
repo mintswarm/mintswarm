@@ -105,8 +105,8 @@ components:
     description: "control plane: store, scheduler, ingest, event log, tracker adapters, HTTP transcoding, server binary"
     paths: ["crates/core/**", "crates/server/**", "crates/steward/**"]
   runner:
-    description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes and language-server definitions"
-    paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**"]
+    description: "runner daemon: stream client, worktrees, harness adapters, job MCP, gates, pusher; built-in probes, language-server definitions and default activity rules"
+    paths: ["crates/runner/**", "defaults/probes/**", "defaults/lsp/**", "defaults/activity/**"]
   console-mcp:
     description: "console MCP server used from people's own agent sessions"
     paths: ["crates/console-mcp/**"]

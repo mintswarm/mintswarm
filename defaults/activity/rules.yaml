@@ -1,0 +1,57 @@
+# The runner's default activity rules, embedded into the runner and applied below a project's
+# metrics.activity.rules in .mintswarm/config.yaml. The schema is documented on
+# mintswarm_config::ActivityRule (crates/config/src/activity.rs). Only the base set of
+# activities is used: reading, searching, writing, building, testing, running, committing,
+# fetching and other.
+rules:
+  # Harness tools.
+  - { tool: Read, activity: reading }
+  - { tool: Write, activity: writing }
+  - { tool: Edit, activity: writing }
+  - { tool: MultiEdit, activity: writing }
+  - { tool: NotebookEdit, activity: writing }
+  - { tool: Grep, activity: searching }
+  - { tool: Glob, activity: searching }
+  - { tool: WebFetch, activity: fetching }
+  - { tool: WebSearch, activity: fetching }
+
+  # Reading and searching commands.
+  - { command: grep, activity: searching }
+  - { command: rg, activity: searching }
+  - { command: find, activity: searching }
+  - { command: sed, activity: reading }
+  - { command: sed, args: ["-i*"], activity: writing }
+  - { command: cat, activity: reading }
+  - { command: head, activity: reading }
+  - { command: tail, activity: reading }
+  - { command: ls, activity: reading }
+  - { command: wc, activity: reading }
+  - { command: diff, activity: reading }
+  - { command: jq, activity: reading }
+  - { command: msw-vcs, activity: reading }
+
+  # Version control.
+  - { command: git, activity: reading }
+  - { command: git, args: [commit], activity: committing }
+  - { command: git, args: [push], activity: committing }
+
+  # Building and testing.
+  - { command: cargo, activity: building }
+  - { command: cargo, args: [test], activity: testing }
+  - { command: cargo, args: [nextest], activity: testing }
+  - { command: black, activity: building }
+  - { command: make, activity: building }
+
+  # Interpreters, and the dogfood scripts run through them.
+  - { command: python3, activity: running }
+  - { command: python3, args: [".mintswarm/dogfood/run-gates.py"], activity: testing }
+  - { command: python3, args: [".mintswarm/dogfood/**selftest*.py"], activity: testing }
+  - { command: python3, args: [".mintswarm/dogfood/commit.py"], activity: committing }
+  - { command: bash, activity: running }
+  - { command: bash, args: [".mintswarm/dogfood/**selftest*.sh"], activity: testing }
+  - { command: bash, args: [".mintswarm/dogfood/shell-lint.sh"], activity: testing }
+
+  # Fetching.
+  - { command: gh, activity: fetching }
+  - { command: curl, activity: fetching }
+  - { mcp: { server: github, tool: "*" }, activity: fetching }
