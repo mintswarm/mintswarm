@@ -70,3 +70,24 @@ id!(
     /// A work item: an issue, a plan, a decomposition or a pull request mintswarm tracks.
     WorkItemId(String)
 );
+id!(
+    /// A person's identity in the plane, which login bindings, sessions and links point to.
+    IdentityId(String)
+);
+id!(
+    /// A signed-in session of an identity.
+    SessionId(String)
+);
+id!(
+    /// One write action an identity asked the plane to perform on the code host.
+    ActionId(String)
+);
+id!(
+    /// A login provider, by the id the server config gives it.
+    ProviderId(String)
+);
+id!(
+    /// A GitHub user's numeric id; `i64`, as auth.v1's `int64 github_user_id` and Postgres
+    /// `bigint` hold it.
+    GitHubUserId(i64)
+);
