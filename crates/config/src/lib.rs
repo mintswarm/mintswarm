@@ -1,7 +1,6 @@
 //! Loaders for mintswarm's YAML configuration: the repository config `.mintswarm/config.yaml`,
 //! the runner config, the capability probe definitions and the activity rules, which share one
-//! schema between the runner's defaults and `metrics.activity` in the repository config, and the
-//! repository's tenet packs (`tenets`).
+//! schema between the runner's defaults and `metrics.activity` in the repository config.
 //!
 //! YAML is read natively, with the same result as `yq -p=yaml -o=json .` (yq v4.45.1) gives for
 //! it, and the repository config is then checked as the dogfood floors check it.
@@ -11,7 +10,6 @@ mod probes;
 mod runner;
 mod schema;
 mod state;
-mod tenets;
 mod trust;
 mod yaml;
 
@@ -31,7 +29,6 @@ pub use state::{
     AWAITING_APPROVAL, AWAITING_MERGE, BLOCKED, DONE, NONE, PLAN_APPROVED, PLANNING, QUEUED,
     REQUIRED_OPTIONS, StateOption, StateSettings, StatusMode,
 };
-pub use tenets::{Override, PackSource, Pin, Strength, TenetSource};
 pub use trust::{Action, ActionTable, ActionTrust, People, Trust, TrustMatch};
 pub use yaml::parse_yaml;
 

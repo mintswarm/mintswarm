@@ -43,9 +43,10 @@
 //! `activity` module checks with the same schema as the runner's default activity rules,
 //! described on [`ActivityRule`].
 //!
-//! The `tenets` check is the loader's own too, in the `tenets` module: the packs the
-//! repository uses, how each is pinned and its overrides, following `schemas/settings.schema.yaml`
-//! in mintswarm/tenets.
+//! `tenets` is accepted as any mapping. Its format is still settling in mintswarm/tenets, whose
+//! `schemas/settings.schema.yaml` defines the section and whose validator checks it; the schema
+//! and the validator move into this repository once the format is done, and the loader checks the
+//! section then.
 
 use std::collections::BTreeMap;
 
@@ -58,7 +59,6 @@ use serde_json::{Map, Value};
 
 use crate::activity::check_activity;
 use crate::state::check_options;
-use crate::tenets::{TenetSource, check_tenets};
 use crate::{
     Action, ActionTable, ActionTrust, ActivityRule, Error, Path, People, Stage, StateSettings,
     StatusMode, Trust, TrustMatch, parse_yaml,
@@ -217,7 +217,6 @@ pub struct RepoConfig {
     state: Option<StateSettings>,
     actions: ActionTable,
     activity_rules: Vec<ActivityRule>,
-    tenets: Vec<TenetSource>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -319,7 +318,9 @@ impl RepoConfig {
             formatters,
         } = check_gates(top.get("gates"), &root.key("gates"))?;
         let activity_rules = check_metrics(top.get("metrics"), &root.key("metrics"))?;
-        let tenets = check_tenets(top.get("tenets"), &root.key("tenets"))?;
+        if let Some(tenets) = top.get("tenets") {
+            mapping(tenets, &root.key("tenets"))?;
+        }
 
         Ok(RepoConfig {
             value,
@@ -334,7 +335,6 @@ impl RepoConfig {
             state,
             actions,
             activity_rules,
-            tenets,
         })
     }
 
@@ -396,11 +396,6 @@ impl RepoConfig {
     /// `metrics.activity.rules`, the project's activity rules in file order, empty when absent.
     pub fn activity_rules(&self) -> &[ActivityRule] {
         &self.activity_rules
-    }
-
-    /// The tenet packs from `tenets.sources`, in order; empty when there are none.
-    pub fn tenets(&self) -> &[TenetSource] {
-        &self.tenets
     }
 
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
