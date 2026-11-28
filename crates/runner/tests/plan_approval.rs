@@ -9,12 +9,8 @@
 //! argument refusal is the same after the prefix, with the usage line swapped, and a refusal that
 //! names the fetch or a partial clone names it on both sides.
 //!
-//! The differences accepted, each by name in [`Difference`], and each seen at least once:
+//! The one difference accepted, by name in [`Difference`], and seen at least once:
 //!
-//! - `footprint-reasons`: a footprint the floor cannot read carries the JSON parser's message in
-//!   Python, which the Rust floor words itself; stdout and `floor.json` may differ only in a
-//!   footprint reason that starts `the footprint is not valid JSON: ` in Python and `the
-//!   footprint is not strict JSON: ` in Rust.
 //! - `yq-missing`: with no `yq` on `PATH`, Python exits 2 with its one `cannot run yq: ` line; the
 //!   Rust tools run no `yq` and give a verdict, exit 0 or 1, with the floor's stderr empty and
 //!   the decision's its one `decision: ` line.
@@ -70,7 +66,6 @@ fn record() -> Vec<Value> {
 /// A difference the parity check accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Difference {
-    FootprintReasons,
     YqMissing,
 }
 
@@ -115,62 +110,6 @@ fn hex(text: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("a hex byte"))
         .collect()
-}
-
-/// The start of Python's reason for a footprint that is not JSON.
-const PYTHON_FOOTPRINT: &str = "the footprint is not valid JSON: ";
-/// The start of Rust's reason for a footprint that is not JSON.
-const RUST_FOOTPRINT: &str = "the footprint is not strict JSON: ";
-
-/// Whether two footprint reasons are equal, or both say the footprint is not JSON, each in its
-/// own words.
-fn same_footprint_reason(python: &str, rust: &str) -> bool {
-    python == rust || (python.starts_with(PYTHON_FOOTPRINT) && rust.starts_with(RUST_FOOTPRINT))
-}
-
-/// The verdict and the `footprint` rule's reasons, taken out of it.
-fn split_footprint_reasons(bytes: &[u8]) -> (Value, Vec<String>) {
-    let mut verdict: Value = serde_json::from_slice(bytes).expect("a JSON verdict");
-    let mut reasons = Vec::new();
-    for rule in verdict["rules"].as_array_mut().expect("rules") {
-        if rule["rule"] == "footprint" {
-            let taken = rule["reasons"].take();
-            reasons.extend(
-                taken
-                    .as_array()
-                    .expect("reasons")
-                    .iter()
-                    .map(|reason| reason.as_str().expect("a reason").to_owned()),
-            );
-        }
-    }
-    (verdict, reasons)
-}
-
-/// Whether two verdicts differ only in footprint reasons that both say the footprint is not JSON.
-fn same_but_footprint_reasons(python: &[u8], rust: &[u8]) -> bool {
-    let (python_verdict, python_reasons) = split_footprint_reasons(python);
-    let (rust_verdict, rust_reasons) = split_footprint_reasons(rust);
-    python_verdict == rust_verdict
-        && python_reasons.len() == rust_reasons.len()
-        && python_reasons
-            .iter()
-            .zip(&rust_reasons)
-            .all(|(p, r)| same_footprint_reason(p, r))
-}
-
-/// Whether two floor stdouts differ only in a `footprint` line's reason that both say the
-/// footprint is not JSON.
-fn same_but_footprint_reason(python: &str, rust: &str) -> bool {
-    let footprint = "hit     footprint: ";
-    python.lines().count() == rust.lines().count()
-        && python.lines().zip(rust.lines()).all(|(p, r)| {
-            p == r
-                || matches!(
-                    (p.strip_prefix(footprint), r.strip_prefix(footprint)),
-                    (Some(p), Some(r)) if same_footprint_reason(p, r)
-                )
-        })
 }
 
 /// A call with no `yq` on `PATH` where Python exits 2 and Rust gives a verdict: accepted only
@@ -244,32 +183,20 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
     if python.exit() != rust.exit() {
         return Err(format!("exit {} and {}", python.exit(), rust.exit()));
     }
-    let mut difference = None;
     for name in ["floor.json", "decision.json"] {
-        if python.file(name) == rust.file(name) {
-            continue;
-        }
-        match (python.file_bytes(name), rust.file_bytes(name)) {
-            (Some(p), Some(r)) if name == "floor.json" && same_but_footprint_reasons(&p, &r) => {
-                difference = Some(Difference::FootprintReasons);
-            }
-            _ => return Err(format!("{name} differs")),
+        if python.file(name) != rust.file(name) {
+            return Err(format!("{name} differs"));
         }
     }
-    let (python_out, rust_out) = (python.text("stdout"), rust.text("stdout"));
-    if python_out != rust_out {
-        if tool == "floor" && same_but_footprint_reason(&python_out, &rust_out) {
-            difference = Some(Difference::FootprintReasons);
-        } else {
-            return Err("stdout differs".to_owned());
-        }
+    if python.text("stdout") != rust.text("stdout") {
+        return Err("stdout differs".to_owned());
     }
     let (python_err, rust_err) = (python.text("stderr"), rust.text("stderr"));
     if python.exit() != 2 {
         if python_err != rust_err {
             return Err(format!("stderr {python_err:?} and {rust_err:?}"));
         }
-        return Ok(difference);
+        return Ok(None);
     }
     let python_lines: Vec<&str> = python_err.lines().collect();
     let rust_lines: Vec<&str> = rust_err.lines().collect();
@@ -301,7 +228,7 @@ fn compare(line: &Value) -> Result<Option<Difference>, String> {
             return Err(format!("{rust_text:?} does not name {word:?}"));
         }
     }
-    Ok(difference)
+    Ok(None)
 }
 
 #[test]
@@ -330,7 +257,7 @@ fn every_selftest_call_equals_the_python() {
         }
     }
     assert!(failures.is_empty(), "differ from the Python: {failures:#?}");
-    for difference in [Difference::FootprintReasons, Difference::YqMissing] {
+    for difference in [Difference::YqMissing] {
         assert!(
             seen.contains(&difference),
             "{difference:?} is accepted but never seen"
