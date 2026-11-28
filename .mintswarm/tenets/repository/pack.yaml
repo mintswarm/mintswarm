@@ -1,0 +1,5 @@
+id: "repository"
+name: "mintswarm repository"
+description: "How the mintswarm repository is laid out, whatever the language."
+applies:
+  kind: ["design", "plan", "code", "test"]

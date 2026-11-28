@@ -42,6 +42,11 @@
 //! The `metrics` check is the loader's own as well: `metrics` holds only `activity`, which the
 //! `activity` module checks with the same schema as the runner's default activity rules,
 //! described on [`ActivityRule`].
+//!
+//! `tenets` is accepted as any mapping. Its format is still settling in mintswarm/tenets, whose
+//! `schemas/settings.schema.yaml` defines the section and whose validator checks it; the schema
+//! and the validator move into this repository once the format is done, and the loader checks the
+//! section then.
 
 use std::collections::BTreeMap;
 
@@ -273,6 +278,7 @@ impl RepoConfig {
                 "pipeline",
                 "gates",
                 "metrics",
+                "tenets",
             ],
         )?;
         let (trust, state, actions) = match top.get("tracker") {
@@ -312,6 +318,9 @@ impl RepoConfig {
             formatters,
         } = check_gates(top.get("gates"), &root.key("gates"))?;
         let activity_rules = check_metrics(top.get("metrics"), &root.key("metrics"))?;
+        if let Some(tenets) = top.get("tenets") {
+            mapping(tenets, &root.key("tenets"))?;
+        }
 
         Ok(RepoConfig {
             value,

@@ -1,0 +1,8 @@
+id: "rust"
+name: "mintswarm Rust"
+description: "mintswarm's own decisions for its Rust workspace, on top of @mintswarm/tenets:rust."
+applies:
+  kind: ["design", "plan", "code", "test"]
+  system: { lang: ["rust"] }
+gates:
+  - { id: "rust-test", run: "cargo nextest run --workspace && cargo test --doc --workspace", output: "text" }
