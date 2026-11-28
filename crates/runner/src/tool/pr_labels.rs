@@ -3,9 +3,11 @@
 //!
 //! It opens the working directory's repository as [`super::msw_vcs`] does, reads
 //! `.mintswarm/config.yaml` at the base commit, never from the worktree, and takes the changed
-//! paths from the diff between the merge base of base and head, and head. Under the pinned
-//! `--no-renames` a rename or a copy is a deletion and an addition, so both of its paths count,
-//! and so does every deleted path. The PR's labels and the repository's labels come from two
+//! paths from the diff between the merge base of base and head, and head. The base is a full
+//! commit id; the head is `HEAD`, the default, or a full commit id, and nothing else, such as a
+//! branch name or a short id, is resolved. Under the pinned `--no-renames` a rename is a deletion
+//! and an addition, so both its paths count, a copy is an addition of its new path, and every
+//! deleted path counts. The PR's labels and the repository's labels come from two
 //! files holding GitHub's arrays of label objects, of which only `name` is read.
 //!
 //! On success it prints the rule's JSON on stdout and exits 0; any unusable input is one
@@ -29,7 +31,7 @@ use crate::exec::git::{GitError, GitStore};
 
 /// The usage line, appended to the argument refusals.
 pub const USAGE: &str = "usage: mintswarm-runner tool pr-labels --base COMMIT --pr-labels PATH \
-                         --repo-labels PATH [--head REV] [--band BAND]";
+                         --repo-labels PATH [--head COMMIT] [--band BAND]";
 
 /// The config the rule reads, relative to the top of the repository.
 pub const CONFIG: &str = ".mintswarm/config.yaml";

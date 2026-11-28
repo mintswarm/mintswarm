@@ -73,7 +73,7 @@ enum Tool {
     #[command(
         name = "pr-labels",
         disable_help_flag = true,
-        override_usage = "mintswarm-runner tool pr-labels --base COMMIT --pr-labels PATH --repo-labels PATH [--head REV] [--band BAND]"
+        override_usage = "mintswarm-runner tool pr-labels --base COMMIT --pr-labels PATH --repo-labels PATH [--head COMMIT] [--band BAND]"
     )]
     PrLabels {
         /// The tool's arguments, checked by the tool itself

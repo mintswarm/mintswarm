@@ -322,6 +322,36 @@ fn unknown_base_exits_2() {
 }
 
 #[test]
+fn explicit_head_commit_is_used() {
+    let fixture = Fixture::new();
+    let base = fixture.branch();
+    fixture.write("crates/runner/a.rs", "changed\n");
+    fixture.git(&["add", "crates/runner/a.rs"]);
+    let head = fixture.commit("change the runner");
+    fixture.git(&["checkout", "-q", "master"]);
+    // the worktree's HEAD is the base, so only the explicit head gives a change
+    assert_eq!(added(&fixture.run(&base, &[])), Vec::<String>::new());
+    assert_eq!(
+        added(&fixture.run(&base, &["--head", &head])),
+        ["component:runner"]
+    );
+    assert_eq!(
+        added(&fixture.run(&base, &["--head", "HEAD"])),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn unresolvable_head_exits_2() {
+    let fixture = Fixture::new();
+    let base = fixture.branch();
+    let short = &base[..12];
+    for head in ["0123456789abcdef0123456789abcdef01234567", "pr", short] {
+        assert_unusable(&fixture.run(&base, &["--head", head]));
+    }
+}
+
+#[test]
 fn manifest_has_no_network_dependency() {
     let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
         .expect("the manifest is read");
