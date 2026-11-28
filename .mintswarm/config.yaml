@@ -229,6 +229,8 @@ gates:
       command: "python3 .mintswarm/dogfood/landing/decision-selftest.py"
     - name: github-selftest
       command: "bash .mintswarm/dogfood/github/selftest.sh"
+    - name: ancestor-decisions-selftest
+      command: "python3 .mintswarm/dogfood/github/ancestor-decisions-selftest.py"
     - name: readiness-selftest
       command: "python3 .mintswarm/dogfood/readiness/selftest.py"
     - name: rust-format
