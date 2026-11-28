@@ -1,0 +1,5 @@
+# The pinned opentelemetry-proto release, vendored by vendor.py beside this file.
+# vendor.py fetches the tag's archive and refuses it unless its SHA-256 equals sha256.
+# To re-pin: change tag, empty the sha256 line to "sha256", then run vendor.py --record-first-hash once.
+tag v1.10.0
+sha256 52c85df79badc45da7e6a8735e8090b05a961b0208756187e1492a40db2d1f5f

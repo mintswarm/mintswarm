@@ -1,0 +1,4 @@
+# The vendored upstream files stay byte for byte as released: upstream has trailing
+# whitespace (common.proto, trace.proto), and no end-of-line conversion may touch them.
+proto/** -text -whitespace
+LICENSE -text -whitespace
