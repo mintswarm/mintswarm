@@ -29,7 +29,7 @@ After the plan stage returns a plan, in this order:
    - no line holds a URL (`://` or `www.`), inside a code span or not.
 
    Otherwise the comment says instead that the plan has no usable TL;DR and links only the plan artifact; the plan's text is then not posted.
-2. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md` and `.mintswarm/job/inputs/artefacts/analysis.md`. Beside them go `analysis.result.json` and `plan.result.json`, the result records `save-output.py` wrote with each document, each copied from the job that saved its document and only when that job wrote one. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
+2. **Lay out the assess job.** Put the plan at the assess job's `.mintswarm/job/inputs/artefacts/plan.md`, beside `.mintswarm/job/inputs/issue.md`, `.mintswarm/job/inputs/artefacts/analysis.md` and `.mintswarm/job/inputs/ancestors.md`, which `ancestor-decisions.py assemble` writes. Beside them go `analysis.result.json` and `plan.result.json`, the result records `save-output.py` wrote with each document, each copied from the job that saved its document and only when that job wrote one. Nothing else goes under `inputs/`: no parent artefacts, no floor verdict, no planner transcript.
 3. **Run the floor** in that job's worktree, on that file, the job's issue document and analysis, and the plan's screen record, with `--base` at the job's base commit:
 
    ```
@@ -40,7 +40,7 @@ After the plan stage returns a plan, in this order:
    ```
 
    `<components>` is the issue's components, comma-separated in the issue's order with no spaces, for example `domain,agents`. It writes `.mintswarm/job/outputs/floor.json`. Besides the footprint, it checks for blocking questions in the analysis and the plan, for a Verification table that does not quote the issue's acceptance criteria, and for the first job of its kind (a component of the issue that no earlier commit on the base has in its scope: each component needs a commit scoped `(<component>)` or with it in a comma-separated scope such as `(domain,agents)`). It reads `analysis.result.json` and `plan.result.json` beside the two documents. With a record, every `must_decide` or `recommended` question in it is a hit, and so are `## Questions` bullets whose counts per kind disagree with it; without one, the floor reads the document's Markdown, where a `Must decide`, `Recommended` or old `Blocking` bullet is a hit. A blocking question stops being a hit only when the analysis is rerun with the answer applied to the issue.
-4. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md` and `plan.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
+4. **Run assess** (`msw-assess`) in a fresh subagent that receives only `issue.md`, `analysis.md`, `plan.md` and `ancestors.md`: no summary of the plan stage, no floor verdict, no other context. Run it on the model `agents.stages.assess` names in the base config, which differs from the plan stage's model.
 5. **Save the assessment** from the subagent's reply with `.mintswarm/dogfood/save-output.py` to `.mintswarm/job/outputs/assessment.md`.
 6. **Publish the assessment as an issue artifact named exactly `Plan assessment`** on the implementation issue, through `bot-gh.sh api` (see "Session procedure" in `.mintswarm/dogfood/github/README.md`). This is done on every plan, whatever `pipeline.plan_approval.mode` is, for traceability.
 7. **Run the decision** with the same plan file, issue document, analysis and screen record, the assessment, the assessment's artifact, the same base, and the harness and model assess actually ran on:
@@ -159,9 +159,9 @@ A change of mind after an approval has been recorded, from the tracker or in the
 
 A maintainer decision taken while a job is in flight, for example one that changes what a criterion asks, is not left only in a comment, because later stages read the job's inputs, not the comments:
 
-1. Apply it to the issue itself: amend the acceptance criteria or the body, with a note that points to the decision.
+1. Apply it to the issue it is recorded on, never to its children or other descendants: amend that issue's acceptance criteria or body, with a note that points to the decision. A descendant's stages read it from `.mintswarm/job/inputs/ancestors.md`, which `.mintswarm/dogfood/github/ancestor-decisions.py` gathers (Session procedure, step 17, in `.mintswarm/dogfood/github/README.md`).
 2. The decision comment carries the line `<!-- mintswarm: steer -->`.
-3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue before the next stage runs.
+3. Refresh the job's `.mintswarm/job/inputs/issue.md` from the issue, and rerun `ancestor-decisions.py fetch` and `assemble`, before the next stage runs.
 4. If the plan was already through the floor, rerun the floor (step 3) and the decision (step 7) on the refreshed `issue.md`, with the same `screen.json`, or after a fresh screen: both bind the documents and the record they read, so a verdict from before the refresh, or from another record, no longer counts. A `floor.json` of version 1 or 2, from before the floor read the issue document and the analysis or the screen record, also counts as `human` until the floor reruns.
 
 ## The review job's mechanical check
