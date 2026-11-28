@@ -246,6 +246,7 @@ fn check_suite_completed_gives_conclusion() {
         detail(&out.event, "check_conclusion"),
         Some(str_at(&payload, "/check_suite/conclusion"))
     );
+    assert_eq!(detail(&out.event, "pull_requests"), Some("524"));
     let subject = out.event.subject.as_ref().unwrap();
     assert_eq!(subject.item_kind(), ItemKind::None);
     assert_eq!(subject.number, 0);
