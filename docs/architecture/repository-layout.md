@@ -36,6 +36,7 @@ mintswarm/
 │   │   ├── buf.yaml        # buf module and rules
 │   │   ├── buf.gen.yaml    # buf generator plugins
 │   │   ├── google/api/     # vendored googleapis
+│   │   ├── opentelemetry/  # vendored OTLP protos
 │   │   └── mintswarm/
 │   │       ├── common/v1/  # shared Secret
 │   │       ├── auth/v1/    # login, sessions, availability
@@ -148,7 +149,7 @@ Not in this repository: the commercial crates, the Node BFF and the deployment c
 - **Extension traits** (`Tenancy`, `AuthProvider`, `SecretStore`, `UsageSink`) live in `core::ext` with the self-hosted implementations. They get their own crate only if the private repository needs them without the rest of core.
 - **Split a crate when it earns it:** an adapter or the probe engine becomes its own crate when a second consumer appears or compile time hurts.
 - **TypeScript:** packages are `@mintswarm/<dir>`; Node and pnpm versions are pinned in `web/`. Only `packages/*` are publishable; `apps/*` are private.
-- **Protos** (`api/proto/`): `buf lint` runs in CI; `buf breaking` is off until the runner–plane exchange is live (#483). Rust is generated in `build.rs` of `crates/proto`, not committed. Messages exposed over HTTP are written with the proto3 JSON mapping in mind. The `runner/v1` protocol is described in [runner-protocol.md](runner-protocol.md). The `auth/v1` and `common/v1` contracts are described in [authentication.md](authentication.md). The googleapis files under `google/api/` are vendored unchanged from googleapis at commit `fc38bc195c0db21fbf363f2b6d824b191e7496d1`; `buf lint` ignores them, and no Rust is generated for them.
+- **Protos** (`api/proto/`): `buf lint` runs in CI; `buf breaking` is off until the runner–plane exchange is live (#483). Rust is generated in `build.rs` of `crates/proto`, not committed. Messages exposed over HTTP are written with the proto3 JSON mapping in mind. The `runner/v1` protocol is described in [runner-protocol.md](runner-protocol.md). The `auth/v1` and `common/v1` contracts are described in [authentication.md](authentication.md). The googleapis files under `google/api/` are vendored unchanged from googleapis at commit `fc38bc195c0db21fbf363f2b6d824b191e7496d1`; `buf lint` ignores them, and no Rust is generated for them. The OTLP protos under `opentelemetry/proto/` and their Apache-2.0 `LICENSE` are vendored unchanged by `opentelemetry/vendor.py` at the tag recorded in `opentelemetry/VENDOR`; `buf lint` and the whitespace check ignore them, and only `proto::otlp` uses their generated types.
 - **HTTP routes** come from `google.api.http` annotations, never from hand-written handlers. The event stream for the browser (`text/event-stream`) is the one exception if the transcoder cannot serve a server-streaming RPC as SSE.
 - **The transcoding layer is isolated.** HTTP JSON is transcoded in process by one module in core; nothing outside it names the transcoding crate, so it can be replaced.
 - **Generated contracts are committed:** `api/openapi/` (from the protos) and `api/schemas/` (from the protos, generated in `crates/proto` and drift-checked by its cargo tests, and from Rust types, via `cargo xtask schemas`). CI regenerates both and fails on drift. TypeScript in `web/packages/api` is generated from `api/openapi/` and not committed.

@@ -304,6 +304,8 @@ pub mod json {
     }
 }
 
+pub mod otlp;
+
 pub mod schema;
 
 /// The protocol's conformance scenarios and, in later changes, fakes of its
