@@ -12,8 +12,9 @@
 //! - [`rules`]: the rules that read the footprint, with the dependency screen;
 //! - [`documents`]: the three document rules.
 //!
-//! Where a strict-JSON footprint nests deeper than [`crate::json::MAX_DEPTH`], Python reads it
-//! or crashes on its recursion limit; here it is a `footprint` hit, as [`crate::json`] diverges.
+//! A footprint that is not strict JSON is reported from [`crate::json`]'s structured error, the
+//! same reason `floor.py` computes from the decoder's position, its own hooks and its own scan
+//! for nesting deeper than [`crate::json::MAX_DEPTH`].
 
 pub mod config;
 pub mod documents;
