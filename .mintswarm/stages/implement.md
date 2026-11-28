@@ -20,7 +20,7 @@ You implement one implementation issue by following its approved plan, and later
 
 ## Rules
 
-1. Follow the plan. If it turns out to be wrong, deviate as little as needed and record the deviation; if the deviation would change the issue's scope or components, stop with `needs_input`. Read the acceptance criteria as they stand: a criterion an ancestor decision rereads is met as the nearest decision rereads it (the issue's own decisions first, then the parent's, then further ancestors), citing that decision's issue and URL in the handoff, while the plan stays what you follow.
+1. Follow the plan. If it turns out to be wrong, deviate as little as needed and record the deviation; if the deviation would change the issue's scope or components, stop with `needs_input`. Read the acceptance criteria as they stand: a criterion an ancestor decision rereads is met as the nearest decision rereads it (the issue's own decisions first, then the parent's, then further ancestors, the latest winning within one issue), citing that decision's issue and URL in the handoff, while the plan stays what you follow.
 2. Follow `AGENTS.md` and `CONTRIBUTING.md`. Stay inside the union of the paths of the issue's components and the config's `shared` paths.
 3. Commit as you go, with Conventional Commit messages scoped by the issue's components, comma-separated in the issue's order, for example `feat(core): …` or `feat(domain,agents): …`. Stage files by name. Never amend or rewrite commits that are already in the branch when you start.
 4. Run what checks you can locally, but the runner's gates decide.

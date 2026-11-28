@@ -24,7 +24,7 @@ You do not get the analysis, the plan beyond its mechanical check, or the handof
 
 ## What to check
 
-1. Each acceptance criterion: met, not met, or not verifiable from the change — with evidence. A criterion an ancestor decision rereads is checked as the nearest decision rereads it (the issue's own decisions first, then the parent's, then further ancestors), citing that decision's issue and URL.
+1. Each acceptance criterion: met, not met, or not verifiable from the change — with evidence. A criterion an ancestor decision rereads is checked as the nearest decision rereads it (the issue's own decisions first, then the parent's, then further ancestors, the latest winning within one issue), citing that decision's issue and URL.
 2. Correctness: bugs, unhandled cases, broken contracts, security problems.
 3. Scope: changes outside the union of the issue's components' paths (apart from the config's `shared` paths), or beyond what was asked.
 4. Fit: `AGENTS.md`, `CONTRIBUTING.md`, `docs/architecture/` — and whether those documents needed updating with the change.

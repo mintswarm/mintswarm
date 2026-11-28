@@ -29,7 +29,8 @@ Checks, by exit code and error class only, never gh's wording:
   .../issues/548#issuecomment-7221891856; #3 has a `## Decision` body
   section and an owner with write permission outside the trusted authors.
   ancestors.md lists #548 first, with that URL, author and time and the
-  quoted text, then #3 with its body section; an untrusted non-owner's
+  quoted text, then #3 with its body section, undated as `Time: unknown;
+  edited: unknown`; an untrusted non-owner's
   comment and a bot comment without the marker are absent; marker comments
   (one with a CRLF marker line, one with trailing spaces) are `via: marker`;
   an edited comment carries its `edited` time;
@@ -51,8 +52,10 @@ Checks, by exit code and error class only, never gh's wording:
   .mintswarm/job/inputs/ancestors.md under `## Inputs`; landing.md's "What
   to judge" holds the nearest-decision rule with its citation, its
   needs-review steer line and likely-safe no-steer condition name ancestor
-  decisions after `approval.approved_at`, and its `inconsistent-inputs`
-  line names ancestors.md; assess.md reads "Read only these four inputs";
+  decisions after `approval.approved_at`, an undated one counting as
+  such, and its `inconsistent-inputs` line names ancestors.md; all six
+  rank decisions nearest first, the latest winning within one issue,
+  citing the decision; assess.md reads "Read only these four inputs";
   the plan-approval README's "Decisions while a job is in flight" applies a
   decision to the issue it is recorded on, never to its children; the
   landing decision.py docstring step 2 and the landing README name
@@ -445,6 +448,7 @@ def assemble_tests(sb: Sandbox) -> None:
     T.check(
         "assemble: #3's body Decision section is quoted, outside fences only",
         "via: body" in far
+        and "- Time: unknown; edited: unknown" in far
         and "> Stages read the ancestors' decisions." in far
         and "> ## Not a heading" in far
         and "Not a decision." not in far,
@@ -619,17 +623,31 @@ def stage_text_tests() -> None:
         "stages: landing.md judges a criterion as the nearest decision rereads it, citing it",
         "as the nearest decision rereads it" in judge and "citing that decision's issue and URL" in judge,
     )
+    for stage in ("landing", "analyse", "plan", "assess", "review", "implement"):
+        text = read(STAGES / f"{stage}.md")
+        T.check(
+            f"stages: {stage}.md ranks decisions nearest first, the latest winning within one issue",
+            "as the nearest decision rereads it" in text
+            and "the latest winning within one issue" in text
+            and "citing that decision's issue and URL" in text,
+        )
     lines = landing.split("\n")
     steer = [line for line in lines if "a steer is listed" in line]
     T.check(
         "stages: landing.md's needs-review steer line counts late ancestor decisions",
-        len(steer) == 1 and "ancestors.md" in steer[0] and "approval.approved_at" in steer[0],
+        len(steer) == 1
+        and "ancestors.md" in steer[0]
+        and "approval.approved_at" in steer[0]
+        and "an undated one counting as such" in steer[0],
         str(steer),
     )
     no_steer = [line for line in lines if line.startswith("- there is no steer")]
     T.check(
         "stages: landing.md's likely-safe no-steer condition counts late ancestor decisions",
-        len(no_steer) == 1 and "ancestors.md" in no_steer[0] and "approval.approved_at" in no_steer[0],
+        len(no_steer) == 1
+        and "ancestors.md" in no_steer[0]
+        and "approval.approved_at" in no_steer[0]
+        and "no undated one" in no_steer[0],
         str(no_steer),
     )
     inconsistent = [line for line in lines if "`inconsistent-inputs`:" in line]

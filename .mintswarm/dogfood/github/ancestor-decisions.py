@@ -81,8 +81,9 @@ naming the chain, then one `## #<a> <title>` section per ancestor, nearest
 first, with its URL, its owner and whether that owner is trusted. Each
 decision follows, body sections first in body order, then comments by
 created_at and id, with its kind, author, `via`, `time`, `edited` (the
-comment's updated_at when it differs from created_at, else `none`; body
-sections carry no time) and URL, and its text quoted with every line
+comment's updated_at when it differs from created_at, else `none`; a body
+section has `time: unknown; edited: unknown`, and the landing stage counts
+such an undated decision as given after the plan's approval) and URL, and its text quoted with every line
 prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
 `Risk:` line can reach column 0. An ancestor without decisions says
 `No decisions.`; a root issue gives the line `#N has no ancestors.`. The
@@ -547,7 +548,7 @@ def render(issue: int, chain: list, responses: Responses, authors: set) -> str:
                     f"### Decision {count}",
                     "",
                     f"- Kind: issue body section; author: {author}; via: body",
-                    "- Time: none; edited: none",
+                    "- Time: unknown; edited: unknown (an undated body decision counts as given after any approval)",
                     f"- URL: {data['html_url']}",
                     "",
                     *quoted(section),
