@@ -165,7 +165,7 @@ enum MainError {
     Log(#[from] webhooks::LogError),
     #[error(transparent)]
     Serve(#[from] webhooks::ServeError),
-    #[error("cannot read {}", path.display())]
+    #[error("cannot read {}: {source}", path.display())]
     ReadConfig {
         path: PathBuf,
         source: std::io::Error,

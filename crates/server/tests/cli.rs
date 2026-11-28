@@ -80,6 +80,13 @@ fn serve_and_migrate_without_a_config_file_fail_as_a_run() {
             Some(FAILURE),
             "{subcommand} without mintswarm.yaml fails as a run, not as usage"
         );
+        // Our wording, then the cause after it, whose own text is the OS's.
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        let prefix = format!("mintswarm-server {subcommand}: cannot read mintswarm.yaml: ");
+        let cause = stderr
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{subcommand} names the file and its cause: {stderr}"));
+        assert!(!cause.trim().is_empty(), "the cause is given: {stderr}");
     }
 }
 
