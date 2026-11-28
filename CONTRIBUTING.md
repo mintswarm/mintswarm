@@ -33,7 +33,7 @@ exp/3-claude-headless-interrupt
 
 ### Reserved prefix
 
-`mintswarm/*` belongs to the factory: see the Design issue [#3](https://github.com/mintswarm/mintswarm/issues/3) and its artifact "mintswarm design", and `.mintswarm/stages/implement.md`. Only mintswarm writes these branches: its runner creates and pushes them, and its implement stage commits on its own job's branch. People never create, push to or rebase them. The `mintswarm-factory-branches` ruleset enforces this: only the GitHub App that mintswarm pushes with — in this repository `mintswarm-dev-bee` (see `.mintswarm/dogfood/github/`) — may create, update or delete them.
+`mintswarm/*` belongs to the factory: see the Design issue [#3](https://github.com/mintswarm/mintswarm/issues/3) and its artifact "mintswarm design", and `.mintswarm/stages/implement.md`. Only mintswarm writes these branches: its runner creates and pushes them, and its implement stage commits on its own job's branch. People never create, push to or rebase them. The `mintswarm-factory-branches` ruleset enforces this: only the GitHub App that mintswarm pushes with, the bee App (see `.mintswarm/dogfood/github/README.md`, Roles), may create, update or delete them.
 
 ### Stacked changes
 

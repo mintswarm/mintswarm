@@ -5,7 +5,7 @@
     reclassify.py check-parent PARENT [--base origin/master]
 
 Dogfooding stand-in for the runner's re-classification before decomposition.
-Every GitHub call goes through bot-gh.sh, so as mintswarm-dev-bee[bot].
+Every GitHub call goes through bot-gh.sh, so as the bee, the runner App.
 
 Both subcommands read .mintswarm/config.yaml at the base ref (--base, resolved
 with `git rev-parse --verify` in the current directory), never the worktree's

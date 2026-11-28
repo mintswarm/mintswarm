@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push a factory branch to GitHub as mintswarm-dev-bee[bot].
+# Push a factory branch to GitHub as the bee, as its config names it.
 #
 #   push.sh BRANCH [--force-with-lease=EXPECTED_SHA]
 #
@@ -11,8 +11,10 @@
 # Refuses, before anything reaches the network:
 #   - a branch outside mintswarm/, master, or a branch that does not exist locally;
 #   - a missing refs/remotes/origin/master (fetch first) or an empty origin/master..BRANCH;
+#   - a bee config ($MSW_APP_CONFIG) without a usable slug or bot_user_id, from which
+#     the bot's login and e-mail are derived (common.sh, msw_bot_login, msw_bot_email);
 #   - any commit in origin/master..BRANCH whose author or committer is not exactly
-#     mintswarm-dev-bee[bot] <359856778+mintswarm-dev-bee[bot]@users.noreply.github.com>;
+#     the name <slug>[bot] with the e-mail <bot_user_id>+<slug>[bot]@users.noreply.github.com;
 #   - repository config matching url.*, credential.*, http.* or remote.<URL>.*
 #     (a remote section named after a URL applies to a push to that URL, so its
 #     url or pushurl would redirect it), which could change where the push goes
@@ -71,10 +73,15 @@ git rev-parse --verify --quiet "refs/heads/$branch^{commit}" >/dev/null \
 git rev-parse --verify --quiet "refs/remotes/origin/master^{commit}" >/dev/null \
   || msw_die "no refs/remotes/origin/master: fetch first"
 
+login=""
+email=""
+login="$(msw_bot_login)" || exit 1
+email="$(msw_bot_email)" || exit 1
+
 count="$(git rev-list --count "refs/remotes/origin/master..refs/heads/$branch")"
 [ "$count" -gt 0 ] || msw_die "nothing to push: origin/master..$branch is empty"
 
-expected="$MSW_BOT_NAME|$MSW_BOT_EMAIL|$MSW_BOT_NAME|$MSW_BOT_EMAIL"
+expected="$login|$email|$login|$email"
 log="$(git log --no-color --no-show-signature --no-mailmap \
          --format='%H %an|%ae|%cn|%ce' "refs/remotes/origin/master..refs/heads/$branch")" \
   || msw_die "cannot list origin/master..$branch"
@@ -85,7 +92,7 @@ bad="$(printf '%s\n' "$log" | while IFS= read -r line; do
 done)"
 if [ -n "$bad" ]; then
   printf '%s\n' "$bad" >&2
-  msw_die "refusing: every commit in origin/master..$branch must be authored and committed by $MSW_BOT_NAME (see README.md, Pitfalls)"
+  msw_die "refusing: every commit in origin/master..$branch must be authored and committed by $login (see README.md, Pitfalls)"
 fi
 
 risky="$(msw_git_env config --name-only --get-regexp '^(url\.|credential\.|http\.|remote\..*://)' || true)"

@@ -109,7 +109,7 @@ The root `compose.yaml` runs the receiver as the service `webhooks` and an ngrok
 
 It reads three files on the host at run time; none is copied into the repository or an image:
 
-- `~/.config/mintswarm/webhook-secret`, read as an env file: its line `mintswarm-dev-keeper-secret=<value>` sets the variable the receiver reads with `--secret-env mintswarm-dev-keeper-secret`. As with any environment variable, anyone who can run `docker inspect` on the machine can see it.
+- `~/.config/mintswarm/webhook-secret`, read as an env file: its line `MSW_KEEPER_WEBHOOK_SECRET=<value>` sets the variable the receiver reads with `--secret-env MSW_KEEPER_WEBHOOK_SECRET`. As with any environment variable, anyone who can run `docker inspect` on the machine can see it.
 - `~/.config/mintswarm/ngrok-domain`: the reserved domain, mounted into the ngrok container.
 - ngrok's own `ngrok.yml`, which holds the auth token, mounted read-only into the ngrok container. Its default path is the macOS one, `~/Library/Application Support/ngrok/ngrok.yml`; elsewhere set `NGROK_CONFIG` to its path, such as `~/.config/ngrok/ngrok.yml` on Linux.
 
@@ -155,7 +155,7 @@ GitHub must reach the receiver over HTTPS. Use one of these forwarders.
 
 ## Setting up the GitHub App
 
-The webhook goes to the keeper App, the control plane's identity (`mintswarm-dev-keeper` while dogfooding). The runner App has no webhook.
+The webhook goes to the keeper App, the control plane's identity (see `.mintswarm/dogfood/github/README.md`, Roles, for the App while dogfooding). The bee App, the runner's, has no webhook.
 
 In the keeper App's settings (**Settings → Developer settings → GitHub Apps → the App → General**):
 

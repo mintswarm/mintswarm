@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline self-test of the mintswarm-dev-bee tooling in this directory.
+# Offline self-test of the bee's tooling in this directory.
 #
 #   selftest.sh
 #
@@ -13,18 +13,21 @@
 # default. git runs without the system config, against repositories and a bare
 # "remote" inside the sandbox.
 #
-# Checks: shellcheck and py_compile; the per-App table; the manifests; App
+# Checks: shellcheck and py_compile; the per-role table and the login and
+# e-mail derived from a role's config, with their failures; the manifests; App
 # creation with store-credentials.sh create, whose listener is driven over
 # 127.0.0.1 (matching and wrong states, loopback only, the timeout, a client that
-# trickles bytes, a held port) with the conversion answered by the curl stub;
+# trickles bytes, a held port) with the conversion and the bot user answered by
+# the curl stub; recording the bot user id with bot-id;
 # the JWT and the installation token; key rotation for both Apps, with no
 # per-use confirmation; every key store backend (selection, round trips, put
 # --confirm, the file backend's modes and refusals, rotate and jwt through
 # each); the bot identity include; push.sh pushes and refusals; the inline
 # credential helper; bot-gh.sh; reviewer resolution; assignment and release of
 # approvers; re-classification of a split issue and the parent check before
-# children are filed; landing a PR as the keeper with land.py, and each of its
-# refusals; msw-state.py in field and labels mode (exact bodies, no-op re-runs,
+# children are filed; landing a PR as the keeper with land.py, run inside a
+# sandbox repository whose config at --base gives merge.apps, and each of its
+# refusals; an App rename that is only a slug edit in the sandbox configs; msw-state.py in field and labels mode (exact bodies, no-op re-runs,
 # unavailable fields, ignored writes, a single label swapped in one PUT, label
 # names in any case) and the issue status it maps to (reset after GitHub moves
 # it, none and status: off leave it alone); field ids resolved by name into the
@@ -77,6 +80,7 @@ unset MSW_REPO MSW_TOKEN MSW_PUSH_URL GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN 
       MSW_KEY_STORE DBUS_SESSION_BUS_ADDRESS PASSWORD_STORE_DIR GNUPGHOME CREDENTIALS_DIRECTORY \
       MSW_STUB_UNAME MSW_STUB_SYSTEMD_VERSION MSW_STUB_SECRET_TOOL_HANG MSW_KEY_STORE_TIMEOUT \
       MSW_KEEPER_CONFIG MSW_MANIFEST_TIMEOUT MSW_STUB_CONV_SLUG MSW_STUB_CONV_MANIFEST MSW_STUB_CURL_FAIL \
+      MSW_STUB_BOT_LOGIN MSW_STUB_BOT_TYPE MSW_STUB_BOT_ID \
       MSW_STUB_SECURITY_READ_FAIL MSW_STUB_SECURITY_WRITE_FAIL MSW_LAND_RETRY_DELAY
 export HOME="$sandbox/home"
 export TMPDIR="$sandbox/tmp"
@@ -336,7 +340,9 @@ cat > "$stubs/curl" <<'EOF'
 # Headers come on stdin with -H @-; with -K - the stdin is a config whose url line
 # gives the URL. The conversion answers slug $MSW_STUB_CONV_SLUG (mintswarm-dev-bee
 # by default), owner mintswarm, and the permissions and events of the manifest
-# named by $MSW_STUB_CONV_MANIFEST, when set.
+# named by $MSW_STUB_CONV_MANIFEST, when set. users/SLUG%5Bbot%5D answers the login
+# $MSW_STUB_BOT_LOGIN (SLUG[bot] by default), the type $MSW_STUB_BOT_TYPE (Bot) and
+# the id $MSW_STUB_BOT_ID (359856778), only when no Authorization header is sent.
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stublib import STATE, record, record_stdin, opt
@@ -358,12 +364,18 @@ m = re.search(r'^url = "(https://[^"]*)"$', config, re.M)
 if m:
     urls.append(m.group(1))
 url = urls[-1] if urls else ""
+bot_user = re.fullmatch(r"https://api\.github\.com/users/([A-Za-z0-9-]+)%5Bbot%5D", url)
 authed = re.search(r"^Authorization: Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$", headers, re.M)
 
 if url == "https://api.github.com/repos/mintswarm/mintswarm/installation" and authed:
     print(json.dumps({"id": 4242}))
 elif url == "https://api.github.com/app/installations/4242/access_tokens" and authed:
     print(json.dumps({"token": os.environ["MSW_STUB_MINTED"], "expires_at": "2026-11-22T13:00:00Z"}))
+elif bot_user and not headers and opt(argv, "-X") is None:
+    ident = os.environ.get("MSW_STUB_BOT_ID", "359856778")
+    print(json.dumps({"login": os.environ.get("MSW_STUB_BOT_LOGIN", bot_user.group(1) + "[bot]"),
+                      "id": int(ident) if ident.isdigit() else ident,
+                      "type": os.environ.get("MSW_STUB_BOT_TYPE", "Bot")}))
 elif url == "https://api.github.com/app-manifests/%s/conversions" % os.environ["MSW_STUB_CODE"] \
         and opt(argv, "-X") == "POST":
     pem = open(os.path.join(STATE, "conv-key.pem")).read()
@@ -805,29 +817,25 @@ no_secret_redirections() {
 }
 check "no here-string, heredoc or tracing in the tools" no_secret_redirections
 
-# --- per-App table -----------------------------------------------------------
+# --- per-role table and derived identity -------------------------------------
 
-profile_of() {  # profile_of NAME: MSW_PROFILE_* for NAME, |-separated
+profile_of() {  # profile_of ROLE: MSW_PROFILE_CONFIG for ROLE
   (
     unset MSW_KEEPER_CONFIG
     # shellcheck source=common.sh
     . "$here/common.sh"
     msw_app_profile "$1" || exit 1
-    printf '%s|%s|%s\n' "$MSW_PROFILE_CONFIG" "$MSW_PROFILE_SERVICE" "$MSW_PROFILE_LABEL"
+    printf '%s\n' "$MSW_PROFILE_CONFIG"
   )
 }
-check "the mintswarm-dev-bee profile: bee-app.json, its service and label" \
-  eq "$(profile_of mintswarm-dev-bee)" \
-     "$MSW_APP_CONFIG|mintswarm-dev-bee-private-key|mintswarm-dev-bee GitHub App private key"
-check "the keeper profile: keeper-app.json, its own service and label" \
-  eq "$(profile_of mintswarm-dev-keeper)" \
-     "$HOME/.config/mintswarm/keeper-app.json|mintswarm-dev-keeper-private-key|mintswarm-dev-keeper GitHub App private key"
+check "the bee's profile is bee-app.json" eq "$(profile_of bee)" "$MSW_APP_CONFIG"
+check "the keeper's profile is keeper-app.json" eq "$(profile_of keeper)" "$HOME/.config/mintswarm/keeper-app.json"
 keeper_config_from_env() {
   (
     MSW_KEEPER_CONFIG="$sandbox/elsewhere.json"
     # shellcheck source=common.sh
     . "$here/common.sh"
-    msw_app_profile mintswarm-dev-keeper
+    msw_app_profile keeper
     printf '%s\n' "$MSW_PROFILE_CONFIG"
   )
 }
@@ -838,13 +846,57 @@ keeper_config_not_derived() {
     MSW_APP_CONFIG="$sandbox/other/bee-app.json"
     # shellcheck source=common.sh
     . "$here/common.sh"
-    msw_app_profile mintswarm-dev-keeper
+    msw_app_profile keeper
     printf '%s\n' "$MSW_PROFILE_CONFIG"
   )
 }
 check "the keeper's config is never derived from MSW_APP_CONFIG" \
   eq "$(keeper_config_not_derived)" "$HOME/.config/mintswarm/keeper-app.json"
-refuses "an unknown App name has no profile" profile_of mintswarm-other
+check "envoy is reserved and has no profile yet" fails_saying "envoy has no profile yet" profile_of envoy
+refuses "an App's slug is not a role" profile_of mintswarm-dev-bee
+refuses "an unknown role has no profile" profile_of other
+
+# The login and e-mail are read from a role's config when asked for, never when common.sh is sourced.
+ident="$sandbox/ident"
+mkdir -p "$ident"
+printf '{"slug": "acme-bee", "bot_user_id": 7}\n' > "$ident/good.json"
+derived() {  # derived FUNCTION [CONFIG]: what FUNCTION of common.sh prints, and its status
+  (
+    # shellcheck source=common.sh
+    . "$here/common.sh"
+    "$@"
+  )
+}
+check "msw_bot_login gives <slug>[bot] from the config" eq "$(derived msw_bot_login "$ident/good.json")" "acme-bee[bot]"
+check "msw_bot_email gives <bot_user_id>+<slug>[bot]@users.noreply.github.com" \
+  eq "$(derived msw_bot_email "$ident/good.json")" "7+acme-bee[bot]@users.noreply.github.com"
+check "both read \$MSW_APP_CONFIG by default" \
+  eq "$(MSW_APP_CONFIG="$ident/good.json" derived msw_bot_login)|$(MSW_APP_CONFIG="$ident/good.json" derived msw_bot_email)" \
+     "acme-bee[bot]|7+acme-bee[bot]@users.noreply.github.com"
+check "sourcing common.sh reads no config" \
+  env MSW_APP_CONFIG="$ident/none.json" MSW_KEEPER_CONFIG="$ident/none.json" bash -c '. "$1"' sh "$here/common.sh"
+check "a missing config fails, naming the path" fails_saying "no App config at $ident/none.json" derived msw_bot_login "$ident/none.json"
+printf 'not json\n' > "$ident/broken.json"
+refuses "a config that is not JSON fails" derived msw_bot_login "$ident/broken.json"
+i=0
+for slug in null '""' '"acme bee"' '"acme/bee"' '"acme_bee"' '"acme.bee"' '"acme-bee\n"' 7 '["acme-bee"]'; do
+  i=$((i + 1))
+  printf '{"slug": %s, "bot_user_id": 7}\n' "$slug" > "$ident/slug-$i.json"
+  check "msw_bot_login refuses the slug $slug" fails_saying "has no usable slug" derived msw_bot_login "$ident/slug-$i.json"
+  check "msw_bot_email refuses the slug $slug" fails_saying "has no usable slug" derived msw_bot_email "$ident/slug-$i.json"
+done
+printf '{"bot_user_id": 7}\n' > "$ident/no-slug.json"
+check "a config without a slug fails" fails_saying "has no usable slug" derived msw_bot_login "$ident/no-slug.json"
+printf '{"slug": "acme-bee"}\n' > "$ident/no-id.json"
+check "without bot_user_id the login is still derived" eq "$(derived msw_bot_login "$ident/no-id.json")" "acme-bee[bot]"
+check "but msw_bot_email fails, pointing at store-credentials.sh bot-id" \
+  fails_saying "store-credentials.sh bot-id" derived msw_bot_email "$ident/no-id.json"
+i=0
+for id in null '"7"' 7.5 -7 '"abc"' true; do
+  i=$((i + 1))
+  printf '{"slug": "acme-bee", "bot_user_id": %s}\n' "$id" > "$ident/id-$i.json"
+  check "msw_bot_email refuses the bot_user_id $id" fails_saying "records no bot_user_id" derived msw_bot_email "$ident/id-$i.json"
+done
 
 # --- App creation: create ----------------------------------------------------
 
@@ -1080,36 +1132,41 @@ create_gh_start="$(gh_calls)"
 
 # Usage and the manifest, the config and the key store, all checked before listening.
 check "create without a manifest is bad usage" exits_2 "$S" create
-check "create with an unknown option is bad usage" exits_2 "$S" create "$here/manifests/mintswarm-dev-bee.json" --confirm
+check "create with an unknown option is bad usage" exits_2 "$S" create bee "$here/manifests/mintswarm-dev-bee.json" --confirm
 check "create with --unconfirmed-key is bad usage" \
-  exits_2 "$S" create "$here/manifests/mintswarm-dev-keeper.json" --unconfirmed-key
+  exits_2 "$S" create keeper "$here/manifests/mintswarm-dev-keeper.json" --unconfirmed-key
 check "prepare is gone" exits_2 "$S" prepare
 check "convert is gone" exits_2 "$S" convert "$CODE" 0123
-check "create refuses a missing manifest" refused_early "no such manifest" "$S" create "$sandbox/manifests/none.json"
+check "create refuses a missing manifest" refused_early "no such manifest" "$S" create bee "$sandbox/manifests/none.json"
 printf '[]\n' > "$sandbox/manifests/array.json"
-check "create refuses a manifest that is not an object" refused_early "is not a JSON object" "$S" create "$sandbox/manifests/array.json"
-check "create refuses an unknown App name" \
-  refused_early "no profile for the App 'mintswarm-other'" "$S" create "$(manifest_copy mintswarm-dev-bee '.name = "mintswarm-other"')"
+check "create refuses a manifest that is not an object" refused_early "is not a JSON object" "$S" create bee "$sandbox/manifests/array.json"
+check "create without a role is bad usage" exits_2 "$S" create "$here/manifests/mintswarm-dev-bee.json"
+check "create refuses an unknown role" \
+  refused_early "no profile for the role 'mintswarm-dev-bee'" "$S" create mintswarm-dev-bee "$(manifest_copy mintswarm-dev-bee)"
+check "create refuses envoy, a reserved role with no profile yet" \
+  refused_early "no profile for the role 'envoy'" "$S" create envoy "$(manifest_copy mintswarm-dev-bee)"
+check "create refuses an App name that is not a slug" \
+  refused_early "unexpected App name" "$S" create bee "$(manifest_copy mintswarm-dev-bee '.name = "mintswarm_other"')"
 check "create refuses a localhost redirect_url" \
-  refused_early "must be http://127.0.0.1:PORT/" "$S" create "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://localhost:8765/"')"
+  refused_early "must be http://127.0.0.1:PORT/" "$S" create bee "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://localhost:8765/"')"
 check "create refuses an https redirect_url" \
-  refused_early "must be http://127.0.0.1:PORT/" "$S" create "$(manifest_copy mintswarm-dev-bee '.redirect_url = "https://127.0.0.1:8765/"')"
+  refused_early "must be http://127.0.0.1:PORT/" "$S" create bee "$(manifest_copy mintswarm-dev-bee '.redirect_url = "https://127.0.0.1:8765/"')"
 check "create refuses a redirect_url without a port" \
-  refused_early "must be http://127.0.0.1:PORT/" "$S" create "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://127.0.0.1/"')"
+  refused_early "must be http://127.0.0.1:PORT/" "$S" create bee "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://127.0.0.1/"')"
 check "create refuses a redirect port below 1024" \
-  refused_early "from 1024 to 65535" "$S" create "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://127.0.0.1:80/"')"
+  refused_early "from 1024 to 65535" "$S" create bee "$(manifest_copy mintswarm-dev-bee '.redirect_url = "http://127.0.0.1:80/"')"
 check "create refuses a public App" \
-  refused_early '"public": false' "$S" create "$(manifest_copy mintswarm-dev-bee '.public = true')"
+  refused_early '"public": false' "$S" create bee "$(manifest_copy mintswarm-dev-bee '.public = true')"
 check "create refuses an invalid MSW_MANIFEST_TIMEOUT" \
   refused_early "MSW_MANIFEST_TIMEOUT must be a whole number" env MSW_MANIFEST_TIMEOUT=0 MSW_APP_CONFIG="$sandbox/none/bee-app.json" \
-  "$S" create "$(manifest_copy mintswarm-dev-bee)"
+  "$S" create bee "$(manifest_copy mintswarm-dev-bee)"
 
 # mintswarm-dev-bee: the bee-app.json the later checks use.
 m_dev="$(manifest_copy mintswarm-dev-bee)"
 lport="$(port_of "$m_dev")"
 home_files > "$sandbox/home-before"
 calls="$(conversions)"
-check "create mintswarm-dev-bee: the listener starts" start_create c-dev env MSW_STUB_CONV_MANIFEST="$m_dev" "$S" create "$m_dev"
+check "create mintswarm-dev-bee: the listener starts" start_create c-dev env MSW_STUB_CONV_MANIFEST="$m_dev" "$S" create bee "$m_dev"
 page="$(create_page)"
 check "the page is ~/.config/mintswarm/create-mintswarm-dev-bee.html, mode 0600" \
   eq "$page|$(ls -ld "$page" | cut -c1-10)" "$HOME/.config/mintswarm/create-mintswarm-dev-bee.html|-rw-------"
@@ -1128,8 +1185,9 @@ check "with one conversion call" eq "$(conversions)" "$((calls + 1))"
 home_files > "$sandbox/home-after"
 check "HOME gains only bee-app.json, and the page is gone" \
   eq "$(LC_ALL=C comm -13 "$sandbox/home-before" "$sandbox/home-after")" "./.config/mintswarm/bee-app.json"
-check "bee-app.json holds the identifiers, the key store and the confirmation kind" \
-  eq "$(jq -c 'keys' "$MSW_APP_CONFIG")" '["app_id","client_id","key_confirm","key_fingerprint","key_store","keychain_service","slug"]'
+check "bee-app.json holds the identifiers, the bot user id, the key store and the confirmation kind" \
+  eq "$(jq -c 'keys' "$MSW_APP_CONFIG")" '["app_id","bot_user_id","client_id","key_confirm","key_fingerprint","key_store","keychain_service","slug"]'
+check "bee-app.json records the bot user id GitHub gave for mintswarm-dev-bee[bot]" eq "$(jq -c .bot_user_id "$MSW_APP_CONFIG")" 359856778
 check "bee-app.json: mintswarm-dev-bee's slug and service, the keychain, no confirmation" \
   eq "$(jq -r '[.slug, .keychain_service, .key_store, .key_confirm] | join(" ")' "$MSW_APP_CONFIG")" \
      "mintswarm-dev-bee mintswarm-dev-bee-private-key keychain none"
@@ -1164,7 +1222,7 @@ lport="$(port_of "$m_st")"
 home_files > "$sandbox/home-before"
 calls="$(conversions)"
 check "create mintswarm-dev-keeper: the listener starts" \
-  start_create c-st env MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_st" "$S" create "$m_st"
+  start_create c-st env MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_st" "$S" create keeper "$m_st"
 state="$(create_state)" || state=""
 check "the listening line names 127.0.0.1 and the manifest's port" \
   present "listening on 127.0.0.1:$lport; open $HOME/.config/mintswarm/create-mintswarm-dev-keeper.html in the browser" "$create_out.err"
@@ -1197,8 +1255,8 @@ check "HOME gains only keeper-app.json" \
   eq "$(LC_ALL=C comm -13 "$sandbox/home-before" "$sandbox/home-after")" "./.config/mintswarm/keeper-app.json"
 check "bee-app.json is byte-identical" cmp "$sandbox/bee-app.before" "$MSW_APP_CONFIG"
 check "mintswarm-dev-bee's Keychain item is unchanged" eq "$(dev_item)" "$dev_item_before"
-check "keeper-app.json holds exactly the identifiers, the key store and the confirmation kind" \
-  eq "$(jq -c 'keys' "$keeper_cfg")" '["app_id","client_id","key_confirm","key_fingerprint","key_store","keychain_service","slug"]'
+check "keeper-app.json holds exactly the identifiers, the bot user id, the key store and the confirmation kind" \
+  eq "$(jq -c 'keys' "$keeper_cfg")" '["app_id","bot_user_id","client_id","key_confirm","key_fingerprint","key_store","keychain_service","slug"]'
 check "keeper-app.json: the keeper's slug and service, the keychain, no confirmation" \
   eq "$(jq -r '[.slug, .keychain_service, .key_store, .key_confirm] | join(" ")' "$keeper_cfg")" \
      "mintswarm-dev-keeper mintswarm-dev-keeper-private-key keychain none"
@@ -1221,23 +1279,23 @@ check "create's output holds no PRIVATE KEY" absent "PRIVATE KEY" "$sandbox/c-de
 check "create's output holds no client or webhook secret" \
   sh -c '! grep -qE "selftest-client-secret|selftest-webhook" "$@"' sh "$sandbox"/c-dev.* "$sandbox"/c-st.*
 check "create prints the slug, id, client id, store, confirmation, fingerprint and config" \
-  sh -c 'grep -qF "created: app mintswarm-dev-keeper (id 5874301, client $2)" "$1" \
+  sh -c 'grep -qF "created: app mintswarm-dev-keeper (id 5874301, client $2, bot user 359856778)" "$1" \
          && grep -qF "key in the keychain key store, confirmation: none" "$1" \
          && grep -qF "key fingerprint SHA256:" "$1" && grep -qF "identifiers: $3" "$1" \
          && grep -qF "README.md, Keeper" "$1"' sh "$sandbox/c-st.out" "$CLIENT_ID" "$keeper_cfg"
 
 # Refusals once the keeper exists.
 check "a second keeper create is refused because its config exists" \
-  refused_early "keeper-app.json exists" "$S" create "$(manifest_copy mintswarm-dev-keeper)"
-check "a second mintswarm-dev-bee create is refused because bee-app.json exists" \
-  refused_early "bee-app.json exists" "$S" create "$(manifest_copy mintswarm-dev-bee)"
+  refused_early "keeper-app.json exists" "$S" create keeper "$(manifest_copy mintswarm-dev-keeper)"
+check "a second bee create is refused because bee-app.json exists" \
+  refused_early "bee-app.json exists" "$S" create bee "$(manifest_copy mintswarm-dev-bee)"
 check "the keeper's config set to bee-app.json is refused" \
-  refused_early "is mintswarm-dev-bee's config" env MSW_KEEPER_CONFIG="$MSW_APP_CONFIG" "$S" create "$(manifest_copy mintswarm-dev-keeper)"
+  refused_early "is the bee's config" env MSW_KEEPER_CONFIG="$MSW_APP_CONFIG" "$S" create keeper "$(manifest_copy mintswarm-dev-keeper)"
 check "the keeper's config set to ~/.config/mintswarm/bee-app.json is refused, whatever MSW_APP_CONFIG says" \
-  refused_early "is mintswarm-dev-bee's config" env MSW_APP_CONFIG="$sandbox/none/bee-app.json" \
-  MSW_KEEPER_CONFIG="$HOME/.config/../.config/mintswarm/bee-app.json" "$S" create "$(manifest_copy mintswarm-dev-keeper)"
-check "mintswarm-dev-bee's config set to the keeper's is refused" \
-  refused_early "is the keeper's config" env MSW_APP_CONFIG="$keeper_cfg" "$S" create "$(manifest_copy mintswarm-dev-bee)"
+  refused_early "is the bee's config" env MSW_APP_CONFIG="$sandbox/none/bee-app.json" \
+  MSW_KEEPER_CONFIG="$HOME/.config/../.config/mintswarm/bee-app.json" "$S" create keeper "$(manifest_copy mintswarm-dev-keeper)"
+check "the bee's config set to the keeper's is refused" \
+  refused_early "is the keeper's config" env MSW_APP_CONFIG="$keeper_cfg" "$S" create bee "$(manifest_copy mintswarm-dev-bee)"
 
 # A conversion for another App stores nothing.
 m_mis="$(manifest_copy mintswarm-dev-keeper)"
@@ -1245,7 +1303,7 @@ lport="$(port_of "$m_mis")"
 cp "$MSW_STUB_STATE/keychain.json" "$sandbox/keychain.before"
 check "create with a slug mismatch: the listener starts" \
   start_create c-mis env MSW_KEEPER_CONFIG="$sandbox/mis/keeper-app.json" MSW_STUB_CONV_SLUG=someone-else \
-  MSW_STUB_CONV_MANIFEST="$m_mis" "$S" create "$m_mis"
+  MSW_STUB_CONV_MANIFEST="$m_mis" "$S" create keeper "$m_mis"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept mis
 check "a slug mismatch fails and names the App's id" failed_saying "GitHub created the App someone-else (id 5874301)"
@@ -1253,12 +1311,26 @@ check "and says to delete it" present "delete it (organisation settings, GitHub 
 check "and writes no config" test ! -e "$sandbox/mis/keeper-app.json"
 check "and stores no key" cmp "$sandbox/keychain.before" "$MSW_STUB_STATE/keychain.json"
 
+# A bot user answer that is not the App's bot stores nothing.
+m_bu="$(manifest_copy mintswarm-dev-keeper)"
+lport="$(port_of "$m_bu")"
+cp "$MSW_STUB_STATE/keychain.json" "$sandbox/keychain.before"
+check "create whose bot user answer is not a Bot: the listener starts" \
+  start_create c-bu env MSW_KEEPER_CONFIG="$sandbox/bu/keeper-app.json" MSW_STUB_CONV_SLUG=mintswarm-dev-keeper \
+  MSW_STUB_BOT_TYPE=User MSW_STUB_CONV_MANIFEST="$m_bu" "$S" create keeper "$m_bu"
+state="$(create_state)" || state=""
+check "its redirect is accepted" accept bu
+check "it fails, saying the answer is not the bot user" failed_saying "is not that bot user: nothing was stored"
+check "and says the App exists and its key was not stored" present "exists on GitHub, but its key was not stored." "$create_out.err"
+check "and writes no config" test ! -e "$sandbox/bu/keeper-app.json"
+check "and stores no key" cmp "$sandbox/keychain.before" "$MSW_STUB_STATE/keychain.json"
+
 # Permissions that differ from the manifest only warn: the key can be taken only once.
 m_warn="$(manifest_copy mintswarm-dev-bee)"
 lport="$(port_of "$m_warn")"
 check "create with other permissions in the answer: the listener starts" \
   start_create c-warn env MSW_APP_CONFIG="$sandbox/warn/bee-app.json" MSW_STUB_CONV_MANIFEST="$here/manifests/mintswarm-dev-keeper.json" \
-  "$S" create "$m_warn"
+  "$S" create bee "$m_warn"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept warn
 check "it succeeds" created
@@ -1271,7 +1343,7 @@ lport="$(port_of "$m_put")"
 check "create whose key store refuses the key: the listener starts" \
   start_create c-put env MSW_STUB_SECURITY_WRITE_FAIL=1 MSW_KEEPER_CONFIG="$sandbox/put/keeper-app.json" \
   MSW_STUB_CONV_SLUG=mintswarm-dev-keeper \
-  MSW_STUB_CONV_MANIFEST="$m_put" "$S" create "$m_put"
+  MSW_STUB_CONV_MANIFEST="$m_put" "$S" create keeper "$m_put"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept put
 check "it fails, saying the App exists and its key was not stored" \
@@ -1281,7 +1353,7 @@ m_rb="$(manifest_copy mintswarm-dev-keeper)"
 lport="$(port_of "$m_rb")"
 check "create whose read-back fails (as from a locked keychain): the listener starts" \
   start_create c-rb env MSW_STUB_SECURITY_READ_FAIL=1 MSW_KEEPER_CONFIG="$sandbox/rb/keeper-app.json" \
-  MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_rb" "$S" create "$m_rb"
+  MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_rb" "$S" create keeper "$m_rb"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept rb
 check "it fails, saying the App exists and its key is in the key store" \
@@ -1297,7 +1369,7 @@ m_to="$(manifest_copy mintswarm-dev-keeper)"
 lport="$(port_of "$m_to")"
 calls="$(curl_calls)"
 check "create with a 2-second timeout: the listener starts" \
-  start_create c-to env MSW_MANIFEST_TIMEOUT=2 MSW_KEEPER_CONFIG="$sandbox/to/keeper-app.json" "$S" create "$m_to"
+  start_create c-to env MSW_MANIFEST_TIMEOUT=2 MSW_KEEPER_CONFIG="$sandbox/to/keeper-app.json" "$S" create keeper "$m_to"
 page="$(create_page)"
 check "with no redirect, create fails within 60 seconds" failed_saying "no matching redirect within 2 seconds"
 check "and calls no curl" eq "$(curl_calls)" "$calls"
@@ -1319,7 +1391,7 @@ trickle_bounded() {  # a client sending a byte every 0.2 seconds is dropped with
     tpid=$!
     bg_groups="$bg_groups $tpid"
     start_create "c-tr.$attempt" env MSW_MANIFEST_TIMEOUT=5 MSW_KEEPER_CONFIG="$sandbox/tr/keeper-app.json" \
-      "$S" create "$m_tr" || { kill -TERM -- "-$tpid" 2>/dev/null; return 1; }
+      "$S" create keeper "$m_tr" || { kill -TERM -- "-$tpid" 2>/dev/null; return 1; }
     deadline=$((SECONDS + wait_ceiling))
     until grep -qE '^(connected|refused)' "$sandbox/trickle.out" 2>/dev/null || ! kill -0 "$tpid" 2>/dev/null; do
       [ "$SECONDS" -lt "$deadline" ] || { echo "the trickle client did not connect"; cat "$sandbox/trickle.out"; return 1; }
@@ -1382,7 +1454,7 @@ time.sleep(600)' "$held_port" > "$sandbox/held.out" 2>&1 &
 }
 check "another socket holds a port" hold_port "$m_held"
 check "with the port held, create fails before listening" \
-  refused_early "cannot listen on 127.0.0.1:$held_port" env MSW_KEEPER_CONFIG="$sandbox/held/keeper-app.json" "$S" create "$m_held"
+  refused_early "cannot listen on 127.0.0.1:$held_port" env MSW_KEEPER_CONFIG="$sandbox/held/keeper-app.json" "$S" create keeper "$m_held"
 kill -TERM -- "-$held_pid" 2>/dev/null || true
 wait "$held_pid" 2>/dev/null || true
 
@@ -1393,7 +1465,7 @@ m_mf="$(manifest_copy mintswarm-dev-keeper)"
 lport="$(port_of "$m_mf")"
 check "on macOS the keeper's create with MSW_KEY_STORE=file: the listener starts" \
   start_create c-mf env "${mf_env[@]}" MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_mf" \
-  "$S" create "$m_mf"
+  "$S" create keeper "$m_mf"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept mf
 check "it succeeds" created
@@ -1409,7 +1481,7 @@ m_lx="$(manifest_copy mintswarm-dev-keeper)"
 lport="$(port_of "$m_lx")"
 check "on Linux the keeper's create: the listener starts" \
   start_create c-lx env "${lx_env[@]}" MSW_STUB_CONV_SLUG=mintswarm-dev-keeper MSW_STUB_CONV_MANIFEST="$m_lx" \
-  "$S" create "$m_lx"
+  "$S" create keeper "$m_lx"
 state="$(create_state)" || state=""
 check "its redirect is accepted" accept lx
 check "it succeeds" created
@@ -1418,8 +1490,10 @@ check "and records the secret-service store and no confirmation" \
 
 # Across every run of create.
 create_curls() { tail -n "+$((create_argv_start + 1))" "$argv_log" | jq -c 'select(.cmd == "curl") | .argv'; }
-check "every curl call of create is a conversion POST that reads its URL from stdin" \
-  eq "$(create_curls | sort -u)" '["-q","-fsS","-X","POST","-H","Accept: application/vnd.github+json","-K","-"]'
+check "every curl call of create is a conversion POST that reads its URL from stdin, or the public bot user read" \
+  eq "$(create_curls | jq -c 'if index("-K") then . else map(sub("users/[A-Za-z0-9-]+%5Bbot%5D$"; "users/SLUG%5Bbot%5D")) end' | sort -u)" \
+     "$(printf '%s\n' '["-q","-fsS","-H","Accept: application/vnd.github+json","https://api.github.com/users/SLUG%5Bbot%5D"]' \
+          '["-q","-fsS","-X","POST","-H","Accept: application/vnd.github+json","-K","-"]' | sort -u)"
 check "and the only URL curl got is the conversion's" \
   sh -c '! grep -v -e "^url = \"https://api.github.com/app-manifests/$2/conversions\"\$" -e "^--\$" -e "^\$" "$1"' \
   sh "$MSW_STUB_STATE/stdin-curl.log" "$CODE"
@@ -1428,6 +1502,37 @@ check "create made no gh call" eq "$(gh_calls)" "$create_gh_start"
 check "the code is in no output of create, no argv, no response and nothing under HOME or TMPDIR" \
   absent "$CODE" "$sandbox"/c-*.out "$sandbox"/c-*.err "$argv_log" "$sandbox/probe" "$HOME" "$sandbox/lx" "$sandbox/macfile" "$TMPDIR"
 check "TMPDIR is empty after the create runs" tmp_empty
+
+# --- bot user id: bot-id ------------------------------------------------------
+
+jq 'del(.bot_user_id)' "$MSW_APP_CONFIG" > "$sandbox/bot-id.json"
+bot_id() { env MSW_APP_CONFIG="$sandbox/bot-id.json" "$S" bot-id; }
+bot_id_argv_start="$(wc -l < "$argv_log" | tr -d ' ')"
+check "bot-id records the bot user id" bot_id
+check "as a number" eq "$(jq -c .bot_user_id "$sandbox/bot-id.json")" 359856778
+check "and changes nothing else" \
+  eq "$(jq -cS 'del(.bot_user_id)' "$sandbox/bot-id.json")" "$(jq -cS 'del(.bot_user_id)' "$MSW_APP_CONFIG")"
+check "it reads users/mintswarm-dev-bee%5Bbot%5D with no credential" \
+  eq "$(tail -n "+$((bot_id_argv_start + 1))" "$argv_log" | jq -c 'select(.cmd == "curl") | .argv')" \
+     '["-q","-fsS","-H","Accept: application/vnd.github+json","https://api.github.com/users/mintswarm-dev-bee%5Bbot%5D"]'
+check "bot-id records the id GitHub gives now" \
+  sh -c 'MSW_STUB_BOT_ID=4242 MSW_APP_CONFIG="$1" "$2" bot-id >/dev/null && test "$(jq -c .bot_user_id "$1")" = 4242' \
+  sh "$sandbox/bot-id.json" "$S"
+cp "$sandbox/bot-id.json" "$sandbox/bot-id.before"
+check "bot-id refuses an answer for another login" \
+  fails_saying "is not that bot user: nothing was stored" env MSW_STUB_BOT_LOGIN='someone-else[bot]' MSW_APP_CONFIG="$sandbox/bot-id.json" "$S" bot-id
+check "bot-id refuses an answer that is not a Bot" \
+  fails_saying "is not that bot user: nothing was stored" env MSW_STUB_BOT_TYPE=User MSW_APP_CONFIG="$sandbox/bot-id.json" "$S" bot-id
+check "bot-id refuses an id that is not a number" \
+  fails_saying "holds no numeric id: nothing was stored" env MSW_STUB_BOT_ID=x7 MSW_APP_CONFIG="$sandbox/bot-id.json" "$S" bot-id
+check "bot-id fails when GitHub cannot be read" \
+  fails_saying "cannot read the bot user mintswarm-dev-bee[bot]" env MSW_STUB_CURL_FAIL=1 MSW_APP_CONFIG="$sandbox/bot-id.json" "$S" bot-id
+check "and none of them changed the config" cmp "$sandbox/bot-id.before" "$sandbox/bot-id.json"
+jq '.slug = "acme/bee"' "$sandbox/bot-id.json" > "$sandbox/bot-id-bad.json"
+calls="$(curl_calls)"
+check "bot-id refuses a malformed slug" fails_saying "has no usable slug" env MSW_APP_CONFIG="$sandbox/bot-id-bad.json" "$S" bot-id
+check "before any curl call" eq "$(curl_calls)" "$calls"
+check "bot-id with an argument is bad usage" exits_2 "$S" bot-id x
 
 # --- JWT and installation token ----------------------------------------------
 
@@ -1540,16 +1645,27 @@ check "on Linux the keeper's key rotates as none" \
 check "and stays in secret-service with no confirmation" \
   eq "$(jq -r '[.key_store, .key_confirm] | join(" ")' "$lx_cfg")" "secret-service none"
 cp "$keys/key1.pem" "$sandbox/any.pem"
-jq '.slug = "mintswarm-other"' "$keeper_cfg" > "$sandbox/other-slug.json"
-check "rotate refuses a config naming an unknown App" \
-  fails_saying "names no known App (slug 'mintswarm-other'" env MSW_APP_CONFIG="$sandbox/other-slug.json" "$S" rotate "$sandbox/any.pem"
+jq '.slug = "acme-keeper" | .keychain_service = "acme-service"' "$keeper_cfg" > "$sandbox/other-slug.json"
+cp "$keys/key1.pem" "$sandbox/other-slug.pem"
+check "rotate takes any slug: no App is named in code" \
+  env MSW_APP_CONFIG="$sandbox/other-slug.json" "$S" rotate "$sandbox/other-slug.pem"
+other_rotated_line() {  # the service from the config, the label derived from its slug
+  local l
+  l="$(kc_adds ' -s acme-service ' | tail -n 1)"
+  printf '%s\n' "$l"
+  printf '%s\n' "$l" | grep -qF -- '-U -s acme-service ' || return 1
+  printf '%s\n' "$l" | grep -qF -- ' -l "acme-keeper GitHub App private key" -w '
+}
+check "with the config's service and the label derived from its slug" other_rotated_line
 jq 'del(.slug)' "$MSW_APP_CONFIG" > "$sandbox/no-slug.json"
 check "rotate refuses a config without a slug" \
-  fails_saying "names no known App (slug ''" env MSW_APP_CONFIG="$sandbox/no-slug.json" "$S" rotate "$sandbox/any.pem"
-jq '.keychain_service = "mintswarm-dev-bee-private-key"' "$keeper_cfg" > "$sandbox/wrong-service.json"
-check "rotate refuses a keychain_service that is not the App's" \
-  fails_saying "but mintswarm-dev-keeper's is mintswarm-dev-keeper-private-key" \
-  env MSW_APP_CONFIG="$sandbox/wrong-service.json" "$S" rotate "$sandbox/any.pem"
+  fails_saying "has no usable slug" env MSW_APP_CONFIG="$sandbox/no-slug.json" "$S" rotate "$sandbox/any.pem"
+jq '.slug = "acme bee"' "$MSW_APP_CONFIG" > "$sandbox/bad-slug.json"
+check "rotate refuses a malformed slug, naming the roles" \
+  fails_saying "is no role's App config (roles: bee, keeper" env MSW_APP_CONFIG="$sandbox/bad-slug.json" "$S" rotate "$sandbox/any.pem"
+jq 'del(.keychain_service)' "$keeper_cfg" > "$sandbox/no-service.json"
+check "rotate refuses a config without a keychain_service" \
+  fails_saying "unexpected keychain_service" env MSW_APP_CONFIG="$sandbox/no-service.json" "$S" rotate "$sandbox/any.pem"
 jq 'del(.key_confirm)' "$MSW_APP_CONFIG" > "$sandbox/dev-no-confirm.json"
 cp "$keys/key2.pem" "$sandbox/same.pem"   # the key mintswarm-dev-bee already has, so the later checks still sign with key2
 dev_no_confirm() {
@@ -1611,7 +1727,7 @@ check "an explicit pass without an initialised store fails" \
   fails_saying "MSW_KEY_STORE=pass is not available" linux_sel MSW_KEY_STORE=pass "$K" backend
 check "create with no key store fails before listening and calls no GitHub endpoint" \
   refused_early "set MSW_KEY_STORE to one of" env HOME="$ks_root/sel" MSW_STUB_UNAME=Linux \
-  MSW_APP_CONFIG="$ks_root/sel/.config/mintswarm/bee-app.json" "$S" create "$(manifest_copy mintswarm-dev-bee)"
+  MSW_APP_CONFIG="$ks_root/sel/.config/mintswarm/bee-app.json" "$S" create bee "$(manifest_copy mintswarm-dev-bee)"
 check "the file backend was never used without MSW_KEY_STORE=file" no_key_dir
 check "the failed selections ran no secret-tool or pass" eq "$(selection_calls)" "$selection_before"
 
@@ -1872,8 +1988,19 @@ git push -q "$remote" master
 git remote add origin "$remote"
 git fetch -q origin
 
+identity_file="$HOME/.config/mintswarm/bot-identity.gitconfig"
+check "install without a bot_user_id in the bee's config fails, pointing at bot-id" \
+  fails_saying "store-credentials.sh bot-id" env MSW_APP_CONFIG="$ident/no-id.json" "$here/bot-identity.sh" install
+check "and writes no identity file and no include" \
+  sh -c 'test ! -e "$1" && ! git config --local --get-all "includeIf.onbranch:mintswarm/.path"' sh "$identity_file"
+check "install without a bee config fails the same way" \
+  fails_saying "no App config at $ident/none.json" env MSW_APP_CONFIG="$ident/none.json" "$here/bot-identity.sh" install
+check "and writes nothing either" \
+  sh -c 'test ! -e "$1" && ! git config --local --get-all "includeIf.onbranch:mintswarm/.path"' sh "$identity_file"
 "$here/bot-identity.sh" install > /dev/null
 "$here/bot-identity.sh" install > /dev/null
+check "install writes the login and e-mail derived from the bee's config" \
+  eq "$(git config --file "$identity_file" user.name)|$(git config --file "$identity_file" user.email)" "$BOT"
 check "install is idempotent" \
   eq "$(git config --local --get-all 'includeIf.onbranch:mintswarm/.path')" "$HOME/.config/mintswarm/bot-identity.gitconfig"
 check "status reports the include" sh -c '"$1" status | grep -q "^include:   /"' sh "$here/bot-identity.sh"
@@ -1939,6 +2066,22 @@ refuses "push.sh refuses an empty range" push_as_bot mintswarm/5-empty
 refuses "push.sh refuses a bare --force-with-lease" push_as_bot mintswarm/1-x --force-with-lease
 refuses "push.sh refuses --force" push_as_bot mintswarm/1-x --force
 refuses "push.sh refuses a short lease" push_as_bot mintswarm/1-x --force-with-lease=abc123
+push_no_mint() {  # push_no_mint TEXT CONFIG: push.sh with CONFIG as the bee's exits 1 saying TEXT, before any curl call
+  local calls rc=0
+  calls="$(curl_calls)"
+  env MSW_APP_CONFIG="$2" MSW_PUSH_URL="$url" "$P" mintswarm/1-x >"$sandbox/push.out" 2>&1 || rc=$?
+  cat "$sandbox/push.out"
+  eq "$rc" 1 || return 1
+  grep -qF -- "$1" "$sandbox/push.out" || return 1
+  eq "$(curl_calls)" "$calls"
+}
+check "push.sh refuses with no bee config, before minting a token" push_no_mint "no App config at $ident/none.json" "$ident/none.json"
+check "push.sh refuses a bee config without bot_user_id, before minting a token" \
+  push_no_mint "store-credentials.sh bot-id" "$ident/no-id.json"
+check "push.sh refuses a bee config with a malformed slug, before minting a token" \
+  push_no_mint "has no usable slug" "$ident/slug-3.json"
+check "push.sh refuses bot commits when the bee's config names another App" \
+  push_no_mint "must be authored and committed by acme-bee[bot]" "$ident/good.json"
 refuses "push.sh refuses a non-file MSW_PUSH_URL" \
   env MSW_TOKEN="$DUMMY" MSW_PUSH_URL=https://example.com/x.git "$P" mintswarm/1-x
 refuses "push.sh refuses a token that is not ghs_" \
@@ -2488,6 +2631,21 @@ seed 15 '{"assignees": ["alice"], "events": [
 out="$(aa release 15 plan 2>/dev/null)" || out="(failed)"
 check "the latest assigned event is the latest by time, not by position" eq "$out" "nothing to release"
 check "alice stays on issue 15" eq "$(assignees 15)" "alice"
+seed 17 '{"assignees": ["alice", "bob"], "events": [
+  {"event": "assigned", "actor": {"login": "mintswarm-dev-bee[bot]"}, "assignee": {"login": "alice"}},
+  {"event": "assigned", "actor": {"login": "dave"}, "performed_via_github_app": {"slug": "acme-bee"}, "assignee": {"login": "bob"}}]}'
+jq '.slug = "acme-bee"' "$MSW_APP_CONFIG" > "$sandbox/acme-bee-app.json"   # bot-gh.sh mints with the same config
+jq '.slug = "acme/bee"' "$MSW_APP_CONFIG" > "$sandbox/bad-bee-app.json"
+check "release takes the bot's login and slug from the bee's config" \
+  eq "$(aa release 17 plan --dry-run 2>/dev/null | tr '\n' ' ')|$(MSW_APP_CONFIG="$sandbox/acme-bee-app.json" aa release 17 plan --dry-run 2>/dev/null | tr '\n' ' ')" \
+     "alice |bob "
+release_no_config() {  # release with a malformed bee config exits 1, naming the path
+  local rc=0
+  MSW_APP_CONFIG="$sandbox/bad-bee-app.json" aa release 17 plan --dry-run >"$sandbox/aa.out" 2>&1 || rc=$?
+  cat "$sandbox/aa.out"
+  eq "$rc" 1 && grep -qF "$sandbox/bad-bee-app.json has no usable slug" "$sandbox/aa.out"
+}
+check "release with a malformed bee config exits 1, naming it" release_no_config
 seed 16 '{"assignees": ["Alice", "Bob"], "events": [
   {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Alice"}},
   {"event": "assigned", "actor": {"login": "dave"}, "assignee": {"login": "Bob"}}]}'
@@ -2717,7 +2875,24 @@ fixture() {  # fixture N [PULL_JQ [COMMIT_JQ [THREADS_JSON [COMMENTS_JQ]]]]: PR 
         body: \"<!-- mintswarm: steer -->\n<!-- mintswarm: steer approval -->\nApproved head: \(\$sha)\nTime: 2026-11-23T12:00:00Z\n\nThe maintainer approved this PR in the session:\n\n> I approve PR #\(\$n)\n\"}] | ${5:-.})}" \
     --arg n "$n" --arg sha "$sha"
 }
-land() { env MSW_LAND_RETRY_DELAY=0 "$L" "$@"; }
+# land.py reads merge.apps from the repository it runs in: every run is inside this sandbox repository,
+# with --base one of its commits, so no case reads the real checkout's config.
+land_repo="$sandbox/land-repo"
+git init -q -b master "$land_repo"
+git -C "$land_repo" config user.name Maintainer
+git -C "$land_repo" config user.email maintainer@example.com
+land_config() {  # land_config YAML: commit YAML as the land repository's .mintswarm/config.yaml; prints the commit
+  mkdir -p "$land_repo/.mintswarm"
+  printf '%s\n' "$1" > "$land_repo/.mintswarm/config.yaml"
+  git -C "$land_repo" add .mintswarm/config.yaml
+  git -C "$land_repo" commit -q -m config
+  git -C "$land_repo" rev-parse HEAD
+}
+land_apps() { land_config "tracker: {actions: {merge: {people: none, apps: $1}}}"; }  # land_apps APPS: a config with merge.apps APPS
+land_base="$(land_apps '[mintswarm-dev-keeper]')"
+land_at="$land_base"
+land() { ( cd "$land_repo" && env MSW_LAND_RETRY_DELAY=0 "$L" "$@" --base "$land_at" ); }
+at_base() { local base="$1"; shift; ( land_at="$base"; "$@" ); }  # at_base REV COMMAND...: COMMAND with land.py's --base REV
 merge_calls() { jq --arg n "$1" '[.calls // [] | .[] | select(.pr == $n)] | length' "$MSW_STUB_STATE/merges.json"; }
 mints() { jq -r 'select(.cmd == "curl") | .argv | select(index("https://api.github.com/app/installations/4242/access_tokens")) | "x"' "$argv_log" | wc -l | tr -d ' '; }
 refused_land() {  # refused_land TEXT N [ARGS...]: land.py N --sha $(sha_of N) exits 1 saying TEXT, with no merge call for N
@@ -2735,7 +2910,7 @@ land_argv_start="$(wc -l < "$argv_log" | tr -d ' ')"
 land_gh_start="$(gh_calls)"
 land_mints_before="$(mints)"
 land_merged() {
-  env MSW_TOKEN="$DUMMY" MSW_LAND_RETRY_DELAY=0 "$L" 90 --sha "$(sha_of 90)" > "$sandbox/land90.out" 2>&1 || { cat "$sandbox/land90.out"; return 1; }
+  MSW_TOKEN="$DUMMY" land 90 --sha "$(sha_of 90)" > "$sandbox/land90.out" 2>&1 || { cat "$sandbox/land90.out"; return 1; }
   cat "$sandbox/land90.out"
   grep -qxF "merged #90 at $(sha_of 90)" "$sandbox/land90.out" || return 1
   grep -qxF "merge_commit_sha: $(printf 'f%.0s' $(seq 40))" "$sandbox/land90.out" || return 1
@@ -2970,22 +3145,43 @@ check "refused: GitHub reports the PR not mergeable" refused_land "GitHub report
 
 check "a refusal says the PR was not merged" present "#116 was not merged" "$sandbox/land.out"
 
-# Only the keeper: a config naming mintswarm-dev-bee or its key is refused before anything is minted.
+# Only the keeper: a keeper config that is the bee's, or whose slug is not in merge.apps at --base, is
+# refused before anything is minted.
 with_cfg() { local cfg="$1"; shift; ( export MSW_KEEPER_CONFIG="$cfg"; "$@" ); }
+with_bee() { local cfg="$1"; shift; ( export MSW_APP_CONFIG="$cfg"; "$@" ); }
 fixture 110
 mints_before="$(mints)"
-check "refused: a keeper config that is mintswarm-dev-bee's" \
-  with_cfg "$MSW_APP_CONFIG" refused_land "names the App 'mintswarm-dev-bee', not mintswarm-dev-keeper" 110
-jq '.keychain_service = "mintswarm-dev-bee-private-key"' "$keeper_cfg" > "$sandbox/keeper-dev-service.json"
-check "refused: a keeper config naming mintswarm-dev-bee's key service" \
-  with_cfg "$sandbox/keeper-dev-service.json" refused_land "not mintswarm-dev-keeper-private-key" 110
+check "refused: a keeper config that is the bee's config file" \
+  with_cfg "$MSW_APP_CONFIG" refused_land "is the bee's config: land.py acts only as the keeper" 110
+jq '.slug = "mintswarm-dev-bee"' "$keeper_cfg" > "$sandbox/keeper-bee-slug.json"
+check "refused: a keeper config naming the bee's slug" \
+  with_cfg "$sandbox/keeper-bee-slug.json" refused_land "names the App 'mintswarm-dev-bee', which is the bee's" 110
+jq '.slug = "acme-keeper"' "$keeper_cfg" > "$sandbox/keeper-other-slug.json"
+check "refused: a keeper slug that is not in merge.apps at --base" \
+  with_cfg "$sandbox/keeper-other-slug.json" refused_land "names the App 'acme-keeper', which is not in tracker.actions.merge.apps" 110
+jq '.slug = "acme keeper"' "$keeper_cfg" > "$sandbox/keeper-bad-slug.json"
+check "refused: a keeper config with a malformed slug" \
+  with_cfg "$sandbox/keeper-bad-slug.json" refused_land "has no usable slug" 110
+jq 'del(.keychain_service)' "$keeper_cfg" > "$sandbox/keeper-no-service.json"
+check "refused: a keeper config with no keychain_service" \
+  with_cfg "$sandbox/keeper-no-service.json" refused_land "names no keychain_service" 110
 check "refused: no keeper config" with_cfg "$sandbox/no-keeper.json" refused_land "no keeper config at" 110
+check "refused: no bee config" with_bee "$sandbox/no-bee.json" refused_land "no bee config at $sandbox/no-bee.json" 110
+check "refused: a bee config with a malformed slug" with_bee "$ident/slug-4.json" refused_land "has no usable slug" 110
+no_apps_base="$(land_config 'tracker: {actions: {merge: {people: none}}}')"
+check "refused: a config at --base with no merge.apps" \
+  at_base "$no_apps_base" refused_land "tracker.actions.merge.apps in .mintswarm/config.yaml at $no_apps_base is not a list of slugs" 110
+check "refused: a --base that does not exist" at_base nowhere refused_land "cannot read .mintswarm/config.yaml at 'nowhere'" 110
 check "and none of them minted a token" eq "$(mints)" "$mints_before"
+check "no --base is bad usage" exits_2 sh -c 'cd "$1" && "$2" 110 --sha "$3"' sh "$land_repo" "$L" "$(sha_of 110)"
 check "a sha that is not 40 lowercase hex characters is bad usage" exits_2 land 110 --sha "$(sha_of 110 | tr a-f A-F)A"
 check "a short sha is bad usage" exits_2 land 110 --sha abc1234
 check "a PR number of 0 is bad usage" exits_2 land 0 --sha "$(sha_of 110)"
 check "no --sha is bad usage" exits_2 land 110
 check "and none of them minted a token either" eq "$(mints)" "$mints_before"
+fixture 111
+check "steers are read by the bee config's login" \
+  with_bee "$ident/good.json" refused_land "no approval steer by acme-bee[bot] names the head" 111
 
 # The kill switch: without the bypass GitHub refuses the merge, and land.py exits 1.
 fixture 112
@@ -3862,6 +4058,49 @@ check "msw-state.py sets plan approved in labels mode, with In progress" \
   eq "$(ms set 86 'plan approved' --base "$labels_status_base" 2>&1) $(labels_of 86) $(status_of 86)" \
   "set #86 msw-state to plan approved (was awaiting approval)
 set #86 status to In progress (was In review) msw-state:plan approved In progress"
+
+# --- an App rename is a slug edit --------------------------------------------
+
+# Both Apps are renamed: only the slugs in the sandbox configs change, and the keeper's entry in the
+# fixture merge.apps, in a new commit of the land repository. No code changes.
+rn="$sandbox/rename"
+mkdir -p "$rn"
+jq '.slug = "acme-bee"' "$MSW_APP_CONFIG" > "$rn/bee-app.json"
+jq '.slug = "acme-keeper"' "$keeper_cfg" > "$rn/keeper-app.json"
+renamed() { ( export MSW_APP_CONFIG="$rn/bee-app.json" MSW_KEEPER_CONFIG="$rn/keeper-app.json"; "$@" ); }
+RN_BOT="acme-bee[bot]|359856778+acme-bee[bot]@users.noreply.github.com"
+check "after the rename the derived login and e-mail follow the slug" \
+  eq "$(renamed derived msw_bot_login)|$(renamed derived msw_bot_email)" "$RN_BOT"
+check "bot-identity.sh install writes the renamed identity" \
+  sh -c 'MSW_APP_CONFIG="$1" "$2" install >/dev/null && echo "$(git config --file "$3" user.name)|$(git config --file "$3" user.email)"' \
+  sh "$rn/bee-app.json" "$here/bot-identity.sh" "$identity_file"
+check "as the derived values" \
+  eq "$(git config --file "$identity_file" user.name)|$(git config --file "$identity_file" user.email)" "$RN_BOT"
+"$here/bot-identity.sh" install > /dev/null
+rn_commit="$(GIT_AUTHOR_NAME='acme-bee[bot]' GIT_AUTHOR_EMAIL='359856778+acme-bee[bot]@users.noreply.github.com' \
+  GIT_COMMITTER_NAME='acme-bee[bot]' GIT_COMMITTER_EMAIL='359856778+acme-bee[bot]@users.noreply.github.com' \
+  git commit-tree -p refs/remotes/origin/master -m "renamed bot commit" 'refs/remotes/origin/master^{tree}')"
+git branch mintswarm/8-rename "$rn_commit"
+refuses "push.sh refuses the renamed bot's commit under the old config" \
+  env MSW_TOKEN="$DUMMY" MSW_PUSH_URL="$url" "$P" mintswarm/8-rename
+check "push.sh pushes the renamed bot's commit with the renamed config" \
+  renamed env MSW_TOKEN="$DUMMY" MSW_PUSH_URL="$url" "$P" mintswarm/8-rename
+refuses "and refuses a commit by the old login with it" renamed env MSW_TOKEN="$DUMMY" MSW_PUSH_URL="$url" "$P" mintswarm/2-y
+rn_base="$(land_apps '[acme-keeper]')"
+fixture 154 . . '[true, true, true]' '.[0].user.login = "acme-bee[bot]"'
+check "land.py refuses the renamed keeper at a base whose merge.apps still names the old one" \
+  renamed refused_land "names the App 'acme-keeper', which is not in tracker.actions.merge.apps" 154
+check "and passes with --base the commit that renames it in merge.apps, reading the renamed bee's steer (--dry-run)" \
+  renamed at_base "$rn_base" land 154 --sha "$(sha_of 154)" --dry-run
+seed 18 '{"assignees": ["alice"], "events": [{"event": "assigned", "actor": {"login": "acme-bee[bot]"}, "assignee": {"login": "alice"}}]}'
+check "assign-approvers.py releases what the renamed bot assigned, and only with the renamed config" \
+  eq "$(aa release 18 plan --dry-run 2>/dev/null)|$(renamed aa release 18 plan --dry-run 2>/dev/null)" "nothing to release|alice"
+wpa_seed 87 "awaiting approval" \
+  "$(wpa_comment 87 10 'acme-bee[bot]' 00 "$(printf '<!-- mintswarm: plan approval package -->\nPlan sha256: %s\nPlease approve.' "$wpa_sha")" 00 Bot)" \
+  "$(wpa_comment 87 11 zmij 05 '/approve-plan')"
+check "watch-plan-approvals.py takes the renamed bot's package as current only with the renamed config" \
+  eq "$(wpa_lines 87 --base "$real_base" | tail -n 1)|$(renamed wpa_lines 87 --base "$real_base" | tail -n 1)" \
+     "refuse #87 comment 11 by zmij: #87 has no current approval package|approve #87 comment 11 by zmij package $(wpa_url 87 10) sha256 $wpa_sha"
 
 # --- summary -----------------------------------------------------------------
 

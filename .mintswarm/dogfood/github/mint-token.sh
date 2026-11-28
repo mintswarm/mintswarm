@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mint a GitHub App credential for mintswarm-dev-bee without the key touching disk.
+# Mint a GitHub App credential for the bee, as its config names it, without the key touching disk.
 #
 #   mint-token.sh jwt                  print an App JWT (10 minutes; for /app endpoints)
 #   mint-token.sh token [PERMS_JSON]   print an installation token for $MSW_REPO (1 hour)

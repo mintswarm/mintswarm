@@ -26,6 +26,7 @@ fn config() -> AppConfig {
         keychain_service: String::from("mintswarm-dev-bee"),
         key_store: Some(KeyStore::File),
         key_fingerprint: None,
+        bot_user_id: None,
     }
 }
 

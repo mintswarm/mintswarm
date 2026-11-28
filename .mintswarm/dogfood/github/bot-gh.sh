@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run gh as mintswarm-dev-bee[bot] against $MSW_REPO (owner/name, mintswarm/mintswarm by default).
+# Run gh as the bee, as its config names it, against $MSW_REPO (owner/name, mintswarm/mintswarm by default).
 #
 #   bot-gh.sh ARGS...      for example: bot-gh.sh api repos/{owner}/{repo} --jq .full_name
 #

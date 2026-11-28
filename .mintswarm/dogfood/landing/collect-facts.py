@@ -77,7 +77,7 @@ Inputs are checked before anything is written:
   so the checks belong to the head commit. The PR's `base.sha` is not used:
   the base is the job's.
 - --approver is a GitHub login, ^[A-Za-z0-9-]+$, or an App's bot login,
-  the same followed by `[bot]` (mintswarm-dev-bee[bot] for a plan approved
+  the same followed by `[bot]` (the bee's login for a plan approved
   without a human); --approved-at is a UTC time, YYYY-MM-DDTHH:MM:SSZ;
   --approval-url starts with https://; --approval-id is a positive integer;
   request.json's fetched_at is a UTC time of the same form.
@@ -179,7 +179,11 @@ is a steer when:
 
 - its author is not a bot (user.type is not Bot and the login does not end
   in [bot]; a deleted user is login `ghost`): via "account";
-- or its author is mintswarm-dev-bee[bot] and some line of its body, split at
+- or its author is the bee, the runner App, whose login `<slug>[bot]` is
+  derived from the bee's config ($MSW_APP_CONFIG or
+  ~/.config/mintswarm/bee-app.json, read only when a bot item with the
+  marker is met; a missing or malformed config, or a slug that is not a
+  non-empty string of [A-Za-z0-9-], is unusable input), and some line of its body, split at
   LF and trimmed of whitespace, is exactly `<!-- mintswarm: steer -->`:
   via "marker". The session puts this marker on every decision it posts on
   the maintainer's behalf, as .mintswarm/dogfood/plan-approval/README.md,
@@ -193,6 +197,7 @@ Standard library only, apart from running bot-gh.sh (fetch), git and yq
 (assemble).
 """
 
+import functools
 import hashlib
 import importlib.util
 import json
@@ -220,7 +225,7 @@ DECISION_TOOL = "mintswarm-approval-decision"
 REPO = "repos/{owner}/{repo}"
 PER_PAGE = 100
 MAX_PAGES = 30
-BOT = "mintswarm-dev-bee[bot]"
+SLUG = re.compile(r"[A-Za-z0-9-]+")
 MARKER = "<!-- mintswarm: steer -->"
 SEVERITIES = ("blocker", "major", "minor", "nit")
 REVIEW_VERDICTS = ("pass", "changes_required")
@@ -283,6 +288,24 @@ class InputError(Exception):
 
 class FetchError(Exception):
     """A GitHub read failed or could not be saved: exit 1."""
+
+
+@functools.lru_cache(maxsize=None)
+def bee_login() -> str:
+    """The bee's bot login, <slug>[bot], from its config; read at the first comparison that needs it, never at import."""
+    path = Path(os.environ.get("MSW_APP_CONFIG") or Path.home() / ".config" / "mintswarm" / "bee-app.json")
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise InputError(
+            f"cannot read the bee's config {path}: {exc} (see .mintswarm/dogfood/github/README.md, Roles)"
+        ) from exc
+    slug = config.get("slug") if isinstance(config, dict) else None
+    if not isinstance(slug, str) or not SLUG.fullmatch(slug):
+        raise InputError(
+            f"the bee's config {path} has no usable slug ({slug!r}; see .mintswarm/dogfood/github/README.md, Roles)"
+        )
+    return f"{slug}[bot]"
 
 
 # --- common ---------------------------------------------------------------
@@ -621,7 +644,7 @@ def collect_steers(responses: Responses, approved_at: datetime, approval_url, ap
             login, is_bot = author(item)
             if not is_bot:
                 via = "account"
-            elif login == BOT and has_marker(item.get("body")):
+            elif has_marker(item.get("body")) and login == bee_login():
                 via = "marker"
             else:
                 continue

@@ -80,7 +80,7 @@ Checks:
   after the approval, a human before and at the approval time, comments
   edited after the approval and before it, the approval by URL and by id,
   a review comment sharing the approval's id, bots without the marker,
-  mintswarm-dev-bee[bot] with the marker line, indented and inside a code
+  acme-bee[bot] with the marker line, indented and inside a code
   fence, the marker mid-line, another bot with the marker, a pending
   review, an inline review comment, a deleted user); review_requests, the
   pull's requested_reviewers with an APPROVED or CHANGES_REQUESTED review
@@ -88,10 +88,11 @@ Checks:
   duplicate once) and exit 2 with no facts file when the field is missing,
   not a list or has an entry without a string login; every round with
   `commit` the head and `current` true; the approval with and without
-  decision, kickoff floor and assessment, and by mintswarm-dev-bee[bot], the
+  decision, kickoff floor and assessment, and by acme-bee[bot], the
   assessment's confidence and band read from its envelope, and null for a
   document with two envelopes; exit 2
-  with no facts file for a head mismatch, a bad fetched_at, a tampered kept
+  with no facts file for a bee config without a usable slug, a head
+  mismatch, a bad fetched_at, a tampered kept
   file, a version 1 round.json, a gates round without its input, a gap in
   round numbers, an unreadable review verdict, a bad --approved-at or
   --approver, and a decision or kickoff floor of the wrong tool;
@@ -212,6 +213,10 @@ class Sandbox:
                 "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
             }
         )
+        # The bee as a fixture config names it, with a slug no code names.
+        self.bee = tmp / "bee-app.json"
+        write(self.bee, json.dumps({"slug": "acme-bee", "bot_user_id": 7}) + "\n")
+        env["MSW_APP_CONFIG"] = str(self.bee)
         self.env = env
         self.git("init", "-q", "-b", "master")
         write(self.repo / "README.md", "a tracked file\n")
@@ -1120,7 +1125,7 @@ def user(login: str, kind: str = "User") -> dict:
     return {"login": login, "id": sum(map(ord, login)), "type": kind}
 
 
-BOT_USER = user("mintswarm-dev-bee[bot]", "Bot")
+BOT_USER = user("acme-bee[bot]", "Bot")
 
 
 def comment(ident: int, who, created: str, body: str, where: str = "pull", updated: Optional[str] = None) -> dict:
@@ -1276,10 +1281,10 @@ PULL_URL = f"https://github.com/mintswarm/mintswarm/pull/{PR}"
 ISSUE_URL = f"https://github.com/mintswarm/mintswarm/issues/{ISSUE}"
 EXPECTED_STEERS = [
     steer("issue-comment", "erin", at("11:30:00"), f"{ISSUE_URL}#issuecomment-1203", "account", at("12:50:00")),
-    steer("issue-comment", "mintswarm-dev-bee[bot]", at("12:10:00"), f"{ISSUE_URL}#issuecomment-1101", "marker"),
+    steer("issue-comment", "acme-bee[bot]", at("12:10:00"), f"{ISSUE_URL}#issuecomment-1101", "marker"),
     steer("pr-comment", "alice", at("12:20:00"), f"{PULL_URL}#issuecomment-2001", "account", at("12:25:00")),
-    steer("pr-comment", "mintswarm-dev-bee[bot]", at("12:40:00"), f"{PULL_URL}#issuecomment-2003", "marker"),
-    steer("issue-comment", "mintswarm-dev-bee[bot]", at("13:00:00"), f"{ISSUE_URL}#issuecomment-1202", "marker"),
+    steer("pr-comment", "acme-bee[bot]", at("12:40:00"), f"{PULL_URL}#issuecomment-2003", "marker"),
+    steer("issue-comment", "acme-bee[bot]", at("13:00:00"), f"{ISSUE_URL}#issuecomment-1202", "marker"),
     steer("review", "bob", at("14:00:00"), f"{PULL_URL}#pullrequestreview-3001", "account"),
     steer("review-comment", "dave", at("15:00:00"), f"{PULL_URL}#discussion_r4001", "account"),
     steer("review-comment", "ghost", at("15:30:00"), f"{PULL_URL}#discussion_r4002", "account"),
@@ -1713,11 +1718,24 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
             json.dumps(r),
         )
     T.check(
-        "assemble: steers (human, marked mintswarm-dev-bee[bot], review, inline, ghost; not the rest)",
+        "assemble: steers (human, marked acme-bee[bot], review, inline, ghost; not the rest)",
         facts["steers"] == EXPECTED_STEERS,
         json.dumps(facts["steers"], indent=1),
     )
     baseline = facts
+    for name, config in (("a malformed slug", {"slug": "acme bee"}), ("no slug", {"bot_user_id": 7})):
+        bad = sb.tmp / "bad-bee-app.json"
+        write(bad, json.dumps(config) + "\n")
+        sb.env["MSW_APP_CONFIG"] = str(bad)
+        try:
+            proc, _ = assemble(sb)
+        finally:
+            sb.env["MSW_APP_CONFIG"] = str(sb.bee)
+        T.check(
+            f"assemble: a bee config with {name} is unusable input (exit 2)",
+            proc.returncode == 2 and f"{bad} has no usable slug" in proc.stderr,
+            detail(proc),
+        )
     proc, short_facts = assemble(sb, replace={"--rounds": str(short)})
     gates = short_facts.get("gate_rounds", []) if written(proc, short_facts) else []
     T.check(
@@ -1786,7 +1804,7 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
             "--decision",
             str(sb.tmp / "decision.json"),
         ],
-        {"--approver": "mintswarm-dev-bee[bot]"},
+        {"--approver": "acme-bee[bot]"},
     )
     ok = written(proc, facts) and list(facts["approval"]) == [
         "approver",
@@ -1798,7 +1816,7 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
     ]
     if ok:
         ok = (
-            facts["approval"]["approver"] == "mintswarm-dev-bee[bot]"
+            facts["approval"]["approver"] == "acme-bee[bot]"
             and facts["approval"]["decision"]
             == {
                 "path": str(sb.tmp / "decision.json"),
@@ -1819,9 +1837,7 @@ def assemble_tests(sb: Sandbox, short: Path, stale_rounds: Path) -> None:
                 "band": "likely-safe",
             }
         )
-    T.check(
-        "assemble: an approval by mintswarm-dev-bee[bot] with decision, kickoff floor and assessment", ok, detail(proc)
-    )
+    T.check("assemble: an approval by acme-bee[bot] with decision, kickoff floor and assessment", ok, detail(proc))
     write(sb.tmp / "assessment-2.md", "# Assessment: x\n\n88 confidence: y\n\n" + envelope + "\n" + envelope)
     proc, facts = assemble(sb, ["--assessment", str(sb.tmp / "assessment-2.md")])
     T.check(

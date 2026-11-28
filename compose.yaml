@@ -21,8 +21,8 @@ services:
       - --log
       - /var/log/mintswarm/webhooks.jsonl
       - --secret-env
-      - mintswarm-dev-keeper-secret
-    # Its line mintswarm-dev-keeper-secret=<value> sets the variable --secret-env names.
+      - MSW_KEEPER_WEBHOOK_SECRET
+    # Its line MSW_KEEPER_WEBHOOK_SECRET=<value> sets the variable --secret-env names.
     # Optional, so the project loads for those who only run postgres.
     env_file:
       - path: ${HOME}/.config/mintswarm/webhook-secret

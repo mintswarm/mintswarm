@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Make every commit on a factory branch (mintswarm/*) the bot's.
+# Make every commit on a factory branch (mintswarm/*) the bee's, with the login and e-mail
+# derived from its config ($MSW_APP_CONFIG; common.sh, msw_bot_login, msw_bot_email).
 #
 #   bot-identity.sh install     write ~/.config/mintswarm/bot-identity.gitconfig and include
 #                               it from this repository's shared config on mintswarm/* branches
 #   bot-identity.sh status      show the identity git uses here and whether the include is set
 #   bot-identity.sh uninstall   remove the include (the gitconfig file stays)
+#
+# install refuses, writing nothing, when the config has no usable slug or bot_user_id.
+# After an App rename, edit the slug in the config and run install again.
 #
 # Run from any worktree of the repository: "git config --local" writes the
 # repository's shared config, so the include applies in every worktree and to
@@ -27,11 +31,15 @@ git rev-parse --git-dir >/dev/null 2>&1 || msw_die "not inside a git repository"
 
 case "${1:-}:$#" in
   install:1)
+    login=""
+    email=""
+    login="$(msw_bot_login)" || exit 1
+    email="$(msw_bot_email)" || exit 1
     mkdir -p "$MSW_CONFIG_DIR"
-    git config --file "$IDENTITY_FILE" user.name "$MSW_BOT_NAME"
-    git config --file "$IDENTITY_FILE" user.email "$MSW_BOT_EMAIL"
+    git config --file "$IDENTITY_FILE" user.name "$login"
+    git config --file "$IDENTITY_FILE" user.email "$email"
     git config --local --replace-all "$INCLUDE_KEY" "$IDENTITY_FILE"
-    printf '%s\n' "installed: commits on ${MSW_BRANCH_PREFIX}* are authored and committed by $MSW_BOT_NAME"
+    printf '%s\n' "installed: commits on ${MSW_BRANCH_PREFIX}* are authored and committed by $login"
     printf '%s\n' "include: $INCLUDE_KEY = $IDENTITY_FILE"
     ;;
   status:1)

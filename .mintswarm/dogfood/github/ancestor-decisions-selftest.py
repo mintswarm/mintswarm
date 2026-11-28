@@ -97,7 +97,8 @@ FORBIDDEN = {"-f", "-F", "--field", "--raw-field", "--input", "--paginate", "-X"
 REPO = "repos/{owner}/{repo}"
 WEB = "https://github.com/mintswarm/mintswarm/issues"
 MARKER = "<!-- mintswarm: steer -->"
-BOT_USER = {"login": "mintswarm-dev-bee[bot]", "type": "Bot"}
+BOT_USER = {"login": "acme-bee[bot]", "type": "Bot"}  # the bee as the fixture config names it; no code names it
+BEE_CONFIG = {"slug": "acme-bee", "bot_user_id": 7}
 REVERSAL = "An approval stands until the plan changes, whatever happens to the issue after it."
 REVERSAL_URL = f"{WEB}/548#issuecomment-7221891856"
 APPROVED_AT = "2026-11-20T12:00:00Z"  # the plan approval landing compares decision times with
@@ -157,6 +158,9 @@ class Sandbox:
                 "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
             }
         )
+        self.bee = tmp / "bee-app.json"
+        self.bee.write_text(json.dumps(BEE_CONFIG), encoding="utf-8")
+        env["MSW_APP_CONFIG"] = str(self.bee)
         self.env = env
         self.git("init", "-q", "-b", "master")
         (self.repo / ".mintswarm").mkdir()
@@ -510,6 +514,28 @@ def assemble_tests(sb: Sandbox) -> None:
     T.check(
         "assemble: marker comments, with a CRLF and with trailing spaces, are via marker",
         "> The relayed decision." in near and "> Another relayed decision." in near and near.count("via: marker") == 2,
+    )
+    for name, config in (("a malformed slug", {"slug": "acme bee"}), ("no slug", {"bot_user_id": 7})):
+        bad = sb.tmp / "bad-bee-app.json"
+        bad.write_text(json.dumps(config), encoding="utf-8")
+        env = dict(sb.env, MSW_APP_CONFIG=str(bad))
+        (sb.repo / OUTPUT).unlink(missing_ok=True)
+        failed = sb.run(
+            ["assemble", "--responses", str(sb.tmp / "responses-fixture"), "--issue", "568", "--base", "HEAD"], env
+        )
+        T.check(
+            f"assemble: a bee config with {name} is unusable input",
+            failed.returncode == 2 and "has no usable slug" in failed.stderr and not (sb.repo / OUTPUT).exists(),
+            detail(failed),
+        )
+    missing = dict(sb.env, MSW_APP_CONFIG=str(sb.tmp / "none.json"))
+    failed = sb.run(
+        ["assemble", "--responses", str(sb.tmp / "responses-fixture"), "--issue", "568", "--base", "HEAD"], missing
+    )
+    T.check(
+        "assemble: a missing bee config is unusable input, naming it",
+        failed.returncode == 2 and str(sb.tmp / "none.json") in failed.stderr,
+        detail(failed),
     )
     T.check("assemble: an edited comment carries its edited time", "edited: 2026-11-28T09:00:00Z" in near)
     T.check("assemble: an unedited comment says edited: none", "Time: 2026-11-27T10:00:00Z; edited: none" in near)

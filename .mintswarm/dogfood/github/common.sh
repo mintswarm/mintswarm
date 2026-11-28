@@ -1,10 +1,23 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # the constants are used by the scripts that source this file
-# Shared constants and helpers for the mintswarm-dev-bee tooling. Sourced, never run.
+# Shared constants and helpers for the bee's tooling (the runner App, as its config names it).
+# Sourced, never run.
 #
 # Contract:
-#   - The repository, bot identity and config locations are defined here and
-#     nowhere else in .mintswarm/dogfood/github/.
+#   - The repository and the config locations are defined here and nowhere
+#     else in .mintswarm/dogfood/github/. No App's slug, login or e-mail is:
+#     each is read from the role's config file when it is needed, never when
+#     this file is sourced, so a run with only $MSW_TOKEN needs no config.
+#   - msw_bot_login [CONFIG] prints the App's bot login, <slug>[bot], from
+#     CONFIG (default $MSW_APP_CONFIG, the bee's). It fails when CONFIG cannot
+#     be read or its slug is missing, empty or holds a character outside
+#     [A-Za-z0-9-].
+#   - msw_bot_email [CONFIG] prints the App's noreply e-mail,
+#     <bot_user_id>+<slug>[bot]@users.noreply.github.com. It fails as
+#     msw_bot_login does, and when bot_user_id is missing or not all digits
+#     (record it with store-credentials.sh bot-id).
+#     Both run in $(...): assign each in a statement of its own with
+#     "|| exit 1", since a failure inside $(...) does not stop the caller.
 #   - msw_token [PERMS_JSON] prints an installation token: $MSW_TOKEN when set,
 #     otherwise a fresh one from mint-token.sh. It fails unless the token starts
 #     with ghs_. Capture it with tok="$(msw_token)" || exit; never print it.
@@ -24,14 +37,15 @@
 #   - msw_recorded_key_store prints the key store recorded as key_store in
 #     $MSW_APP_CONFIG; a file without it means keychain on macOS and is an
 #     error elsewhere. mint-token.sh reads the key only from that store.
-#   - msw_app_profile NAME is the per-App table: for each App that
-#     store-credentials.sh creates from a manifest, it sets
-#       MSW_PROFILE_CONFIG   the App's own config file
-#       MSW_PROFILE_SERVICE  the key's service name in every key store
-#       MSW_PROFILE_LABEL    the key's label
-#     for mintswarm-dev-bee ($MSW_APP_CONFIG) and mintswarm-dev-keeper
-#     ($MSW_KEEPER_CONFIG, never derived from $MSW_APP_CONFIG), and returns 1
-#     for any other name.
+#   - msw_app_profile ROLE is the per-role table: it sets MSW_PROFILE_CONFIG,
+#     the role's own config file, for
+#       bee     the runner App: $MSW_APP_CONFIG
+#       keeper  the control plane's App: $MSW_KEEPER_CONFIG, never derived
+#               from $MSW_APP_CONFIG
+#       envoy   the user-facing sign-in App: reserved, it has no profile yet
+#               and returns 1
+#     and returns 1 for any other name. The key's service and label are
+#     derived from the slug (store-credentials.sh).
 #
 # bash 3.2 compatible.
 
@@ -48,15 +62,10 @@ MSW_REPO_OWNER="${MSW_REPO%%/*}"
 MSW_REPO_NAME="${MSW_REPO#*/}"
 MSW_REPO_URL="https://github.com/$MSW_REPO.git"
 
-MSW_BOT_NAME='mintswarm-dev-bee[bot]'
-MSW_BOT_EMAIL='359856778+mintswarm-dev-bee[bot]@users.noreply.github.com'
-
 MSW_BRANCH_PREFIX=mintswarm/
 
-MSW_KEYCHAIN_SERVICE=mintswarm-dev-bee-private-key
 MSW_CONFIG_DIR="$HOME/.config/mintswarm"
 MSW_APP_CONFIG="${MSW_APP_CONFIG:-$MSW_CONFIG_DIR/bee-app.json}"
-MSW_KEEPER_KEYCHAIN_SERVICE=mintswarm-dev-keeper-private-key
 MSW_KEEPER_CONFIG="${MSW_KEEPER_CONFIG:-$MSW_CONFIG_DIR/keeper-app.json}"
 MSW_KEY_FILE_DIR="$MSW_CONFIG_DIR/keys"
 MSW_CREDSTORE_DIR="$MSW_CONFIG_DIR/credstore"
@@ -101,24 +110,53 @@ msw_recorded_key_store() {
   printf '%s\n' "$store"
 }
 
-MSW_PROFILE_CONFIG=""
-MSW_PROFILE_SERVICE=""
-MSW_PROFILE_LABEL=""
-msw_app_profile() {  # msw_app_profile NAME: set MSW_PROFILE_*; 1 for an unknown NAME
-  case "$1" in
-    mintswarm-dev-bee)
-      MSW_PROFILE_CONFIG="$MSW_APP_CONFIG"
-      MSW_PROFILE_SERVICE="$MSW_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev-bee GitHub App private key' ;;
-    mintswarm-dev-keeper)
-      MSW_PROFILE_CONFIG="$MSW_KEEPER_CONFIG"
-      MSW_PROFILE_SERVICE="$MSW_KEEPER_KEYCHAIN_SERVICE"
-      MSW_PROFILE_LABEL='mintswarm-dev-keeper GitHub App private key' ;;
-    *)
-      MSW_PROFILE_CONFIG=""
-      MSW_PROFILE_SERVICE=""
-      MSW_PROFILE_LABEL=""
+msw_config_slug() {  # msw_config_slug [CONFIG]: the checked slug in CONFIG
+  local cfg="${1:-$MSW_APP_CONFIG}" slug
+  [ -f "$cfg" ] || {
+    printf '%s\n' "$(basename "$0"): no App config at $cfg (see README.md, Roles)" >&2
+    return 1
+  }
+  # A slug with a newline is refused in jq: $(...) would drop a trailing one.
+  slug="$(jq -r '.slug | if type == "string" and test("\\A[A-Za-z0-9-]+\\z") then . else "" end' "$cfg" 2>/dev/null)" || {
+    printf '%s\n' "$(basename "$0"): cannot read $cfg (see README.md, Roles)" >&2
+    return 1
+  }
+  case "$slug" in
+    ''|*[!A-Za-z0-9-]*)
+      printf '%s\n' "$(basename "$0"): $cfg has no usable slug ('$slug'; see README.md, Roles)" >&2
       return 1 ;;
+  esac
+  printf '%s\n' "$slug"
+}
+
+msw_bot_login() {  # msw_bot_login [CONFIG]: <slug>[bot]
+  local slug
+  slug="$(msw_config_slug "$@")" || return 1
+  printf '%s[bot]\n' "$slug"
+}
+
+msw_bot_email() {  # msw_bot_email [CONFIG]: <bot_user_id>+<slug>[bot]@users.noreply.github.com
+  local cfg="${1:-$MSW_APP_CONFIG}" slug id
+  slug="$(msw_config_slug "$cfg")" || return 1
+  id="$(jq -r '.bot_user_id // empty | numbers | tostring' "$cfg" 2>/dev/null)" || id=""
+  case "$id" in
+    ''|*[!0-9]*)
+      printf '%s\n' "$(basename "$0"): $cfg records no bot_user_id: record it with MSW_APP_CONFIG=$cfg store-credentials.sh bot-id (see README.md, Roles)" >&2
+      return 1 ;;
+  esac
+  printf '%s+%s[bot]@users.noreply.github.com\n' "$id" "$slug"
+}
+
+MSW_PROFILE_CONFIG=""
+msw_app_profile() {  # msw_app_profile ROLE: set MSW_PROFILE_CONFIG; 1 for an unknown ROLE
+  MSW_PROFILE_CONFIG=""
+  case "$1" in
+    bee) MSW_PROFILE_CONFIG="$MSW_APP_CONFIG" ;;
+    keeper) MSW_PROFILE_CONFIG="$MSW_KEEPER_CONFIG" ;;
+    envoy)
+      printf '%s\n' "$(basename "$0"): envoy has no profile yet" >&2
+      return 1 ;;
+    *) return 1 ;;
   esac
 }
 

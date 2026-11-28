@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mintswarm_domain::tracker::Login;
 use serde::Deserialize;
 
 /// The key store that holds an App's private key.
@@ -42,7 +43,7 @@ impl KeyStore {
 pub struct AppConfig {
     /// The App's numeric id.
     pub app_id: u64,
-    /// The App's slug, for example `mintswarm-dev-bee`.
+    /// The App's slug, for example `acme-bee`.
     pub slug: String,
     /// The App's client id: the JWT's issuer, and the key's account name in every key store.
     pub client_id: String,
@@ -54,6 +55,10 @@ pub struct AppConfig {
     /// The fingerprint of the key, for example `SHA256:…`.
     #[serde(default)]
     pub key_fingerprint: Option<String>,
+    /// The App's bot user id, which `store-credentials.sh` records: the number in the bot's
+    /// noreply e-mail.
+    #[serde(default)]
+    pub bot_user_id: Option<u64>,
 }
 
 /// Why the App's configuration could not be used.
@@ -130,6 +135,18 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// The App's bot login, derived from its slug: `<slug>[bot]`.
+    pub fn bot_login(&self) -> Login {
+        Login(format!("{}[bot]", self.slug))
+    }
+
+    /// The App's bot noreply e-mail, derived from its slug and bot user id:
+    /// `<bot_user_id>+<slug>[bot]@users.noreply.github.com`, or `None` when no id is recorded.
+    pub fn noreply_email(&self) -> Option<String> {
+        self.bot_user_id
+            .map(|id| format!("{id}+{}[bot]@users.noreply.github.com", self.slug))
+    }
+
     /// The key store that holds the key: the recorded one, or `keychain` on macOS when none is
     /// recorded.
     pub fn key_store(&self) -> Result<KeyStore, ConfigError> {
@@ -157,11 +174,13 @@ pub(crate) fn valid_name(value: &str) -> bool {
 mod tests {
     use std::path::Path;
 
+    use mintswarm_domain::tracker::Login;
+
     use super::{AppConfig, ConfigError, KeyStore, ParseError, valid_name};
 
-    const FULL: &str = r#"{"app_id": 123, "slug": "mintswarm-dev-bee", "client_id": "Iv23liAbc",
-        "keychain_service": "mintswarm-dev-bee", "key_store": "secret-service",
-        "key_fingerprint": "SHA256:abc"}"#;
+    const FULL: &str = r#"{"app_id": 123, "slug": "acme-bee", "client_id": "Iv23liAbc",
+        "keychain_service": "acme-bee", "key_store": "secret-service",
+        "key_fingerprint": "SHA256:abc", "bot_user_id": 7}"#;
 
     fn parse(text: &str) -> Result<AppConfig, ParseError> {
         AppConfig::parse(text.as_bytes())
@@ -171,12 +190,38 @@ mod tests {
     fn reads_every_field() {
         let config = parse(FULL).ok().unwrap();
         assert_eq!(config.app_id, 123);
-        assert_eq!(config.slug, "mintswarm-dev-bee");
+        assert_eq!(config.slug, "acme-bee");
         assert_eq!(config.client_id, "Iv23liAbc");
-        assert_eq!(config.keychain_service, "mintswarm-dev-bee");
+        assert_eq!(config.keychain_service, "acme-bee");
         assert_eq!(config.key_store, Some(KeyStore::SecretService));
         assert_eq!(config.key_fingerprint.as_deref(), Some("SHA256:abc"));
         assert_eq!(config.key_store().unwrap(), KeyStore::SecretService);
+        assert_eq!(config.bot_user_id, Some(7));
+    }
+
+    #[test]
+    fn derives_the_bot_login_from_the_slug() {
+        let config = parse(FULL).ok().unwrap();
+        assert_eq!(config.bot_login(), Login(String::from("acme-bee[bot]")));
+    }
+
+    #[test]
+    fn derives_the_noreply_email_from_the_slug_and_the_id() {
+        let config = parse(FULL).ok().unwrap();
+        assert_eq!(
+            config.noreply_email().as_deref(),
+            Some("7+acme-bee[bot]@users.noreply.github.com")
+        );
+    }
+
+    #[test]
+    fn has_no_noreply_email_without_an_id() {
+        let text =
+            r#"{"app_id": 1, "slug": "acme-bee", "client_id": "c", "keychain_service": "k"}"#;
+        let config = parse(text).ok().unwrap();
+        assert_eq!(config.bot_user_id, None);
+        assert_eq!(config.bot_login(), Login(String::from("acme-bee[bot]")));
+        assert_eq!(config.noreply_email(), None);
     }
 
     #[test]
@@ -205,6 +250,7 @@ mod tests {
         let config = parse(text).ok().unwrap();
         assert_eq!(config.key_store, None);
         assert_eq!(config.key_fingerprint, None);
+        assert_eq!(config.bot_user_id, None);
         if cfg!(target_os = "macos") {
             assert_eq!(config.key_store().unwrap(), KeyStore::Keychain);
         } else {
@@ -242,7 +288,7 @@ mod tests {
 
     #[test]
     fn name_rule() {
-        for good in ["a", "A1", "mintswarm-dev-bee", "Iv23li.x_y-z", "0"] {
+        for good in ["a", "A1", "acme-bee", "Iv23li.x_y-z", "0"] {
             assert!(valid_name(good), "{good}");
         }
         for bad in ["", "-a", "_a", ".a", "a b", "a/b", "a@b", "é"] {
