@@ -1,11 +1,13 @@
 //! The GitHub tracker against a scripted local server answering with JSON in the shapes of the
 //! `mintswarm-github` fixtures: field ids learned, reused, forgotten and deferred, and the other
 //! capabilities over their clients, the reactions, edits, permission reads and pull request
-//! reads and merges replaying the recorded fixtures themselves.
+//! reads and merges replaying the recorded fixtures themselves, and the keyed comments,
+//! assignments and artefact reads replaying `mintswarm-github`'s hand-written fixtures.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use mintswarm_core::tracker::github::{
     GitHubClients, GitHubTracker, GitHubTrackerError, InstallationTokens,
@@ -16,9 +18,9 @@ use mintswarm_domain::field::{
 use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError};
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    CodeOwners, Collaborators, CommentEdits, Comments, Cursor, Fields, IssueType, Issues, Links,
-    Login, MergeOutcome, Merged, Merges, ParentIssue, Reactions, RepoRole, RequestedReviewers,
-    ReviewThread, Reviews, Statuses, SubItem,
+    ArtifactReads, AssignmentReason, Assignments, CodeOwners, Collaborators, CommentEdits,
+    Comments, Cursor, Fields, IssueType, Issues, Links, Login, MergeOutcome, Merged, Merges,
+    ParentIssue, Reactions, RepoRole, RequestedReviewers, ReviewThread, Reviews, Statuses, SubItem,
 };
 use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{
@@ -26,6 +28,7 @@ use mintswarm_github::{
     Kinds, MergeClient, NOTE_MARKER, Permissions, RetryPolicy, StatusClient, Token, TokenError,
     WriteError,
 };
+use mintswarm_rules::render::decision::refusal;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -88,6 +91,30 @@ const PERMISSION: &str = include_str!("../../github/tests/fixtures/reads/permiss
 const PERMISSION_NONE: &str =
     include_str!("../../github/tests/fixtures/reads/permission-none.json");
 const PARENT_NONE: &str = include_str!("../../github/tests/fixtures/reads/parent-none.json");
+/// `mintswarm-github`'s hand-written fixtures of keyed records, assignees and artefacts.
+const CREATED_RECORD: &str =
+    include_str!("../../github/tests/fixtures/comments/created-record.json");
+const SINCE_RECORD: &str = include_str!("../../github/tests/fixtures/comments/since-record.json");
+const ASSIGNEES_ISSUE: &str = include_str!("../../github/tests/fixtures/assignees/issue.json");
+const ASSIGNED_EVENTS: &str = include_str!("../../github/tests/fixtures/assignees/events.json");
+const ASSIGNED: &str = include_str!("../../github/tests/fixtures/assignees/assigned.json");
+const ASSIGN_DROPPED: &str =
+    include_str!("../../github/tests/fixtures/assignees/assign-dropped.json");
+const RELEASED: &str = include_str!("../../github/tests/fixtures/assignees/released.json");
+const RELEASE_KEPT: &str = include_str!("../../github/tests/fixtures/assignees/release-kept.json");
+const ARTIFACT: &str = include_str!("../../github/tests/fixtures/reads/artifact.json");
+/// 2026-11-26T12:00:00Z, as in `crates/github/tests/comments.rs`.
+const NOW: u64 = 1_795_694_400;
+/// The probe's first page: comments since [`NOW`] less the probe margin.
+const PROBE_PATH: &str =
+    "/repos/acme/widgets/issues/7/comments?since=2026-11-26T11%3A59%3A50Z&per_page=100&page=1";
+const COMMENTS_PATH: &str = "/repos/acme/widgets/issues/7/comments";
+const ASSIGNEES_PATH: &str = "/repos/acme/widgets/issues/7/assignees";
+/// The command comment the fixtures' records answer.
+const ANSWERED: u64 = 8800;
+/// The plane's own logins the assignee fixtures name: an App's bot login, and a login without
+/// `[bot]`.
+const OWN: [&str; 2] = ["widgets-plane[bot]", "plane-operator"];
 const COMMENT_ID: u64 = 7_202_074_597;
 const CREATED: &str = r#"{
   "id": 9001, "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-9001",
@@ -153,8 +180,29 @@ fn tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
 
 /// A tracker over `responder`, and what its token source was asked for.
 fn recording_tracker(responder: &Responder) -> (GitHubTracker<FixedTokens>, Asked) {
+    tracker_with(responder, Clock::system(), single_attempt())
+}
+
+/// A tracker whose comment client probes at the fixed [`NOW`] and tries a create twice, with
+/// millisecond waits, so a 502 on the first POST is probed before a second attempt.
+fn probing_tracker(responder: &Responder) -> GitHubTracker<FixedTokens> {
+    let two_attempts = RetryPolicy {
+        attempts: 2,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+        ..RetryPolicy::default()
+    };
+    tracker_with(responder, Clock::from_fn(|| NOW), two_attempts).0
+}
+
+/// A tracker over `responder` whose comment client times its probes by `clock` and retries
+/// with `comments`; every other client makes a single attempt.
+fn tracker_with(
+    responder: &Responder,
+    clock: Clock,
+    comments: RetryPolicy,
+) -> (GitHubTracker<FixedTokens>, Asked) {
     let base = responder.base.as_str();
-    let clock = Clock::system();
     let limiter = Arc::new(ContentLimiter::new(clock.clone()));
     let clients = GitHubClients {
         reads: GitHubReads::new(
@@ -182,7 +230,7 @@ fn recording_tracker(responder: &Responder) -> (GitHubTracker<FixedTokens>, Aske
             clock,
         )
         .unwrap()
-        .with_retry(single_attempt()),
+        .with_retry(comments),
         writes: IssueWrites::new(base, "acme", "widgets", limiter)
             .unwrap()
             .with_retry(single_attempt()),
@@ -1181,4 +1229,192 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<Request> {
         headers,
         body: String::from_utf8_lossy(&body).into_owned(),
     })
+}
+
+/// A plan approval record answering [`ANSWERED`], as the fixtures' records are: steer-marked,
+/// with no note marker.
+fn record() -> String {
+    format!(
+        "<!-- mintswarm: plan approved -->\n<!-- mintswarm: steer -->\n\
+         <!-- mintswarm: answer {ANSWERED} -->\n\n\
+         **Plan approved** by `zmij` at `2026-11-26T11:59:40Z`."
+    )
+}
+
+fn posts(requests: &[Request]) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .count()
+}
+
+fn logins(names: &[&str]) -> Vec<Login> {
+    names.iter().map(|name| Login((*name).to_owned())).collect()
+}
+
+#[tokio::test]
+async fn a_steer_record_is_posted_once() {
+    let responder = Responder::start().await;
+    responder.reply(201, CREATED_RECORD);
+    let comment = probing_tracker(&responder)
+        .post_comment(ISSUE, record())
+        .await
+        .unwrap();
+    assert_eq!(comment.id, 9101);
+    assert_eq!(comment.body, record());
+    let requests = responder.requests();
+    assert_eq!(summary(&requests), [format!("POST {COMMENTS_PATH}")]);
+}
+
+#[tokio::test]
+async fn a_record_whose_post_was_lost_is_found_by_the_probe() {
+    let responder = Responder::start().await;
+    responder.reply(502, r#"{"message":"Bad Gateway"}"#);
+    responder.reply(200, SINCE_RECORD);
+    let comment = probing_tracker(&responder)
+        .post_comment(ISSUE, record())
+        .await
+        .unwrap();
+    // The landed own record, not the older one or someone else's copy.
+    assert_eq!(comment.id, 9102);
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [format!("POST {COMMENTS_PATH}"), format!("GET {PROBE_PATH}")]
+    );
+    assert_eq!(posts(&requests), 1);
+}
+
+#[tokio::test]
+async fn an_answer_whose_post_was_lost_is_found_by_its_answer_line() {
+    let responder = Responder::start().await;
+    responder.reply(502, r#"{"message":"Bad Gateway"}"#);
+    // The landed own comment carries the answer line the refusal is keyed by.
+    responder.reply(200, SINCE_RECORD);
+    let comment = probing_tracker(&responder)
+        .post_comment(ISSUE, refusal(ANSWERED, "no package awaits approval"))
+        .await
+        .unwrap();
+    assert_eq!(comment.id, 9102);
+    let requests = responder.requests();
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(requests[1].path, PROBE_PATH);
+    assert_eq!(posts(&requests), 1);
+    assert_eq!(requests.len(), 2);
+}
+
+#[tokio::test]
+async fn release_removes_only_the_own_assignments() {
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    responder.reply(200, ASSIGNED_EVENTS);
+    responder.reply(200, RELEASED);
+    tracker(&responder)
+        .with_own_logins(logins(&OWN))
+        .release(ISSUE)
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [
+            "GET /repos/acme/widgets/issues/7".to_owned(),
+            "GET /repos/acme/widgets/issues/7/events?per_page=100&page=1".to_owned(),
+            format!("DELETE {ASSIGNEES_PATH}"),
+        ]
+    );
+    let body: Value = serde_json::from_str(&requests[2].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({ "assignees": ["alice", "erin", "grace"] })
+    );
+}
+
+#[tokio::test]
+async fn release_without_own_logins_removes_none() {
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    responder.reply(200, ASSIGNED_EVENTS);
+    tracker(&responder).release(ISSUE).await.unwrap();
+    assert!(writes(&responder.requests()).is_empty());
+    assert_eq!(responder.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn assign_skips_a_login_already_assigned() {
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    responder.reply(201, ASSIGNED);
+    tracker(&responder)
+        .assign(ISSUE, logins(&["Bob", "heidi"]), AssignmentReason::Plan)
+        .await
+        .unwrap();
+    let requests = responder.requests();
+    assert_eq!(
+        summary(&requests),
+        [
+            "GET /repos/acme/widgets/issues/7".to_owned(),
+            format!("POST {ASSIGNEES_PATH}"),
+        ]
+    );
+    let body: Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(body, serde_json::json!({ "assignees": ["heidi"] }));
+}
+
+#[tokio::test]
+async fn assign_with_every_login_assigned_sends_nothing() {
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    tracker(&responder)
+        .assign(ISSUE, logins(&["alice", "bob"]), AssignmentReason::Plan)
+        .await
+        .unwrap();
+    assert!(writes(&responder.requests()).is_empty());
+}
+
+#[tokio::test]
+async fn an_unchanged_login_fails_the_assignment_change() {
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    responder.reply(201, ASSIGN_DROPPED);
+    let error = tracker(&responder)
+        .assign(ISSUE, logins(&["heidi"]), AssignmentReason::Plan)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, GitHubTrackerError::AssigneesUnchanged { logins: left }
+            if *left == logins(&["heidi"])),
+        "{error:?}"
+    );
+
+    let responder = Responder::start().await;
+    responder.reply(200, ASSIGNEES_ISSUE);
+    responder.reply(200, ASSIGNED_EVENTS);
+    responder.reply(200, RELEASE_KEPT);
+    let error = tracker(&responder)
+        .with_own_logins(logins(&OWN))
+        .release(ISSUE)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, GitHubTrackerError::AssigneesUnchanged { logins: left }
+            if *left == logins(&["erin"])),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn reads_an_artifact_by_its_number() {
+    let responder = Responder::start().await;
+    responder.reply(200, ARTIFACT);
+    let artifact = tracker(&responder).read_artifact(ISSUE, 2).await.unwrap();
+    assert_eq!(artifact.name, "plan");
+    assert_eq!(artifact.body, "# Plan\n\nA GET-only client.");
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_sent(
+        &requests[0],
+        "GET",
+        "/repos/acme/widgets/issues/7/artifacts/2",
+    );
 }

@@ -226,6 +226,27 @@ impl<T: Transport> Retrying<T> {
         self.run(&request, Class::Idempotent).await
     }
 
+    /// A DELETE with a JSON body that changes content and leaves GitHub as one success would
+    /// however often it is repeated, such as removing assignees. `gate` is awaited before every
+    /// attempt after the first, as a create's is. Each caller says next to the call why
+    /// repeating is safe.
+    pub async fn delete_gated<'a>(
+        &self,
+        path: &str,
+        token: &Token,
+        body: &Value,
+        gate: Gate<'a>,
+    ) -> Result<Reply, Exhausted> {
+        let request = Request {
+            method: Method::DELETE,
+            path,
+            token,
+            body: Some(body),
+            if_none_match: None,
+        };
+        self.run(&request, Class::Gated(gate)).await
+    }
+
     /// A POST that leaves GitHub as one success would however often it is repeated, such as
     /// setting a value or adding a label. Each caller says next to the call why that holds.
     pub async fn post_idempotent(
@@ -451,7 +472,7 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
     use std::time::Duration;
 
-    use reqwest::StatusCode;
+    use reqwest::{Method, StatusCode};
     use tokio::time::Instant;
 
     use mintswarm_domain::retry::{Exhausted, Failure, RetryPolicy};
@@ -1045,24 +1066,26 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn patch_and_gated_posts_are_retried_behind_their_gate() {
         let body = serde_json::json!({"body": "edited"});
-        for post in [false, true] {
+        for method in [Method::PATCH, Method::POST, Method::DELETE] {
             let layer = scripted([Ok(reply(502)), Ok(reply(200))]);
             let gated = AtomicUsize::new(0);
             let gate: Gate<'_> = Box::new(|| {
                 gated.fetch_add(1, Ordering::Relaxed);
                 Box::pin(async {})
             });
-            let got = if post {
+            let got = if method == Method::POST {
                 layer
                     .post_idempotent_gated("/x", &token(), &body, gate)
                     .await
+            } else if method == Method::DELETE {
+                layer.delete_gated("/x", &token(), &body, gate).await
             } else {
                 layer.patch("/x", &token(), &body, gate).await
             }
             .expect("a reply");
             assert_eq!(got.status, StatusCode::OK);
             assert!(got.after_ambiguous);
-            assert_eq!(gated.load(Ordering::Relaxed), 1, "post: {post}");
+            assert_eq!(gated.load(Ordering::Relaxed), 1, "method: {method}");
             assert_eq!(offsets(&layer).len(), 2);
         }
 

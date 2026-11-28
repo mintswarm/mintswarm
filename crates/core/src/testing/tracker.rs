@@ -1,16 +1,19 @@
 //! An in-memory tracker for tests: issues with their comments, links, dependencies, role field
 //! values and statuses, seeded by the test, with every accepted write recorded in order.
 //!
-//! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`],
-//! [`Links`], [`Fields`], [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`],
-//! [`Collaborators`], [`Reviews`], [`CodeOwners`] and [`Merges`]), and refuses what it does: an
-//! option the role's map does not list, a status the repository does not have, a comment without
-//! a note key, a CODEOWNERS read at a revision that is not a full commit id, and the operations
-//! the GitHub tracker does not support yet. A test may also make it refuse a comment's reactions
-//! and edits, or an artifact's updates, as GitHub refuses a change the installation may not make.
-//! It does not model labels, so a labels-mode role never reads as a conflict. A test may
-//! script a role's value to change between reads with [`FakeTracker::script_field_changes`], as
-//! a session writing between the plane's read and write would.
+//! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`], [`Links`],
+//! [`Fields`], [`Statuses`], [`Comments`], [`Assignments`], [`Reactions`], [`CommentEdits`],
+//! [`ArtifactReads`], [`Collaborators`], [`Reviews`], [`CodeOwners`] and [`Merges`]), and refuses
+//! what it does: an option the role's map does not list, a status the repository does not have, a
+//! comment without a key line (whatever its mark; the note marker is not needed), a CODEOWNERS read
+//! at a revision that is not a full commit id, and the operations the GitHub tracker does not
+//! support yet. Assignments are released by [`releasable`], as on GitHub, with the own logins
+//! [`FakeTracker::with_own_logins`] gives; none by default. A test may also make it refuse a
+//! comment's reactions and edits, or an artifact's updates, as GitHub refuses a change the
+//! installation may not make. It does not model labels, so a labels-mode role never reads as a
+//! conflict. A test may script a role's value to change between reads with
+//! [`FakeTracker::script_field_changes`], as a session writing between the plane's read and write
+//! would.
 //!
 //! Pull requests carry their reviews, review threads, requested reviewers and changed files, and
 //! commits their checks, statuses and files, all seeded by the test. Each pull request has a
@@ -33,10 +36,11 @@ use mintswarm_domain::tracker::{
     PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
     Reviews, Statuses, SubItem, TrackerBase, is_bot,
 };
+use mintswarm_domain::tracker::{ArtifactReads, AssignmentReason, Assignments};
 use mintswarm_domain::vcs::RepoPath;
-use mintswarm_github::{NOTE_MARKER, Token, is_commit_id};
+use mintswarm_github::{AssignedEvent, Token, is_commit_id, releasable};
 
-use crate::tracker::github::note_key;
+use crate::tracker::github::comment_key;
 
 /// The time a new fake stamps on comments until [`FakeTracker::set_now`] changes it.
 const START: &str = "2026-01-01T00:00:00Z";
@@ -54,6 +58,17 @@ pub enum FakeWrite {
     SetStatus { issue: IssueNumber, status: String },
     /// [`Comments::post_comment`].
     PostComment { issue: IssueNumber, body: String },
+    /// [`Assignments::assign`], with the logins it added; not recorded when it added none.
+    Assign {
+        issue: IssueNumber,
+        logins: Vec<Login>,
+        reason: AssignmentReason,
+    },
+    /// [`Assignments::release`], with the logins it removed; not recorded when it removed none.
+    Release {
+        issue: IssueNumber,
+        logins: Vec<Login>,
+    },
     /// [`Reactions::react_plus_one`], recorded on every call, a repeated one included.
     React { comment: u64 },
     /// [`CommentEdits::edit_comment`].
@@ -108,8 +123,8 @@ pub enum FakeTrackerError {
     /// The repository has no status of this name; nothing was written.
     #[error("the repository has no issue status {name:?}")]
     UnknownStatus { name: String },
-    /// The comment carries no note key; nothing was written.
-    #[error("the note's body does not carry its marker and key lines")]
+    /// The comment carries no key line, whatever its mark; nothing was written.
+    #[error("the body does not carry its key line")]
     Unmarked,
     /// No seeded or posted comment has this id; nothing was written.
     #[error("no comment {comment}")]
@@ -150,6 +165,12 @@ struct State {
     /// The comments carrying the bot's `+1`.
     reacted: HashSet<u64>,
     artifacts: HashMap<(IssueNumber, u64), Artifact>,
+    /// Each issue's assignees, in the order they were seeded or assigned.
+    assignees: HashMap<IssueNumber, Vec<Login>>,
+    /// Each issue's `assigned` events, in the order they were seeded or made.
+    assigned_events: HashMap<IssueNumber, Vec<AssignedEvent>>,
+    /// The id the next `assigned` event the fake makes gets.
+    next_event: u64,
     /// The logins' roles; an unset login is [`RepoRole::NoAccess`].
     roles: HashMap<Login, RepoRole>,
     refused_comments: HashSet<u64>,
@@ -287,6 +308,8 @@ impl State {
 #[derive(Debug)]
 pub struct FakeTracker {
     bot: Login,
+    /// The plane's own logins, whose assignments [`Assignments::release`] releases.
+    own_logins: Vec<Login>,
     state: Mutex<State>,
 }
 
@@ -295,6 +318,7 @@ impl FakeTracker {
     pub fn new(bot: Login) -> Self {
         Self {
             bot,
+            own_logins: Vec::new(),
             state: Mutex::new(State {
                 issues: HashMap::new(),
                 links: HashMap::new(),
@@ -308,6 +332,9 @@ impl FakeTracker {
                 field_changes: HashMap::new(),
                 reacted: HashSet::new(),
                 artifacts: HashMap::new(),
+                assignees: HashMap::new(),
+                assigned_events: HashMap::new(),
+                next_event: 1,
                 roles: HashMap::new(),
                 refused_comments: HashSet::new(),
                 refused_artifacts: HashSet::new(),
@@ -335,6 +362,16 @@ impl FakeTracker {
     #[must_use]
     pub fn with_statuses<'a>(self, names: impl IntoIterator<Item = &'a str>) -> Self {
         self.state().known_statuses = Some(names.into_iter().map(str::to_owned).collect());
+        self
+    }
+
+    /// The tracker trusting `logins` as the plane's own, as
+    /// [`GitHubTracker::with_own_logins`](crate::tracker::github::GitHubTracker::with_own_logins)
+    /// does. None by default, and `bot` is not added, so a fake built without them releases
+    /// nothing.
+    #[must_use]
+    pub fn with_own_logins(mut self, logins: Vec<Login>) -> Self {
+        self.own_logins = logins;
         self
     }
 
@@ -431,6 +468,39 @@ impl FakeTracker {
         self.state()
             .artifacts
             .insert((issue.clone(), number), artifact);
+    }
+
+    /// Seeds an assignee of `issue` with the `assigned` event that made it, without recording a
+    /// write; the assignee is added once, whatever the events.
+    pub fn seed_assignment(&self, issue: &IssueNumber, event: AssignedEvent) {
+        let mut state = self.state();
+        let assignees = state.assignees.entry(issue.clone()).or_default();
+        if !assignees.contains(&event.assignee) {
+            assignees.push(event.assignee.clone());
+        }
+        state
+            .assigned_events
+            .entry(issue.clone())
+            .or_default()
+            .push(event);
+    }
+
+    /// Seeds an assignee of `issue` without any `assigned` event, without recording a write.
+    pub fn seed_assignee(&self, issue: &IssueNumber, login: Login) {
+        let mut state = self.state();
+        let assignees = state.assignees.entry(issue.clone()).or_default();
+        if !assignees.contains(&login) {
+            assignees.push(login);
+        }
+    }
+
+    /// `issue`'s assignees, seeded and assigned and not released, in order.
+    pub fn assignees(&self, issue: &IssueNumber) -> Vec<Login> {
+        self.state()
+            .assignees
+            .get(issue)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Seeds `login`'s role on the repository.
@@ -709,11 +779,10 @@ impl Statuses for FakeTracker {
 }
 
 impl Comments for FakeTracker {
-    /// Posts `body` as the bot's note; it must hold the note marker line and a key line, as the
-    /// GitHub tracker requires.
+    /// Posts `body` as the bot's comment; it must hold a key line, as the GitHub tracker's
+    /// [`comment_key`] finds one, whatever its mark.
     async fn post_comment(&self, issue: IssueNumber, body: String) -> Result<Comment, Self::Error> {
-        let marked = body.split('\n').any(|line| line.trim() == NOTE_MARKER);
-        if !marked || note_key(&body).is_none() {
+        if comment_key(&body).is_none() {
             return Err(FakeTrackerError::Unmarked);
         }
         let mut state = self.state();
@@ -734,6 +803,100 @@ impl Comments for FakeTracker {
         }
         state.writes.push(FakeWrite::PostComment { issue, body });
         Ok(comment)
+    }
+}
+
+impl Assignments for FakeTracker {
+    /// Assigns the logins of `who` that `issue` is not assigned to yet, compared ASCII
+    /// case-insensitively, each with an `assigned` event by `bot` at the fake's current time.
+    async fn assign(
+        &self,
+        issue: IssueNumber,
+        who: Vec<Login>,
+        reason: AssignmentReason,
+    ) -> Result<(), Self::Error> {
+        let mut state = self.state();
+        state.issue(&issue)?;
+        let mut added: Vec<Login> = Vec::new();
+        for login in who {
+            let current = state.assignees.get(&issue).map_or(&[][..], Vec::as_slice);
+            let known = |logins: &[Login]| {
+                logins
+                    .iter()
+                    .any(|other| other.0.eq_ignore_ascii_case(&login.0))
+            };
+            if known(current) || known(&added) {
+                continue;
+            }
+            let id = state.next_event;
+            state.next_event += 1;
+            let event = AssignedEvent {
+                assignee: login.clone(),
+                actor: Some(self.bot.clone()),
+                assigner: Some(self.bot.clone()),
+                app: None,
+                created_at: Some(state.now.clone()),
+                id: Some(id),
+            };
+            state
+                .assigned_events
+                .entry(issue.clone())
+                .or_default()
+                .push(event);
+            state
+                .assignees
+                .entry(issue.clone())
+                .or_default()
+                .push(login.clone());
+            added.push(login);
+        }
+        if !added.is_empty() {
+            state.writes.push(FakeWrite::Assign {
+                issue,
+                logins: added,
+                reason,
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes the assignees [`releasable`] names with the fake's own logins.
+    async fn release(&self, issue: IssueNumber) -> Result<(), Self::Error> {
+        let mut state = self.state();
+        state.issue(&issue)?;
+        let current = state.assignees.get(&issue).cloned().unwrap_or_default();
+        let events = state
+            .assigned_events
+            .get(&issue)
+            .cloned()
+            .unwrap_or_default();
+        let released = releasable(&current, &events, &self.own_logins);
+        if released.is_empty() {
+            return Ok(());
+        }
+        if let Some(assignees) = state.assignees.get_mut(&issue) {
+            assignees.retain(|login| !released.contains(login));
+        }
+        state.writes.push(FakeWrite::Release {
+            issue,
+            logins: released,
+        });
+        Ok(())
+    }
+}
+
+impl ArtifactReads for FakeTracker {
+    /// The seeded or last updated artifact numbered `number` on `issue`.
+    async fn read_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+    ) -> Result<Artifact, Self::Error> {
+        self.state()
+            .artifacts
+            .get(&(issue.clone(), number))
+            .cloned()
+            .ok_or(FakeTrackerError::NoSuchArtifact { issue, number })
     }
 }
 

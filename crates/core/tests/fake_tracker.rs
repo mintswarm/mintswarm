@@ -10,14 +10,15 @@ use mintswarm_domain::field::{
 use mintswarm_domain::hosting::CodeOwnersFile;
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifact, ChangedFile, CheckRun, CheckState, CheckSuite, CodeOwners, Collaborators,
-    CombinedStatus, Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue,
-    IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, ParentIssue,
-    PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
-    Reviews, Statuses, SubItem,
+    Artifact, ArtifactReads, AssignmentReason, Assignments, ChangedFile, CheckRun, CheckState,
+    CheckSuite, CodeOwners, Collaborators, CombinedStatus, Comment, CommentEdits, Comments, Cursor,
+    Dependency, Direction, Fields, Issue, IssueType, Issues, Link, LinkKind, Links, Login,
+    MergeOutcome, Merged, Merges, ParentIssue, PullDetail, Reactions, RepoRole, RequestedReviewers,
+    Review, ReviewComment, ReviewThread, Reviews, Statuses, SubItem,
 };
 use mintswarm_domain::vcs::{BranchName, RepoPath};
-use mintswarm_github::{NOTE_MARKER, Token};
+use mintswarm_github::{AssignedEvent, NOTE_MARKER, Token};
+use mintswarm_rules::render::decision::refusal;
 
 const BOT: &str = "mintswarm-dev[bot]";
 const ISSUE: IssueNumber = IssueNumber(7);
@@ -83,8 +84,10 @@ where
         + Fields
         + Statuses
         + Comments
+        + Assignments
         + Reactions
         + CommentEdits
+        + ArtifactReads
         + Collaborators
         + Reviews
         + CodeOwners
@@ -242,11 +245,6 @@ async fn refused_writes_are_not_recorded() {
     );
     assert_eq!(
         fake.post_comment(ISSUE, format!("{NOTE_MARKER}\nNo key."))
-            .await,
-        Err(FakeTrackerError::Unmarked)
-    );
-    assert_eq!(
-        fake.post_comment(ISSUE, format!("{KEY}\nNo note marker."))
             .await,
         Err(FakeTrackerError::Unmarked)
     );
@@ -979,5 +977,137 @@ async fn every_merge_call_is_recorded_whatever_its_outcome() {
             (PrNumber(401), head.clone(), "Unknown".to_owned()),
             (PR, head, "Merged".to_owned()),
         ]
+    );
+}
+
+#[tokio::test]
+async fn a_keyed_body_without_the_note_marker_posts() {
+    let fake = fake();
+    let body = format!("{KEY}\nNo note marker.");
+    let posted = fake.post_comment(ISSUE, body.clone()).await.unwrap();
+    assert_eq!(posted.body, body);
+    assert_eq!(
+        fake.writes(),
+        [FakeWrite::PostComment { issue: ISSUE, body }]
+    );
+}
+
+#[tokio::test]
+async fn an_answer_is_posted_keyed_by_its_answer_line() {
+    let fake = fake();
+    let body = refusal(8800, "no package awaits approval");
+    assert!(
+        body.starts_with("<!-- mintswarm: answer 8800 -->\n"),
+        "{body}"
+    );
+    let posted = fake.post_comment(ISSUE, body.clone()).await.unwrap();
+    assert_eq!(posted.author, Login(BOT.into()));
+    assert_eq!(fake.comments(&ISSUE), [posted]);
+    assert_eq!(
+        fake.writes(),
+        [FakeWrite::PostComment { issue: ISSUE, body }]
+    );
+}
+
+/// The plane's own logins in the release tests: an App's bot login, and a login without
+/// `[bot]`.
+const OWN: [&str; 2] = ["widgets-plane[bot]", "plane-operator"];
+
+fn assigned(assignee: &str, actor: &str, app: Option<&str>, id: u64) -> AssignedEvent {
+    AssignedEvent {
+        assignee: Login(assignee.into()),
+        actor: Some(Login(actor.into())),
+        assigner: Some(Login(actor.into())),
+        app: app.map(str::to_owned),
+        created_at: Some("2026-11-26T12:00:00Z".into()),
+        id: Some(id),
+    }
+}
+
+/// A fake with own logins, `alice` assigned by an own login, `erin` through the App of the own
+/// `[bot]` login, `bob` by a person and `carol` with no event.
+fn assigned_fake(own: &[&str]) -> FakeTracker {
+    let fake = FakeTracker::new(Login(BOT.into()))
+        .with_own_logins(own.iter().map(|login| Login((*login).into())).collect());
+    fake.add_issue(issue(7));
+    fake.seed_assignment(&ISSUE, assigned("alice", "plane-operator", None, 1));
+    fake.seed_assignment(&ISSUE, assigned("bob", "maintainer", None, 2));
+    fake.seed_assignment(
+        &ISSUE,
+        assigned("erin", "someone-else", Some("widgets-plane"), 3),
+    );
+    fake.seed_assignee(&ISSUE, Login("carol".into()));
+    fake
+}
+
+fn logins(names: &[&str]) -> Vec<Login> {
+    names.iter().map(|name| Login((*name).into())).collect()
+}
+
+#[tokio::test]
+async fn release_removes_the_own_assignments_and_keeps_a_person_s() {
+    let fake = assigned_fake(&OWN);
+    fake.release(ISSUE).await.unwrap();
+    assert_eq!(fake.assignees(&ISSUE), logins(&["bob", "carol"]));
+    assert_eq!(
+        fake.writes(),
+        [FakeWrite::Release {
+            issue: ISSUE,
+            logins: logins(&["alice", "erin"]),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn release_without_own_logins_removes_none() {
+    let fake = assigned_fake(&[]);
+    fake.release(ISSUE).await.unwrap();
+    assert_eq!(
+        fake.assignees(&ISSUE),
+        logins(&["alice", "bob", "erin", "carol"])
+    );
+    assert!(fake.writes().is_empty());
+}
+
+#[tokio::test]
+async fn assign_adds_new_logins_as_the_bot() {
+    let fake = assigned_fake(&[BOT]);
+    fake.assign(ISSUE, logins(&["Bob", "heidi"]), AssignmentReason::Plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        fake.assignees(&ISSUE),
+        logins(&["alice", "bob", "erin", "carol", "heidi"])
+    );
+    assert_eq!(
+        fake.writes(),
+        [FakeWrite::Assign {
+            issue: ISSUE,
+            logins: logins(&["heidi"]),
+            reason: AssignmentReason::Plan,
+        }]
+    );
+    // The bot made heidi's assignment, so a fake trusting the bot releases it.
+    fake.release(ISSUE).await.unwrap();
+    assert_eq!(
+        fake.assignees(&ISSUE),
+        logins(&["alice", "bob", "erin", "carol"])
+    );
+}
+
+#[tokio::test]
+async fn reads_a_seeded_artifact() {
+    let fake = fake();
+    fake.add_artifact(&ISSUE, 2, artifact("Decision."));
+    assert_eq!(
+        fake.read_artifact(ISSUE, 2).await,
+        Ok(artifact("Decision."))
+    );
+    assert_eq!(
+        fake.read_artifact(ISSUE, 3).await,
+        Err(FakeTrackerError::NoSuchArtifact {
+            issue: ISSUE,
+            number: 3
+        })
     );
 }
