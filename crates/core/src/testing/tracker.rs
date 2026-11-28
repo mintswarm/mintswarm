@@ -1,18 +1,19 @@
 //! An in-memory tracker for tests: issues with their comments, links, dependencies, role field
 //! values and statuses, seeded by the test, with every accepted write recorded in order.
 //!
-//! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`],
-//! [`Links`], [`Fields`], [`Statuses`], [`Comments`], [`Assignments`], [`Reactions`],
-//! [`CommentEdits`], [`ArtifactReads`], [`Collaborators`], [`Reviews`], [`CodeOwners`] and
-//! [`Merges`]), and refuses what it does: an option the role's map does not list, a status the
-//! repository does not have, a comment without a key line (whatever its mark; the note marker is
-//! not needed), a CODEOWNERS read at a revision that is not a full commit id, and the operations
-//! the GitHub tracker does not support yet. Assignments are released by [`releasable`], as on
-//! GitHub, with the own logins [`FakeTracker::with_own_logins`] gives; none by default. A test may also make it refuse a comment's reactions
-//! and edits, or an artifact's updates, as GitHub refuses a change the installation may not make.
-//! It does not model labels, so a labels-mode role never reads as a conflict. A test may
-//! script a role's value to change between reads with [`FakeTracker::script_field_changes`], as
-//! a session writing between the plane's read and write would.
+//! [`FakeTracker`] implements the capability traits the GitHub tracker does ([`Issues`], [`Links`],
+//! [`Fields`], [`Statuses`], [`Comments`], [`Assignments`], [`Reactions`], [`CommentEdits`],
+//! [`ArtifactReads`], [`Collaborators`], [`Reviews`], [`CodeOwners`] and [`Merges`]), and refuses
+//! what it does: an option the role's map does not list, a status the repository does not have, a
+//! comment without a key line (whatever its mark; the note marker is not needed), a CODEOWNERS read
+//! at a revision that is not a full commit id, and the operations the GitHub tracker does not
+//! support yet. Assignments are released by [`releasable`], as on GitHub, with the own logins
+//! [`FakeTracker::with_own_logins`] gives; none by default. A test may also make it refuse a
+//! comment's reactions and edits, or an artifact's updates, as GitHub refuses a change the
+//! installation may not make. It does not model labels, so a labels-mode role never reads as a
+//! conflict. A test may script a role's value to change between reads with
+//! [`FakeTracker::script_field_changes`], as a session writing between the plane's read and write
+//! would.
 //!
 //! Pull requests carry their reviews, review threads, requested reviewers and changed files, and
 //! commits their checks, statuses and files, all seeded by the test. Each pull request has a
