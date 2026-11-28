@@ -6,7 +6,10 @@
 //! - [`trigger`]: the deliveries that queue an issue for approvals, or a pull request for the
 //!   steward, on the state-sync queue.
 //! - [`judge`]: the pure judge of the approve, reject and help comments of an issue.
+//! - [`evaluate`]: one approvals evaluation from fresh reads, which the state-sync queue's
+//!   worker runs after state-sync; it judges and logs, and writes nothing.
 
 pub mod approver;
+pub mod evaluate;
 pub mod judge;
 pub mod trigger;

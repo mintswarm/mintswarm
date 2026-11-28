@@ -7,8 +7,8 @@
 use std::sync::{Arc, Mutex};
 
 use mintswarm_config::{
-    BLOCKED, DONE, NONE, PLANNING, QUEUED, REQUIRED_OPTIONS, StateOption, StateSettings,
-    StatusMode, Trust, TrustMatch,
+    ActionTable, BLOCKED, DONE, NONE, PLANNING, QUEUED, REQUIRED_OPTIONS, StateOption,
+    StateSettings, StatusMode, Trust, TrustMatch,
 };
 use mintswarm_core::state_sync::evaluate::evaluate;
 use mintswarm_core::state_sync::report;
@@ -54,6 +54,7 @@ fn settings(status: StatusMode) -> Settings {
     Settings {
         repository: REPO.to_owned(),
         bot: Login(BOT.to_owned()),
+        peer_logins: Vec::new(),
         trust: Trust {
             labels: Vec::new(),
             authors: vec![Login(MAINTAINER.to_owned())],
@@ -70,6 +71,7 @@ fn settings(status: StatusMode) -> Settings {
                 })
                 .collect(),
         },
+        actions: ActionTable::default(),
     }
 }
 
@@ -197,6 +199,19 @@ fn plane(fake: FakeTracker, status: StatusMode) -> Plane {
         sync,
         worker,
         lines,
+    }
+}
+
+impl Plane {
+    /// State-sync's lines, in order.
+    fn lines(&self) -> Vec<Value> {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line["evaluator"] == "state_sync")
+            .cloned()
+            .collect()
     }
 }
 
@@ -383,7 +398,7 @@ async fn a_cross_repository_blocker_change_is_reported() {
     plane.worker.drain().await;
 
     // The change names the blocker with its repository, in the line and in the note.
-    let lines = plane.lines.lock().unwrap().clone();
+    let lines = plane.lines();
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0]["causes"],
@@ -536,7 +551,7 @@ async fn a_value_changed_between_read_and_write_is_kept() {
     let mut plane = plane(fake, StatusMode::Off);
     plane.sync.enqueue(IssueNumber(5), no_change());
     plane.worker.drain().await;
-    let lines = plane.lines.lock().unwrap().clone();
+    let lines = plane.lines();
     let outcomes: Vec<&Value> = lines.iter().map(|line| &line["outcome"]).collect();
     assert_eq!(outcomes, vec!["deferred", "deferred"]);
     assert!(plane.fake.writes().is_empty());

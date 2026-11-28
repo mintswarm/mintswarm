@@ -171,6 +171,10 @@ struct State {
     now: String,
     next_comment: u64,
     writes: Vec<FakeWrite>,
+    /// How many times [`Collaborators::read_permission`] was called.
+    permission_reads: usize,
+    /// How many times [`Collaborators::read_parent`] was called.
+    parent_reads: usize,
 }
 
 impl State {
@@ -321,6 +325,8 @@ impl FakeTracker {
                 now: START.to_owned(),
                 next_comment: 1,
                 writes: Vec::new(),
+                permission_reads: 0,
+                parent_reads: 0,
             }),
         }
     }
@@ -537,6 +543,16 @@ impl FakeTracker {
     /// Every accepted write, in order.
     pub fn writes(&self) -> Vec<FakeWrite> {
         self.state().writes.clone()
+    }
+
+    /// How many times [`Collaborators::read_permission`] was called.
+    pub fn permission_reads(&self) -> usize {
+        self.state().permission_reads
+    }
+
+    /// How many times [`Collaborators::read_parent`] was called.
+    pub fn parent_reads(&self) -> usize {
+        self.state().parent_reads
     }
 
     /// The raw option name a role's field holds on `issue`.
@@ -778,8 +794,9 @@ impl CommentEdits for FakeTracker {
 
 impl Collaborators for FakeTracker {
     async fn read_permission(&self, login: Login) -> Result<RepoRole, Self::Error> {
-        Ok(self
-            .state()
+        let mut state = self.state();
+        state.permission_reads += 1;
+        Ok(state
             .roles
             .get(&login)
             .copied()
@@ -790,7 +807,8 @@ impl Collaborators for FakeTracker {
     /// with the seeded parent issue's author and bot flag. A parent link to an issue that is
     /// not seeded is [`FakeTrackerError::NoSuchIssue`].
     async fn read_parent(&self, issue: IssueNumber) -> Result<Option<ParentIssue>, Self::Error> {
-        let state = self.state();
+        let mut state = self.state();
+        state.parent_reads += 1;
         state.issue(&issue)?;
         let Some(number) = state.links.get(&issue).and_then(|links| {
             links

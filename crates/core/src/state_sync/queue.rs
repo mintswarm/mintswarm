@@ -1,14 +1,18 @@
-//! The per-repository queue and its one worker, design §6.
+//! The per-repository queue and its one worker, design §6, shared by state-sync and approvals
+//! (design #548 §5): one queue per repository, never one per evaluator.
 //!
 //! [`StateSync`] is the hand-off: it holds no tracker, so [`StateSync::on_delivery`] cannot call
-//! one. It reduces the event, merges the entries into a set of issue numbers kept in arrival
-//! order, and wakes the worker. A number already queued absorbs the new cause and keeps its
-//! place.
+//! one. It reduces the event for state-sync and for approvals and the steward, merges the
+//! entries into a set of issue and pull request numbers kept in arrival order, and wakes the
+//! worker. A number already queued absorbs the new causes and keeps its place.
 //!
-//! [`Worker`] owns the tracker and evaluates one issue at a time, oldest first. Before it
+//! [`Worker`] owns the tracker and takes one number at a time, oldest first, running each
+//! evaluator the entry has a cause for: state-sync first, then approvals. Before state-sync
 //! evaluates an issue marked for fan-out, it queues the issues that one blocks. Each triggered
-//! evaluation is queued again once after [`SETTLE`], without its cause, from one FIFO of
-//! deadlines: the delay is constant, so the deadlines are already in order.
+//! state-sync evaluation is queued again once after [`SETTLE`], without its cause, from one
+//! FIFO of deadlines: the delay is constant, so the deadlines are already in order. The settle
+//! repeat and the requeue of a deferred evaluation carry the state-sync cause only. A pull
+//! request's cause is queued, but no evaluator runs on it yet.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,7 +21,9 @@ use std::time::Duration;
 use mintswarm_config::PLAN_APPROVED;
 use mintswarm_domain::field::{FieldSource, LabelPattern};
 use mintswarm_domain::ids::IssueNumber;
-use mintswarm_domain::tracker::{Comments, Direction, Fields, Issues, Links, Statuses};
+use mintswarm_domain::tracker::{
+    Collaborators, Comments, Direction, Fields, Issues, Links, Statuses,
+};
 use mintswarm_proto::watch::v1::WatchEvent;
 use tokio::sync::Notify;
 use tokio::time::Instant;
@@ -25,12 +31,14 @@ use tokio::time::Instant;
 use super::evaluate::{Outcome, Settings, evaluate};
 use super::rule::{BlockerChange, BlockerChangeKind, Cause};
 use super::trigger;
+use crate::approvals::evaluate as approvals_evaluate;
 use crate::approvals::trigger::{self as approvals_trigger, ApprovalCause};
 
 /// How long after a triggered evaluation the issue is evaluated once more.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
-/// Where each evaluation's JSON line goes; by default a `tracing` event of target `state_sync`.
+/// Where each evaluation's JSON line goes, state-sync's and approvals' alike, told apart by the
+/// line's `evaluator`; by default a `tracing` event of target `state_sync`.
 pub type Sink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// One queued number's reasons to be evaluated, by each evaluator that runs on it.
@@ -220,7 +228,16 @@ pub struct StateSync {
 
 impl StateSync {
     /// The hand-off for `settings.repository` and the worker that drains it with `tracker`.
+    ///
+    /// `settings.peer_logins` must not repeat `settings.bot`.
     pub fn new<T>(tracker: Arc<T>, settings: Settings) -> (Self, Worker<T>) {
+        debug_assert!(
+            !settings
+                .peer_logins
+                .iter()
+                .any(|peer| peer.0.eq_ignore_ascii_case(&settings.bot.0)),
+            "a peer login repeats the bot's"
+        );
         let shared = Arc::new(Shared::default());
         let plan_approved = match &settings.state.source {
             FieldSource::Labels { label } => {
@@ -275,7 +292,7 @@ pub struct Worker<T> {
 
 impl<T> Worker<T>
 where
-    T: Issues + Links + Fields + Statuses + Comments,
+    T: Issues + Links + Fields + Statuses + Comments + Collaborators,
 {
     /// The worker writing each evaluation's line to `sink` instead of the default `tracing` event.
     #[must_use]
@@ -338,11 +355,22 @@ where
         }
     }
 
-    /// Fans out, evaluates and logs one entry, then queues its requeue or settle repeat.
+    /// Runs each evaluator one entry has a cause for, in order: state-sync, then approvals.
+    /// A PR cause is queued but not evaluated yet.
     async fn process(&mut self, issue: IssueNumber, entry: Entry) {
-        let Some(cause) = entry.cause.clone() else {
-            return;
-        };
+        if let Some(cause) = entry.cause.clone() {
+            self.sync(issue.clone(), &entry, cause).await;
+        }
+        if let Some(cause) = entry.approvals {
+            let line =
+                approvals_evaluate::evaluate(&*self.tracker, &self.settings, issue, cause).await;
+            (self.sink)(&line.to_string());
+        }
+    }
+
+    /// Fans out, evaluates and logs one state-sync cause, then queues its requeue or settle
+    /// repeat, each with the state-sync cause only.
+    async fn sync(&mut self, issue: IssueNumber, entry: &Entry, cause: Cause) {
         let fan_out = if entry.fan_out {
             Some(self.fan_out(&issue).await)
         } else {

@@ -13,7 +13,9 @@
 //! When the rule asks for a report, the blocker note is posted through
 //! [`report::post_if_changed`]. Every evaluation gives one [`Outcome`] and one JSON line.
 
-use mintswarm_config::{BLOCKED, DONE, NONE, QUEUED, StateSettings, StatusMode, Trust};
+use mintswarm_config::{
+    ActionTable, BLOCKED, DONE, NONE, QUEUED, StateSettings, StatusMode, Trust,
+};
 use mintswarm_domain::field::{FieldError, FieldFinding, FieldRead, FieldRef};
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::tracker::{
@@ -24,17 +26,30 @@ use serde_json::{Value, json};
 use super::report::{self, Report};
 use super::rule::{BlockerChangeKind, Cause, Facts, decide, open_blockers};
 
-/// What the evaluator needs of the repository's config.
+/// What the evaluators on the queue need of the repository's config.
 #[derive(Clone, Debug)]
 pub struct Settings {
     /// The repository, `owner/name`.
     pub repository: String,
     /// The plane's login, whose notes are its own.
     pub bot: Login,
+    /// The plane's other own logins, such as the steward's; never `bot` again.
+    pub peer_logins: Vec<Login>,
     /// `tracker.ingest`: which issues the plane evaluates.
     pub trust: Trust,
     /// `tracker.state`.
     pub state: StateSettings,
+    /// `tracker.actions`: who is trusted with each decision.
+    pub actions: ActionTable,
+}
+
+impl Settings {
+    /// Every login of the plane's own: `bot`, then `peer_logins`.
+    pub fn self_logins(&self) -> Vec<Login> {
+        std::iter::once(self.bot.clone())
+            .chain(self.peer_logins.iter().cloned())
+            .collect()
+    }
 }
 
 /// How an evaluation ended.
@@ -69,7 +84,7 @@ impl Outcome {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
     pub outcome: Outcome,
-    /// `issue`, `causes` (each blocker named `#N` in the repository, `owner/name#N` otherwise),
+    /// `evaluator` (`state_sync`), `issue`, `causes` (each blocker named `#N` in the repository, `owner/name#N` otherwise),
     /// `fan_out`, `value_before`, `value_after`, `wrote`, `status_before`,
     /// `status_after`, `reported` and `outcome`, with a `detail` on a skip, deferral or failure.
     pub line: Value,
@@ -108,6 +123,7 @@ impl Line {
                 .collect(),
         };
         let line = json!({
+            "evaluator": "state_sync",
             "issue": issue.0,
             "cause": match cause { Cause::Sweep => "sweep", Cause::Triggered { .. } => "triggered" },
             "causes": causes,
@@ -135,14 +151,26 @@ fn change_name(change: BlockerChangeKind) -> &'static str {
 }
 
 /// Why an evaluation stopped early.
-enum Stop {
+pub(crate) enum Stop {
     Skipped(String),
     Failed(String),
 }
 
+impl Stop {
+    /// What stopped it.
+    pub(crate) fn detail(self) -> String {
+        match self {
+            Self::Skipped(detail) | Self::Failed(detail) => detail,
+        }
+    }
+}
+
 /// The value a field read gives: unset is `none`, an unconfigured value a skip, and a labels
 /// conflict or any other error a failure.
-fn value_of(read: Result<FieldRead, FieldError>, state: &StateSettings) -> Result<String, Stop> {
+pub(crate) fn value_of(
+    read: Result<FieldRead, FieldError>,
+    state: &StateSettings,
+) -> Result<String, Stop> {
     let name = match read {
         Ok(FieldRead::Unset) => NONE.to_owned(),
         Ok(FieldRead::Value(value)) => value.name,
