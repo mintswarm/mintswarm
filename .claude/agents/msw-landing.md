@@ -76,7 +76,7 @@ You do not get the analysis, the handoff, the implementer's reasoning or the lan
   - "a gate failed and was then changed", read conservatively: any failed gate round together with any change in the diff to the config or a gate-named file counts, as does a `gates.input.json` that differs between kept rounds;
   - the CI `checks`: when none are listed, say so; checks completing after `fetched_at` are not seen;
   - the steers, by count, author, `via` and time; they have no bodies;
-  - the ancestor decisions in `ancestors.md` given or edited after `approval.approved_at`, by count, issue, author and time; a body section (`via: issue body`) is dated by its issue's created_at;
+  - the ancestor decisions in `ancestors.md` given or edited after `approval.approved_at`, by count, issue, author and time; a body section (`via: issue body`) is dated by its issue's created_at and edited at the body's last edit (`lastEditedAt`), and is late when either is after `approval.approved_at`;
   - the pending re-requested reviews, by login, from `review_requests`; say so when there are none.
 - **Approval:** the approver, time and reference, and the decision record, kickoff floor and the assessment's confidence and band when present, and whether the plan was approved by a human, as Bands defines it. That bears on the bands, and the plan sha256 check is a consistency check.
 

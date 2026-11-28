@@ -18,15 +18,21 @@ argument. N is a positive integer.
 fetch
 -----
 
-Reads GitHub through bot-gh.sh beside this script, and only with GET: every
-call is exactly `bot-gh.sh api --method GET PATH`, with the query in PATH,
-and never -f, -F, --field, --raw-field, --input or --paginate. PATH is one
-of, under repos/{owner}/{repo}/ (gh fills the placeholders):
+Reads GitHub through bot-gh.sh beside this script, and only reads. Every
+REST call is exactly `bot-gh.sh api --method GET PATH`, with the query in
+PATH, and never -f, -F, --field, --raw-field, --input or --paginate. PATH is
+one of, under repos/{owner}/{repo}/ (gh fills the placeholders):
 
   issues/<n>/parent                      the sub-issue parent of <n>
   issues/<a>                             each ancestor
   issues/<a>/comments?per_page=100&page=K  its comments, page by page
   collaborators/<login>/permission       each person who filed an ancestor
+
+The one other call, once per ancestor, is the read-only GraphQL query
+QUERY below, for the time of the body's last edit (`lastEditedAt`, which
+only body edits change; `null` for a body never edited), exactly as
+`bot-gh.sh api graphql -f query=QUERY -F owner={owner} -F repo={repo}
+-F number=<a>`; QUERY is a `query`, never a `mutation`.
 
 It follows the parent chain from N: a 404 on the parent endpoint (`HTTP 404`
 on gh's stderr, as assign-approvers.py's gh() detects it) ends the chain
@@ -34,8 +40,8 @@ normally. A revisited issue, or more than 10 ancestors, exits 1. Comment
 pages stop at the first page with fewer than 100 items; more than 30 pages
 exit 1. A 404 on a permission read is saved as `null`: no permission, as
 watch-plan-approvals.py treats it. Every other response is saved byte for
-byte, as parent-of-<n>.json, issue-<a>.json, comments-<a>.<K>.json and
-permission-<login>.json (login in lower case), with request.json holding
+byte, as parent-of-<n>.json, issue-<a>.json, edited-<a>.json,
+comments-<a>.<K>.json and permission-<login>.json (login in lower case), with request.json holding
 `issue`, `ancestors` (the chain, nearest first) and `fetched_at`.
 Everything goes to a temporary directory beside DIR, renamed onto DIR only
 when every call succeeded, so a failure leaves DIR as it was. DIR defaults
@@ -83,7 +89,7 @@ decision follows, body sections first in body order, then comments by
 created_at and id, with its kind, author, `via`, `time`, `edited` (the
 comment's updated_at when it differs from created_at, else `none`; a body
 section is `via: issue body`, dated by its issue's own created_at, with
-`edited: none`) and URL, and its text quoted with every line prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
+the body's lastEditedAt as `edited`, `none` when never edited) and URL, and its text quoted with every line prefixed by `> ` (CR and CRLF read as LF), so no quoted fence and no
 `Risk:` line can reach column 0. An ancestor without decisions says
 `No decisions.`; a root issue gives the line `#N has no ancestors.`. The
 file is written to a temporary file and renamed.
@@ -122,6 +128,10 @@ NUMBER = re.compile(r"[1-9][0-9]*")
 LOGIN = re.compile(r"[A-Za-z0-9-]+")
 HEADING = re.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+QUERY = (
+    "query($owner: String!, $repo: String!, $number: Int!) "
+    "{ repository(owner: $owner, name: $repo) { issue(number: $number) { lastEditedAt } } }"
+)
 FETCH_OPTIONS = {"--issue": True, "--out": False}
 ASSEMBLE_OPTIONS = {"--responses": True, "--issue": True, "--base": True}
 USAGE = (
@@ -208,6 +218,26 @@ def gh_get(path: str, missing_ok: bool = False):
     return proc.stdout, data
 
 
+def last_edited(number: int):
+    """The read-only GraphQL query for #NUMBER's lastEditedAt: (raw bytes, the time or None)."""
+    argv = [str(BOT_GH), "api", "graphql", "-f", f"query={QUERY}"]
+    argv += ["-F", "owner={owner}", "-F", "repo={repo}", "-F", f"number={number}"]
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True)
+    except OSError as exc:
+        raise FetchError(f"cannot run {BOT_GH}: {exc}") from exc
+    if proc.returncode != 0:
+        raise FetchError(f"bot-gh.sh api graphql for the lastEditedAt of #{number} exited {proc.returncode}")
+    try:
+        data = json.loads(proc.stdout.decode("utf-8"))
+        edited = data["data"]["repository"]["issue"]["lastEditedAt"]
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        raise FetchError(f"the lastEditedAt of #{number}: the response is not of the expected shape") from exc
+    if edited is not None and not isinstance(edited, str):
+        raise FetchError(f"the lastEditedAt of #{number} is not a time")
+    return proc.stdout, edited
+
+
 def save(directory: Path, name: str, data: bytes) -> None:
     try:
         with open(directory / name, "xb") as out:
@@ -242,6 +272,7 @@ def fetch_into(tmp: Path, issue: int) -> None:
         if not isinstance(data, dict) or data.get("number") != number:
             raise FetchError(f"GET issues/{number}: the response is not issue #{number}")
         save(tmp, f"issue-{number}.json", raw)
+        save(tmp, f"edited-{number}.json", last_edited(number)[0])
         login = person(data.get("user"))
         if login is not None:
             if not LOGIN.fullmatch(login):
@@ -511,6 +542,20 @@ def comment_decisions(number: int, comments: list, owner, trusted: bool, authors
     return found
 
 
+def body_edited(responses: Responses, number: int) -> str:
+    """The saved lastEditedAt of #NUMBER's body, or `none`."""
+    data = responses.load(f"edited-{number}.json")
+    try:
+        edited = data["data"]["repository"]["issue"]["lastEditedAt"]
+    except (KeyError, TypeError) as exc:
+        raise InputError(f"edited-{number}.json is not a lastEditedAt response") from exc
+    if edited is None:
+        return "none"
+    if not isinstance(edited, str) or not re.fullmatch(r"[0-9T:Z.+-]+", edited):
+        raise InputError(f"edited-{number}.json holds no time")
+    return edited
+
+
 def render(issue: int, chain: list, responses: Responses, authors: set) -> str:
     issues = {}
     for number in chain:
@@ -547,7 +592,8 @@ def render(issue: int, chain: list, responses: Responses, authors: set) -> str:
                     f"### Decision {count}",
                     "",
                     f"- Kind: issue body section; author: {author}; via: issue body",
-                    f"- Time: {data['created_at']} (the issue's created_at); edited: none",
+                    f"- Time: {data['created_at']} (the issue's created_at); "
+                    f"edited: {body_edited(responses, number)} (the body's lastEditedAt)",
                     f"- URL: {data['html_url']}",
                     "",
                     *quoted(section),

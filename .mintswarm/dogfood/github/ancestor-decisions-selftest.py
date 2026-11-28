@@ -16,12 +16,15 @@ with the dummy MSW_TOKEN ghs_selftest. A path it does not serve answers
 
 Checks, by exit code and error class only, never gh's wording:
 
-- fetch reads only: every recorded call, the issue, parent, comment and
-  collaborator-permission calls included, is `api --method GET PATH` with
-  no field, input or paginate flag; a 404 parent ends the chain; a 404
+- fetch reads only: every recorded REST call, the issue, parent, comment
+  and collaborator-permission calls included, is `api --method GET PATH`
+  with no field, input or paginate flag, and the only other calls are one
+  `api graphql -f query=query(...) -F owner={owner} -F repo={repo}
+  -F number=<a>` per ancestor, never a mutation; a 404 parent ends the chain; a 404
   permission is saved as no permission; comments come in two pages (100
   and 5); every response is saved byte for byte with request.json;
 - fetch failures: a 500 on a parent, a comments page and a permission call,
+  a failing lastEditedAt query,
   a loop, more than 10 ancestors and more than 30 pages each exit 1 and
   leave an earlier DIR unchanged; bad arguments exit 2;
 - the #568/#548/#3 fixture: #548, owned by a trusted author, holds that
@@ -30,7 +33,9 @@ Checks, by exit code and error class only, never gh's wording:
   section and an owner with write permission outside the trusted authors.
   ancestors.md lists #548 first, with that URL, author and time and the
   quoted text, then #3 with its body section, `via: issue body` and dated
-  by #3's created_at, before the approval; an untrusted non-owner's
+  by #3's created_at, before the approval, with `edited: none` for a body
+  never edited, so it is not late; a body edited after the approval
+  carries that lastEditedAt and is late; an untrusted non-owner's
   comment and a bot comment without the marker are absent; marker comments
   (one with a CRLF marker line, one with trailing spaces) are `via: marker`;
   an edited comment carries its `edited` time;
@@ -53,7 +58,7 @@ Checks, by exit code and error class only, never gh's wording:
   to judge" holds the nearest-decision rule with its citation, its
   needs-review steer line and likely-safe no-steer condition name ancestor
   decisions after `approval.approved_at`, the Process bullet dates a body
-  section by its issue's created_at and no line counts an undated decision
+  section by its issue's created_at and its last edit, and no line counts an undated decision
   as late, and its `inconsistent-inputs` line names ancestors.md; all six
   rank decisions nearest first, the latest winning within one issue,
   citing the decision; assess.md reads "Read only these four inputs";
@@ -259,12 +264,23 @@ def permission(level: str, role: str = None) -> str:
     return json.dumps({"permission": level, "role_name": role or level, "user": {"login": "x"}})
 
 
+def edited_response(when) -> str:
+    return json.dumps({"data": {"repository": {"issue": {"lastEditedAt": when}}}})
+
+
+def late_times(section_text: str) -> list:
+    """The times and edit times of SECTION_TEXT's decisions after APPROVED_AT, as landing reads them."""
+    found = re.findall(r"^- Time: (\S+).*?; edited: (\S+)", section_text, re.M)
+    return [t for pair in found for t in pair if t != "none" and t > APPROVED_AT]
+
+
 def world(
     parent_decision: bool = True,
     owner3: str = "dana",
     perm3=permission("write"),
     extra548: list = (),
     filler548: int = 0,
+    edited3: str = None,
 ) -> dict:
     """GitHub as the stub serves it, for #568 under #548 under #3."""
     body3 = (
@@ -290,6 +306,8 @@ def world(
         f"{REPO}/issues/548": json.dumps(issue(548, "Approvals", user("zmij"))),
         f"{REPO}/issues/3": json.dumps(issue(3, "Design", user(owner3), body3)),
         f"{REPO}/collaborators/zmij/permission": permission("admin"),
+        "number=548": edited_response(None),
+        "number=3": edited_response(edited3),
     }
     if perm3 is not None:
         pages[f"{REPO}/collaborators/{owner3}/permission"] = perm3
@@ -330,12 +348,25 @@ def fetch_tests(sb: Sandbox) -> None:
     proc = sb.run(["fetch", "--issue", "568"], env)
     calls = sb.recorded()
     T.check("fetch: exits 0", proc.returncode == 0, detail(proc))
-    bad = [
-        c["argv"]
-        for c in calls
-        if c["argv"][:3] != ["api", "--method", "GET"] or len(c["argv"]) != 4 or FORBIDDEN & set(c["argv"])
+    graphql = [c["argv"] for c in calls if c["argv"][:2] == ["api", "graphql"]]
+    rest = [c["argv"] for c in calls if c["argv"][:2] != ["api", "graphql"]]
+    bad = [argv for argv in rest if argv[:3] != ["api", "--method", "GET"] or len(argv) != 4 or FORBIDDEN & set(argv)]
+    T.check("fetch: every REST call is api --method GET PATH with no field, input or paginate flag", not bad, str(bad))
+    not_query = [
+        argv
+        for argv in graphql
+        if len(argv) != 10
+        or argv[2] != "-f"
+        or not argv[3].startswith("query=query(")
+        or "mutation" in " ".join(argv)
+        or argv[4:9] != ["-F", "owner={owner}", "-F", "repo={repo}", "-F"]
+        or argv[9] not in ("number=548", "number=3")
     ]
-    T.check("fetch: every call is api --method GET PATH with no field, input or paginate flag", not bad, str(bad))
+    T.check(
+        "fetch: the only other calls are one read-only GraphQL query per ancestor, never a mutation",
+        len(graphql) == 2 and not not_query,
+        str(not_query),
+    )
     paths = [c["argv"][-1] for c in calls]
     T.check(
         "fetch: it reads parents, issues, comments and permissions",
@@ -364,6 +395,8 @@ def fetch_tests(sb: Sandbox) -> None:
                 "parent-of-548.json",
                 "issue-548.json",
                 "issue-3.json",
+                "edited-548.json",
+                "edited-3.json",
                 "comments-548.1.json",
                 "comments-548.2.json",
                 "comments-3.1.json",
@@ -400,6 +433,7 @@ def fetch_tests(sb: Sandbox) -> None:
         ("a 500 on a parent", f"{REPO}/issues/548/parent"),
         ("a 500 on a comments page", f"{REPO}/issues/548/comments?per_page=100&page=1"),
         ("a 500 on a permission", f"{REPO}/collaborators/dana/permission"),
+        ("a failing lastEditedAt query", "number=3"),
     ):
         pages = world()
         pages[path] = None
@@ -458,15 +492,15 @@ def assemble_tests(sb: Sandbox) -> None:
         "assemble: #3's body Decision section is quoted, outside fences only",
         "via: issue body" in far
         and "via: issue body" in far
-        and "- Time: 2026-03-01T00:00:00Z (the issue's created_at); edited: none" in far
+        and "- Time: 2026-03-01T00:00:00Z (the issue's created_at); edited: none (the body's lastEditedAt)" in far
         and "> Stages read the ancestors' decisions." in far
         and "> ## Not a heading" in far
         and "Not a decision." not in far,
         far,
     )
-    late = [t for t in re.findall(r"^- Time: (\S+)", far, re.M) if t > APPROVED_AT]
+    late = late_times(far)
     T.check(
-        "assemble: a body section on an ancestor created before the approval is not late by landing's rule",
+        "assemble: a body section created before the approval and never edited is not late by landing's rule",
         "via: issue body" in far and late == [],
         str(late),
     )
@@ -479,6 +513,16 @@ def assemble_tests(sb: Sandbox) -> None:
     )
     T.check("assemble: an edited comment carries its edited time", "edited: 2026-11-28T09:00:00Z" in near)
     T.check("assemble: an unedited comment says edited: none", "Time: 2026-11-27T10:00:00Z; edited: none" in near)
+
+    _, built, text = gather(sb, world(edited3="2026-11-25T08:00:00Z"), "body-edited")
+    far = section(text or "", 3)
+    T.check(
+        "assemble: a body edited after the approval carries lastEditedAt and is late by landing's rule",
+        built.returncode == 0
+        and "edited: 2026-11-25T08:00:00Z (the body's lastEditedAt)" in far
+        and "2026-11-25T08:00:00Z" in late_times(far),
+        far,
+    )
 
     extra = [comment(105, 548, user("CAROL"), "Carol's decision.", "2026-11-27T14:00:00Z")]
     _, built, text = gather(sb, world(extra548=extra), "carol-comment")
@@ -662,7 +706,8 @@ def stage_text_tests() -> None:
     )
     T.check(
         "stages: landing.md dates a body section by its issue's created_at and has no undated rule",
-        "is dated by its issue's created_at" in judge and "undated" not in landing,
+        "is dated by its issue's created_at and edited at the body's last edit (`lastEditedAt`)" in judge
+        and "undated" not in landing,
     )
     inconsistent = [line for line in lines if "`inconsistent-inputs`:" in line]
     T.check(
