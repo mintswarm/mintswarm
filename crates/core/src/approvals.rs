@@ -5,6 +5,8 @@
 //!   pure rules of [`mintswarm_rules::approver`].
 //! - [`trigger`]: the deliveries that queue an issue for approvals, or a pull request for the
 //!   steward, on the state-sync queue.
+//! - [`judge`]: the pure judge of the approve, reject and help comments of an issue.
 
 pub mod approver;
+pub mod judge;
 pub mod trigger;
