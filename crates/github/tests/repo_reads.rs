@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use mintswarm_domain::hosting::{CODEOWNERS_PATHS, CodeOwnersFile, RepoReadError, RepoReads};
 use mintswarm_domain::ids::RevId;
+use mintswarm_domain::setup::ProjectSetup;
 use mintswarm_domain::tracker::{IssueType, Login};
-use mintswarm_domain::vcs::RepoPath;
+use mintswarm_domain::vcs::{BranchName, RepoPath};
 use mintswarm_github::{GitHubReads, GitHubRepoReads, Kinds, Permissions, RetryPolicy, Token};
 use support::Responder;
 
@@ -57,6 +58,13 @@ fn path(text: &str) -> RepoPath {
     RepoPath(text.as_bytes().to_vec())
 }
 
+/// The work branch the head reads ask for: not the fixtures' default branch, `master`.
+const WORK: &str = "develop";
+
+fn work() -> BranchName {
+    BranchName(WORK.to_owned())
+}
+
 fn commit() -> RevId {
     RevId(COMMIT.to_owned())
 }
@@ -68,7 +76,7 @@ fn contents_path(file: &str) -> String {
 /// One behaviour every host's repository reads must show.
 #[derive(Clone, Copy, Debug)]
 enum Case {
-    /// The default branch's head is the recorded commit.
+    /// The work branch's head is the recorded commit.
     Head,
     /// The config file reads as its exact bytes.
     ConfigBytes,
@@ -89,7 +97,7 @@ async fn check(host: &impl RepoReads, case: Case) {
     match case {
         Case::Head => {
             assert_eq!(
-                host.default_branch_head().await.unwrap(),
+                host.branch_head(&work()).await.unwrap(),
                 RevId(HEAD.to_owned())
             );
         }
@@ -120,10 +128,7 @@ async fn github_passes_the_shared_cases() {
     for case in CASES {
         let responder = Responder::start().await;
         match case {
-            Case::Head => {
-                responder.reply(200, REPOSITORY);
-                responder.reply(200, BRANCH);
-            }
+            Case::Head => responder.reply(200, BRANCH),
             Case::ConfigBytes => responder.reply(200, CONFIG_CONTENTS),
             Case::MissingPath => responder.reply(404, NOT_FOUND),
             Case::RateLimited => responder.reply_with(403, &[("retry-after", "1")], LIMITED),
@@ -134,11 +139,12 @@ async fn github_passes_the_shared_cases() {
     }
 }
 
-/// An in-memory host: a head, files by commit and path, and an optional rate limit that
-/// refuses every read.
+/// An in-memory host: heads by branch, a default branch, files by commit and path, and an
+/// optional rate limit that refuses every read.
 #[derive(Default)]
 struct FakeHost {
-    head: Option<RevId>,
+    heads: BTreeMap<String, RevId>,
+    default: Option<BranchName>,
     files: BTreeMap<(RevId, RepoPath), Vec<u8>>,
     rate_limit: Option<Duration>,
 }
@@ -155,11 +161,27 @@ impl FakeHost {
 }
 
 impl RepoReads for FakeHost {
-    fn default_branch_head(&self) -> impl Future<Output = Result<RevId, RepoReadError>> + Send {
-        let head = self
-            .limited()
-            .and_then(|()| self.head.clone().ok_or(RepoReadError::Inaccessible));
+    fn branch_head(
+        &self,
+        branch: &BranchName,
+    ) -> impl Future<Output = Result<RevId, RepoReadError>> + Send {
+        let head = self.limited().and_then(|()| {
+            if !BranchName::is_valid(&branch.0) {
+                return Err(RepoReadError::InvalidBranch);
+            }
+            self.heads
+                .get(&branch.0)
+                .cloned()
+                .ok_or(RepoReadError::Inaccessible)
+        });
         async move { head }
+    }
+
+    fn default_branch(&self) -> impl Future<Output = Result<BranchName, RepoReadError>> + Send {
+        let name = self
+            .limited()
+            .and_then(|()| self.default.clone().ok_or(RepoReadError::Inaccessible));
+        async move { name }
     }
 
     fn read_file(
@@ -178,9 +200,10 @@ impl RepoReads for FakeHost {
 async fn fake_passes_the_shared_cases() {
     for case in CASES {
         let mut host = FakeHost {
-            head: Some(RevId(HEAD.to_owned())),
+            default: Some(BranchName("master".to_owned())),
             ..FakeHost::default()
         };
+        host.heads.insert(WORK.to_owned(), RevId(HEAD.to_owned()));
         host.files
             .insert((commit(), path(CONFIG_PATH)), CONFIG.to_vec());
         if matches!(case, Case::RateLimited) {
@@ -210,22 +233,24 @@ async fn the_recorded_contents_decode_to_the_file() {
 }
 
 #[tokio::test]
-async fn the_head_reads_the_repository_then_its_branch() {
+async fn the_head_reads_only_the_named_branch() {
     let responder = Responder::start().await;
-    responder.reply(200, REPOSITORY);
     responder.reply(200, BRANCH);
+    responder.reply(200, CONFIG_CONTENTS);
     let reads = client(&responder);
     let token = token();
-    reads
-        .repo_reads(&token)
-        .default_branch_head()
-        .await
-        .unwrap();
+    let repo = reads.repo_reads(&token);
+    let head = repo.branch_head(&work()).await.unwrap();
+    let bytes = repo.read_file(&head, &path(CONFIG_PATH)).await.unwrap();
+    assert_eq!(bytes.as_deref(), Some(CONFIG));
     let requests = responder.requests();
     let paths: Vec<_> = requests.iter().map(|r| r.path.as_str()).collect();
     assert_eq!(
         paths,
-        [REPO_PATH.to_owned(), format!("{REPO_PATH}/branches/master")]
+        [
+            format!("{REPO_PATH}/branches/{WORK}"),
+            format!("{REPO_PATH}/contents/{CONFIG_PATH}?ref={HEAD}"),
+        ]
     );
     assert!(requests.iter().all(|r| r.method == "GET"));
 }
@@ -233,39 +258,95 @@ async fn the_head_reads_the_repository_then_its_branch() {
 #[tokio::test]
 async fn a_slashed_branch_is_encoded_per_segment() {
     let responder = Responder::start().await;
-    responder.reply(
-        200,
-        r#"{"name":"widgets","default_branch":"release/2026 q4"}"#,
-    );
     responder.reply(200, BRANCH);
     let reads = client(&responder);
     let token = token();
     reads
         .repo_reads(&token)
-        .default_branch_head()
+        .branch_head(&BranchName("release/2026+q4".to_owned()))
         .await
         .unwrap();
     assert_eq!(
-        responder.requests()[1].path,
-        format!("{REPO_PATH}/branches/release/2026%20q4")
+        responder.requests()[0].path,
+        format!("{REPO_PATH}/branches/release/2026%2Bq4")
     );
 }
 
 #[tokio::test]
-async fn a_missing_repository_or_branch_is_inaccessible() {
-    for found in [0, 1] {
+async fn an_invalid_branch_is_refused_before_any_request() {
+    let responder = Responder::start().await;
+    let reads = client(&responder);
+    let token = token();
+    let repo = reads.repo_reads(&token);
+    for bad in ["", "a..b", "a b", "-x", "HEAD", "/a"] {
+        let error = repo
+            .branch_head(&BranchName(bad.to_owned()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, RepoReadError::InvalidBranch),
+            "{bad:?}: {error:?}"
+        );
+    }
+    assert!(responder.requests().is_empty());
+}
+
+#[tokio::test]
+async fn the_default_branch_is_the_repository_s() {
+    let responder = Responder::start().await;
+    responder.reply(200, REPOSITORY);
+    let reads = client(&responder);
+    let token = token();
+    let name = reads.repo_reads(&token).default_branch().await.unwrap();
+    assert_eq!(name, BranchName("master".to_owned()));
+    assert_eq!(responder.requests()[0].path, REPO_PATH);
+}
+
+#[tokio::test]
+async fn setup_defaults_the_work_branch_to_the_default_branch() {
+    let responder = Responder::start().await;
+    responder.reply(200, r#"{"name":"widgets","default_branch":"develop"}"#);
+    let reads = client(&responder);
+    let token = token();
+    let setup = ProjectSetup::from_default_branch(&reads.repo_reads(&token))
+        .await
+        .unwrap();
+    assert_eq!(setup.work_branch, work());
+}
+
+#[tokio::test]
+async fn an_empty_or_invalid_default_branch_is_unexpected() {
+    for body in [
+        r#"{"name":"widgets","default_branch":""}"#,
+        r#"{"name":"widgets","default_branch":"a b"}"#,
+        r#"{"name":"widgets","default_branch":7}"#,
+        r#"{"name":"widgets"}"#,
+    ] {
         let responder = Responder::start().await;
-        if found == 1 {
-            responder.reply(200, REPOSITORY);
-        }
+        responder.reply(200, body);
+        let reads = client(&responder);
+        let token = token();
+        let error = reads.repo_reads(&token).default_branch().await.unwrap_err();
+        assert!(
+            matches!(error, RepoReadError::Unexpected),
+            "{body}: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missing_repository_or_branch_is_inaccessible() {
+    for head in [false, true] {
+        let responder = Responder::start().await;
         responder.reply(404, NOT_FOUND);
         let reads = client(&responder);
         let token = token();
-        let error = reads
-            .repo_reads(&token)
-            .default_branch_head()
-            .await
-            .unwrap_err();
+        let repo = reads.repo_reads(&token);
+        let error = if head {
+            repo.branch_head(&work()).await.unwrap_err()
+        } else {
+            repo.default_branch().await.unwrap_err()
+        };
         assert!(matches!(error, RepoReadError::Inaccessible), "{error:?}");
     }
 }
@@ -273,13 +354,12 @@ async fn a_missing_repository_or_branch_is_inaccessible() {
 #[tokio::test]
 async fn a_head_that_is_not_a_commit_id_is_unexpected() {
     let responder = Responder::start().await;
-    responder.reply(200, REPOSITORY);
-    responder.reply(200, r#"{"name":"master","commit":{"sha":"ABC"}}"#);
+    responder.reply(200, r#"{"name":"develop","commit":{"sha":"ABC"}}"#);
     let reads = client(&responder);
     let token = token();
     let error = reads
         .repo_reads(&token)
-        .default_branch_head()
+        .branch_head(&work())
         .await
         .unwrap_err();
     assert!(matches!(error, RepoReadError::Unexpected), "{error:?}");
@@ -436,7 +516,7 @@ async fn a_refused_credential_or_permission_is_inaccessible() {
             let token = token();
             let repo = reads.repo_reads(&token);
             let error = if head {
-                repo.default_branch_head().await.unwrap_err()
+                repo.branch_head(&work()).await.unwrap_err()
             } else {
                 repo.read_file(&commit(), &path(CONFIG_PATH))
                     .await

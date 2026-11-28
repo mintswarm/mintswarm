@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Set an issue's msw-state value and the GitHub issue status it maps to, the verdicts and the short title.
 
-    msw-state.py set ISSUE VALUE [--base origin/master] [--dry-run]
-    msw-state.py get ISSUE [--base origin/master]
-    msw-state.py verdict set NUMBER plan|decomp|pr BAND [--base origin/master] [--dry-run]
-    msw-state.py verdict get NUMBER plan|decomp|pr [--base origin/master]
-    msw-state.py fields resolve [ISSUE ...] [--base origin/master]
+    msw-state.py set ISSUE VALUE [--base origin/<work branch>] [--dry-run]
+    msw-state.py get ISSUE [--base origin/<work branch>]
+    msw-state.py verdict set NUMBER plan|decomp|pr BAND [--base origin/<work branch>] [--dry-run]
+    msw-state.py verdict get NUMBER plan|decomp|pr [--base origin/<work branch>]
+    msw-state.py fields resolve [ISSUE ...] [--base origin/<work branch>]
     msw-state.py short-title read ANALYSIS
-    msw-state.py short-title set ISSUE --analysis PATH [--base origin/master] [--dry-run]
-    msw-state.py short-title get ISSUE [--base origin/master]
+    msw-state.py short-title set ISSUE --analysis PATH [--base origin/<work branch>] [--dry-run]
+    msw-state.py short-title get ISSUE [--base origin/<work branch>]
     msw-state.py short-title name --title TITLE [--value VALUE]
 
 Dogfooding stand-in for the runner's tracker effects that show where an issue
@@ -896,37 +896,52 @@ def short_title_get(number: int, base: str) -> int:
     return 0
 
 
+def default_base() -> str:
+    """origin/ and the work branch, read by ../project-setup.py loaded by path; RuntimeError when it cannot be."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to project-setup.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_project_setup", HERE.parent / "project-setup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        raise RuntimeError("cannot load project-setup.py") from None
+    try:
+        return "origin/" + module.work_branch()
+    except module.SetupError as err:
+        raise RuntimeError(f"cannot read the work branch: {err}") from None
+
+
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(
         description="Set or show an issue's msw-state value, its status, verdicts and short title."
     )
     sub = parser.add_subparsers(dest="action", required=True)
-    base_help = "ref to read the config at (default origin/master)"
+    base_help = "ref to read the config at (default origin/<work branch>)"
     s = sub.add_parser("set", help="set the issue's msw-state value, then its issue status")
     s.add_argument("number", type=int, help="issue number")
     s.add_argument("value", help="the name of one of tracker.state.options at --base")
-    s.add_argument("--base", default="origin/master", help=base_help)
+    s.add_argument("--base", default=None, help=base_help)
     s.add_argument("--dry-run", action="store_true", help="print the lines, change nothing")
     g = sub.add_parser("get", help="print the issue's msw-state value and its issue status")
     g.add_argument("number", type=int, help="issue number")
-    g.add_argument("--base", default="origin/master", help=base_help)
+    g.add_argument("--base", default=None, help=base_help)
     v = sub.add_parser("verdict", help="set or print an approval stage's verdict")
     vsub = v.add_subparsers(dest="verdict", required=True)
     vs = vsub.add_parser("set", help="set the verdict to a band")
     vs.add_argument("number", type=int, help="issue or pull request number")
     vs.add_argument("kind", help="plan, decomp or pr")
     vs.add_argument("band", help="one of: " + ", ".join(BANDS))
-    vs.add_argument("--base", default="origin/master", help=base_help)
+    vs.add_argument("--base", default=None, help=base_help)
     vs.add_argument("--dry-run", action="store_true", help="print the line, change nothing")
     vg = vsub.add_parser("get", help="print the verdict")
     vg.add_argument("number", type=int, help="issue or pull request number")
     vg.add_argument("kind", help="plan, decomp or pr")
-    vg.add_argument("--base", default="origin/master", help=base_help)
+    vg.add_argument("--base", default=None, help=base_help)
     f = sub.add_parser("fields", help="resolve the configured fields' ids into the cache")
     fsub = f.add_subparsers(dest="fields", required=True)
     fr = fsub.add_parser("resolve", help="learn the field ids from issues and the organisation")
     fr.add_argument("numbers", type=int, nargs="*", metavar="ISSUE", help="issues that hold the fields")
-    fr.add_argument("--base", default="origin/master", help=base_help)
+    fr.add_argument("--base", default=None, help=base_help)
     t = sub.add_parser("short-title", help="read, set or show the item's short title")
     tsub = t.add_subparsers(dest="short_title", required=True)
     tr = tsub.add_parser("read", help="print the short title the analysis proposes")
@@ -934,17 +949,19 @@ def main(argv: list) -> int:
     ts = tsub.add_parser("set", help="write the analysis's short title when the issue holds none")
     ts.add_argument("number", type=int, help="issue number")
     ts.add_argument("--analysis", required=True, help="the analysis to read the name from")
-    ts.add_argument("--base", default="origin/master", help=base_help)
+    ts.add_argument("--base", default=None, help=base_help)
     ts.add_argument("--dry-run", action="store_true", help="print the line, change nothing")
     tg = tsub.add_parser("get", help="print the issue's display name")
     tg.add_argument("number", type=int, help="issue number")
-    tg.add_argument("--base", default="origin/master", help=base_help)
+    tg.add_argument("--base", default=None, help=base_help)
     tn = tsub.add_parser("name", help="print the display name for a title and value, offline")
     tn.add_argument("--title", required=True, help="the item's title")
     tn.add_argument("--value", default="", help="the field's or label's value, if any")
     args = parser.parse_args(argv)
 
     try:
+        if getattr(args, "base", "") is None:
+            args.base = default_base()
         if args.action == "fields":
             numbers = args.numbers
         elif args.action == "short-title" and args.short_title in ("read", "name"):

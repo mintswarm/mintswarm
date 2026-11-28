@@ -1,7 +1,8 @@
 //! Loaders for mintswarm's YAML configuration: the repository config `.mintswarm/config.yaml`,
-//! the runner config, the control plane's `mintswarm.yaml`, the capability probe definitions and
-//! the activity rules, which share one schema between the runner's defaults and
-//! `metrics.activity` in the repository config.
+//! the runner config, the control plane's `mintswarm.yaml`, the capability probe definitions, the
+//! activity rules, which share one schema between the runner's defaults and `metrics.activity` in
+//! the repository config, and the project setup file ([`load_project_setup`]), which names the
+//! factory's branches.
 //!
 //! YAML is read natively, with the same result as `yq -p=yaml -o=json .` (yq v4.45.1) gives for
 //! it, and the repository config is then checked as the dogfood floors check it.
@@ -11,6 +12,7 @@ mod plane;
 mod probes;
 mod runner;
 mod schema;
+mod setup;
 mod shlex;
 mod state;
 mod trust;
@@ -32,6 +34,7 @@ pub use schema::{
     DependencyReview, Formatter, GatesSummary, Landing, LimitOverrides, Limits, Mode, PlanApproval,
     RepoConfig, RequireHuman, ReviewClear, load_repo_config, load_repo_config_with_roles,
 };
+pub use setup::load_project_setup;
 pub use shlex::{SplitError, shlex_split};
 pub use state::{
     AWAITING_APPROVAL, AWAITING_MERGE, BLOCKED, DONE, NONE, PLAN_APPROVED, PLANNING, QUEUED,

@@ -12,8 +12,8 @@ use crate::scale::{Scale, Size};
 pub enum ReadPoint {
     /// The job's pinned base, so that a job's stages and its field reads use one mapping.
     PinnedBase,
-    /// The default branch's head, as ingest rules are read.
-    DefaultHead,
+    /// The work branch's head, as ingest rules are read.
+    WorkHead,
 }
 
 /// One option of a [`Preset`].

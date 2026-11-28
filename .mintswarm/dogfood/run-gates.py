@@ -5,7 +5,7 @@ Dogfooding stand-in for the runner's GateRunner. Paths are relative to the
 working directory, which is the worktree root. The input is the gates the
 runner prepared in .mintswarm/job/inputs/gates.json:
 
-    {"gates": [{"name": "whitespace", "command": "git diff --check origin/master...HEAD",
+    {"gates": [{"name": "rust-format", "command": "cargo fmt --all --check",
                 "timeout": 600}]}
 
 `timeout` is in seconds and optional (default 1800).

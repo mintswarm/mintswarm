@@ -45,10 +45,14 @@ later steer, relayed or the maintainer's own, a "Request changes" or comment
 review included, withdraws an approval. The approval itself is strict: the
 three lines count only at the top of a comment by mintswarm-dev[bot].
 
+The work branch is the branch the factory integrates into, read when the
+script starts by ../project-setup.py (loaded by path, without writing
+bytecode) from the project-setup.yaml beside it.
+
 Checks, all made with the steward's token; every failure is collected and
 printed on stderr, and nothing is merged unless all of them hold:
 
-- pulls/PR: open, not a draft, base master, head ref mintswarm/*, head repo
+- pulls/PR: open, not a draft, base the work branch, head ref mintswarm/*, head repo
   mintswarm/mintswarm, head sha equal to SHA; no label named hold; mergeable
   true and mergeable_state not dirty. While mergeable is null on an open PR,
   pulls/PR is read again up to 5 times, $MSW_LAND_RETRY_DELAY seconds apart
@@ -80,11 +84,13 @@ and merged_by.
 
 Exit codes: 0 when merged, or when --dry-run passes every check; 1 on any
 refusal or GitHub failure, including a refused merge call, which is what
-removing the steward from the master ruleset's bypass list (the kill switch)
-causes; 2 on bad arguments. Standard library only.
+removing the steward from the bypass list of the ruleset on the work branch
+(`master` here; the kill switch) causes; 2 on bad arguments or when the work
+branch cannot be read. Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -99,7 +105,8 @@ MINT_TOKEN = HERE / "mint-token.sh"
 
 REPO = "mintswarm/mintswarm"
 OWNER, NAME = REPO.split("/")
-BASE = "master"
+# The work branch, read by main() from ../project-setup.yaml before any check.
+BASE = ""
 BRANCH_PREFIX = "mintswarm/"
 STEWARD_SLUG = "mintswarm-dev-steward"
 STEWARD_SERVICE = "mintswarm-dev-steward-private-key"
@@ -225,6 +232,21 @@ def pull_settled(steward: Steward, pr: int, delay: float) -> dict:
     return data
 
 
+def work_branch() -> str:
+    """The work branch, from ../project-setup.py loaded by path; UsageError when it cannot be read."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to project-setup.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_project_setup", HERE.parent / "project-setup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        raise UsageError("cannot load project-setup.py") from None
+    try:
+        return module.work_branch()
+    except module.SetupError as err:
+        raise UsageError(f"cannot read the work branch: {err}") from None
+
+
 def check_pull(data: dict, sha: str) -> list:
     reasons = []
     head = data.get("head") or {}
@@ -250,7 +272,7 @@ def check_pull(data: dict, sha: str) -> list:
     elif data.get("mergeable") is not True:
         reasons.append("GitHub reports the PR not mergeable")
     if data.get("mergeable_state") == "dirty":
-        reasons.append("the PR conflicts with master")
+        reasons.append(f"the PR conflicts with {BASE}")
     return reasons
 
 
@@ -471,7 +493,9 @@ def main(argv: list) -> int:
     parser.add_argument("--dry-run", action="store_true", help="check everything, merge nothing")
     args = parser.parse_args(argv)
 
+    global BASE
     try:
+        BASE = work_branch()
         if args.pr <= 0:
             raise UsageError("PR must be a positive number")
         if not SHA_RE.match(args.sha):

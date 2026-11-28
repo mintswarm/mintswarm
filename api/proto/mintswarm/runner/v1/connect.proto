@@ -175,13 +175,14 @@ message ProbeResult {
 // The repository a runner serves, as `Hello` reports it (design §6.1).
 //
 // The plane checks `remote` against the project's repository at every
-// `Hello`. It reads the default-branch head itself, so the runner's head only
+// `Hello`. It reads the work branch's head itself, so the runner's head only
 // says how far behind its store is.
 message HelloRepository {
   // The repository's remote URL.
   string remote = 1;
-  // The default branch's head in the runner's trusted store.
-  string default_branch_head = 2;
+  // The work branch's head in the runner's trusted store; the work branch is
+  // the one `RegisterResponse.work_branch` named.
+  string work_branch_head = 2;
 }
 
 // An attempt as the runner sees it (design §6.1, §7.3).

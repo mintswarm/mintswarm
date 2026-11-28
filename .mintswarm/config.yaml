@@ -194,11 +194,11 @@ gates:
   tests: selftests                   # only none forces plan approval
   run:
     - name: whitespace
-      command: "git diff --check origin/master...HEAD"
+      command: "python3 -I .mintswarm/dogfood/project-setup.py diff-check"
     - name: agents-drift
       command: "python3 .mintswarm/dogfood/render-agents.py --check"
     - name: packs-check
-      command: "python3 .mintswarm/dogfood/packs/pack.py check --base origin/master"
+      command: "python3 -I .mintswarm/dogfood/project-setup.py packs-check"
     - name: packs-selftest
       command: "python3 .mintswarm/dogfood/packs/selftest.py"
     - name: python-format

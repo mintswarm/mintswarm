@@ -15,7 +15,7 @@ A runner talks to the control plane through one gRPC service in the package `min
 | `PutBlob` | client stream: `PutBlobRequest` → `PutBlobResponse` | access token | `DATA_LOSS` when the bytes do not hash to the header's sha256; `RESOURCE_EXHAUSTED` when the blob is over `max_blob_bytes` | uploads one blob (design §8.2) |
 | `GetBlob` | server stream: `GetBlobRequest` → `GetBlobResponse` | access token | none stated | downloads one blob that belongs to the fenced attempt's job (design §8.2) |
 
-`RegisterResponse` gives the runner its `runner_id`, its `project`, the `default_tags` the plane applied and the `audience` its client assertions use. `AuthenticateResponse` carries the opaque `access_token` and its `expires_at`. The registration token, the client assertion and the access token are all `mintswarm.common.v1.Secret` messages, from `api/proto/mintswarm/common/v1/secret.proto`.
+`RegisterResponse` gives the runner its `runner_id`, its `project`, the `default_tags` the plane applied, the `audience` its client assertions use and the project's `work_branch`, the branch the factory integrates into, chosen at setup: the runner is told it and never discovers it. `AuthenticateResponse` carries the opaque `access_token` and its `expires_at`. The registration token, the client assertion and the access token are all `mintswarm.common.v1.Secret` messages, from `api/proto/mintswarm/common/v1/secret.proto`.
 
 ## Envelope
 
@@ -60,7 +60,7 @@ The envelope rules, as the proto comments state them (design §5.3):
 - its `runner_version`, its `protocol_minor`, the optional `features` it supports and every `StepKind` it executes (`step_kinds`);
 - its outbox position: `outbox_epoch`, a random 128-bit id, with `first_unacked_seq` and `last_seq`;
 - its host, `Harness` list, probe results (`ProbeResult`, whose schema is contract C7), tags, harness account and `workers_total`;
-- the repository it serves (`HelloRepository`: `remote` and the `default_branch_head` of its trusted store). The plane checks `remote` against the project's repository at every `Hello` and reads the default-branch head itself, so `default_branch_head` only shows how far behind the runner's store is;
+- the repository it serves (`HelloRepository`: `remote` and the `work_branch_head` of its trusted store). The plane checks `remote` against the project's repository at every `Hello` and reads the work branch's head itself, so `work_branch_head` only shows how far behind the runner's store is;
 - its `RunnerMode`: `worker` claims work, `observer` never does;
 - every attempt it believes it runs, as `HeldAttempt` (`attempt_id`, `lease_epoch`, `phase`).
 
@@ -159,6 +159,7 @@ The plane drops a fenced event whose fence is stale. A stale fence does not fail
   - `MalformedSha256`: a sha256 is not 64 lowercase hex characters;
   - `Zero`: a number that counts from one, such as `seq`, `lease_epoch` or a revision, is zero;
   - `PartialFence`: a `RunnerEvent` sets some of its fence fields but not all;
+  - `InvalidBranch`: a branch name, such as `RegisterResponse.work_branch`, is not a valid branch name;
   - `Question`: a `StageResult` question, or its status, breaks the stage contract.
 - The wire checks return the first violation; a receiver closes the stream on a refused message (design §5.3 rule 6). The `StageResult` check returns every violation at once.
 - `NoBody` is the exception: prost decodes a body case added by a newer peer as no body, so a receiver ignores and counts such an envelope rather than closing the stream (design §5.3 rule 5).

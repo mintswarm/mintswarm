@@ -100,6 +100,9 @@ message RegisterResponse {
   repeated string default_tags = 3;
   // The `aud` the runner must use in its client assertions.
   string audience = 4;
+  // The project's work branch: the branch the factory integrates into, chosen
+  // at setup. The runner is told it and never discovers it.
+  string work_branch = 5;
 }
 
 // The access-token exchange's request, with RFC 7523's names (design §9.2).

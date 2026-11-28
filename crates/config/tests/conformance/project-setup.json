@@ -1,0 +1,80 @@
+{
+  "_comment": "The project setup cases both readers run: crates/config's load_project_setup and BranchName::is_valid in crates/config/tests/setup.rs, and .mintswarm/dogfood/project-setup.py in .mintswarm/dogfood/github/selftest.sh. A valid name passes git check-ref-format refs/heads/<name>, does not start with - and is not HEAD. Each document fails at its path, empty for the root.",
+  "valid_names": [
+    "master",
+    "develop",
+    "release/2026+q4",
+    "@",
+    "a.b",
+    "a@b",
+    "a/@",
+    "HEAD/x",
+    "é",
+    "a\u0085b"
+  ],
+  "invalid_names": [
+    "",
+    "a..b",
+    "a b",
+    "a~b",
+    "a^b",
+    "a:b",
+    "a?b",
+    "a*b",
+    "a[b",
+    "a\\b",
+    "a//b",
+    "/a",
+    "a/",
+    "a.",
+    ".a",
+    "a/.b",
+    "a.lock",
+    "a.lock/b",
+    "a/b.lock/c",
+    "a@{b",
+    "a\tb",
+    "a\u007fb"
+  ],
+  "invalid_by_rule": [
+    "-x",
+    "HEAD"
+  ],
+  "documents": [
+    {
+      "name": "no branches",
+      "yaml": "{}\n",
+      "path": "branches"
+    },
+    {
+      "name": "no work branch",
+      "yaml": "branches: {}\n",
+      "path": "branches.work"
+    },
+    {
+      "name": "a work branch that is not a string",
+      "yaml": "branches:\n  work: [master]\n",
+      "path": "branches.work"
+    },
+    {
+      "name": "an unknown key at the root",
+      "yaml": "branches:\n  work: master\nmemories: notes\n",
+      "path": "memories"
+    },
+    {
+      "name": "an unknown key under branches",
+      "yaml": "branches:\n  work: master\n  memories: notes\n",
+      "path": "branches.memories"
+    },
+    {
+      "name": "a root that is not a mapping",
+      "yaml": "- master\n",
+      "path": ""
+    },
+    {
+      "name": "branches that are not a mapping",
+      "yaml": "branches: master\n",
+      "path": "branches"
+    }
+  ]
+}

@@ -241,7 +241,7 @@ create() {
   printf '%s\n' "identifiers: $cfg"
   case "$name" in
     mintswarm-dev-steward)
-      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Steward (install it; the bypass on master)" ;;
+      printf '%s\n' "next: the maintainer's admin steps in $MSW_HERE/README.md, Steward (install it; the bypass on the work branch)" ;;
     *)
       printf '%s\n' "next: install the App ($MSW_HERE/README.md, Setup)" ;;
   esac

@@ -168,10 +168,20 @@ fn hello() -> Hello {
         workers_total: 1,
         repository: Some(HelloRepository {
             remote: "git@github.com:o/r.git".to_owned(),
-            default_branch_head: String::new(),
+            work_branch_head: String::new(),
         }),
         mode: RunnerMode::Worker.into(),
         held_attempts: vec![held()],
+    }
+}
+
+fn register_response() -> RegisterResponse {
+    RegisterResponse {
+        runner_id: "r1".to_owned(),
+        project: "mintswarm".to_owned(),
+        default_tags: Vec::new(),
+        audience: "plane".to_owned(),
+        work_branch: "develop".to_owned(),
     }
 }
 
@@ -450,12 +460,7 @@ fn a_valid_instance_of_each_type_is_accepted_unchanged() {
     });
     accepted(get_blob_request());
     every_request().into_iter().for_each(accepted);
-    accepted(RegisterResponse {
-        runner_id: "r1".to_owned(),
-        project: "mintswarm".to_owned(),
-        default_tags: Vec::new(),
-        audience: "plane".to_owned(),
-    });
+    accepted(register_response());
     accepted(AuthenticateResponse {
         access_token: secret("token"),
         expires_at: at(),
@@ -909,5 +914,25 @@ fn errors_display_the_message_the_field_and_the_rule() {
     assert_eq!(
         error.to_string(),
         "mintswarm.runner.v1.ConnectRequest: body: has no body case this build knows"
+    );
+}
+
+#[test]
+fn a_register_response_names_a_valid_work_branch() {
+    let mut registered = register_response();
+    registered.work_branch = String::new();
+    refused(
+        registered.receive(),
+        "mintswarm.runner.v1.RegisterResponse",
+        "work_branch",
+        Rule::Missing,
+    );
+    let mut registered = register_response();
+    registered.work_branch = "a..b".to_owned();
+    refused(
+        registered.receive(),
+        "mintswarm.runner.v1.RegisterResponse",
+        "work_branch",
+        Rule::InvalidBranch,
     );
 }

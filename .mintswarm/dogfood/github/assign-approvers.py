@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Assign an issue or PR to the people it waits on, release it, or name a PR's code owners.
 
-    assign-approvers.py assign NUMBER pr [--base origin/master] (--paths P... | --branch B) [--dry-run]
+    assign-approvers.py assign NUMBER pr [--base origin/<work branch>] (--paths P... | --branch B) [--dry-run]
     assign-approvers.py assign NUMBER plan|needs_input|external_steps [--dry-run]
     assign-approvers.py release NUMBER REASON [--dry-run]
-    assign-approvers.py owners [--base origin/master] (--paths P... | --branch B)
+    assign-approvers.py owners [--base origin/<work branch>] (--paths P... | --branch B)
 
 Dogfooding stand-in for the control plane's "waiting on human" assignee. NUMBER
 is an issue or a PR: the issues endpoints serve both. REASON is one of plan,
@@ -85,6 +85,7 @@ when nobody is left to assign. Standard library only.
 """
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -456,24 +457,41 @@ def add_paths(parser: argparse.ArgumentParser, required: bool) -> None:
     group.add_argument("--branch", help="take the paths from git diff BASE...BRANCH")
 
 
+def default_base() -> str:
+    """origin/ and the work branch, read by ../project-setup.py loaded by path; RuntimeError when it cannot be."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ next to project-setup.py
+    try:
+        spec = importlib.util.spec_from_file_location("msw_project_setup", HERE.parent / "project-setup.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        raise RuntimeError("cannot load project-setup.py") from None
+    try:
+        return "origin/" + module.work_branch()
+    except module.SetupError as err:
+        raise RuntimeError(f"cannot read the work branch: {err}") from None
+
+
 def main(argv: list) -> int:
     parser = argparse.ArgumentParser(description="Assign an item's approvers, release them, or name the code owners.")
     actions = parser.add_subparsers(dest="action", required=True)
-    base_help = "ref to read CODEOWNERS at (default origin/master)"
+    base_help = "ref to read CODEOWNERS at (default origin/<work branch>)"
     for name in ("assign", "release"):
         sub = actions.add_parser(name)
         sub.add_argument("number", type=int, help="issue or pull request number")
         sub.add_argument("reason", help="one of " + ", ".join(REASONS))
-        sub.add_argument("--base", default="origin/master", help=base_help)
+        sub.add_argument("--base", default=None, help=base_help)
         if name == "assign":
             add_paths(sub, required=False)
         sub.add_argument("--dry-run", action="store_true", help="print the logins, change nothing")
     sub = actions.add_parser("owners")
-    sub.add_argument("--base", default="origin/master", help=base_help)
+    sub.add_argument("--base", default=None, help=base_help)
     add_paths(sub, required=True)
     args = parser.parse_args(argv)
 
     try:
+        if getattr(args, "base", "") is None:
+            args.base = default_base()
         if args.action == "owners":
             print("\n".join(code_owners(args.base, args.paths, args.branch)))
             return 0

@@ -25,10 +25,7 @@ fn every_registered_role_reports_its_read_point() {
     assert!(!registered.is_empty());
     for role in registered {
         let point = role.read_point();
-        assert!(matches!(
-            point,
-            ReadPoint::PinnedBase | ReadPoint::DefaultHead
-        ));
+        assert!(matches!(point, ReadPoint::PinnedBase | ReadPoint::WorkHead));
         assert!(!role.presets().is_empty(), "{}", role.name());
     }
     let size = registered

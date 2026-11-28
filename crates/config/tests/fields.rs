@@ -83,7 +83,7 @@ struct LevelRole;
 impl Role for LevelRole {
     type Scale = Level;
     const NAME: &'static str = "level";
-    const READ_POINT: ReadPoint = ReadPoint::DefaultHead;
+    const READ_POINT: ReadPoint = ReadPoint::WorkHead;
     const PRESETS: &'static [Preset] = &[];
 }
 
@@ -171,7 +171,7 @@ fn registered_roles_report_their_read_points() {
             .map(|role| role.read_point())
     };
     assert_eq!(point("size"), Some(ReadPoint::PinnedBase));
-    assert_eq!(point("level"), Some(ReadPoint::DefaultHead));
+    assert_eq!(point("level"), Some(ReadPoint::WorkHead));
 }
 
 #[test]

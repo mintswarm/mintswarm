@@ -150,6 +150,38 @@ pub enum RebaseOutcome {
 #[serde(transparent)]
 pub struct BranchName(pub String);
 
+impl BranchName {
+    /// Whether `name` is a valid branch name: exactly when `git check-ref-format
+    /// refs/heads/<name>` accepts it, it does not start with `-` and it is not `HEAD`.
+    ///
+    /// Git's rules for that refname are: no empty part (so no leading `/`, no `//` and no
+    /// trailing `/`, and not empty); no `..` and no `@{`; no ASCII control character; no space
+    /// and none of `~^:?*[\`; no part that starts with `.` or ends with `.lock`; and not ending
+    /// in `.`. The case table `crates/config/tests/conformance/project-setup.json` holds this
+    /// rule and the Python reader `.mintswarm/dogfood/project-setup.py` to the same cases.
+    pub fn is_valid(name: &str) -> bool {
+        if name.starts_with('-') || name == "HEAD" || name.ends_with('.') {
+            return false;
+        }
+        if name.contains("..") || name.contains("@{") {
+            return false;
+        }
+        if name.chars().any(|c| {
+            c.is_ascii_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        }) {
+            return false;
+        }
+        name.split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+    }
+}
+
+impl std::fmt::Display for BranchName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The remote head a push expects to replace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

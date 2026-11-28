@@ -220,8 +220,10 @@ fn messages_carry_the_design_fields() {
         project: "mintswarm".to_owned(),
         default_tags: vec!["linux".to_owned()],
         audience: "https://plane.example".to_owned(),
+        work_branch: "develop".to_owned(),
     };
     assert_eq!(registered.runner_id, "runner-1");
+    assert_eq!(registered.work_branch, "develop");
     assert!(authenticate_request().client_assertion.is_some());
     assert!(authenticate_response().expires_at.is_some());
 
