@@ -3,9 +3,9 @@
 //! the refusal of a bundle whose bindings do not hold.
 //!
 //! Parity is the exit class and the whole `floor.json` record, its bindings, mode and verdict,
-//! each rule's id and outcome, and the rules not evaluated, but not the rules' reasons. Reasons are
-//! not compared: a reason can carry a parser's message, whose wording is
-//! the parser's own and changes between versions.
+//! each rule's id, outcome and reasons, and the rules not evaluated. Reasons are compared because
+//! they are the floor's own wording on both sides, never a parser's message, so they are the same
+//! on every Python version.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -119,7 +119,7 @@ fn decision(text: &str) -> Value {
         .as_array()
         .expect("rules")
         .iter()
-        .map(|rule| serde_json::json!([rule["rule"], rule["result"]]))
+        .map(|rule| serde_json::json!([rule["rule"], rule["result"], rule["reasons"]]))
         .collect();
     floor["rules"] = Value::Array(rules);
     floor
