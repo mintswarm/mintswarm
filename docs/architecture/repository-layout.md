@@ -25,6 +25,7 @@ mintswarm/
 │   ├── config.yaml         # repository mintswarm config
 │   ├── stages.md           # conventions every stage agent follows
 │   ├── stages/             # harness-neutral stage definitions
+│   ├── principles/         # local principle packs
 │   ├── dogfood/            # temporary runner and plane stand-ins
 │   ├── job/                # uncommitted per-job inputs and outputs
 │   └── worktrees/          # uncommitted job worktrees

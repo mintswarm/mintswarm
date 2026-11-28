@@ -117,8 +117,8 @@ components:
     description: "web UI and its generated API client"
     paths: ["web/**"]
   agents:
-    description: "stage agent definitions, stage conventions, prompt templates and the dogfooding glue"
-    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/dogfood/**", "defaults/prompts/**", "defaults/packs/**", ".claude/skills/**"]
+    description: "stage agent definitions, stage conventions, local principles, prompt templates and the dogfooding glue"
+    paths: [".claude/agents/**", ".mintswarm/stages.md", ".mintswarm/stages/**", ".mintswarm/principles/**", ".mintswarm/dogfood/**", "defaults/prompts/**", "defaults/packs/**", ".claude/skills/**"]
   distribution:
     description: "container image, compose files, service units and installers"
     paths: ["docker/**", "packaging/**", "compose.yaml", ".dockerignore"]
@@ -278,3 +278,32 @@ gates:
     formats: [ctrf]                  # ctrf is always written; add a converter's format, e.g. junit (built in)
     # converters:                    # repository converters, contract in .mintswarm/dogfood/report-gates.py
     #   sarif: { command: [python3, .mintswarm/reporters/ctrf-to-sarif.py], extension: sarif }
+
+# Principle packs (#705): statements, facts and checks that steer the stages producing an artefact
+# and are the lenses of the stages reviewing it. Not read by any stage yet. The format and the
+# schema of this section are in mintswarm/tenets (FORMAT.md, schemas/settings.schema.yaml).
+principles:
+  sources:
+    - pack: "@mintswarm/tenets:rust"
+      from: "git+https://github.com/mintswarm/tenets"
+      tag: "rust/v0.1.0"
+      # docs/conventions/rust.md states these without exception, so mintswarm holds itself to must.
+      principles:
+        edition-inherited: { strength: "must" }
+        lints-in-workspace: { strength: "must" }
+        dependencies-in-workspace: { strength: "must" }
+        lockfile-committed: { strength: "must" }
+        clippy-clean: { strength: "must" }
+        narrow-lint-suppression: { strength: "must" }
+        typed-errors-in-libraries: { strength: "must" }
+        no-unwrap-outside-tests: { strength: "must" }
+        expect-states-invariant: { strength: "must" }
+        unsafe-code-level: { strength: "must" }
+        public-items-documented: { strength: "must" }
+        api-guidelines: { strength: "must" }
+        unit-tests-beside-code: { strength: "must" }
+        integration-tests-in-tests-dir: { strength: "must" }
+    - pack: "@mintswarm/mintswarm:repository"
+      from: "repo:.mintswarm/principles/repository"
+    - pack: "@mintswarm/mintswarm:rust"
+      from: "repo:.mintswarm/principles/rust"

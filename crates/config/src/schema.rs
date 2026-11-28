@@ -42,6 +42,10 @@
 //! The `metrics` check is the loader's own as well: `metrics` holds only `activity`, which the
 //! `activity` module checks with the same schema as the runner's default activity rules,
 //! described on [`ActivityRule`].
+//!
+//! The `principles` check is the loader's own too, in the `principles` module: the packs the
+//! repository uses, how each is pinned and its overrides, following `schemas/settings.schema.yaml`
+//! in mintswarm/tenets.
 
 use std::collections::BTreeMap;
 
@@ -53,6 +57,7 @@ use mintswarm_domain::tracker::Login;
 use serde_json::{Map, Value};
 
 use crate::activity::check_activity;
+use crate::principles::{PrincipleSource, check_principles};
 use crate::state::check_options;
 use crate::{
     Action, ActionTable, ActionTrust, ActivityRule, Error, Path, People, Stage, StateSettings,
@@ -212,6 +217,7 @@ pub struct RepoConfig {
     state: Option<StateSettings>,
     actions: ActionTable,
     activity_rules: Vec<ActivityRule>,
+    principles: Vec<PrincipleSource>,
 }
 
 /// The lowest, and default, `pipeline.plan_approval.min_confidence`, and the lowest landing one.
@@ -273,6 +279,7 @@ impl RepoConfig {
                 "pipeline",
                 "gates",
                 "metrics",
+                "principles",
             ],
         )?;
         let (trust, state, actions) = match top.get("tracker") {
@@ -312,6 +319,7 @@ impl RepoConfig {
             formatters,
         } = check_gates(top.get("gates"), &root.key("gates"))?;
         let activity_rules = check_metrics(top.get("metrics"), &root.key("metrics"))?;
+        let principles = check_principles(top.get("principles"), &root.key("principles"))?;
 
         Ok(RepoConfig {
             value,
@@ -326,6 +334,7 @@ impl RepoConfig {
             state,
             actions,
             activity_rules,
+            principles,
         })
     }
 
@@ -387,6 +396,11 @@ impl RepoConfig {
     /// `metrics.activity.rules`, the project's activity rules in file order, empty when absent.
     pub fn activity_rules(&self) -> &[ActivityRule] {
         &self.activity_rules
+    }
+
+    /// The principle packs from `principles.sources`, in order; empty when there are none.
+    pub fn principles(&self) -> &[PrincipleSource] {
+        &self.principles
     }
 
     /// The role's map from `tracker.fields.<role>`, `None` when the entry is absent or `off`.
