@@ -25,6 +25,7 @@ mintswarm/
 │   ├── config.yaml         # repository mintswarm config
 │   ├── stages.md           # conventions every stage agent follows
 │   ├── stages/             # harness-neutral stage definitions
+│   ├── tenets.yaml         # exported tenet packs
 │   ├── tenets/             # local tenet packs
 │   ├── dogfood/            # temporary runner and plane stand-ins
 │   ├── job/                # uncommitted per-job inputs and outputs

@@ -1,0 +1,6 @@
+# The tenet packs this repository exports (mintswarm/tenets schemas/manifest.schema.yaml). The
+# tenets section of .mintswarm/config.yaml is the import side: the packs this repository uses.
+namespace: "@mintswarm/mintswarm"
+packs:
+  repository: { path: ".mintswarm/tenets/repository", intent: "internal" }
+  rust: { path: ".mintswarm/tenets/rust", intent: "internal" }
