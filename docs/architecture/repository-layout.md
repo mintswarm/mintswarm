@@ -91,6 +91,7 @@ mintswarm/
 ├── defaults/               # data embedded into binaries
 │   ├── probes/             # built-in capability probes
 │   ├── lsp/                # language-server definitions
+│   ├── activity/           # default activity rules
 │   └── prompts/            # versioned stage prompts and templates
 │
 ├── tests/
