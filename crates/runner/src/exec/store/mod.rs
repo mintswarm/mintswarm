@@ -131,8 +131,8 @@ pub enum StoreError {
         /// Its permission bits.
         mode: u32,
     },
-    /// Something other than a directory, such as a file or a symbolic link, is at the state
-    /// directory's path.
+    /// Something other than a directory, such as a file or a symbolic link, is at the
+    /// runner directory's path.
     #[error("the runner directory {path} is not a directory")]
     NotADirectory {
         /// The runner directory.

@@ -3,7 +3,7 @@
 use mintswarm_domain::ids::JobId;
 
 use super::super::{BlobId, EffectKind, EffectState, NewEffect, OutboxMode};
-use super::{fresh_state, open};
+use super::{fresh_runner_dir, open};
 
 /// A comment effect of `job` with `key`.
 fn comment(job: &str, key: &str) -> NewEffect {
@@ -17,8 +17,8 @@ fn comment(job: &str, key: &str) -> NewEffect {
 
 #[test]
 fn a_suppressed_effect_is_stored_as_suppressed_and_never_due() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Suppressed).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Suppressed).unwrap();
     let effect = comment("j1", "k1");
     let id = store.insert_effect(&effect).unwrap();
 
@@ -34,7 +34,7 @@ fn a_suppressed_effect_is_stored_as_suppressed_and_never_due() {
     assert!(store.due(i64::MAX, u32::MAX).unwrap().is_empty());
 
     drop(store);
-    let store = open(&state, OutboxMode::Live).unwrap();
+    let store = open(&runner_dir, OutboxMode::Live).unwrap();
     assert_eq!(
         store.effect(id).unwrap().unwrap().state,
         EffectState::Suppressed
@@ -44,8 +44,8 @@ fn a_suppressed_effect_is_stored_as_suppressed_and_never_due() {
 
 #[test]
 fn a_live_effect_is_pending_and_due() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Live).unwrap();
     let id = store.insert_effect(&comment("j1", "k1")).unwrap();
     let due = store.due(i64::MAX, u32::MAX).unwrap();
     assert_eq!(due.len(), 1);
@@ -55,8 +55,8 @@ fn a_live_effect_is_pending_and_due() {
 
 #[test]
 fn re_inserting_an_effect_returns_the_existing_row() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Suppressed).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Suppressed).unwrap();
     let first = store.insert_effect(&comment("j1", "k1")).unwrap();
     let before = store.effect(first).unwrap();
     let mut again = comment("j1", "k1");
@@ -69,8 +69,8 @@ fn re_inserting_an_effect_returns_the_existing_row() {
 
 #[test]
 fn due_orders_rows_by_job_then_insertion() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Live).unwrap();
     let b1 = store.insert_effect(&comment("b", "1")).unwrap();
     let a1 = store.insert_effect(&comment("a", "1")).unwrap();
     let b2 = store.insert_effect(&comment("b", "2")).unwrap();
@@ -87,8 +87,8 @@ fn due_orders_rows_by_job_then_insertion() {
 
 #[test]
 fn due_skips_rows_not_yet_due_and_rows_done_with() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Live).unwrap();
     let later = store.insert_effect(&comment("j", "later")).unwrap();
     let acked = store.insert_effect(&comment("j", "acked")).unwrap();
     let sent = store.insert_effect(&comment("j", "sent")).unwrap();
@@ -127,8 +127,8 @@ fn due_skips_rows_not_yet_due_and_rows_done_with() {
 
 #[test]
 fn a_failed_transaction_leaves_no_effect() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Live).unwrap();
     let result: Result<(), _> = store.transaction(|tx| {
         tx.insert_effect(&comment("j", "k"))?;
         Err(super::super::StoreError::LeaseTtl(0))

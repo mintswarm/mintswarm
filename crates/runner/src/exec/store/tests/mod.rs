@@ -41,25 +41,25 @@ impl Clock for ManualClock {
 }
 
 /// A fresh runner directory path inside a temporary directory; the directory does not exist.
-pub(super) fn fresh_state() -> (TempDir, PathBuf) {
+pub(super) fn fresh_runner_dir() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let state = tmp.path().join("state");
-    (tmp, state)
+    let runner_dir = tmp.path().join("runner");
+    (tmp, runner_dir)
 }
 
 /// How long [`open`] retries a store that reads as locked.
 const LOCKED_RETRY: Duration = Duration::from_secs(5);
 
-/// Open the store at `state` with the system clock and `mode`, retrying while it reads as
+/// Open the store at `runner_dir` with the system clock and `mode`, retrying while it reads as
 /// locked.
 ///
 /// Other tests in this binary spawn processes. A child forked while a test holds a store's lock
 /// shares the lock until it execs, so a reopen right after a drop can briefly read as locked.
 /// The tests of the lock itself use [`open_once`].
-pub(super) fn open(state: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
+pub(super) fn open(runner_dir: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
     let deadline = Instant::now() + LOCKED_RETRY;
     loop {
-        match open_once(state, mode) {
+        match open_once(runner_dir, mode) {
             Err(StoreError::Locked { .. }) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -68,9 +68,9 @@ pub(super) fn open(state: &Path, mode: OutboxMode) -> Result<Store, StoreError> 
     }
 }
 
-/// Open the store at `state` with the system clock and `mode`, once.
-pub(super) fn open_once(state: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
-    Store::open(state, SystemClock, mode)
+/// Open the store at `runner_dir` with the system clock and `mode`, once.
+pub(super) fn open_once(runner_dir: &Path, mode: OutboxMode) -> Result<Store, StoreError> {
+    Store::open(runner_dir, SystemClock, mode)
 }
 
 /// The permission bits of `path`.
@@ -80,11 +80,11 @@ pub(super) fn mode_of(path: &Path) -> u32 {
 
 #[test]
 fn open_creates_the_layout_with_mode_0700() {
-    let (_tmp, state) = fresh_state();
-    let store = open(&state, OutboxMode::Suppressed).unwrap();
-    assert_eq!(store.path(), state);
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let store = open(&runner_dir, OutboxMode::Suppressed).unwrap();
+    assert_eq!(store.path(), runner_dir);
     assert_eq!(store.mode(), OutboxMode::Suppressed);
-    assert_eq!(mode_of(&state), 0o700);
+    assert_eq!(mode_of(&runner_dir), 0o700);
     for dir in [
         "blobs",
         "blobs/sha256",
@@ -93,21 +93,21 @@ fn open_creates_the_layout_with_mode_0700() {
         "worktrees",
         "tmp",
     ] {
-        assert_eq!(mode_of(&state.join(dir)), 0o700, "{dir}");
+        assert_eq!(mode_of(&runner_dir.join(dir)), 0o700, "{dir}");
     }
-    assert_eq!(mode_of(&state.join("lock")), 0o600);
-    assert!(state.join("runner.sqlite").is_file());
+    assert_eq!(mode_of(&runner_dir.join("lock")), 0o600);
+    assert!(runner_dir.join("runner.sqlite").is_file());
 }
 
 #[test]
 fn open_refuses_a_runner_directory_with_another_mode() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     std::fs::DirBuilder::new()
         .mode(0o755)
-        .create(&state)
+        .create(&runner_dir)
         .unwrap();
-    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    std::fs::set_permissions(&runner_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = open(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(
         matches!(err, StoreError::Mode { mode: 0o755, .. }),
         "{err:?}"
@@ -116,22 +116,22 @@ fn open_refuses_a_runner_directory_with_another_mode() {
 
 #[test]
 fn open_refuses_a_file_in_place_of_the_runner_directory() {
-    let (_tmp, state) = fresh_state();
-    std::fs::write(&state, b"").unwrap();
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    std::fs::write(&runner_dir, b"").unwrap();
+    let err = open(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::NotADirectory { .. }), "{err:?}");
 }
 
 #[test]
 fn open_refuses_a_symlink_in_place_of_the_runner_directory() {
-    let (tmp, state) = fresh_state();
+    let (tmp, runner_dir) = fresh_runner_dir();
     let target = tmp.path().join("target");
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&target)
         .unwrap();
-    std::os::unix::fs::symlink(&target, &state).unwrap();
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    std::os::unix::fs::symlink(&target, &runner_dir).unwrap();
+    let err = open(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::NotADirectory { .. }), "{err:?}");
 }
 
@@ -173,22 +173,25 @@ fn a_database_not_in_write_ahead_logging_is_refused() {
 
 #[test]
 fn open_clears_stale_files_in_tmp() {
-    let (_tmp, state) = fresh_state();
-    drop(open(&state, OutboxMode::Live).unwrap());
-    std::fs::write(state.join("tmp/stale"), b"left over").unwrap();
-    std::fs::create_dir(state.join("tmp/stale-dir")).unwrap();
-    drop(open(&state, OutboxMode::Live).unwrap());
-    assert_eq!(std::fs::read_dir(state.join("tmp")).unwrap().count(), 0);
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    drop(open(&runner_dir, OutboxMode::Live).unwrap());
+    std::fs::write(runner_dir.join("tmp/stale"), b"left over").unwrap();
+    std::fs::create_dir(runner_dir.join("tmp/stale-dir")).unwrap();
+    drop(open(&runner_dir, OutboxMode::Live).unwrap());
+    assert_eq!(
+        std::fs::read_dir(runner_dir.join("tmp")).unwrap().count(),
+        0
+    );
 }
 
 #[test]
 fn a_second_open_in_the_same_process_is_locked_out() {
-    let (_tmp, state) = fresh_state();
-    let first = open(&state, OutboxMode::Live).unwrap();
-    let err = open_once(&state, OutboxMode::Live).unwrap_err();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let first = open(&runner_dir, OutboxMode::Live).unwrap();
+    let err = open_once(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::Locked { .. }), "{err:?}");
     drop(first);
-    open(&state, OutboxMode::Live).unwrap();
+    open(&runner_dir, OutboxMode::Live).unwrap();
 }
 
 /// The environment variable that turns [`lock_holder_child`] on, naming the runner directory.
@@ -203,10 +206,10 @@ const HELD_SENTINEL: &str = "mintswarm-test-store-lock-held";
 #[test]
 #[ignore = "a helper run by another test in a child process"]
 fn lock_holder_child() {
-    let Some(state) = std::env::var_os(HOLDER_ENV) else {
+    let Some(runner_dir) = std::env::var_os(HOLDER_ENV) else {
         return;
     };
-    let _store = open(Path::new(&state), OutboxMode::Live).unwrap();
+    let _store = open(Path::new(&runner_dir), OutboxMode::Live).unwrap();
     // libtest has written the test's name without a newline; start a line of our own.
     println!("\n{HELD_SENTINEL}");
     let mut rest = Vec::new();
@@ -215,7 +218,7 @@ fn lock_holder_child() {
 
 #[test]
 fn another_process_holding_the_lock_locks_out_open() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "exec::store::tests::lock_holder_child",
@@ -224,7 +227,7 @@ fn another_process_holding_the_lock_locks_out_open() {
             "--nocapture",
             "--test-threads=1",
         ])
-        .env(HOLDER_ENV, &state)
+        .env(HOLDER_ENV, &runner_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -242,11 +245,11 @@ fn another_process_holding_the_lock_locks_out_open() {
     }
     assert!(held, "the child process never held the store");
 
-    let err = open_once(&state, OutboxMode::Live).unwrap_err();
+    let err = open_once(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::Locked { .. }), "{err:?}");
 
     drop(child.stdin.take());
     let status = child.wait().unwrap();
     assert!(status.success(), "the child process failed: {status}");
-    open(&state, OutboxMode::Live).unwrap();
+    open(&runner_dir, OutboxMode::Live).unwrap();
 }

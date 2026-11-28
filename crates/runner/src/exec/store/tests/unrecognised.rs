@@ -2,7 +2,7 @@
 //! seen times, separate keys and the reader's order.
 
 use super::super::{NewUnrecognised, OutboxMode, Store};
-use super::{ManualClock, fresh_state};
+use super::{ManualClock, fresh_runner_dir};
 
 /// The clock's starting time.
 const START: i64 = 1_000_000;
@@ -18,9 +18,9 @@ fn failure(adapter: &str, signature: &str, excerpt: &str) -> NewUnrecognised {
 
 #[test]
 fn a_repeated_failure_is_counted_in_one_row() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     let clock = ManualClock::at(START);
-    let mut store = Store::open(&state, clock.clone(), OutboxMode::Suppressed).unwrap();
+    let mut store = Store::open(&runner_dir, clock.clone(), OutboxMode::Suppressed).unwrap();
 
     store
         .transaction(|tx| tx.record_unrecognised(&failure("git", "s1", "first")))
@@ -45,8 +45,9 @@ fn a_repeated_failure_is_counted_in_one_row() {
 
 #[test]
 fn other_adapters_and_signatures_get_their_own_rows_read_by_count() {
-    let (_tmp, state) = fresh_state();
-    let mut store = Store::open(&state, ManualClock::at(START), OutboxMode::Suppressed).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store =
+        Store::open(&runner_dir, ManualClock::at(START), OutboxMode::Suppressed).unwrap();
     store
         .transaction(|tx| {
             tx.record_unrecognised(&failure("git", "rare", "r"))?;

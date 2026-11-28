@@ -6,7 +6,7 @@ use rusqlite::Connection;
 
 use super::super::schema::{MIGRATIONS, migrate};
 use super::super::{OutboxMode, SCHEMA_VERSION, StoreError};
-use super::{fresh_state, open};
+use super::{fresh_runner_dir, open};
 
 /// The tables of design §12 and `unrecognised_failures`, beyond it, and their columns, in order.
 const TABLES: &[(&str, &[&str])] = &[
@@ -189,8 +189,8 @@ fn dump(conn: &Connection) -> (i64, Vec<(String, String, Option<String>)>) {
 
 #[test]
 fn migrations_create_every_table_of_section_12_with_its_columns() {
-    let (_tmp, state) = fresh_state();
-    let store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let store = open(&runner_dir, OutboxMode::Live).unwrap();
     let expected: Vec<&str> = TABLES.iter().map(|(name, _)| *name).collect();
     assert_eq!(tables(&store.conn), expected);
     for (table, expected) in TABLES {
@@ -200,22 +200,22 @@ fn migrations_create_every_table_of_section_12_with_its_columns() {
 
 #[test]
 fn re_running_the_migrations_changes_nothing() {
-    let (_tmp, state) = fresh_state();
-    let mut store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let mut store = open(&runner_dir, OutboxMode::Live).unwrap();
     let before = dump(&store.conn);
     assert_eq!(before.0, SCHEMA_VERSION);
     migrate(&mut store.conn).unwrap();
     assert_eq!(dump(&store.conn), before);
     drop(store);
-    let store = open(&state, OutboxMode::Live).unwrap();
+    let store = open(&runner_dir, OutboxMode::Live).unwrap();
     assert_eq!(dump(&store.conn), before);
 }
 
 #[test]
 fn a_job_at_version_2_keeps_its_component_under_components() {
-    let (_tmp, state) = fresh_state();
-    drop(open(&state, OutboxMode::Live).unwrap());
-    let database = state.join("runner.sqlite");
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    drop(open(&runner_dir, OutboxMode::Live).unwrap());
+    let database = runner_dir.join("runner.sqlite");
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", database.display()));
     }
@@ -230,7 +230,7 @@ fn a_job_at_version_2_keeps_its_component_under_components() {
     )
     .unwrap();
     drop(conn);
-    let store = open(&state, OutboxMode::Live).unwrap();
+    let store = open(&runner_dir, OutboxMode::Live).unwrap();
     let rows: Vec<(String, Option<String>)> = store
         .conn
         .prepare("SELECT job_id, components FROM jobs ORDER BY job_id")
@@ -250,13 +250,13 @@ fn a_job_at_version_2_keeps_its_component_under_components() {
 
 #[test]
 fn a_newer_schema_version_is_refused() {
-    let (_tmp, state) = fresh_state();
-    drop(open(&state, OutboxMode::Live).unwrap());
-    let conn = Connection::open(state.join("runner.sqlite")).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    drop(open(&runner_dir, OutboxMode::Live).unwrap());
+    let conn = Connection::open(runner_dir.join("runner.sqlite")).unwrap();
     conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .unwrap();
     drop(conn);
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    let err = open(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(
         matches!(err, StoreError::SchemaTooNew { found, known }
             if found == SCHEMA_VERSION + 1 && known == SCHEMA_VERSION),
@@ -266,19 +266,19 @@ fn a_newer_schema_version_is_refused() {
 
 #[test]
 fn a_negative_schema_version_is_refused() {
-    let (_tmp, state) = fresh_state();
-    drop(open(&state, OutboxMode::Live).unwrap());
-    let conn = Connection::open(state.join("runner.sqlite")).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    drop(open(&runner_dir, OutboxMode::Live).unwrap());
+    let conn = Connection::open(runner_dir.join("runner.sqlite")).unwrap();
     conn.pragma_update(None, "user_version", -1).unwrap();
     drop(conn);
-    let err = open(&state, OutboxMode::Live).unwrap_err();
+    let err = open(&runner_dir, OutboxMode::Live).unwrap_err();
     assert!(matches!(err, StoreError::SchemaInvalid(-1)), "{err:?}");
 }
 
 #[test]
 fn the_outbox_refuses_an_unknown_state() {
-    let (_tmp, state) = fresh_state();
-    let store = open(&state, OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let store = open(&runner_dir, OutboxMode::Live).unwrap();
     let inserted = store.conn.execute(
         "INSERT INTO outbox (job_id, kind, effect_key, payload_blob, state) \
          VALUES ('j', 'comment', 'k', 'b', 'shipped')",
