@@ -1,16 +1,18 @@
 //! The plan-approval bodies: the confinement of model text against `decision.py`'s `inert` and
 //! `span` (captured in `tests/fixtures/plan_decision.jsonl`) and `check_span`, the TL;DR check,
 //! and the TL;DR comment, shadow record and approval package of session jobs, against the bodies
-//! the session posted (`tests/fixtures/plan_session.jsonl`).
+//! the session posted (`tests/fixtures/plan_session.jsonl`), and the readers of a package's links
+//! and `judged_decision`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mintswarm_domain::records::{DecisionRecord, FloorRecord};
+use mintswarm_domain::records::{Decision, DecisionRecord, FloorRecord, Mode};
 use mintswarm_rules::json::{self, Style};
 use mintswarm_rules::plan_floor::footprint;
 use mintswarm_rules::render::approval::{
-    Artifacts, Package, TldrError, approval_package, shadow_record, tldr, tldr_comment,
+    Artifacts, Package, TldrError, approval_package, decision_link, judged_decision, shadow_record,
+    shadow_record_link, tldr, tldr_comment,
 };
 use mintswarm_rules::render::comment::{package_rows, shadow_comment};
 use mintswarm_rules::render::{SPAN_LIMIT, SPAN_MARK, inert, is_removed, span};
@@ -314,5 +316,91 @@ fn every_tldr_condition_rejects() {
             "### Plan TL;DR\n\nThe plan has no usable TL;DR.\n\nFull plan: \
              https://example.invalid/plan\n"
         );
+    }
+}
+
+#[test]
+fn shadow_packages_read_back_their_links_and_judged_decision() {
+    for job in fixture("plan_session.jsonl") {
+        let posted = text(&job, "approval_package");
+        let record: DecisionRecord =
+            serde_json::from_str(text(&job, "decision")).expect("a decision record");
+        assert_eq!(record.mode, Mode::Shadow);
+        assert_eq!(
+            shadow_record_link(posted),
+            Some(job["urls"]["shadow"].as_str().expect("a URL")),
+            "#{}",
+            job["issue"]
+        );
+        assert_eq!(
+            decision_link(posted),
+            Some(job["urls"]["decision"].as_str().expect("a URL"))
+        );
+        // The line has no `judged_decision` span: the two agree.
+        assert_eq!(record.judged_decision, record.decision);
+        assert_eq!(judged_decision(posted), Some(record.decision));
+    }
+}
+
+/// The first session job's package, rendered in `mode` with `decision` and `judged`, with no
+/// shadow record.
+fn package_in(mode: Mode, decision: Decision, judged: Decision) -> String {
+    let job = &fixture("plan_session.jsonl")[0];
+    let mut record: DecisionRecord =
+        serde_json::from_str(text(job, "decision")).expect("a decision record");
+    record.mode = mode;
+    record.decision = decision;
+    record.judged_decision = judged;
+    let floor: FloorRecord = serde_json::from_str(text(job, "floor")).expect("a floor record");
+    approval_package(&Package {
+        plan: text(job, "plan").as_bytes(),
+        tldr_url: "https://example.test/tldr",
+        plan_url: "https://example.test/plan",
+        note: text(job, "note"),
+        size: &[],
+        floor: &floor,
+        packages: &[],
+        decision: &record,
+        assessment_url: "https://example.test/assessment",
+        decision_url: "https://example.test/issues/7/artifacts/5",
+        shadow_url: None,
+        commands: None,
+    })
+}
+
+#[test]
+fn a_judged_package_has_no_shadow_record_link() {
+    let body = package_in(Mode::Judged, Decision::Auto, Decision::Auto);
+    assert_eq!(shadow_record_link(&body), None);
+    assert_eq!(
+        decision_link(&body),
+        Some("https://example.test/issues/7/artifacts/5")
+    );
+    assert_eq!(judged_decision(&body), Some(Decision::Auto));
+}
+
+#[test]
+fn an_always_package_reads_its_differing_judged_decision() {
+    let body = package_in(Mode::Always, Decision::Human, Decision::Auto);
+    assert!(body.contains("`judged_decision` **auto**"), "{body}");
+    assert_eq!(judged_decision(&body), Some(Decision::Auto));
+    assert_eq!(
+        decision_link(&body),
+        Some("https://example.test/issues/7/artifacts/5")
+    );
+    assert_eq!(shadow_record_link(&body), None);
+}
+
+#[test]
+fn a_body_that_is_no_package_reads_as_none() {
+    for body in [
+        "",
+        "Looks right.",
+        "- **Mode `shadow`:** decision **maybe** ([decision](https://example.test/d)).",
+        "- **Mode `shadow`:** decision **human** (no link).",
+    ] {
+        assert_eq!(shadow_record_link(body), None, "{body:?}");
+        assert_eq!(decision_link(body), None, "{body:?}");
+        assert_eq!(judged_decision(body), None, "{body:?}");
     }
 }

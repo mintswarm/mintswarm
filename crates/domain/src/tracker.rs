@@ -313,8 +313,32 @@ pub trait Assignments: TrackerBase {
         reason: AssignmentReason,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Release the bot's own assignments of an item.
+    /// Release the assignments of an item that one of the tracker's own logins, or its App,
+    /// made, keeping those a person made.
     fn release(&self, issue: IssueNumber) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// Reading the body of a document published on an issue, so the plane can append to it.
+///
+/// It is not part of [`Tracker`]: only the plane reads artefact bodies, so a [`Tracker`] bound
+/// alone does not give it.
+///
+/// ```compile_fail
+/// use mintswarm_domain::ids::IssueNumber;
+/// use mintswarm_domain::tracker::{ArtifactReads, Tracker};
+///
+/// fn read<T: Tracker>(tracker: &T) {
+///     let _ = tracker.read_artifact(IssueNumber(1), 1);
+/// }
+/// ```
+pub trait ArtifactReads: TrackerBase {
+    /// The artifact numbered `number` on `issue` (its per-issue number, as in
+    /// [`ArtifactSummary::number`]), with its body.
+    fn read_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+    ) -> impl Future<Output = Result<Artifact, Self::Error>> + Send;
 }
 
 /// Reacting to comments.

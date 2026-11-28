@@ -6,7 +6,7 @@
 //! - [`comment`]: the auto-approval comment and the shadow record `decision.py` prints, with their
 //!   Confidence, Hard triggers, Doubt and Package rows;
 //! - [`approval`]: the TL;DR check and comment of step 1 of `plan-approval/README.md`, and the
-//!   approval package the session posts;
+//!   approval package the session posts and the readers of its links and `judged_decision`;
 //! - [`commands`]: the Commands section of a plan, design or decomposition approval, the only copy
 //!   of it, listing every [`Command`];
 //! - [`decision`]: the decision records, answers, set-backs and merge records of design #548 §7,

@@ -1,10 +1,12 @@
 //! Changes to existing issue content as an App's installation, design §6.3–§6.4: a `+1` reaction
-//! on a comment, a comment's edited body and an artifact's updated body.
+//! on a comment, a comment's edited body, an artifact's updated body, and an issue's assignees
+//! added or removed.
 //!
 //! Each write is safe to repeat: GitHub answers a repeated `+1` with the reaction it already
-//! holds, and an edit or an update sets the body whatever it held. So every write is retried as
-//! an idempotent request, and, as each attempt changes content, each attempt takes a grant from
-//! a [`ContentLimiter`] first.
+//! holds, an edit or an update sets the body whatever it held, and adding a login already
+//! assigned or removing one no longer assigned leaves the assignees as they are. So every write
+//! is retried as an idempotent request, and, as each attempt changes content, each attempt takes
+//! a grant from a [`ContentLimiter`] first.
 //!
 //! A 403 that is not a rate limit is [`WriteError::Refused`]: the installation may not change
 //! the item. It is told by its status alone; GitHub's wording is never read.
@@ -16,8 +18,9 @@ use serde_json::Value;
 
 use mintswarm_domain::ids::IssueNumber;
 use mintswarm_domain::retry::{Exhausted, Failure, RetryPolicy};
-use mintswarm_domain::tracker::{Artifact, Comment};
+use mintswarm_domain::tracker::{Artifact, Comment, Login};
 
+use crate::assignees::assignee_logins;
 use crate::limit::ContentLimiter;
 use crate::reads::{map_comment, str_at, text_at};
 use crate::rest::{ClientError, Reply, Rest, check_names};
@@ -60,8 +63,8 @@ pub enum WriteError {
     },
 }
 
-/// Reacts to, edits and updates the issue content of one repository with a token its caller
-/// passes in.
+/// Reacts to, edits and updates the issue content of one repository, and adds and removes its
+/// issues' assignees, with a token its caller passes in.
 #[derive(Debug)]
 pub struct IssueWrites {
     rest: Rest,
@@ -154,6 +157,47 @@ impl IssueWrites {
         })
     }
 
+    /// Assigns `logins` to `issue`, and returns the logins the issue is assigned to as GitHub
+    /// answers. GitHub leaves out, without an error, a login it cannot assign, so the caller
+    /// checks the answer.
+    pub async fn add_assignees(
+        &self,
+        token: &Token,
+        issue: IssueNumber,
+        logins: &[Login],
+    ) -> Result<Vec<Login>, WriteError> {
+        let path = self.assignees_path(issue);
+        let body = assignees_body(logins);
+        self.grant().await;
+        let gate: Gate<'_> = Box::new(move || Box::pin(self.grant()));
+        // Idempotent: a login already assigned stays assigned once, so a retried attempt adds
+        // nothing a landed one did not.
+        let sent = self
+            .rest
+            .post_idempotent_gated(&path, token, &body, gate)
+            .await;
+        assignees_of(&self.success(sent)?)
+    }
+
+    /// Removes `logins` from `issue`'s assignees, and returns the logins the issue is assigned
+    /// to as GitHub answers. GitHub may keep, without an error, a login it does not remove, so
+    /// the caller checks the answer.
+    pub async fn remove_assignees(
+        &self,
+        token: &Token,
+        issue: IssueNumber,
+        logins: &[Login],
+    ) -> Result<Vec<Login>, WriteError> {
+        let path = self.assignees_path(issue);
+        let body = assignees_body(logins);
+        self.grant().await;
+        let gate: Gate<'_> = Box::new(move || Box::pin(self.grant()));
+        // Idempotent: removing a login no longer assigned leaves the assignees as they are, so a
+        // retried attempt removes nothing a landed one did not.
+        let sent = self.rest.delete_gated(&path, token, &body, gate).await;
+        assignees_of(&self.success(sent)?)
+    }
+
     /// A PATCH of `{"body": body}` to `path`, each attempt behind a grant.
     async fn patch(&self, token: &Token, path: &str, body: &str) -> Result<Reply, WriteError> {
         self.grant().await;
@@ -204,6 +248,22 @@ impl IssueWrites {
     fn repo_path(&self) -> String {
         format!("/repos/{}/{}", self.owner, self.repo)
     }
+
+    fn assignees_path(&self, issue: IssueNumber) -> String {
+        format!("{}/issues/{}/assignees", self.repo_path(), issue.0)
+    }
+}
+
+/// The `{"assignees": [...]}` body of an assignee change.
+fn assignees_body(logins: &[Login]) -> Value {
+    serde_json::json!({
+        "assignees": logins.iter().map(|login| login.0.as_str()).collect::<Vec<_>>()
+    })
+}
+
+/// The assignees of the issue an assignee change answers with.
+fn assignees_of(reply: &Reply) -> Result<Vec<Login>, WriteError> {
+    assignee_logins(&json(reply)?, &reply.endpoint).map_err(|_| unexpected(reply))
 }
 
 fn json(reply: &Reply) -> Result<Value, WriteError> {

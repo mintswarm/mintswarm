@@ -11,6 +11,9 @@
 //! triggers listed and the reason, but not the threshold, the unusable hard triggers or the
 //! doubts, and its Floor row names the hit rules without their reasons. The decision record and
 //! the shadow record it links carry those.
+//!
+//! [`shadow_record_link`], [`decision_link`] and [`judged_decision`] read a package's Mode line
+//! back: the links it carries and the decision plan approval judged.
 
 use mintswarm_domain::records::{Decision, DecisionRecord, FloorRecord, LayerStatus, Verdict};
 
@@ -313,4 +316,95 @@ pub fn approval_package(package: &Package<'_>) -> String {
         out.push_str(commands);
     }
     out
+}
+
+/// What opens a package's Mode line, before the mode's name.
+const MODE_OPEN: &str = "- **Mode `";
+
+/// What follows the mode's name on the Mode line, before the decision.
+const MODE_DECISION: &str = "`:** decision **";
+
+/// What opens the judged decision on the Mode line, after the decision.
+const MODE_JUDGED: &str = ", `judged_decision` **";
+
+/// What opens the decision artifact's link on the Mode line.
+const DECISION_LINK: &str = "([decision](";
+
+/// What opens the shadow record's link on the Mode line.
+const SHADOW_LINK: &str = ", [shadow record](";
+
+/// The parts of a package's Mode line.
+struct ModeLine<'a> {
+    decision: Decision,
+    judged: Option<Decision>,
+    decision_url: &'a str,
+    shadow_url: Option<&'a str>,
+}
+
+fn decision_of(word: &str) -> Option<Decision> {
+    [Decision::Auto, Decision::Human]
+        .into_iter()
+        .find(|decision| decision_name(*decision) == word)
+}
+
+/// The URL `rest` opens with, up to the `)` that closes its link, and what follows.
+fn link_of(rest: &str) -> Option<(&str, &str)> {
+    let (url, after) = rest.split_once(')')?;
+    (!url.is_empty()).then_some((url, after))
+}
+
+/// One Mode line as [`approval_package`] writes it, or nothing.
+fn mode_line(line: &str) -> Option<ModeLine<'_>> {
+    let rest = line.trim_end().strip_prefix(MODE_OPEN)?;
+    let (mode, rest) = rest.split_once(MODE_DECISION)?;
+    if mode.is_empty() || mode.contains('`') {
+        return None;
+    }
+    let (word, mut rest) = rest.split_once("**")?;
+    let decision = decision_of(word)?;
+    let mut judged = None;
+    if let Some(after) = rest.strip_prefix(MODE_JUDGED) {
+        let (word, after) = after.split_once("**")?;
+        judged = Some(decision_of(word)?);
+        rest = after;
+    }
+    let (decision_url, rest) = link_of(rest.strip_prefix(" ")?.strip_prefix(DECISION_LINK)?)?;
+    let (shadow_url, rest) = match rest.strip_prefix(SHADOW_LINK) {
+        Some(after) => {
+            let (url, after) = link_of(after)?;
+            (Some(url), after)
+        }
+        None => (None, rest),
+    };
+    (rest == ").").then_some(ModeLine {
+        decision,
+        judged,
+        decision_url,
+        shadow_url,
+    })
+}
+
+/// The last Mode line of the package `body`, lines split at LF.
+fn package_mode(body: &str) -> Option<ModeLine<'_>> {
+    body.split('\n').filter_map(mode_line).next_back()
+}
+
+/// The shadow record's URL that the package `body`'s Mode line links; `None` when the body has
+/// no Mode line, or the line no shadow record link, as outside `shadow` mode.
+pub fn shadow_record_link(body: &str) -> Option<&str> {
+    package_mode(body)?.shadow_url
+}
+
+/// The `Plan approval decision` artifact's URL that the package `body`'s Mode line links;
+/// `None` when the body has no Mode line.
+pub fn decision_link(body: &str) -> Option<&str> {
+    Some(package_mode(body)?.decision_url)
+}
+
+/// The decision plan approval judged, as the package `body`'s Mode line gives it: its
+/// `judged_decision`, or the decision when the line has none because the two agree; `None` when
+/// the body has no Mode line.
+pub fn judged_decision(body: &str) -> Option<Decision> {
+    let mode = package_mode(body)?;
+    Some(mode.judged.unwrap_or(mode.decision))
 }

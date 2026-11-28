@@ -22,16 +22,22 @@
 //!
 //! [`StatusClient`] reads an issue's status name and sets it by name through GraphQL, querying
 //! the repository's statuses once per [`StatusPass`]; a GraphQL reply with `errors` is a failure,
-//! and one with a `RATE_LIMITED` error a rate limit. [`CommentClient`] posts notes once each: a
-//! create whose attempt may have landed is answered by a probe for the note's key, and
-//! [`ContentLimiter`] budgets every [`CommentClient::post_note`]. [`IssueWrites`] reacts `+1` to
-//! a comment, edits a comment and updates an artifact, each attempt budgeted by the same limiter,
-//! and a 403 that is not a rate limit is [`WriteError::Refused`].
+//! and one with a `RATE_LIMITED` error a rate limit. [`CommentClient`] posts keyed comments, notes
+//! among them, once each: a create whose attempt may have landed is answered by a probe for the
+//! comment's key line, whatever its mark, and [`ContentLimiter`] budgets every
+//! [`CommentClient::post_keyed`]. [`IssueWrites`] reacts `+1` to a comment, edits a comment,
+//! updates an artifact and adds and removes an issue's assignees, each attempt budgeted by the
+//! same limiter, and a 403 that is not a rate limit is [`WriteError::Refused`].
+//!
+//! [`GitHubReads::read_assignees`] and [`GitHubReads::read_assigned_events`] read an issue's
+//! assignees and its [`AssignedEvent`]s, and [`releasable`] names the assignments the plane's own
+//! logins, or the App one of them acts as, made, keeping those a person made.
 //!
 //! Every request goes through one retry layer: a transient failure is retried within a
 //! [`RetryPolicy`], with bounded, jittered backoff and the waits a rate limit names, and a call
 //! whose retries run out ends in [`Exhausted`].
 
+mod assignees;
 mod catalogue;
 mod comments;
 mod config;
@@ -51,6 +57,7 @@ mod status;
 mod token;
 mod writes;
 
+pub use assignees::{AssignedEvent, releasable};
 pub use catalogue::GitHubFieldCatalogue;
 pub use comments::{CommentClient, CommentError, PROBE_MARGIN};
 pub use config::{AppConfig, ConfigError, KeyStore};

@@ -1,6 +1,6 @@
-//! Note creates against a scripted local server answering with hand-written fixtures in the
-//! shape of GitHub's issue comments API: the probe after an ambiguous attempt, and the content
-//! limiter's budget.
+//! Note and keyed-comment creates against a scripted local server answering with hand-written
+//! fixtures in the shape of GitHub's issue comments API: the probe after an ambiguous attempt,
+//! whatever the comment's mark, and the content limiter's budget.
 // Not redundant: clippy's `allow-unwrap-in-tests` covers a `tests/` crate only under `cfg(test)`.
 #![cfg(test)]
 
@@ -21,6 +21,10 @@ use support::{Request, Responder};
 const TOKEN: &str = "ghs_c0mmentT0kenV4lue";
 const CREATED: &str = include_str!("fixtures/comments/created.json");
 const SINCE: &str = include_str!("fixtures/comments/since.json");
+const CREATED_RECORD: &str = include_str!("fixtures/comments/created-record.json");
+const SINCE_RECORD: &str = include_str!("fixtures/comments/since-record.json");
+/// The answer line that keys a decision record answering the command comment 8800.
+const ANSWER_KEY: &str = "<!-- mintswarm: answer 8800 -->";
 const BOT: &str = "mintswarm-dev[bot]";
 const KEY: &str = "<!-- mintswarm: blockers open=12 unreadable= -->";
 /// 2026-11-26T12:00:00Z.
@@ -36,6 +40,22 @@ fn token() -> Token {
 
 fn note() -> String {
     format!("{NOTE_MARKER}\n{KEY}\nBlocked by #12.")
+}
+
+/// A plan approval record answering comment 8800: it carries the steer marker, not the note
+/// marker, as the fixtures' records do.
+fn record() -> String {
+    format!(
+        "<!-- mintswarm: plan approved -->\n{STEER_MARKER}\n{ANSWER_KEY}\n\n\
+         **Plan approved** by `zmij` at `2026-11-26T11:59:40Z`."
+    )
+}
+
+fn record_comment(id: u64, created_at: &str) -> Comment {
+    Comment {
+        body: record(),
+        ..comment(id, created_at)
+    }
 }
 
 /// A clock the test moves by hand, starting at [`NOW`].
@@ -315,4 +335,87 @@ async fn a_create_sent_again_waits_for_a_second_grant() {
         .unwrap();
     assert_eq!(posted, Ok(comment(9001, "2026-11-26T12:00:02Z")));
     assert_eq!(posts(&responder.requests()), 2);
+}
+
+#[tokio::test]
+async fn a_steer_record_is_posted_once() {
+    let responder = Responder::start().await;
+    responder.reply(201, CREATED_RECORD);
+    let (client, _) = client(&responder, two_attempts());
+    let posted = client
+        .post_keyed(&token(), IssueNumber(7), ANSWER_KEY, &record())
+        .await;
+    assert_eq!(posted, Ok(record_comment(9101, "2026-11-26T12:00:02Z")));
+    let requests = responder.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, COMMENTS_PATH);
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(body, serde_json::json!({ "body": record() }));
+}
+
+#[tokio::test]
+async fn an_ambiguous_record_create_is_answered_by_the_probe() {
+    let responder = Responder::start().await;
+    responder.drop_connection();
+    responder.reply(200, SINCE_RECORD);
+    let (client, _) = client(&responder, two_attempts());
+    let posted = client
+        .post_keyed(&token(), IssueNumber(7), ANSWER_KEY, &record())
+        .await;
+    // The landed record, steer-marked: not the older one, not someone else's copy.
+    assert_eq!(posted, Ok(record_comment(9102, "2026-11-26T12:00:01Z")));
+    let requests = responder.requests();
+    assert_eq!(posts(&requests), 1);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(requests[1].path, PROBE_PATH);
+}
+
+#[tokio::test]
+async fn a_probe_ignores_other_authors_and_older_records() {
+    let responder = Responder::start().await;
+    responder.drop_connection();
+    // The fixture less its landed record: an older own record and someone else's copy.
+    let mut items: Vec<serde_json::Value> = serde_json::from_str(SINCE_RECORD).unwrap();
+    items.retain(|item| item["id"] != 9102);
+    assert_eq!(items.len(), 2);
+    responder.reply(200, serde_json::Value::Array(items).to_string());
+    responder.reply(201, CREATED_RECORD);
+    let (client, _) = client(&responder, two_attempts());
+    let posted = client
+        .post_keyed(&token(), IssueNumber(7), ANSWER_KEY, &record())
+        .await;
+    assert_eq!(posted, Ok(record_comment(9101, "2026-11-26T12:00:02Z")));
+    let requests = responder.requests();
+    assert_eq!(posts(&requests), 2);
+    assert_eq!(requests.len(), 3);
+}
+
+#[tokio::test]
+async fn a_key_that_is_no_marker_line_is_refused() {
+    let responder = Responder::start().await;
+    let (client, _) = client(&responder, two_attempts());
+    for (key, body) in [
+        ("", format!("{STEER_MARKER}\n\nAn empty key.")),
+        ("answer 8800", "answer 8800\nNo marker line.".to_owned()),
+        (
+            NOTE_MARKER,
+            format!("{NOTE_MARKER}\nThe note marker as the key."),
+        ),
+        (
+            STEER_MARKER,
+            format!("{STEER_MARKER}\nThe steer marker as the key."),
+        ),
+        (ANSWER_KEY, format!("{STEER_MARKER}\nNo key line.")),
+    ] {
+        assert_eq!(
+            client
+                .post_keyed(&token(), IssueNumber(7), key, &body)
+                .await,
+            Err(CommentError::Unmarked),
+            "{key:?}"
+        );
+    }
+    assert!(responder.requests().is_empty());
 }

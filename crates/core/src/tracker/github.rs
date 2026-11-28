@@ -1,6 +1,13 @@
 //! The GitHub tracker: the capability traits the plane uses ([`Issues`], [`Links`], [`Fields`],
-//! [`Statuses`], [`Comments`], [`Reactions`], [`CommentEdits`], [`Collaborators`], [`Reviews`],
-//! [`CodeOwners`] and [`Merges`]) over the `mintswarm-github` clients, design §9.
+//! [`Statuses`], [`Comments`], [`Assignments`], [`Reactions`], [`CommentEdits`],
+//! [`ArtifactReads`], [`Collaborators`], [`Reviews`], [`CodeOwners`] and [`Merges`]) over the
+//! `mintswarm-github` clients, design §9.
+//!
+//! A comment is posted as a keyed comment, keyed by its [`comment_key`]: a record's or answer's
+//! `<!-- mintswarm: answer <id> -->` line, else its first key marker, so a retry after a lost
+//! response finds the first post. Assignments are released by [`releasable`], with the plane's
+//! own logins the tracker is given by [`GitHubTracker::with_own_logins`]; without them it
+//! releases none.
 //!
 //! Every issue call asks its [`InstallationTokens`] for one installation token, writing issues
 //! and reading the repository's metadata, and opens a fresh pass of the client it uses, so each
@@ -27,17 +34,18 @@ use mintswarm_domain::field::{FieldError, FieldFinding, FieldRead, FieldRef, Fie
 use mintswarm_domain::hosting::{CodeOwnersFile, RepoReadError};
 use mintswarm_domain::ids::{IssueNumber, PrNumber, RevId};
 use mintswarm_domain::tracker::{
-    Artifact, ChangedFile, CheckRun, CheckSuite, CodeOwners, Collaborators, CombinedStatus,
-    Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
-    IssueType, Issues, Link, Links, Login, MergeOutcome, Merges, ParentIssue, PullDetail,
-    Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread, Reviews,
-    Statuses, SubItem, TrackerBase,
+    Artifact, ArtifactReads, AssignmentReason, Assignments, ChangedFile, CheckRun, CheckSuite,
+    CodeOwners, Collaborators, CombinedStatus, Comment, CommentEdits, Comments, Cursor, Dependency,
+    Direction, Fields, Issue, IssueRead, IssueType, Issues, Link, Links, Login, MergeOutcome,
+    Merges, ParentIssue, PullDetail, Reactions, RepoRole, RequestedReviewers, Review,
+    ReviewComment, ReviewThread, Reviews, Statuses, SubItem, TrackerBase,
 };
 use mintswarm_github::{
     CommentClient, CommentError, FieldClient, FieldPass, GitHubFieldCatalogue, GitHubReads,
     IssueWrites, MergeClient, MergeError, NOTE_MARKER, Permissions, ReadError, STEER_MARKER,
-    StatusClient, StatusError, Token, TokenClient, TokenError, WriteError,
+    StatusClient, StatusError, Token, TokenClient, TokenError, WriteError, releasable,
 };
+use mintswarm_rules::render::decision::{Marker, answer_of};
 
 /// The operator's step for a field whose id cannot be resolved, as the deferral log names it.
 const FIELD_IDS_STEP: &str = "set the field on one issue by hand so its values show the field's \
@@ -75,9 +83,9 @@ pub struct GitHubClients {
     pub fields: FieldClient,
     /// Issue statuses.
     pub statuses: StatusClient,
-    /// Notes.
+    /// Keyed comments, notes, decision records and answers among them.
     pub comments: CommentClient,
-    /// Reactions, comment edits and artifact updates. It must share the
+    /// Reactions, comment edits, artifact updates and assignee changes. It must share the
     /// [`ContentLimiter`](mintswarm_github::ContentLimiter) of `comments`, so both count against
     /// one content budget.
     pub writes: IssueWrites,
@@ -98,7 +106,7 @@ pub enum GitHubTrackerError {
     /// A status read or write failed.
     #[error(transparent)]
     Status(#[from] StatusError),
-    /// A note could not be posted.
+    /// A comment could not be posted.
     #[error(transparent)]
     Comment(#[from] CommentError),
     /// A reaction, comment edit or artifact update failed; [`WriteError::Refused`] when the
@@ -112,6 +120,13 @@ pub enum GitHubTrackerError {
     /// A merge failed in a way that is no refusal; see [`Merges::may_have_landed`].
     #[error(transparent)]
     Merge(#[from] MergeError),
+    /// GitHub's answer to an assignee change still shows these logins unchanged: not added, as
+    /// GitHub leaves out a login it cannot assign, or not removed.
+    #[error("GitHub left the assignees {logins:?} unchanged")]
+    AssigneesUnchanged {
+        /// The logins GitHub did not add or remove.
+        logins: Vec<Login>,
+    },
     /// The tracker does not support the operation yet; nothing was sent.
     #[error("the GitHub tracker does not support {operation}")]
     Unsupported {
@@ -128,6 +143,8 @@ pub struct GitHubTracker<T: InstallationTokens> {
     repo: String,
     tokens: T,
     clients: GitHubClients,
+    /// The plane's own logins, whose assignments [`Assignments::release`] releases.
+    own_logins: Vec<Login>,
     /// The field ids learned so far, by field name, kept for the process.
     field_ids: Mutex<HashMap<String, u64>>,
 }
@@ -143,8 +160,18 @@ impl<T: InstallationTokens> GitHubTracker<T> {
             repo: repo.to_owned(),
             tokens,
             clients,
+            own_logins: Vec::new(),
             field_ids: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The tracker trusting `logins` as the plane's own: [`Assignments::release`] releases the
+    /// assignments one of them, or the App one of them acts as, made. None by default, so a
+    /// tracker built without them releases nothing.
+    #[must_use]
+    pub fn with_own_logins(mut self, logins: Vec<Login>) -> Self {
+        self.own_logins = logins;
+        self
     }
 
     /// The permissions of the one token every call asks for: writing issues, and reading the
@@ -341,15 +368,92 @@ impl<T: InstallationTokens> Statuses for GitHubTracker<T> {
 }
 
 impl<T: InstallationTokens> Comments for GitHubTracker<T> {
-    /// Posts `body` as a note, keyed by its first key line ([`note_key`]); a body without one is
-    /// [`CommentError::Unmarked`] before any request.
+    /// Posts `body` as a keyed comment, whatever its mark, keyed by its [`comment_key`]; a body
+    /// without one is [`CommentError::Unmarked`] before any request.
     async fn post_comment(&self, issue: IssueNumber, body: String) -> Result<Comment, Self::Error> {
-        let key = note_key(&body).ok_or(CommentError::Unmarked)?;
+        let key = comment_key(&body).ok_or(CommentError::Unmarked)?;
         let token = self.token().await?;
         Ok(self
             .clients
             .comments
-            .post_note(&token, issue, key, &body)
+            .post_keyed(&token, issue, &key, &body)
+            .await?)
+    }
+}
+
+impl<T: InstallationTokens> Assignments for GitHubTracker<T> {
+    /// Assigns the logins of `who` that `issue` is not assigned to yet, compared ASCII
+    /// case-insensitively, and sends nothing when there are none. A login GitHub's answer leaves
+    /// out is [`GitHubTrackerError::AssigneesUnchanged`].
+    async fn assign(
+        &self,
+        issue: IssueNumber,
+        who: Vec<Login>,
+        _reason: AssignmentReason,
+    ) -> Result<(), Self::Error> {
+        let token = self.token().await?;
+        let current = self
+            .clients
+            .reads
+            .read_assignees(&token, issue.clone())
+            .await?;
+        let mut todo: Vec<Login> = Vec::new();
+        for login in who {
+            if !contains(&current, &login) && !contains(&todo, &login) {
+                todo.push(login);
+            }
+        }
+        if todo.is_empty() {
+            return Ok(());
+        }
+        let answer = self
+            .clients
+            .writes
+            .add_assignees(&token, issue, &todo)
+            .await?;
+        let missing: Vec<Login> = todo
+            .into_iter()
+            .filter(|login| !contains(&answer, login))
+            .collect();
+        unchanged(missing)
+    }
+
+    /// Removes the assignees [`releasable`] names from `issue`'s assignees and `assigned`
+    /// events with the plane's own logins, and sends nothing when there are none. A login
+    /// GitHub's answer still shows is [`GitHubTrackerError::AssigneesUnchanged`].
+    async fn release(&self, issue: IssueNumber) -> Result<(), Self::Error> {
+        let token = self.token().await?;
+        let reads = &self.clients.reads;
+        let current = reads.read_assignees(&token, issue.clone()).await?;
+        let events = reads.read_assigned_events(&token, issue.clone()).await?;
+        let mine = releasable(&current, &events, &self.own_logins);
+        if mine.is_empty() {
+            return Ok(());
+        }
+        let answer = self
+            .clients
+            .writes
+            .remove_assignees(&token, issue, &mine)
+            .await?;
+        let left: Vec<Login> = mine
+            .into_iter()
+            .filter(|login| contains(&answer, login))
+            .collect();
+        unchanged(left)
+    }
+}
+
+impl<T: InstallationTokens> ArtifactReads for GitHubTracker<T> {
+    async fn read_artifact(
+        &self,
+        issue: IssueNumber,
+        number: u64,
+    ) -> Result<Artifact, Self::Error> {
+        let token = self.token().await?;
+        Ok(self
+            .clients
+            .reads
+            .read_artifact(&token, issue, number)
             .await?)
     }
 }
@@ -529,6 +633,31 @@ impl<T: InstallationTokens> Fields for GitHubTracker<T> {
     }
 }
 
+/// Whether `logins` holds `login`, compared ASCII case-insensitively, as GitHub treats logins.
+fn contains(logins: &[Login], login: &Login) -> bool {
+    logins
+        .iter()
+        .any(|candidate| candidate.0.eq_ignore_ascii_case(&login.0))
+}
+
+/// Success when GitHub changed every login, else the logins it left unchanged.
+fn unchanged(logins: Vec<Login>) -> Result<(), GitHubTrackerError> {
+    if logins.is_empty() {
+        Ok(())
+    } else {
+        Err(GitHubTrackerError::AssigneesUnchanged { logins })
+    }
+}
+
+/// The key a comment is posted under: the `<!-- mintswarm: answer <id> -->` line of a decision
+/// record or an answer, as [`answer_of`] reads it, and otherwise its [`note_key`].
+pub(crate) fn comment_key(body: &str) -> Option<String> {
+    match answer_of(body) {
+        Some(id) => Some(Marker::Answer(id).lines().trim_end().to_owned()),
+        None => note_key(body).map(str::to_owned),
+    }
+}
+
 /// The key of a note: its first line, split at LF and trimmed, that is a mintswarm marker
 /// (`<!-- mintswarm: … -->`) other than [`NOTE_MARKER`] and [`STEER_MARKER`].
 pub(crate) fn note_key(body: &str) -> Option<&str> {
@@ -542,7 +671,34 @@ pub(crate) fn note_key(body: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NOTE_MARKER, STEER_MARKER, note_key};
+    use mintswarm_rules::render::decision::refusal;
+
+    use super::{NOTE_MARKER, STEER_MARKER, comment_key, note_key};
+
+    #[test]
+    fn a_record_or_an_answer_is_keyed_by_its_answer_line() {
+        let record = format!(
+            "<!-- mintswarm: plan approved -->\n{STEER_MARKER}\n<!-- mintswarm: answer 42 -->\n"
+        );
+        assert_eq!(
+            comment_key(&record).as_deref(),
+            Some("<!-- mintswarm: answer 42 -->")
+        );
+        assert_eq!(
+            comment_key(&refusal(43, "no package")).as_deref(),
+            Some("<!-- mintswarm: answer 43 -->")
+        );
+    }
+
+    #[test]
+    fn a_note_is_keyed_by_its_note_key() {
+        let body = format!("{NOTE_MARKER}\n<!-- mintswarm: plan 12 -->\nText.");
+        assert_eq!(
+            comment_key(&body).as_deref(),
+            Some("<!-- mintswarm: plan 12 -->")
+        );
+        assert_eq!(comment_key(&format!("{NOTE_MARKER}\nText.")), None);
+    }
 
     #[test]
     fn the_key_is_the_first_marker_that_is_not_a_kind_marker() {
