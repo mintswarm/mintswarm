@@ -71,7 +71,7 @@ A decision on an ancestor is one of:
 - a comment by a login that matches an entry of
   `tracker.ingest.trusted.authors` case-insensitively, or by that
   ancestor's owner when the owner is trusted (`via: account`);
-- a mintswarm-dev[bot] comment holding the line `<!-- mintswarm: steer -->`
+- a mintswarm-dev-bee[bot] comment holding the line `<!-- mintswarm: steer -->`
   (`via: marker`), tested as collect-facts.py tests it: CRLF becomes LF,
   each line is trimmed of whitespace, then compared;
 - a section of the ancestor's body, when its owner is trusted, under an ATX
@@ -122,7 +122,7 @@ REPO = "repos/{owner}/{repo}"
 PER_PAGE = 100
 MAX_PAGES = 30
 MAX_ANCESTORS = 10
-BOT = "mintswarm-dev[bot]"
+BOT = "mintswarm-dev-bee[bot]"
 MARKER = "<!-- mintswarm: steer -->"
 WRITE_PERMISSIONS = {"admin", "write"}
 WRITE_ROLES = {"admin", "maintain", "write"}
