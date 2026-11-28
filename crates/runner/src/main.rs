@@ -1,4 +1,5 @@
-//! The `mintswarm-runner` binary: for now, the ported dogfood tools under `tool`.
+//! The `mintswarm-runner` binary: `join`, `run` and `add-service` in the runner directory, the
+//! current directory, and the ported dogfood tools under `tool`.
 
 use std::ffi::OsString;
 use std::io;
@@ -6,7 +7,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use mintswarm_rules::exit;
+use mintswarm_rules::exit::{self, Outcome, Unusable, Verdict};
+use mintswarm_runner::runner_dir::{self, ServiceKind};
 use mintswarm_runner::tool::{msw_vcs, plan_decision, plan_floor, pr_labels, save_output};
 
 /// The mintswarm runner
@@ -19,6 +21,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Make the current directory a runner directory: its store and a runner.yaml
+    Join,
+    /// Run in the current directory, which `join` made a runner directory
+    Run,
+    /// Write a systemd unit or launchd plist that runs the current runner directory
+    AddService,
     /// Run a ported dogfood tool, with the command line of its Python script
     #[command(subcommand)]
     Tool(Tool),
@@ -90,8 +98,75 @@ fn operands_and_cwd() -> (Vec<OsString>, PathBuf) {
     (argv, cwd)
 }
 
+/// `error` and its sources, each after a `: `.
+fn chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    text
+}
+
+/// The current directory, the runner directory of every command.
+fn runner_dir() -> Result<PathBuf, Unusable> {
+    std::env::current_dir()
+        .map_err(|err| Unusable::new(format!("cannot read the current directory: {err}")))
+}
+
+/// `mintswarm-runner join`.
+fn join() -> Result<Verdict, Unusable> {
+    let dir = runner_dir()?;
+    runner_dir::claim(&dir).map_err(|err| Unusable::new(chain(&err)))?;
+    println!("joined {}", dir.display());
+    Ok(Verdict::Clean)
+}
+
+/// `mintswarm-runner run`: hold the runner directory until a signal ends the process.
+fn run() -> Unusable {
+    let dir = match runner_dir() {
+        Ok(dir) => dir,
+        Err(err) => return err,
+    };
+    match runner_dir::open(&dir) {
+        Ok((_config, _store)) => {
+            eprintln!("mintswarm-runner: running in {}", dir.display());
+            // The job loop attaches here. Until then the store, and with it the lock, is held
+            // until SIGINT or SIGTERM ends the process and the kernel drops the lock.
+            loop {
+                std::thread::park();
+            }
+        }
+        Err(err) => Unusable::new(chain(&err)),
+    }
+}
+
+/// `mintswarm-runner add-service`.
+fn add_service() -> Result<Verdict, Unusable> {
+    let dir = runner_dir()?;
+    let binary = std::env::current_exe()
+        .and_then(std::path::absolute)
+        .map_err(|err| Unusable::new(format!("cannot find this binary: {err}")))?;
+    let (path, instructions) = runner_dir::add_service(&dir, &binary, ServiceKind::host())
+        .map_err(|err| Unusable::new(chain(&err)))?;
+    println!("wrote {}\n\n{instructions}", path.display());
+    Ok(Verdict::Clean)
+}
+
+/// Print an unusable outcome's message to standard error.
+fn report(outcome: Outcome) -> Outcome {
+    if let Err(err) = &outcome {
+        eprintln!("mintswarm-runner: {err}");
+    }
+    outcome
+}
+
 fn main() -> ExitCode {
     let outcome = match Cli::parse().command {
+        Command::Join => report(join()),
+        Command::Run => report(Err(run())),
+        Command::AddService => report(add_service()),
         Command::Tool(Tool::SaveOutput { .. }) => {
             // clap drops a `--` separator, which save-output.py rejects; the tool checks the
             // arguments after `tool save-output` exactly as given

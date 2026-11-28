@@ -3,7 +3,7 @@
 use mintswarm_domain::ids::{AttemptId, JobId};
 
 use super::super::{LeaseResource, OutboxMode, Store, StoreError};
-use super::{ManualClock, fresh_state};
+use super::{ManualClock, fresh_runner_dir};
 
 /// The time to live of the leases in these tests.
 const TTL: i64 = 60_000;
@@ -37,9 +37,9 @@ fn resources_render_as_in_section_12() {
 
 #[test]
 fn a_lease_expires_at_its_deadline() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     let clock = ManualClock::at(START);
-    let store = Store::open(&state, clock.clone(), OutboxMode::Live).unwrap();
+    let store = Store::open(&runner_dir, clock.clone(), OutboxMode::Live).unwrap();
     let job = LeaseResource::Job(JobId("j1".to_owned()));
 
     let lease = store.acquire(&job, "alpha", TTL).unwrap();
@@ -66,9 +66,9 @@ fn a_lease_expires_at_its_deadline() {
 
 #[test]
 fn only_the_holder_renews_a_lease() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     let clock = ManualClock::at(START);
-    let store = Store::open(&state, clock.clone(), OutboxMode::Live).unwrap();
+    let store = Store::open(&runner_dir, clock.clone(), OutboxMode::Live).unwrap();
     let fetch = LeaseResource::StoreFetch;
     store.acquire(&fetch, "alpha", TTL).unwrap();
 
@@ -88,9 +88,9 @@ fn only_the_holder_renews_a_lease() {
 
 #[test]
 fn only_the_holder_releases_a_lease() {
-    let (_tmp, state) = fresh_state();
+    let (_tmp, runner_dir) = fresh_runner_dir();
     let clock = ManualClock::at(START);
-    let store = Store::open(&state, clock, OutboxMode::Live).unwrap();
+    let store = Store::open(&runner_dir, clock, OutboxMode::Live).unwrap();
     let worktree = LeaseResource::Worktree("w1".to_owned());
     store.acquire(&worktree, "alpha", TTL).unwrap();
     let err = store.release(&worktree, "beta").unwrap_err();
@@ -102,8 +102,8 @@ fn only_the_holder_releases_a_lease() {
 
 #[test]
 fn a_lease_needs_a_positive_time_to_live() {
-    let (_tmp, state) = fresh_state();
-    let store = Store::open(&state, ManualClock::at(START), OutboxMode::Live).unwrap();
+    let (_tmp, runner_dir) = fresh_runner_dir();
+    let store = Store::open(&runner_dir, ManualClock::at(START), OutboxMode::Live).unwrap();
     for ttl in [0, -1] {
         let err = store
             .acquire(&LeaseResource::StoreFetch, "alpha", ttl)

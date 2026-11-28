@@ -412,9 +412,11 @@ pub(super) fn remove_tree(path: &Path) -> Result<(), GitError> {
 /// `<state>/snapshots/<repository>`.
 ///
 /// The name must be one path component that does not start with `.`, as for [`store_path`].
-pub fn snapshots_path(state_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
-    store_path(state_dir, repository)?;
-    Ok(state_dir.join("snapshots").join(repository))
+pub fn snapshots_path(runner_dir: &Path, repository: &str) -> Result<PathBuf, GitError> {
+    store_path(runner_dir, repository)?;
+    Ok(runner_dir
+        .join(crate::exec::store::SNAPSHOTS_DIR)
+        .join(repository))
 }
 
 /// One snapshot the registry holds.

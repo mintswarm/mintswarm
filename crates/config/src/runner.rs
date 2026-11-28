@@ -1,10 +1,9 @@
-//! The runner config: where a runner keeps its state, how many jobs it runs at once, how often
-//! it polls, the wall-clock limit of each stage, and how GitHub calls are retried.
+//! The runner config: how many jobs a runner runs at once, how often it polls, the wall-clock
+//! limit of each stage, and how GitHub calls are retried.
 //!
 //! The caller finds and reads the file; this module parses its text.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use mintswarm_domain::retry::RetryPolicy;
@@ -85,7 +84,6 @@ const POLL_INTERVAL: (u64, u64) = (10, 60);
 /// A validated runner config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerConfig {
-    state_dir: PathBuf,
     workers: u64,
     poll_interval: Duration,
     wall_clock: BTreeMap<Stage, Duration>,
@@ -93,11 +91,6 @@ pub struct RunnerConfig {
 }
 
 impl RunnerConfig {
-    /// `state_dir`: where the runner keeps its state.
-    pub fn state_dir(&self) -> &std::path::Path {
-        &self.state_dir
-    }
-
     /// `workers`: how many jobs run at once, 1 when absent.
     pub fn workers(&self) -> u64 {
         self.workers
@@ -125,8 +118,8 @@ impl RunnerConfig {
 
 /// Parse and validate a runner config.
 ///
-/// The keys are `state_dir` (a non-empty string, required), `workers` (an integer of 1 or more,
-/// default 1), `poll_interval` (whole seconds from 10 to 60, default 30) and `wall_clock` (a
+/// Every key is optional. The keys are `workers` (an integer of 1 or more, default 1),
+/// `poll_interval` (whole seconds from 10 to 60, default 30) and `wall_clock` (a
 /// positive number of seconds per stage, default 3600), and `github_retry`, a mapping of
 /// `attempts` (an integer of 1 or more, default
 /// [`DEFAULT_ATTEMPTS`](mintswarm_domain::retry::DEFAULT_ATTEMPTS), 4), `base_delay` (default
@@ -141,28 +134,10 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
         .as_object()
         .ok_or_else(|| Error::schema(&root, "the runner config must be a mapping"))?;
     if let Some(key) = map.keys().find(|key| {
-        ![
-            "state_dir",
-            "workers",
-            "poll_interval",
-            "wall_clock",
-            "github_retry",
-        ]
-        .contains(&key.as_str())
+        !["workers", "poll_interval", "wall_clock", "github_retry"].contains(&key.as_str())
     }) {
         return Err(Error::schema(&root.key(key), "unknown key"));
     }
-
-    let state_dir = match map.get("state_dir") {
-        Some(Value::String(dir)) if !dir.is_empty() => PathBuf::from(dir),
-        Some(_) => {
-            return Err(Error::schema(
-                &root.key("state_dir"),
-                "must be a non-empty string",
-            ));
-        }
-        None => return Err(Error::schema(&root.key("state_dir"), "is missing")),
-    };
 
     let workers = match map.get("workers") {
         None => 1,
@@ -207,7 +182,6 @@ pub fn load_runner_config(text: &str) -> Result<RunnerConfig, Error> {
     };
 
     Ok(RunnerConfig {
-        state_dir,
         workers,
         poll_interval: Duration::from_secs(poll_interval),
         wall_clock,

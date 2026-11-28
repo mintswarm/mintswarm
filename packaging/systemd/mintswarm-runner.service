@@ -1,0 +1,12 @@
+# A systemd user unit for one mintswarm runner directory, rendered by `mintswarm-runner add-service`.
+[Unit]
+Description=mintswarm runner {{label}}
+
+[Service]
+Type=simple
+WorkingDirectory={{working_directory}}
+ExecStart={{exec_start}}
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
