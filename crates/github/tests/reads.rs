@@ -105,6 +105,7 @@ fn comment(author: &str, body: &str) -> Comment {
     Comment {
         id: 1,
         author: Login(author.into()),
+        author_is_bot: false,
         body: body.into(),
         created_at: String::new(),
         updated_at: String::new(),
@@ -625,6 +626,31 @@ async fn an_issue_author_is_a_bot_by_type_or_by_login() {
             .unwrap();
         assert!(read.issue.author_is_bot, "{}", issue["user"]);
     }
+}
+
+#[tokio::test]
+async fn a_comment_author_is_a_bot_by_type_or_by_login() {
+    let responder = Responder::start().await;
+    let mut bot_typed = comment_json(9, "zmij", "Approve", "2026-11-24T10:00:00Z");
+    bot_typed["user"] = serde_json::json!({ "login": "zmij", "type": "Bot" });
+    let comments = serde_json::json!([
+        bot_typed,
+        comment_json(10, BOT, "Noted.", "2026-11-24T10:00:00Z"),
+        comment_json(11, "maintainer", "Approve", "2026-11-24T10:00:00Z"),
+    ]);
+    responder.reply(200, ISSUE_JSON);
+    responder.reply(200, comments.to_string());
+    let read = client(&responder)
+        .read_issue(&token(), ISSUE, None)
+        .await
+        .unwrap();
+    let flags: Vec<bool> = read
+        .comments
+        .iter()
+        .map(|comment| comment.author_is_bot)
+        .collect();
+    assert_eq!(flags, [true, true, false]);
+    assert_eq!(read.comments[0].author, Login("zmij".into()));
 }
 
 #[tokio::test]

@@ -31,7 +31,7 @@ use mintswarm_domain::tracker::{
     Comment, CommentEdits, Comments, Cursor, Dependency, Direction, Fields, Issue, IssueRead,
     IssueType, Issues, Link, LinkKind, Links, Login, MergeOutcome, Merged, Merges, ParentIssue,
     PullDetail, Reactions, RepoRole, RequestedReviewers, Review, ReviewComment, ReviewThread,
-    Reviews, Statuses, SubItem, TrackerBase,
+    Reviews, Statuses, SubItem, TrackerBase, is_bot,
 };
 use mintswarm_domain::vcs::RepoPath;
 use mintswarm_github::{NOTE_MARKER, Token, is_commit_id};
@@ -707,6 +707,7 @@ impl Comments for FakeTracker {
         let comment = Comment {
             id,
             author: self.bot.clone(),
+            author_is_bot: is_bot(&self.bot.0, None),
             body: body.clone(),
             created_at: state.now.clone(),
             updated_at: state.now.clone(),

@@ -746,6 +746,7 @@ pub(crate) fn map_comment(body: &Value, endpoint: &str) -> Result<Comment, ReadE
     Ok(Comment {
         id: u64_at(body, "id", endpoint)?,
         author: login_at(body, "user", endpoint)?,
+        author_is_bot: body.get("user").is_some_and(user_is_bot),
         body: text_at(body, "body", endpoint)?,
         created_at: str_at(body, "created_at", endpoint)?,
         updated_at: str_at(body, "updated_at", endpoint)?,

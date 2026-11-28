@@ -167,6 +167,7 @@ mod tests {
         Comment {
             id: 1,
             author: Login(author.to_owned()),
+            author_is_bot: false,
             body: body.to_owned(),
             created_at: String::new(),
             updated_at: String::new(),

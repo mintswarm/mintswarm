@@ -43,6 +43,7 @@ fn comment(id: u64, updated_at: &str) -> Comment {
     Comment {
         id,
         author: Login("maintainer".into()),
+        author_is_bot: false,
         body: format!("Comment {id}."),
         created_at: updated_at.into(),
         updated_at: updated_at.into(),

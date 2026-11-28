@@ -92,6 +92,7 @@ fn edited_comment() -> Comment {
     Comment {
         id: COMMENT_ID,
         author: Login("mintswarm-dev[bot]".to_owned()),
+        author_is_bot: true,
         body: EDITED.to_owned(),
         created_at: "2026-11-26T19:53:51Z".to_owned(),
         updated_at: "2026-11-26T19:54:10Z".to_owned(),
