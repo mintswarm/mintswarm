@@ -96,16 +96,15 @@ fn expected_judge(value: &Value) -> ExpectedJudge {
     }
 }
 
-/// The unusable-input message for a config that does not load. A YAML failure is worded here
-/// from its class and key path alone, since its message may carry the YAML parser's own text; a
-/// schema failure keeps `mintswarm_config`'s own wording.
+/// The unusable-input message for a config that does not load. A YAML failure is worded from its
+/// class alone, with no key path: its message may carry the YAML parser's own text, and
+/// `floor.py`, which sees only whether yq converts the config and whether the JSON it gives is
+/// strict, can name no key path for any of them. A schema failure keeps `mintswarm_config`'s own
+/// wording.
 fn load_message(error: &ConfigError) -> String {
     match error {
-        ConfigError::Yaml { path, .. } if path.is_empty() => {
+        ConfigError::Yaml { .. } => {
             "config: .mintswarm/config.yaml at the base is not valid YAML".to_owned()
-        }
-        ConfigError::Yaml { path, .. } => {
-            format!("config: .mintswarm/config.yaml at the base is not valid YAML at {path}")
         }
         ConfigError::Schema { .. } => format!("config: {error}"),
     }
@@ -263,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn a_yaml_failure_is_worded_by_its_class_and_path() {
+    fn a_yaml_failure_is_worded_by_its_class_alone() {
         let unbalanced = view(b"a: [1\n", &["core".to_owned()])
             .map(|_| ())
             .unwrap_err();
@@ -276,7 +275,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             duplicate.message(),
-            "config: .mintswarm/config.yaml at the base is not valid YAML at a"
+            "config: .mintswarm/config.yaml at the base is not valid YAML"
         );
     }
 

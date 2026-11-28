@@ -121,7 +121,9 @@ Rules, evaluated in this order. The declared paths are `files` plus each
 new dependency's `manifest`.
 
   footprint                  the footprint is missing, misplaced, not strict
-                             JSON (no duplicate keys, NaN or Infinity), not
+                             JSON (no duplicate keys, NaN or Infinity, no
+                             integer outside i64 and u64, no nesting deeper
+                             than 512), not
                              of the shape above (lists without null or
                              repeated values, `estimated_lines` an integer
                              of 0 or more, `production_lines` an integer
@@ -264,8 +266,9 @@ invalid config, an unreadable or non-UTF-8 plan, issue document, analysis,
 screen record or result record that exists, git or yq missing or failing
 (reading the history too), a stale verdict that cannot be deleted, or any
 unexpected error, reported as a fixed line naming only its class. Unusable
-input leaves no verdict file, unless a stale one could not be deleted. The interpreter itself exits 1 when it crashes outside
-main(), for example at import time, so exit 0 or 1 counts only together with
+input leaves no verdict file, unless a stale one could not be deleted. The
+interpreter itself exits 1 when it crashes outside main(), for example at
+import time, so exit 0 or 1 counts only together with
 a verdict file whose `plan.sha256`, `base.commit` and document bindings match
 the request; exit 2 never comes with a valid verdict.
 
@@ -405,7 +408,12 @@ SEPARATOR_CELL = re.compile(r"[ \t]*:?-{3,}:?[ \t]*")
 CELL_BAR = re.compile(r"(?<!\\)\|")
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 MAX_DEPTH = 512  # the deepest nesting of arrays and objects a footprint may have, as rules::json reads it
+# Every YAML failure, whether yq rejects the config or its JSON is not strict (a duplicate key, for one): no key
+# path, as rules::plan_floor words it.
 NOT_YAML = f"config: {CONFIG} at the base is not valid YAML"
+NOT_UTF8_CONFIG = f"config: {CONFIG} at the base is not UTF-8"
+# The integers rules::json reads: those that fit in i64 or u64.
+INT_RANGE = (-(2**63), 2**64 - 1)
 STORE_PREFIX = "msw-floor-objects-"
 # Dropped by neutral_git_env(): config and diff settings passed through the environment, and the
 # repository-local variables (readiness/check.py's GIT_LOCAL_ENV), so no variable points git elsewhere.
@@ -740,6 +748,10 @@ def load_config(commit: str, git_dir=None) -> dict:
     if proc.returncode != 0:
         raise InputError(f"no {CONFIG} at {commit}")
     try:
+        proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InputError(NOT_UTF8_CONFIG) from exc
+    try:
         converted = subprocess.run(["yq", "-p=yaml", "-o=json", "."], input=proc.stdout, capture_output=True)
     except OSError as exc:
         raise cannot_run("yq", exc) from exc
@@ -1020,7 +1032,8 @@ def check_entries(value: list, key: str, fields: tuple) -> None:
 
 def check_depth(text: str) -> None:
     """Raise JsonError at the first `[` or `{` nested deeper than MAX_DEPTH, outside strings, as rules::json finds
-    it; the decoder itself would recurse far deeper."""
+    it. Run only on text the decoder read, or read up to where it ran out of recursion, so no earlier error is
+    passed over."""
     depth = 0
     in_string = False
     i = 0
@@ -1055,17 +1068,42 @@ def decode_failure(exc: json.JSONDecodeError) -> str:
     return f"not valid JSON: line {line} column {column}"
 
 
+def _bounded_int(digits: str) -> int:
+    """An integer of the footprint, which rules::json reads only in i64 or u64; checked before int(), so no digit
+    limit of Python's is ever reached."""
+    if len(digits.lstrip("-")) <= 20:
+        value = int(digits)
+        if INT_RANGE[0] <= value <= INT_RANGE[1]:
+            return value
+    raise JsonError("an integer is out of range")
+
+
 def footprint_json(block: str):
-    """The footprint block read as strict JSON; a FootprintError with a fixed cause when it is not."""
+    """The footprint block read as strict JSON; a FootprintError with a fixed cause when it is not.
+
+    The first error in the text is the one reported, as rules::json reads it in one pass: the decoder's or a
+    hook's, and nesting deeper than MAX_DEPTH only once the decoder has read the text or run out of recursion
+    inside the deep part."""
+    prefix = "the footprint is not strict JSON: "
+    try:
+        document = json.loads(
+            block, object_pairs_hook=_no_duplicates, parse_constant=_no_constant, parse_int=_bounded_int
+        )
+    except JsonError as error:
+        raise FootprintError(prefix + str(error)) from error
+    except json.JSONDecodeError as exc:
+        raise FootprintError(prefix + decode_failure(exc)) from exc
+    except RecursionError as exc:
+        try:
+            check_depth(block)
+        except JsonError as error:
+            raise FootprintError(prefix + str(error)) from exc
+        raise FootprintError(prefix + "not valid JSON") from exc
     try:
         check_depth(block)
-        return strict_json(block)
     except JsonError as error:
-        raise FootprintError(f"the footprint is not strict JSON: {error}") from error
-    except json.JSONDecodeError as exc:
-        raise FootprintError(f"the footprint is not strict JSON: {decode_failure(exc)}") from exc
-    except (ValueError, RecursionError) as exc:  # an integer longer than Python reads, for example
-        raise FootprintError("the footprint is not strict JSON: not valid JSON") from exc
+        raise FootprintError(prefix + str(error)) from error
+    return document
 
 
 def parse_footprint(text: str) -> dict:

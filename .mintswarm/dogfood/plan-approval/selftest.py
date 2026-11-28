@@ -64,7 +64,9 @@ Checks:
   footprint rules not evaluated and the document rules evaluated; each
   footprint that is not strict JSON (invalid, a trailing comma, reported at
   the comma, a duplicate key, NaN, extra data, a control character, a
-  double comma and nesting deeper than 512) has its exact reason;
+  double comma, nesting deeper than 512, a syntax error before such
+  nesting, which is the one reported, an integer outside u64 and one of
+  5000 digits) has its exact reason;
 - base ref: with a worktree config and a HEAD commit that drop a
   require_human path, `--base` at the earlier commit still gives the hit;
 - historic fixtures: fixtures/plan-{9,12,14,19,20,10}.md, with a
@@ -147,11 +149,12 @@ Checks:
   records (missing, unreadable, not UTF-8, given twice or with an empty
   value), result records beside the analysis or the plan (a directory, not
   UTF-8), gate commands with an open quote or a trailing backslash, a
-  config that is not YAML and a missing `yq`, exit 2 and leave no verdict
-  file, even a stale one; each missing, unreadable or not UTF-8 plan,
-  document or result record, the base without a config, each split gate
-  command and the config that is not YAML with its exact reason, the same
-  under Rust; the configs that do not load are commits kept aside under
+  config that is not YAML, one that is not UTF-8, one with a duplicate key
+  and a missing `yq`, exit 2 and leave no verdict file, even a stale one;
+  each missing, unreadable or not UTF-8 plan, document or result record,
+  the base without a config, each split gate command and the configs that
+  are not YAML, not UTF-8 or hold a duplicate key with its exact reason,
+  the same under Rust; the configs that do not load are commits kept aside under
   refs/selftest/, so HEAD stays at `dropped`;
 - verdict errors: a verdict path that is a directory, and a read-only
   outputs directory with or without a stale verdict, exit 2 with a one-line
@@ -1539,6 +1542,9 @@ def unusable_footprints() -> list:
         ("control character", plan_text(block=replaced(block, '"files"', '"fi\tles"'))),
         ("double comma", plan_text(block=replaced(block, '"external_steps": []', '"external_steps": ["x",,]'))),
         ("nested too deep", plan_text(block=replaced(block, '"external_steps": []', f'"external_steps": {DEEP}'))),
+        ("fault before deep nesting", plan_text(block=replaced(block, '"external_steps": []', BEFORE_DEEP))),
+        ("integer out of range", plan_text(footprint=base(estimated_lines=10**25))),
+        ("integer past the digit limit", plan_text(block=replaced(block, '"estimated_lines": 6', LONG_INTEGER))),
     ]
     reordered = {"new_files": CLEAN_BASE["new_files"], **{k: v for k, v in CLEAN_BASE.items() if k != "new_files"}}
     missing = {k: v for k, v in CLEAN_BASE.items() if k != "gate_changes"}
@@ -1583,6 +1589,10 @@ def unusable_footprints() -> list:
 
 # Nested deeper than 512 inside the footprint's two objects: the 511th `[` is the 513th container.
 DEEP = "[" * 600 + "]" * 600
+# A syntax error before the deep part: the first error is the one reported.
+BEFORE_DEEP = f'"external_steps": [x, {DEEP}]'
+# More digits than Python's int() reads by default.
+LONG_INTEGER = '"estimated_lines": ' + "9" * 5000
 
 
 def position(text: str, needle: str, offset: int = 0) -> str:
@@ -1608,6 +1618,11 @@ def footprint_json_reasons() -> dict:
         "control character": prefix + "not valid JSON: " + position(control, "\t"),
         "double comma": prefix + "not valid JSON: " + position(double, '["x",,]', 5),
         "nested too deep": prefix + "nested deeper than 512: " + position(deep, '"external_steps": [', 18 + 510),
+        "fault before deep nesting": prefix
+        + "not valid JSON: "
+        + position(replaced(block, '"external_steps": []', BEFORE_DEEP), '"external_steps": [x', 19),
+        "integer out of range": prefix + "an integer is out of range",
+        "integer past the digit limit": prefix + "an integer is out of range",
     }
 
 
@@ -2374,6 +2389,8 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
         "gate-open-quote",
         "gate-trailing-backslash",
         "not-yaml",
+        "not-utf8",
+        "duplicate-key",
     ):
         cases.append((f"config {variant}", ["--plan", good, "--components", "docs", "--base", commits[variant]]))
     issue = sb.write_plan("unusable issue", issue_document())
@@ -2437,6 +2454,8 @@ def check_unusable_input(sb: Sandbox, commits: dict) -> None:
             f"config: gates.run[{gate}].command: does not split: a backslash ends the command"
         ),
         "config not-yaml": f"config: {CONFIG_PATH} at the base is not valid YAML",
+        "config not-utf8": f"config: {CONFIG_PATH} at the base is not UTF-8",
+        "config duplicate-key": f"config: {CONFIG_PATH} at the base is not valid YAML",
     }
     for flag, what in (
         ("--issue-document", "issue document"),
@@ -4147,7 +4166,13 @@ def check_object_store(sb: Sandbox, commits: dict) -> None:
             proc.returncode == 2 and verdict is None and len(lines) == 1 and "fetch" in lines[0],
             f"exit {proc.returncode}, verdict {verdict!r}: {proc.stderr.strip()}",
         )
-        if not RUST:
+        if RUST:
+            skip_under_rust(
+                "object store, forged object: the fetch is named by its command and exit status only",
+                "a_forged_loose_object_names_only_the_fetch",
+                "crates/runner/src/exec/git/tests/fresh_store.rs",
+            )
+        else:
             T.check(
                 "object store, forged object: the fetch is named by its command and exit status only",
                 len(lines) == 1 and FETCH_FAILED.fullmatch(lines[0]) is not None,
@@ -4648,6 +4673,9 @@ def build_commits(sb: Sandbox) -> tuple:
         config["gates"]["run"].append({"name": name, "command": command})
         commits[name] = sb.commit_config_aside(as_json(config), name)
     commits["not-yaml"] = sb.commit_config_aside(b"a: [1\n", "not-yaml")
+    commits["not-utf8"] = sb.commit_config_aside(b'a: "\xff"\n', "not-utf8")
+    # yq converts a duplicate key, repeating it in its JSON; strict JSON then refuses it
+    commits["duplicate-key"] = sb.commit_config_aside(b"a:\n  b: 1\n  b: 2\n", "duplicate-key")
     return commits, approval(real)["limits"]
 
 

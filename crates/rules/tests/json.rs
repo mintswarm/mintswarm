@@ -143,6 +143,10 @@ fn errors_display_with_a_position_unless_a_hook_finds_them() {
     assert_eq!(at(r#"{"a": 1, "a": 2}"#).to_string(), "duplicate key 'a'");
     assert_eq!(at("[NaN]").to_string(), "NaN is not allowed");
     assert_eq!(
+        at(&format!("[{}]", "9".repeat(5000))).to_string(),
+        "an integer is out of range"
+    );
+    assert_eq!(
         at("{ not json").to_string(),
         "not valid JSON: line 1 column 3"
     );

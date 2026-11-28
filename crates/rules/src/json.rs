@@ -8,11 +8,13 @@
 //! - a number too large for a finite `f64` (Python reads `1e400` as infinity) is
 //!   [`ReadErrorKind::NonFinite`];
 //! - an integer outside `i64` and `u64` (Python's integers are unbounded) is
-//!   [`ReadErrorKind::IntegerOutOfRange`];
+//!   [`ReadErrorKind::IntegerOutOfRange`], which `floor.py` checks for the footprint with a
+//!   `parse_int` hook;
 //! - a `\u` escape of a lone surrogate, which a Rust string cannot hold, is
 //!   [`ReadErrorKind::LoneSurrogate`];
-//! - nesting deeper than [`MAX_DEPTH`] containers is [`ReadErrorKind::TooDeep`], which the tools'
-//!   Python counterparts check with a scan of their own before decoding.
+//! - nesting deeper than [`MAX_DEPTH`] containers is [`ReadErrorKind::TooDeep`], which
+//!   `floor.py` finds for the footprint with a scan of its own when the decoder succeeds or runs
+//!   out of recursion, so the first error is the one reported on both sides.
 //!
 //! The kinds are only those Python can tell apart without reading its decoder's message: every
 //! `JSONDecodeError` is [`ReadErrorKind::Syntax`], at the position Python gives it. A comma
@@ -76,12 +78,15 @@ pub struct ReadError {
     pub column: usize,
 }
 
-/// The kind alone for the kinds a Python hook detects, which carry no position there; the kind
-/// and its line and column for every other.
+/// The kind alone for the kinds a Python hook detects, which carry no position there: a
+/// duplicate key, a constant and an integer out of range. The kind and its line and column for
+/// every other.
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            ReadErrorKind::DuplicateKey(_) | ReadErrorKind::Constant(_) => {
+            ReadErrorKind::DuplicateKey(_)
+            | ReadErrorKind::Constant(_)
+            | ReadErrorKind::IntegerOutOfRange => {
                 write!(f, "{}", self.kind)
             }
             _ => write!(
