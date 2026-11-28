@@ -236,13 +236,14 @@ fn is_plain_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// `name` as a quoted identifier.
+/// `name` as a quoted identifier, with any `"` in it doubled. A `Versioned` identifier is
+/// plain, which the debug assertion checks, so the escape only guards the quoting.
 fn quoted(name: &str) -> String {
     debug_assert!(
         is_plain_identifier(name),
         "a Versioned identifier is plain: {name:?}"
     );
-    format!("\"{name}\"")
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// The schema-qualified, quoted table of `R`.
